@@ -775,8 +775,7 @@ func (c *Client) refreshImageAsync(imageName string) {
 	c.imageRefreshed[imageName] = time.Now()
 	c.refreshMu.Unlock()
 
-	// A registry pull must never clobber a locally built image
-	// Containerd stores give local builds digests, only labels prove origin
+	// Never clobbers a locally built image with registry pull
 	if img, err := c.docker.ImageInspect(context.Background(), imageName); err == nil &&
 		img.Config != nil && img.Config.Labels["app.discopanel.build"] == "local" {
 		c.log.Debug("Image %s is locally built, skipping background refresh", imageName)
@@ -848,7 +847,7 @@ func (c *Client) PanelAgentURL(ctx context.Context, panelPort string) (string, e
 	return "", fmt.Errorf("no gateway on network %s", c.config.NetworkName)
 }
 
-// Resolves and caches the URL module containers reach the panel at
+// Resolves and caches panel URL for module containers
 func (c *Client) ModulePanelURL(panelPort string) string {
 	c.panelURLOnce.Do(func() {
 		url, err := c.PanelAgentURL(context.Background(), panelPort)

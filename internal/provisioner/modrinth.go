@@ -379,8 +379,7 @@ func writeModrinthState(dataPath string, state *modrinthInstallState) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// Installs individual Modrinth mods, optionally resolving dependencies
-// Presence decides first, the network only fills what is missing
+// Installs Modrinth mods, skips ones already present
 func (p *Provisioner) installModrinthProjects(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, mcVersion string, force bool) error {
 	projects := minecraft.SplitPatterns(strVal(cfg.ModrinthProjects))
 	if len(projects) == 0 {

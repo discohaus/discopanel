@@ -278,7 +278,6 @@
 		}
 
 		// Unknown hashes are property links, go to properties tab
-		// eslint-disable-next-line svelte/no-navigation-without-resolve -- base is resolved, only query and hash vary
 		goto(`${resolve(`/servers/${server.id}`)}?tab=properties#${hash}`, {
 			noScroll: true,
 			keepFocus: true

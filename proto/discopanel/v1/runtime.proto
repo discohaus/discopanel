@@ -1,8 +1,6 @@
 syntax = "proto3";
 
-// File contract between the panel and the runtime container.
-// The provisioner writes these specs into the server data dir,
-// the runtime entrypoint in a separate process reads them back.
+// File contract between panel and runtime container
 package discopanel.v1;
 
 import "discopanel/options/v1/options.proto";

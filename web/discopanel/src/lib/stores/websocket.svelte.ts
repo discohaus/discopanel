@@ -43,8 +43,7 @@ class WebSocketClient {
 
 	constructor() {
 		if (browser) {
-			// Recover promptly after network loss or tab sleep instead of
-			// waiting out the backoff timer
+			// Reconnects fast after network loss or tab sleep
 			window.addEventListener('online', () => this.reconnectNow());
 			document.addEventListener('visibilitychange', () => {
 				if (document.visibilityState === 'visible') {

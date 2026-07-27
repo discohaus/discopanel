@@ -62,7 +62,6 @@ func (s *ServerService) ListBackups(ctx context.Context, req *connect.Request[v1
 }
 
 // Stages an uploaded world zip into the data dir
-// Level.dat testimony sets the world name and MC version
 func (s *ServerService) importUploadedWorld(server *v1.Server, sessionID string) (string, error) {
 	archivePath, _, err := s.uploadManager.GetTempPath(sessionID)
 	if err != nil {

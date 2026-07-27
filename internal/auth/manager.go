@@ -406,9 +406,7 @@ func (m *Manager) GenerateApiToken(ctx context.Context, userID, name string, exp
 	return plaintext, token, nil
 }
 
-// Creates a module API token under the creating user
-// Empty user mints a userless supermodule token instead
-// Role widens access for trusted builtins, e.g. the doctor
+// Mints a module token, empty user means supermodule
 func (m *Manager) GenerateModuleToken(ctx context.Context, userID, moduleName, moduleID, role string) (string, *v1.ApiToken, error) {
 	if userID == "" && role == "" {
 		return "", nil, fmt.Errorf("supermodule token requires a module role")

@@ -969,7 +969,7 @@ func (s *ModuleService) GetResolvedAliases(ctx context.Context, req *connect.Req
 
 // Runtime input prompts
 
-// Wire shape of a prompt served on the module health port
+// Wire shape of a module health port prompt
 type modulePromptWire struct {
 	ID          string `json:"id"`
 	Title       string `json:"title"`
@@ -983,7 +983,7 @@ type modulePromptWire struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// Maps the sidecar prompt kind string onto a config field type
+// Maps sidecar prompt kind onto config field type
 func promptKind(kind string) v1.ModuleConfigFieldType {
 	switch kind {
 	case "password":

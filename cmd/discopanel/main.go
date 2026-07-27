@@ -174,8 +174,7 @@ func main() {
 	agentHub := metrics.NewHub(metricsCollector, eventBus, rec, log)
 	sender.SetAgent(agentHub)
 
-	// Initialize the provisioner and the lifecycle manager (the single owner
-	// of server start/stop/pause transitions)
+	// Lifecycle manager owns all start stop pause transitions
 	prov := provisioner.New(store, dockerClient, cfg, rec, log)
 	lifecycleManager := lifecycle.NewManager(store, dockerClient, prov, sender, proxyManager, eventBus, cfg, rec, log)
 	lifecycleManager.SetPlayerCounter(metricsCollector)

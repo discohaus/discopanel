@@ -1,5 +1,4 @@
-# discobench configuration. Every contender in a scenario runs with the
-# identical fairness envelope below, so the runtime is the only variable.
+# Every contender runs the identical fairness envelope below
 
 iterations: 3
 bots: 30
@@ -17,8 +16,7 @@ simulation_distance: 10
 ready_timeout: 10m
 stop_timeout: 3m
 
-# Bot behavior: radial flights out to walk_radius and back, spreading
-# bots over distinct chunk paths so worldgen and entity load are real
+# Radial bot flights spread load over distinct chunk paths
 walk_speed: 4.0
 walk_radius: 128
 
@@ -41,7 +39,6 @@ contenders:
   - name: itzg
     kind: itzg
     image: itzg/minecraft-server:java21
-  # A/B our own knobs by adding a third column, for example ZGC:
   # - name: discopanel-zgc
   #   kind: discopanel
   #   image: ghcr.io/discohaus/discoruntime:java21

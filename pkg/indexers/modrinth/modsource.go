@@ -15,8 +15,7 @@ var _ indexers.ModSourcer = (*ModrinthIndexer)(nil)
 // Caps fuzzy search hits tried per query
 const maxSourceHits = 3
 
-// Finds candidate jars for a mod id
-// Direct lookup first, search hits next, their required deps last
+// Finds candidate jars for a mod id, best first
 func (m *ModrinthIndexer) SourceMod(ctx context.Context, q indexers.ModQuery) ([]indexers.ModCandidate, error) {
 	direct, _, err := m.projectCandidate(ctx, q.ModID, q)
 	if err != nil && !isNotFound(err) {
@@ -52,7 +51,7 @@ func (m *ModrinthIndexer) SourceMod(ctx context.Context, q indexers.ModQuery) ([
 		}
 	}
 
-	// Addons of the wanted mod point at it as a dependency
+	// Addons point at the wanted mod as a dependency
 	for _, id := range depIDs {
 		c, _, err := m.projectCandidate(ctx, id, q)
 		if err != nil || c == nil {
@@ -68,7 +67,6 @@ func (m *ModrinthIndexer) SourceMod(ctx context.Context, q indexers.ModQuery) ([
 }
 
 // Builds one candidate from a project's best matching version
-// Required dep ids return even when the candidate fails
 func (m *ModrinthIndexer) projectCandidate(ctx context.Context, projectID string, q indexers.ModQuery) (*indexers.ModCandidate, []string, error) {
 	versions, err := m.client.GetProjectVersionsFiltered(ctx, projectID, q.Loaders, []string{q.McVersion})
 	if err != nil {

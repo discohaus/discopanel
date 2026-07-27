@@ -188,7 +188,6 @@ func (p *Provisioner) writeServerIcon(ctx context.Context, server *v1.Server, cf
 }
 
 // Downloads any common image into 64x64 PNG bytes
-// Shared resilience client paces, retries, and reuses connections
 func FetchServerIcon(ctx context.Context, userAgent, iconURL string) ([]byte, error) {
 	host := "icon"
 	if u, err := url.Parse(iconURL); err == nil && u.Host != "" {
@@ -242,7 +241,6 @@ type playerEntry struct {
 }
 
 // Resolves names to UUIDs and merges into list file
-// An explicit overwrite with an empty list truncates
 func (p *Provisioner) writePlayerListFile(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, filename, list string, isOps bool, overwrite bool) error {
 	names := splitList(list)
 	path := filepath.Join(server.DataPath, filename)

@@ -5,7 +5,7 @@ set -e
 IMAGE_NAME="discopanel"
 IMAGE_TAG="dev"
 
-# Panel image ships to ghcr only, hub stays frozen at v2
+# Panel image ships to ghcr, hub frozen at v2
 IMAGES=(
     "ghcr.io/discohaus/${IMAGE_NAME}:${IMAGE_TAG}"
 )

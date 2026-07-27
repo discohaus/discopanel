@@ -1,5 +1,4 @@
-// File paths and IO for the panel to runtime contract.
-// Every spec on disk is a v1 proto message held as protojson.
+// Reads and writes panel to runtime spec files
 package runtimespec
 
 import (

@@ -46,7 +46,7 @@
 	let invitePin = $state('');
 
 	onMount(() => {
-		// Token in the URL fragment means an OIDC callback landed here
+		// Token in URL fragment means OIDC callback landed
 		const urlParams = new URLSearchParams(window.location.search);
 		const token = new URLSearchParams(window.location.hash.slice(1)).get('token');
 		if (token) {

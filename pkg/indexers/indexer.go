@@ -35,8 +35,7 @@ type ModQuery struct {
 	Loaders   []string // Loader facets the server can load
 }
 
-// One downloadable jar an indexer offers for a query
-// Callers must verify the jar declares the queried id
+// One downloadable jar, callers verify it declares the id
 type ModCandidate struct {
 	Origin   string // Human label naming the source project
 	FileName string
@@ -46,7 +45,6 @@ type ModCandidate struct {
 }
 
 // Optional capability sourcing single mod jars by id
-// Candidates come best match first
 type ModSourcer interface {
 	SourceMod(ctx context.Context, q ModQuery) ([]ModCandidate, error)
 }
@@ -130,8 +128,7 @@ func LookupIndexer(name string) (IndexerInfo, bool) {
 	return entry.info, ok
 }
 
-// Pack source behind an indexed modpack row.
-// Manual uploads carry curseforge format archives.
+// Pack source behind an indexed modpack row
 func PackSourceFor(indexer string) optionsv1.PackSource {
 	if indexer == ManualIndexer {
 		return optionsv1.PackSource_PACK_SOURCE_CURSEFORGE

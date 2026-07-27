@@ -42,8 +42,7 @@ message PanelMessage {
   }
 }
 
-// Asks the JVM agent to report stuck threads as a fatal error
-// Supervisor sends this on the loopback link when a boot stalls
+// Asks the JVM agent to report stuck threads
 message ThreadDumpRequest {}
 
 // Mandatory first message identifying the connecting party
@@ -98,7 +97,7 @@ message Exited {
   bool oom_killed = 6;
   // Structured fatal error captured inside the JVM, when available
   FatalError fatal_error = 7;
-  // True when the crash ended boot before the server was ready
+  // True when the crash ended boot before ready
   bool boot_failed = 8;
   // True when the server reached ready before this exit
   bool was_ready = 9;
@@ -107,7 +106,6 @@ message Exited {
 }
 
 // Signals the javaagent hooked the game's error logging
-// Loopback only, the hub does not forward this signal
 message CaptureArmed {
   // Log4j contexts hooked so far
   int32 contexts_hooked = 1;
@@ -119,7 +117,7 @@ message FatalError {
   string thread = 1;
   // Cause chain, outermost first and root cause last
   repeated CrashCause causes = 2;
-  // Mods the loader reported as failed, read from the live exception
+  // Mods the loader reported as failed
   repeated FailedMod failed_mods = 3;
   // True from the uncaught handler, false from the log4j hook
   bool uncaught = 4;
@@ -137,7 +135,7 @@ message FailedMod {
   string error_message = 4;
   // Loader's machine-readable failure key, e.g. fml.modloading.missingdependency
   string reason = 5;
-  // Failure key args rendered as strings, dep ids and ranges live here
+  // Failure key args as strings, dep ids and ranges
   repeated string reason_args = 6;
   // Root failure frames, mapped to the jars that own them
   repeated CrashFrame frames = 7;

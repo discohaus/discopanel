@@ -31,8 +31,8 @@ docker:
   host: "unix:///var/run/docker.sock"
   version: ""
   network_name: "discopanel-network"
-  runtime_image: ""  # Override the discoruntime image repository (default: ghcr.io/discohaus/discoruntime)
-  agent_url: ""  # URL server containers use to reach the panel for live telemetry (auto-detected when empty)
+  runtime_image: ""  # Overrides the runtime image repo, default ghcr.io/discohaus/discoruntime
+  agent_url: ""  # Panel URL for container telemetry, auto detected when empty
   dns: ""  # Custom DNS server for containers (empty = docker default)
   sync_interval: 5  # Seconds between docker state sync
   # Can be configure like labels: {"your.label.key": "your_label_value", "other.label.key": "other_label_value"}
@@ -69,10 +69,10 @@ auth:
     scopes: ["openid", "profile", "email"]
     role_claim: "groups"  # The token claim that contains the user's groups (usually "groups")
     role_mapping: {}  # Mapping to groups if they arent the same name as discopanels (ie: {"my-admins": "admin", "my-users": "user"})
-    reject_unmapped: false  # Deny login when no claim group maps to a DiscoPanel role
-    required_claim: ""  # Claim that must be present to log in (ie: "groups")
+    reject_unmapped: false  # Deny login when no group maps to a role
+    required_claim: ""  # Claim required to log in, ie "groups"
     required_values: []  # Values required in that claim (any match allows login)
-    extra_claims_url: ""  # Endpoint queried for additional claims (ie: userinfo-style URL)
+    extra_claims_url: ""  # Endpoint queried for additional claims like userinfo
     extra_claims_key: ""  # JSON key holding the claim list in that response
     extra_claims_name: ""  # Claim name the fetched values are merged under
     skip_tls_verify: false  # Skip TLS certificate verification (for self-signed certs)
@@ -108,7 +108,7 @@ proxy:
 # All servers use the same port (25565) and are routed based on hostname!
 # 
 # DNS Setup Required:
-# Add a wildcard DNS record: *.mc.example.com pointing to your server's IP
+# Add a wildcard DNS record *.mc.example.com pointing to your server's IP
 # Or add individual A records for each server subdomain
 
 

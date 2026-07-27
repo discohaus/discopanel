@@ -559,8 +559,7 @@ func (p *Provisioner) completeServerPack(ctx context.Context, server *v1.Server,
 	return nil, errNoLaunchTarget
 }
 
-// Extracted tree outranks the user MC version guess
-// Absent evidence changes nothing, uncertainty never reports
+// Adopts pack MC version over the user guess
 func (p *Provisioner) adoptServerPackVersion(ctx context.Context, server *v1.Server, spec *v1.LaunchSpec) {
 	evidence := serverPackMCVersion(server.DataPath, spec)
 	if evidence == "" || evidence == server.McVersion {
@@ -596,8 +595,7 @@ func serverPackMCVersion(dataPath string, spec *v1.LaunchSpec) string {
 	return ""
 }
 
-// Reads the version.json a vanilla server jar carries
-// World version distinguishes it from forge launch profiles
+// Reads MC version from a vanilla jar version.json
 func jarMCVersion(jarPath string) string {
 	r, err := zip.OpenReader(jarPath)
 	if err != nil {

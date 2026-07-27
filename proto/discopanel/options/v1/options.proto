@@ -1,8 +1,6 @@
 syntax = "proto3";
 
-// Annotation vocabulary read from descriptors at runtime.
-// protometa in Go and proto-meta.ts in the frontend are the
-// only readers, nothing here is ever hand-copied elsewhere.
+// Annotation vocabulary read from descriptors at runtime
 package discopanel.options.v1;
 
 import "google/protobuf/descriptor.proto";
@@ -72,8 +70,7 @@ enum ModLoaderCategory {
   MOD_LOADER_CATEGORY_OTHER = 10 [(value) = {label: "Other"}];
 }
 
-// Loader facts annotated on one ModLoader value.
-// Dialects empty means the install on disk testifies instead.
+// Loader facts annotated on one ModLoader value
 message LoaderMeta {
   ModLoaderCategory category = 1;
   string mods_directory = 2; // Where jars install, mods or plugins, empty when none

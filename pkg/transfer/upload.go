@@ -291,8 +291,7 @@ func (m *UploadManager) Cancel(sessionID string) error {
 	return nil
 }
 
-// Removes session after file moved to destination
-// Caller moved the temp file, this never removes it
+// Removes session only, caller already moved the temp file
 func (m *UploadManager) CleanupSession(sessionID string) error {
 	session, ok := m.store.take(sessionID)
 	if !ok {

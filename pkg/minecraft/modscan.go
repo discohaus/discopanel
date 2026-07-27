@@ -54,7 +54,7 @@ func foldModID(id string) string {
 	return strings.ReplaceAll(id, "-", "_")
 }
 
-// True when a loader-reported id names one of this jar's mods
+// True when a reported id names one of these mods
 func (m *ModJarMeta) HasReportedModID(id string) bool {
 	if m.HasModID(id) {
 		return true
@@ -68,7 +68,7 @@ func (m *ModJarMeta) HasReportedModID(id string) bool {
 	return false
 }
 
-// True when any declared mod id is in the required set
+// True when any declared mod id is required
 func (m *ModJarMeta) providesAny(required map[string]bool) bool {
 	for i := range m.Mods {
 		if required[m.Mods[i].ID] {
@@ -103,7 +103,7 @@ func ClientOnlySweep(metas []ModJarMeta, forceIncludes []string) []ModJarMeta {
 			drop = append(drop, m)
 		}
 	}
-	// Kept jars pull their deps out of the drop set until stable
+	// Kept jars pull their deps back until stable
 	for {
 		required := requiredModIDs(keep)
 		var next []ModJarMeta

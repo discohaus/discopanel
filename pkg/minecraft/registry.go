@@ -12,9 +12,7 @@ import (
 	utils "github.com/discohaus/discopanel/pkg/utils"
 )
 
-// One row of loader facts keyed by proto enum.
-// Every fact comes from ModLoader descriptor annotations,
-// adding a loader is one annotated enum value.
+// One row of loader facts keyed by proto enum
 type LoaderInfo struct {
 	Info *v1.ModLoaderInfo
 	*optionsv1.LoaderMeta
@@ -103,7 +101,7 @@ func PackSourceFor(loader v1.ModLoader) optionsv1.PackSource {
 	return optionsv1.PackSource_PACK_SOURCE_UNSPECIFIED
 }
 
-// Maps a pack source to the loader that auto installs it
+// Maps a pack source to its auto installing loader
 func LoaderForPackSource(src optionsv1.PackSource) (v1.ModLoader, bool) {
 	if src != optionsv1.PackSource_PACK_SOURCE_UNSPECIFIED {
 		for i := range registry {

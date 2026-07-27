@@ -120,8 +120,7 @@ func (s *ServerService) serverFavicon(server *v1.Server) string {
 	return uri
 }
 
-// applyMetrics copies the collector's cached runtime stats onto the server
-// row's transient fields (shared by ListServers and GetServer).
+// Copies cached runtime stats onto transient server fields
 func (s *ServerService) applyMetrics(server *v1.Server) {
 	if s.metricsCollector == nil {
 		return
@@ -1157,8 +1156,7 @@ func (s *ServerService) GetServerLogs(ctx context.Context, req *connect.Request[
 	// Get structured log entries from the log streamer if available
 	var protoLogs []*v1.LogEntry
 	if s.logStreamer != nil {
-		// Attaches a follow when nothing streams a live container
-		// yet (e.g. panel restarted while the server was running).
+		// Attaches a follow when no stream exists yet
 		if server.ContainerId != "" {
 			if err := s.logStreamer.StartStreaming(server.Id, server.ContainerId); err != nil {
 				s.log.Warn("Failed to start log streaming for server %s: %v", server.Id, err)

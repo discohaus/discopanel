@@ -1,8 +1,6 @@
 syntax = "proto3";
 
-// Every persisted data model lives in this file.
-// Table messages carry protogorm model options, their column enums and nested msgs sit beside them,
-// so the whole database schema reads top to bottom... lets try to keep it that way.
+// Every persisted data model lives in this file
 package discopanel.v1;
 
 import "discopanel/options/v1/options.proto";
@@ -56,9 +54,7 @@ enum ServerStatus {
   }];
 }
 
-// Minecraft server software type.
-// Loader annotations carry every per-loader fact, the
-// registry in pkg/minecraft reads them from descriptors.
+// Minecraft server software type
 enum ModLoader {
   option (discopanel.options.v1.enum_type) = {label: "Mod Loader"};
   MOD_LOADER_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
@@ -565,7 +561,7 @@ enum ModuleStatus {
   MODULE_STATUS_CREATING = 6 [(discopanel.options.v1.value) = {label: "Creating"}];
 }
 
-// ModuleEventAction defines actions that can be triggered by module event hooks.
+// Actions module event hooks can trigger
 enum ModuleEventAction {
   option (discopanel.options.v1.enum_type) = {label: "Event Action"};
   MODULE_EVENT_ACTION_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
@@ -836,13 +832,13 @@ message ModuleConfigField {
 message ModuleDependency {
   // ID of the module this module depends on.
   string module_id = 1;
-  // Wait for the dependency to pass its health check before starting.
+  // Wait for dependency health check before starting.
   bool wait_for_healthy = 2;
-  // Maximum seconds to wait for the dependency. 0 uses the default (60s).
+  // Max seconds to wait, 0 means 60.
   int32 timeout_seconds = 3;
 }
 
-// ModuleEventHook configures an action to take when a server event occurs.
+// Action to take when a server event occurs
 message ModuleEventHook {
   // The event that triggers this hook.
   TriggeredEventType event = 1;
@@ -864,10 +860,10 @@ message CommandTaskConfig {
 // Configuration for backup tasks
 message BackupTaskConfig {
   string backup_name = 1; // Name pattern for backup (empty = task name)
-  repeated string paths = 2; // Paths to include, relative to the server directory (empty = world directory)
+  repeated string paths = 2; // Server-relative paths, empty means world directory
   bool compress = 3; // Whether to compress archive contents
   int32 retention_days = 4; // Days to keep backups (0 = forever)
-  int32 max_backups = 5; // Maximum number of backups to keep (0 = unlimited, takes precedence over min_backups)
+  int32 max_backups = 5; // Max backups kept, 0 unlimited, beats min_backups
   int32 min_backups = 6; // Never let retention_days expiry reduce the backup count below this
 }
 
@@ -881,7 +877,7 @@ message ScriptTaskConfig {
 message WebhookTaskConfig {
   string url = 1; // Webhook destination URL
   string secret = 2; // Optional HMAC signing secret
-  string payload_template = 3; // Go text/template rendered into the request body; falls back to a generic JSON payload when empty
+  string payload_template = 3; // Go template for request body, empty uses generic JSON
   map<string, string> headers = 4; // Custom request headers
   int32 max_retries = 5; // Retries on delivery failure (default 3)
   int32 retry_delay_ms = 6; // Initial retry delay in ms (default 1000)
@@ -1379,7 +1375,7 @@ message ScheduledTask {
   google.protobuf.Timestamp created_at = 20 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
   google.protobuf.Timestamp updated_at = 21 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
 
-  // Events that trigger this task. Only used when schedule == SCHEDULE_TYPE_EVENT.
+  // Events that trigger event scheduled tasks.
   repeated TriggeredEventType event_triggers = 22;
   Server server = 23 [(protogorm.v1.db) = {tag: "constraint:OnDelete:CASCADE"}];
 }
@@ -1517,7 +1513,7 @@ message ModuleTemplate {
   string description = 3;
   // Whether this is a built-in or custom template.
   ModuleTemplateType type = 4 [(protogorm.v1.db) = {tag: "not null;default:2"}];
-  // Docker image to use (e.g., "nginx:latest").
+  // Docker image reference to run.
   string docker_image = 5 [(protogorm.v1.db) = {tag: "not null"}];
   // Typed config inputs shown when creating instances.
   repeated ModuleConfigField config_fields = 6;
@@ -1527,7 +1523,7 @@ message ModuleTemplate {
   repeated VolumeMount default_volumes = 8;
   // HTTP path for health checks (e.g., "/health").
   string health_check_path = 9;
-  // Port to use for health checks. 0 uses the first configured port.
+  // Health check port, 0 uses first configured port.
   int32 health_check_port = 10;
   // Whether instances must be attached to a server.
   bool requires_server = 11 [(protogorm.v1.db) = {tag: "default:true"}];
@@ -1561,9 +1557,9 @@ message ModuleTemplate {
   string default_uid = 25 [(protogorm.v1.db) = {tag: "default:''"}];
   // Default GID to run the container
   string default_gid = 26 [(protogorm.v1.db) = {tag: "default:''"}];
-  // Command to exec inside the container after start (e.g., sed to patch config files)
+  // Command execd in the container after start
   string default_init_command = 27 [(protogorm.v1.db) = {tag: "default:''"}];
-  // Seconds to wait after container is healthy before running init command
+  // Delay after healthy before init command runs
   int32 default_init_command_delay = 28 [(protogorm.v1.db) = {tag: "default:0"}];
   // Whether to restart the container after init command completes
   bool default_restart_after_init = 29 [(protogorm.v1.db) = {tag: "default:false"}];
@@ -1682,7 +1678,7 @@ message Module {
   string gid = 36 [(protogorm.v1.db) = {tag: "default:''"}];
   // Command to exec inside the container after start
   string init_command = 37 [(protogorm.v1.db) = {tag: "default:''"}];
-  // Seconds to wait after container is healthy before running init command
+  // Delay after healthy before init command runs
   int32 init_command_delay = 38 [(protogorm.v1.db) = {tag: "default:0"}];
   // Whether to restart the container after init command completes
   bool restart_after_init = 39 [(protogorm.v1.db) = {tag: "default:false"}];
@@ -1853,9 +1849,7 @@ message ProxyConfig {
   google.protobuf.Timestamp updated_at = 4 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
 }
 
-// All tunable server properties, global defaults reuse the
-// table under a pseudo server id. Field metadata drives the
-// settings UI, env generation, and server.properties writing.
+// All tunable server properties for one server
 message ServerProperties {
   option (protogorm.v1.model) = {
     table: "server_properties"

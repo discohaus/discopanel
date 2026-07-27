@@ -932,7 +932,7 @@
 												{#each proxyListeners as listener (listener.id)}
 													<SelectItem value={listener.id}>
 														{listener.name} (port {listener.port}){listener.isDefault
-															? ' — default'
+															? ' (default)'
 															: ''}
 													</SelectItem>
 												{/each}

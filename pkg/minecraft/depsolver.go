@@ -56,7 +56,6 @@ type providerRef struct {
 }
 
 // Finds provable dependency violations, uncertainty never reports
-// Dialects name the metadata the platform reads, empty solves nothing
 func SolveDeps(metas []ModJarMeta, dialects []string) []DepIssue {
 	if len(dialects) == 0 {
 		return nil
@@ -69,8 +68,7 @@ func SolveDeps(metas []ModJarMeta, dialects []string) []DepIssue {
 	seen := make(map[string]bool)
 	for i := range metas {
 		for _, dep := range metas[i].Deps {
-			// Platform-provided ids never convict, the loader's
-			// own boot is the only judge of platform ranges
+			// Platform-provided ids never convict
 			if dep.ID == "" || dep.Side == "client" || dialectBuiltin(dep.Dialect, dep.ID) {
 				continue
 			}
@@ -87,8 +85,7 @@ func SolveDeps(metas []ModJarMeta, dialects []string) []DepIssue {
 	return issues
 }
 
-// Filters each jar to the manifest the platform actually reads
-// A universal jar's other dialects are inert at runtime
+// Filters each jar to the manifest the platform reads
 func activeMetas(metas []ModJarMeta, dialects []string) []ModJarMeta {
 	out := make([]ModJarMeta, 0, len(metas))
 	for i := range metas {
@@ -101,8 +98,7 @@ func activeMetas(metas []ModJarMeta, dialects []string) []ModJarMeta {
 	return out
 }
 
-// Picks the dialect a platform reads from one jar
-// The most native manifest the jar carries wins
+// Picks the most native manifest the jar carries
 func jarDialect(m *ModJarMeta, dialects []string) string {
 	for _, d := range dialects {
 		for i := range m.Mods {
@@ -252,8 +248,7 @@ func checkDep(meta *ModJarMeta, dep ModDep, idx *depIndex) *DepIssue {
 	}
 }
 
-// Reports whether a version satisfies a raw range, unparseable satisfies
-// Dialect picks range grammar, maven or semver
+// Reports whether a version satisfies a range, unparseable satisfies
 func VersionSatisfies(version, rawRange, dialect string) bool {
 	rawRange = strings.TrimSpace(rawRange)
 	if version == "" || rawRange == "" || rawRange == "*" {

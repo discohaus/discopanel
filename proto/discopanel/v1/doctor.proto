@@ -1,8 +1,6 @@
 syntax = "proto3";
 
-// Shared journal contract between the panel and the doctor module.
-// The doctor writes its repair record into the server data dir,
-// the panel reads it back for status and findings display.
+// Shared journal contract between panel and doctor module
 package discopanel.v1;
 
 import "google/protobuf/timestamp.proto";

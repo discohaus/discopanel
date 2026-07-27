@@ -57,7 +57,7 @@
 	let trackWidth = $state(0);
 	let dragging = $state<Thumb | null>(null);
 
-	// Falls back to a sane range when host memory is unknown
+	// Falls back to sane range when memory unknown
 	let rangeMax = $derived(
 		totalMb > 0 ? totalMb : Math.max(32768, Math.ceil((memory * 2) / 1024) * 1024)
 	);

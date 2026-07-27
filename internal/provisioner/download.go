@@ -109,7 +109,7 @@ func isTransient(err error) bool {
 	return !errors.As(err, &ce)
 }
 
-// Retries fn up to three times with backoff on transient errors
+// Retries three times with backoff on transient errors
 func retryTransient(ctx context.Context, fn func() error) error {
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {

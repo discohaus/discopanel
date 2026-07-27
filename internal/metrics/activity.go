@@ -59,8 +59,7 @@ func newTraceID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// One chokepoint for the per-server activity ledger
-// Records every action with context source and trace
+// Records every server action into the activity ledger
 type Recorder struct {
 	store *storage.Store
 	log   *logger.Logger

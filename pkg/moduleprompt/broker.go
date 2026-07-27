@@ -1,4 +1,4 @@
-// Lets a sidecar module ask the panel user for input at runtime
+// Lets a sidecar module ask the user for input
 package moduleprompt
 
 import (
@@ -10,20 +10,20 @@ import (
 	"time"
 )
 
-// Widget kinds a prompt can request, mirrors the panel config field types
+// Widget kinds a prompt can request
 const (
 	KindText     = "text"
 	KindPassword = "password"
 	KindSelect   = "select"
 )
 
-// Option is one choice for a select prompt
+// One choice for a select prompt
 type Option struct {
 	Value string `json:"value"`
 	Label string `json:"label"`
 }
 
-// Prompt describes one piece of input the module is waiting on
+// One piece of input the module waits on
 type Prompt struct {
 	ID          string    `json:"id"`
 	Title       string    `json:"title"`
@@ -34,27 +34,27 @@ type Prompt struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
-// ErrSuperseded means a newer prompt replaced this one before it was answered
+// Returned when a newer prompt replaces the pending one
 var ErrSuperseded = errors.New("prompt superseded")
 
-// Broker holds at most one pending prompt and serves it over HTTP
+// Holds one pending prompt served over HTTP
 type Broker struct {
 	mu      sync.Mutex
 	pending *Prompt
 	answer  chan string
 }
 
-// New builds an empty broker
+// Builds an empty broker
 func New() *Broker {
 	return &Broker{}
 }
 
-// Register wires the prompt endpoints onto a mux
+// Wires the prompt endpoint onto a mux
 func (b *Broker) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/prompt", b.handle)
 }
 
-// Ask publishes a prompt and blocks until it is answered or ctx ends
+// Publishes a prompt and blocks for the answer
 func (b *Broker) Ask(ctx context.Context, p Prompt) (string, error) {
 	if p.CreatedAt.IsZero() {
 		p.CreatedAt = time.Now()
@@ -82,14 +82,14 @@ func (b *Broker) Ask(ctx context.Context, p Prompt) (string, error) {
 	}
 }
 
-// Pending returns the current prompt or nil
+// Returns the current prompt or nil
 func (b *Broker) Pending() *Prompt {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.pending
 }
 
-// Drops the pending prompt when the given wait channel is still current
+// Drops the pending prompt when still current
 func (b *Broker) clear(answer chan string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

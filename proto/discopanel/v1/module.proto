@@ -583,7 +583,7 @@ message GetResolvedAliasesResponse {
   map<string, string> aliases = 1;
 }
 
-// ModulePrompt is one piece of input a running module is waiting on.
+// One piece of input a running module awaits.
 message ModulePrompt {
   // Stable id for this prompt within the module.
   string id = 1;

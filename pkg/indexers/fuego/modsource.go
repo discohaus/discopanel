@@ -13,8 +13,7 @@ var _ indexers.ModSourcer = (*FuegoIndexer)(nil)
 // Caps fuzzy search hits tried per query
 const maxSourceHits = 3
 
-// Finds candidate jars for a mod id
-// Exact slug first, search hits next, their required deps last
+// Finds candidate jars for a mod id, best first
 func (f *FuegoIndexer) SourceMod(ctx context.Context, q indexers.ModQuery) ([]indexers.ModCandidate, error) {
 	lt := queryLoaderType(q.Loaders)
 	if lt == ModLoaderAny {
@@ -50,7 +49,7 @@ func (f *FuegoIndexer) SourceMod(ctx context.Context, q indexers.ModQuery) ([]in
 		}
 	}
 
-	// Addons of the wanted mod point at it as a dependency
+	// Addons point at the wanted mod as a dependency
 	if len(depIDs) > 0 {
 		if mods, err := f.client.GetModsByIDs(ctx, depIDs); err == nil {
 			for i := range mods {
@@ -80,7 +79,6 @@ func queryLoaderType(loaders []string) ModLoaderType {
 }
 
 // Builds one candidate from a mod's newest matching file
-// Required dep ids return even when the candidate fails
 func (f *FuegoIndexer) modCandidate(ctx context.Context, mod *Modpack, mcVersion string, lt ModLoaderType) (*indexers.ModCandidate, []int, error) {
 	files, err := f.client.GetModpackFiles(ctx, mod.ID, mcVersion, lt)
 	if err != nil {

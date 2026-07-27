@@ -38,7 +38,6 @@ func casCacheable(sum *checksum) bool {
 }
 
 // Materializes cached artifact at dest, false on miss
-// Rot gets dropped so the caller refetches from origin
 func (p *Provisioner) casGet(dest string, sum *checksum) bool {
 	if !casCacheable(sum) {
 		return false

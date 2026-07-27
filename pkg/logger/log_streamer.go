@@ -106,10 +106,7 @@ func (ls *LogStreamer) StartStreaming(key, containerID string) error {
 	return nil
 }
 
-// Follows a containers output and appends it to the stream
-// buffer. A zero since with seedTail=false means "everything since the
-// container started", resolved from the container's own timestamps so panel
-// clock skew can never skip early lines.
+// Follows container output and appends to the stream buffer
 func (ls *LogStreamer) streamLogs(ctx context.Context, stream *LogStream, containerID string, gen int, seedTail bool, since time.Time) {
 	defer func() {
 		stream.mu.Lock()

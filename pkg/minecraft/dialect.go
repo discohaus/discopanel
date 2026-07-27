@@ -9,10 +9,6 @@ import (
 	"github.com/discohaus/discopanel/pkg/runtimespec"
 )
 
-// One mod manifest format named for its loader
-// The registry declares which formats every loader reads
-// Detection exists only for loaders whose row declares nothing
-
 // Dialects the server's platform reads, declared else observed
 func ResolveDialects(loader v1.ModLoader, dataPath, modsDir string) []string {
 	if row, ok := loaderIndex[loader]; ok && len(row.Dialects) > 0 {
@@ -21,8 +17,7 @@ func ResolveDialects(loader v1.ModLoader, dataPath, modsDir string) []string {
 	return DetectDialects(dataPath, modsDir)
 }
 
-// Dialects observed from the install when nothing is declared
-// Launch spec, disk framework, and jars testify
+// Observes dialects from the install when nothing is declared
 func DetectDialects(dataPath, modsDir string) []string {
 	if dataPath != "" {
 		if spec, err := runtimespec.ReadLaunchSpec(dataPath); err == nil && spec != nil {
@@ -41,7 +36,6 @@ func DetectDialects(dataPath, modsDir string) []string {
 }
 
 // Probes disk markers, the longest dialect chain wins
-// A fork's chain outranks its base's hit
 func markerHit(dataPath string) *LoaderInfo {
 	var best *LoaderInfo
 	for i := range registry {
@@ -59,7 +53,6 @@ func markerHit(dataPath string) *LoaderInfo {
 }
 
 // Reports whether the platform supplies a dep id
-// The declaring manifest's format names the platform, chain included
 func dialectBuiltin(dialect, id string) bool {
 	if dialect == "" {
 		for d := range dialectIndex {
@@ -109,7 +102,6 @@ func DialectFacets(dialects []string) []string {
 }
 
 // Votes the dialect from installed jar manifests
-// A jar carrying only one manifest can only load there
 func inferDialect(metas []ModJarMeta) string {
 	exclusive := make(map[string]int)
 	present := make(map[string]bool)

@@ -447,8 +447,7 @@ func isConnectPath(path string) bool {
 	return false
 }
 
-// Resolves scoped ids to the owning server id
-// Backstop clearing secrets a handler forgot to redact
+// Clears secrets a handler forgot to redact
 func (s *Server) redactInterceptor() connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {

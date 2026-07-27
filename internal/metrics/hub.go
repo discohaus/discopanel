@@ -241,7 +241,7 @@ func (h *Hub) HandleMessage(ctx context.Context, serverID string, msg *agentv1.A
 				}
 			}
 		}
-		// Ack runs off the recv loop, telemetry never stalls on it
+		// Acks off the recv loop so telemetry never stalls
 		go h.ackExit(ctx, serverID, p.Exited.GetExitedAtUnixMs())
 
 	case *agentv1.AgentMessage_ProcSample:

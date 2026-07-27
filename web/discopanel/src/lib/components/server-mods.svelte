@@ -36,7 +36,7 @@
 	let hasLoaded = false;
 	let previousServerId = $state(server.id);
 
-	// Registry decides mods vs plugins vs none, never a loader list
+	// Registry decides mods vs plugins, never a loader list
 	let modsDirectory = $state('mods');
 	$effect(() => {
 		modsDirectoryFor(server.modLoader).then((dir) => (modsDirectory = dir));
