@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/nickheyer/discopanel/pkg/indexers"
+	"github.com/discohaus/discopanel/pkg/indexers"
 )
 
 // Implements ModSourcer

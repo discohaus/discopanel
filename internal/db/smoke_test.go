@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nickheyer/discopanel/pkg/config"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/config"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 

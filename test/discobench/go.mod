@@ -1,4 +1,4 @@
-module github.com/nickheyer/discopanel/test/discobench
+module github.com/discohaus/discopanel/test/discobench
 
 go 1.26.4
 

@@ -10,7 +10,7 @@
 
 services:
   discopanel:
-    image: nickheyer/discopanel:dev
+    image: ghcr.io/discohaus/discopanel:dev
     container_name: discopanel
     restart: unless-stopped
     network_mode: host

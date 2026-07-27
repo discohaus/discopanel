@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/nickheyer/discopanel/pkg/javaversions"
-	"github.com/nickheyer/discopanel/pkg/minecraft"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/javaversions"
+	"github.com/discohaus/discopanel/pkg/minecraft"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
 // Default discoruntime repo, overridable via docker.runtime_image
-const DefaultRuntimeImage = "ghcr.io/nickheyer/discoruntime"
+const DefaultRuntimeImage = "ghcr.io/discohaus/discoruntime"
 
 // Java majors the runtime image publishes
 var SupportedJavaVersions = javaversions.Supported

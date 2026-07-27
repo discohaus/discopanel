@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nickheyer/discopanel/pkg/events"
-	"github.com/nickheyer/discopanel/pkg/logger"
-	agentv1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/agent/v1"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
-	"github.com/nickheyer/discopanel/pkg/runtimespec"
+	"github.com/discohaus/discopanel/pkg/events"
+	"github.com/discohaus/discopanel/pkg/logger"
+	agentv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/agent/v1"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/runtimespec"
 )
 
 // Feeds human-readable agent lines into a server's console stream

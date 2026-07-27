@@ -6,9 +6,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nickheyer/discopanel/pkg/logger"
-	"github.com/nickheyer/discopanel/pkg/protometa"
-	web "github.com/nickheyer/discopanel/web/discopanel"
+	"github.com/discohaus/discopanel/pkg/logger"
+	"github.com/discohaus/discopanel/pkg/protometa"
+	web "github.com/discohaus/discopanel/web/discopanel"
 	"gopkg.in/yaml.v3"
 )
 

@@ -5,10 +5,9 @@ set -e
 IMAGE_NAME="discopanel"
 IMAGE_TAG="dev"
 
-# Panel image ships to both registries during the ghcr transition
+# Panel image ships to ghcr only, hub stays frozen at v2
 IMAGES=(
-    "nickheyer/${IMAGE_NAME}:${IMAGE_TAG}"
-    "ghcr.io/nickheyer/${IMAGE_NAME}:${IMAGE_TAG}"
+    "ghcr.io/discohaus/${IMAGE_NAME}:${IMAGE_TAG}"
 )
 
 TAG_ARGS=()

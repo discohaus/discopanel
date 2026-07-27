@@ -3,7 +3,7 @@ package indexers
 import (
 	"testing"
 
-	optionsv1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/options/v1"
+	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
 )
 
 func TestRegisterIndexerMetadata(t *testing.T) {

@@ -4,7 +4,7 @@ package discopanel.v1;
 
 import "discopanel/options/v1/options.proto";
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
 // Generic chunked file upload service
 service UploadService {

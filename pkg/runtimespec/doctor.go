@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"slices"
 
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )

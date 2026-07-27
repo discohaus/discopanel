@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
 // Caches maven library tree, deterministic per loader version

@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nickheyer/discopanel/pkg/logger"
+	"github.com/discohaus/discopanel/pkg/logger"
 )
 
 const (

@@ -7,7 +7,7 @@ package discopanel.v1;
 
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
 // Repair step kinds a doctor incident may record
 enum DoctorActionKind {

@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nickheyer/discopanel/internal/alias"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/internal/alias"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
 // ConfigViolation is one failed config field check

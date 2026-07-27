@@ -81,7 +81,7 @@ func DefaultConfig() *Config {
 			{Name: "paper-1.21.1", Type: TypePaper, MCVersion: "1.21.1", JavaMajor: 21, BotsSupported: true},
 		},
 		Contenders: []ContenderCfg{
-			{Name: "discopanel", Kind: KindDiscopanel, Image: "ghcr.io/nickheyer/discoruntime:java21"},
+			{Name: "discopanel", Kind: KindDiscopanel, Image: "ghcr.io/discohaus/discoruntime:java21"},
 			{Name: "itzg", Kind: KindItzg, Image: "itzg/minecraft-server:java21"},
 		},
 	}

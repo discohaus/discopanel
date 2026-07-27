@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	protogormv1 "github.com/nickheyer/protogorm/gen/protogorm/v1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"

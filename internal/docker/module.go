@@ -14,12 +14,12 @@ import (
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/go-connections/nat"
-	"github.com/nickheyer/discopanel/internal/alias"
-	models "github.com/nickheyer/discopanel/internal/db"
-	"github.com/nickheyer/discopanel/pkg/config"
-	"github.com/nickheyer/discopanel/pkg/files"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
-	"github.com/nickheyer/discopanel/pkg/protometa"
+	"github.com/discohaus/discopanel/internal/alias"
+	models "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/pkg/config"
+	"github.com/discohaus/discopanel/pkg/files"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/protometa"
 	"google.golang.org/protobuf/proto"
 )
 

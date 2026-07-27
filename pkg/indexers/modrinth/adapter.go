@@ -6,11 +6,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nickheyer/discopanel/pkg/indexers"
-	"github.com/nickheyer/discopanel/pkg/minecraft"
-	optionsv1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/options/v1"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
-	"github.com/nickheyer/discopanel/pkg/protometa"
+	"github.com/discohaus/discopanel/pkg/indexers"
+	"github.com/discohaus/discopanel/pkg/minecraft"
+	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/protometa"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 

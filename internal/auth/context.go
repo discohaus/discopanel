@@ -3,7 +3,7 @@ package auth
 import (
 	"context"
 
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
 type contextKey string

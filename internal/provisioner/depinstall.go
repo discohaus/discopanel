@@ -3,8 +3,8 @@ package provisioner
 import (
 	"context"
 
-	"github.com/nickheyer/discopanel/pkg/indexers/fuego"
-	"github.com/nickheyer/discopanel/pkg/indexers/modrinth"
+	"github.com/discohaus/discopanel/pkg/indexers/fuego"
+	"github.com/discohaus/discopanel/pkg/indexers/modrinth"
 )
 
 // Resolves a mod file url, CDN guess covers withheld urls

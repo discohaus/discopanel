@@ -8,11 +8,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nickheyer/discopanel/internal/alias"
-	models "github.com/nickheyer/discopanel/internal/db"
-	"github.com/nickheyer/discopanel/pkg/config"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
-	"github.com/nickheyer/discopanel/pkg/protometa"
+	"github.com/discohaus/discopanel/internal/alias"
+	models "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/pkg/config"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/protometa"
 	"google.golang.org/protobuf/proto"
 )
 

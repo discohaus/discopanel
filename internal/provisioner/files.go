@@ -21,10 +21,10 @@ import (
 
 	_ "golang.org/x/image/webp"
 
-	"github.com/nickheyer/discopanel/pkg/indexers"
-	"github.com/nickheyer/discopanel/pkg/minecraft"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
-	"github.com/nickheyer/discopanel/pkg/protometa"
+	"github.com/discohaus/discopanel/pkg/indexers"
+	"github.com/discohaus/discopanel/pkg/minecraft"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/protometa"
 )
 
 // Writes panel-managed config files and installs configured Modrinth mods

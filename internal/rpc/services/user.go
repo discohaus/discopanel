@@ -5,11 +5,11 @@ import (
 	"errors"
 
 	"connectrpc.com/connect"
-	"github.com/nickheyer/discopanel/internal/auth"
-	storage "github.com/nickheyer/discopanel/internal/db"
-	"github.com/nickheyer/discopanel/pkg/logger"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
-	"github.com/nickheyer/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
+	"github.com/discohaus/discopanel/internal/auth"
+	storage "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/pkg/logger"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
 )
 
 var _ discopanelv1connect.UserServiceHandler = (*UserService)(nil)

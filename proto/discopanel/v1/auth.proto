@@ -7,7 +7,7 @@ import "discopanel/v1/storage.proto";
 import "gnostic/openapi/v3/annotations.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 // Bearer token auth via session JWT or API token
 option (gnostic.openapi.v3.document) = {
   info: {

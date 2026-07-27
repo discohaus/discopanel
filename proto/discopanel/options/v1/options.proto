@@ -7,7 +7,7 @@ package discopanel.options.v1;
 
 import "google/protobuf/descriptor.proto";
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/options/v1;optionsv1";
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1;optionsv1";
 
 // Display metadata for one enum
 message EnumType {

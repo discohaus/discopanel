@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	agentv1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/agent/v1"
+	agentv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/agent/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )

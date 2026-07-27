@@ -1,7 +1,7 @@
 version: v2
 modules:
   - path: proto
-    name: github.com/nickheyer/discopanel
+    name: github.com/discohaus/discopanel
 lint:
   use:
     - STANDARD

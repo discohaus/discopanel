@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
 // Materializes the schema from proto models and seeds base rows

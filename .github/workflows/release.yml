@@ -214,12 +214,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
-
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -233,8 +227,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            nickheyer/discopanel
-            ghcr.io/nickheyer/discopanel
+            ghcr.io/discohaus/discopanel
           tags: |
             type=ref,event=tag
             type=semver,pattern={{version}}
@@ -247,8 +240,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            nickheyer/discopanel
-            ghcr.io/nickheyer/discopanel
+            ghcr.io/discohaus/discopanel
           tags: |
             type=ref,event=tag
             type=raw,value=dev
@@ -360,8 +352,8 @@ jobs:
                     "inline": true
                   },
                   {
-                    "name": "Docker Hub",
-                    "value": "[View Images](https://hub.docker.com/r/nickheyer/discopanel)",
+                    "name": "Container Images",
+                    "value": "[View Images](https://github.com/discohaus/discopanel/pkgs/container/discopanel)",
                     "inline": true
                   }
                 ],

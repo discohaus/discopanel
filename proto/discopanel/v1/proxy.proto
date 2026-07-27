@@ -5,7 +5,7 @@ package discopanel.v1;
 import "discopanel/options/v1/options.proto";
 import "discopanel/v1/storage.proto";
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
 // TCP proxy and routing management
 service ProxyService {

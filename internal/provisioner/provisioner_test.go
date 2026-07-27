@@ -9,12 +9,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nickheyer/discopanel/pkg/config"
-	"github.com/nickheyer/discopanel/pkg/indexers/fuego"
-	"github.com/nickheyer/discopanel/pkg/indexers/modrinth"
-	"github.com/nickheyer/discopanel/pkg/logger"
-	"github.com/nickheyer/discopanel/pkg/minecraft"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/config"
+	"github.com/discohaus/discopanel/pkg/indexers/fuego"
+	"github.com/discohaus/discopanel/pkg/indexers/modrinth"
+	"github.com/discohaus/discopanel/pkg/logger"
+	"github.com/discohaus/discopanel/pkg/minecraft"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
 func writeClientJar(t *testing.T, dir, name, manifest string) {

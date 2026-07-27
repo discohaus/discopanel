@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nickheyer/discopanel/pkg/config"
+	"github.com/discohaus/discopanel/pkg/config"
 )
 
 // Tagged config secrets never surface through the alias system

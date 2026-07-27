@@ -2,7 +2,7 @@ package logger
 
 import (
 	"fmt"
-	"github.com/nickheyer/discopanel/pkg/config"
+	"github.com/discohaus/discopanel/pkg/config"
 	"io"
 	"log"
 	"os"

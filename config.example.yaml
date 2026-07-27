@@ -16,7 +16,7 @@ server:
   host: "0.0.0.0"
   read_header_timeout: 15
   idle_timeout: 60
-  user_agent: "DiscoPanel/1.0 (github.com/nickheyer/discopanel)"
+  user_agent: "DiscoPanel/1.0 (github.com/discohaus/discopanel)"
 
 # Database configuration
 database:
@@ -31,7 +31,7 @@ docker:
   host: "unix:///var/run/docker.sock"
   version: ""
   network_name: "discopanel-network"
-  runtime_image: ""  # Override the discoruntime image repository (default: ghcr.io/nickheyer/discoruntime)
+  runtime_image: ""  # Override the discoruntime image repository (default: ghcr.io/discohaus/discoruntime)
   agent_url: ""  # URL server containers use to reach the panel for live telemetry (auto-detected when empty)
   dns: ""  # Custom DNS server for containers (empty = docker default)
   sync_interval: 5  # Seconds between docker state sync

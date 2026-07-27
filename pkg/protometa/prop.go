@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"sync"
 
-	optionsv1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/options/v1"
+	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )

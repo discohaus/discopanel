@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nickheyer/discopanel/pkg/indexers"
+	"github.com/discohaus/discopanel/pkg/indexers"
 )
 
 const (

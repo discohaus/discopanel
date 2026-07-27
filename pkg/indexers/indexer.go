@@ -6,8 +6,8 @@ import (
 	"sort"
 	"sync"
 
-	optionsv1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/options/v1"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
 // Pseudo indexer name for uploaded modpack archives

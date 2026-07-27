@@ -5,10 +5,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nickheyer/discopanel/internal/metrics"
-	"github.com/nickheyer/discopanel/internal/proxy"
-	"github.com/nickheyer/discopanel/pkg/events"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/internal/metrics"
+	"github.com/discohaus/discopanel/internal/proxy"
+	"github.com/discohaus/discopanel/pkg/events"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
 // Runs lifecycle RCON commands as an event bus subscriber

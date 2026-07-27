@@ -2,6 +2,6 @@
 package all
 
 import (
-	_ "github.com/nickheyer/discopanel/pkg/indexers/fuego"
-	_ "github.com/nickheyer/discopanel/pkg/indexers/modrinth"
+	_ "github.com/discohaus/discopanel/pkg/indexers/fuego"
+	_ "github.com/discohaus/discopanel/pkg/indexers/modrinth"
 )

@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nickheyer/discopanel/pkg/config"
-	"github.com/nickheyer/discopanel/pkg/logger"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/config"
+	"github.com/discohaus/discopanel/pkg/logger"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
 func testProvisioner(t *testing.T) *Provisioner {

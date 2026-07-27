@@ -6,7 +6,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/nickheyer/discopanel/pkg/logger"
+	"github.com/discohaus/discopanel/pkg/logger"
 )
 
 // Forwards raw TCP to one backend, no routing needed

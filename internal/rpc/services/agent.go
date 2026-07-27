@@ -10,11 +10,11 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
-	storage "github.com/nickheyer/discopanel/internal/db"
-	"github.com/nickheyer/discopanel/internal/metrics"
-	"github.com/nickheyer/discopanel/pkg/logger"
-	agentv1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/agent/v1"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	storage "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/internal/metrics"
+	"github.com/discohaus/discopanel/pkg/logger"
+	agentv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/agent/v1"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"gorm.io/gorm"
 )
 

@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"slices"
 
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
-	"github.com/nickheyer/discopanel/pkg/runtimespec"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/runtimespec"
 )
 
 // One mod manifest format named for its loader

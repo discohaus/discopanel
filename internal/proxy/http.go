@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nickheyer/discopanel/pkg/logger"
+	"github.com/discohaus/discopanel/pkg/logger"
 )
 
 // Handles HTTP reverse proxying keyed by Host header

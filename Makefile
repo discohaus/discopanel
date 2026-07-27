@@ -134,7 +134,7 @@ check:
 	@echo "Type checking frontend..."
 	cd $(FRONTEND_DIR) && npm run check
 	@echo "Checking for private repo imports..."
-	@if grep -rn --include="*.go" '"github.com/nickheyer/discoruntime[/"]\|"github.com/nickheyer/discomodule[/"]' cmd internal pkg; then \
+	@if grep -rn --include="*.go" '"github.com/discohaus/discoruntime[/"]\|"github.com/discohaus/discomodule[/"]' cmd internal pkg; then \
 		echo "panel code must never import private repos"; exit 1; fi
 
 proto:

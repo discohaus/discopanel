@@ -616,7 +616,7 @@
 							Discord
 						</a>
 						<a
-							href="https://github.com/nickheyer/discopanel/issues"
+							href="https://github.com/discohaus/discopanel/issues"
 							target="_blank"
 							rel="noreferrer"
 							class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
@@ -625,7 +625,7 @@
 							Report an issue
 						</a>
 						<a
-							href="https://github.com/nickheyer/discopanel"
+							href="https://github.com/discohaus/discopanel"
 							target="_blank"
 							rel="noreferrer"
 							class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"

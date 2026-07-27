@@ -37,13 +37,13 @@ scenarios:
 contenders:
   - name: discopanel
     kind: discopanel
-    image: ghcr.io/nickheyer/discoruntime:java21
+    image: ghcr.io/discohaus/discoruntime:java21
   - name: itzg
     kind: itzg
     image: itzg/minecraft-server:java21
   # A/B our own knobs by adding a third column, for example ZGC:
   # - name: discopanel-zgc
   #   kind: discopanel
-  #   image: ghcr.io/nickheyer/discoruntime:java21
+  #   image: ghcr.io/discohaus/discoruntime:java21
   #   env:
   #     USE_ZGC_FLAGS: "true"

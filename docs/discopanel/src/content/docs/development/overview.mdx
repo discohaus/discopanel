@@ -15,11 +15,11 @@ The design rule that shapes everything: **containers hold nothing but Java and a
 
 | Binary | Image | Job |
 |---|---|---|
-| `cmd/discopanel` | `nickheyer/discopanel` | The panel itself: API, UI, provisioner, proxy, scheduler - everything below. |
-| `cmd/runtime` | `ghcr.io/nickheyer/discoruntime:javaN` | In-container supervisor for Minecraft servers. Reads `launch.json`, builds the java argv, runs java as a child and streams telemetry to the panel. See [Runtime Image](/development/runtime-image/) and [Runtime Agent](/development/agent/). |
-| `cmd/exporter` (discomodule) | `ghcr.io/nickheyer/discomodule-exporter` | Standalone Prometheus exporter (SLP-based). Ships as a built-in module template. |
-| `cmd/geyser` (discomodule) | `ghcr.io/nickheyer/discomodule-geyser` | Geyser wrapper for the Bedrock crossplay module. |
-| `cmd/status` (discomodule) | `ghcr.io/nickheyer/discomodule-status` | Status dashboard module that polls the panel API. |
+| `cmd/discopanel` | `ghcr.io/discohaus/discopanel` | The panel itself: API, UI, provisioner, proxy, scheduler - everything below. |
+| `cmd/runtime` | `ghcr.io/discohaus/discoruntime:javaN` | In-container supervisor for Minecraft servers. Reads `launch.json`, builds the java argv, runs java as a child and streams telemetry to the panel. See [Runtime Image](/development/runtime-image/) and [Runtime Agent](/development/agent/). |
+| `cmd/exporter` (discomodule) | `ghcr.io/discohaus/discomodule-exporter` | Standalone Prometheus exporter (SLP-based). Ships as a built-in module template. |
+| `cmd/geyser` (discomodule) | `ghcr.io/discohaus/discomodule-geyser` | Geyser wrapper for the Bedrock crossplay module. |
+| `cmd/status` (discomodule) | `ghcr.io/discohaus/discomodule-status` | Status dashboard module that polls the panel API. |
 
 ## Repository layout
 

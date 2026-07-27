@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nickheyer/discopanel/internal/alias"
-	"github.com/nickheyer/discopanel/pkg/events"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/internal/alias"
+	"github.com/discohaus/discopanel/pkg/events"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
 // Module subsystem subscription to the central event bus

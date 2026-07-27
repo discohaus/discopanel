@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	agentv1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/agent/v1"
+	agentv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/agent/v1"
 )
 
 // Collector intake for agent-pushed telemetry, takes precedence when fresh

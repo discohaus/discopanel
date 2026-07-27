@@ -188,7 +188,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.host", "0.0.0.0")
 	v.SetDefault("server.read_header_timeout", 15)
 	v.SetDefault("server.idle_timeout", 60)
-	v.SetDefault("server.user_agent", "DiscoPanel/1.0 (github.com/nickheyer/discopanel)")
+	v.SetDefault("server.user_agent", "DiscoPanel/1.0 (github.com/discohaus/discopanel)")
 
 	// Database defaults
 	v.SetDefault("database.path", "./data/discopanel.db")

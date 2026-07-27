@@ -1,13 +1,13 @@
 package minecraft
 
 import (
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 
-	"github.com/nickheyer/discopanel/pkg/runtimespec"
+	"github.com/discohaus/discopanel/pkg/runtimespec"
 )
 
 func TestDialectBuiltin(t *testing.T) {

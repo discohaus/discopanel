@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nickheyer/discopanel/pkg/indexers"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/indexers"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
 type checksum struct {

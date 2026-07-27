@@ -5,7 +5,7 @@
   
   **The Minecraft server manager that works**
   
-  [Website](https://discopanel.app) | [Gallery](https://discopanel.app#gallery) | [Discord](https://discord.gg/6Z9yKTbsrP) | [Docker Hub](https://hub.docker.com/r/nickheyer/discopanel)
+  [Website](https://discopanel.app) | [Gallery](https://discopanel.app#gallery) | [Discord](https://discord.gg/6Z9yKTbsrP) | [Docker Hub](https://github.com/discohaus/discopanel/pkgs/container/discopanel)
 </div>
 
 ---
@@ -35,7 +35,7 @@ Because managing Minecraft servers shouldn't be difficult:
 # 2. NodeJs + npm (for building front end)
 
 # Clone it
-git clone https://github.com/nickheyer/discopanel
+git clone https://github.com/discohaus/discopanel
 cd discopanel
 
 # Generate the rpc/api code for server/client using buf in docker
@@ -72,7 +72,7 @@ docker run -d \
   -e DISCOPANEL_DATA_DIR=/app/data \
   -e DISCOPANEL_HOST_DATA_PATH="$(pwd)/data" \
   -e TZ=UTC \
-  nickheyer/discopanel:latest
+  ghcr.io/discohaus/discopanel:latest
 ```
 
 ## Docker Compose (Recommended)
@@ -81,7 +81,7 @@ docker run -d \
 
 services:
   discopanel:
-    image: nickheyer/discopanel:latest
+    image: ghcr.io/discohaus/discopanel:latest
     container_name: discopanel
     restart: unless-stopped
 
@@ -264,7 +264,7 @@ Open `http://localhost:4321`.
 
 ### Reporting doc issues
 
-If something is wrong or missing, open an issue on [GitHub](https://github.com/nickheyer/discopanel/issues) or mention it in [Discord](https://discord.gg/6Z9yKTbsrP).
+If something is wrong or missing, open an issue on [GitHub](https://github.com/discohaus/discopanel/issues) or mention it in [Discord](https://discord.gg/6Z9yKTbsrP).
 
 ## License
 
@@ -273,4 +273,4 @@ MIT. Do whatever you want with it, just don't blame me when it breaks.
 ## Support
 
 - [Discord](https://discord.gg/6Z9yKTbsrP) - Come complain directly
-- [GitHub Issues](https://github.com/nickheyer/discopanel/issues) - For the brave
+- [GitHub Issues](https://github.com/discohaus/discopanel/issues) - For the brave

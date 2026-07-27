@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/nickheyer/discopanel/internal/metrics"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/internal/metrics"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
 const idleCheckInterval = 30 * time.Second

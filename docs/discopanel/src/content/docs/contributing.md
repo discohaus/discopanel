@@ -3,7 +3,7 @@ title: Contributing
 description: Setting up a development environment, the protobuf workflow, tests, and what pull requests should look like.
 ---
 
-DiscoPanel lives at [github.com/nickheyer/discopanel](https://github.com/nickheyer/discopanel). Issues and pull requests are welcome. For questions, the [Discord](https://discord.gg/6Z9yKTbsrP) is faster.
+DiscoPanel lives at [github.com/discohaus/discopanel](https://github.com/discohaus/discopanel). Issues and pull requests are welcome. For questions, the [Discord](https://discord.gg/6Z9yKTbsrP) is faster.
 
 ## Toolchain
 
@@ -15,7 +15,7 @@ DiscoPanel lives at [github.com/nickheyer/discopanel](https://github.com/nickhey
 ## First build
 
 ```sh
-git clone https://github.com/nickheyer/discopanel.git
+git clone https://github.com/discohaus/discopanel.git
 cd discopanel
 make gen      # generate Go + TypeScript from the protos
 make deps     # go mod download + npm install

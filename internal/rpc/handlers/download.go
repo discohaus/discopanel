@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nickheyer/discopanel/internal/auth"
-	"github.com/nickheyer/discopanel/internal/rbac"
-	"github.com/nickheyer/discopanel/pkg/logger"
-	optionsv1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/options/v1"
-	"github.com/nickheyer/discopanel/pkg/transfer"
+	"github.com/discohaus/discopanel/internal/auth"
+	"github.com/discohaus/discopanel/internal/rbac"
+	"github.com/discohaus/discopanel/pkg/logger"
+	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
+	"github.com/discohaus/discopanel/pkg/transfer"
 )
 
 // Handles GET download streaming with auth and range resume

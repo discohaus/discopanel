@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package discopanel.agent.v1;
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/agent/v1;agentv1";
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/agent/v1;agentv1";
 option java_outer_classname = "AgentProto";
 option java_package = "app.discopanel.agent.proto";
 

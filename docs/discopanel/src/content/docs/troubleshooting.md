@@ -58,6 +58,6 @@ Before opening a GitHub issue:
 1. Check this page and the [FAQ](/faq/) first
 2. Try the latest version of DiscoPanel
 3. Include your Docker/compose version, DiscoPanel version, and relevant logs
-4. Open an issue at [github.com/nickheyer/discopanel/issues](https://github.com/nickheyer/discopanel/issues)
+4. Open an issue at [github.com/discohaus/discopanel/issues](https://github.com/discohaus/discopanel/issues)
 
 For quicker help, ask in the [Discord](https://discord.gg/6Z9yKTbsrP).

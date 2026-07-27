@@ -15,4 +15,4 @@ Things it does for you:
 
 To get going, pick an install method - [Docker Compose](/getting-started/docker-compose/) is the recommended one - then open the panel, create your admin account, and make your first server.
 
-For the full feature list, see the [project README](https://github.com/nickheyer/discopanel).
+For the full feature list, see the [project README](https://github.com/discohaus/discopanel).

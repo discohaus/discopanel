@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/nickheyer/discopanel/pkg/indexers"
+	"github.com/discohaus/discopanel/pkg/indexers"
 )
 
 // Implements ModSourcer

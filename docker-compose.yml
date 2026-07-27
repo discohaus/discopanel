@@ -1,6 +1,6 @@
 services:
   discopanel:
-    image: nickheyer/discopanel:latest
+    image: ghcr.io/discohaus/discopanel:latest
     container_name: discopanel
     restart: unless-stopped
 

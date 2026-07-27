@@ -1,4 +1,4 @@
-module github.com/nickheyer/discopanel
+module github.com/discohaus/discopanel
 
 go 1.25.0
 

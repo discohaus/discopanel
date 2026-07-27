@@ -3,9 +3,9 @@ package module
 import (
 	"context"
 
-	storage "github.com/nickheyer/discopanel/internal/db"
-	"github.com/nickheyer/discopanel/pkg/config"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	storage "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/pkg/config"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -65,7 +65,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			Name:           "Geyser",
 			Description:    "Allows Bedrock Edition players to join Java Edition servers. Requires Floodgate plugin on the server for seamless authentication.",
 			Type:           v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_BUILTIN,
-			DockerImage:    "ghcr.io/nickheyer/discomodule-geyser:latest",
+			DockerImage:    "ghcr.io/discohaus/discomodule-geyser:latest",
 			Category:       "proxy",
 			SupportsProxy:  true,
 			RequiresServer: true,
@@ -99,7 +99,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			Name:           "Prometheus Exporter",
 			Description:    "Exports Minecraft server metrics to Prometheus for monitoring dashboards",
 			Type:           v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_BUILTIN,
-			DockerImage:    "ghcr.io/nickheyer/discomodule-exporter:latest",
+			DockerImage:    "ghcr.io/discohaus/discomodule-exporter:latest",
 			Category:       "monitoring",
 			SupportsProxy:  true,
 			RequiresServer: true,
@@ -153,7 +153,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			Name:           "Status Panel",
 			Description:    "Real-time server status dashboard showing player count, TPS, memory usage, and server info via the DiscoPanel API.",
 			Type:           v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_BUILTIN,
-			DockerImage:    "ghcr.io/nickheyer/discomodule-status:latest",
+			DockerImage:    "ghcr.io/discohaus/discomodule-status:latest",
 			Category:       "monitoring",
 			SupportsProxy:  true,
 			RequiresServer: true,
@@ -176,7 +176,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			Name:           "Steam Bridge",
 			Description:    "Expose this server over Steam networking (Valve SDR relay / direct P2P). Players join through the DiscoPanel Bridge app or a compatible client mod using this module's SteamID64. No port forwarding or public IP needed.",
 			Type:           v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_BUILTIN,
-			DockerImage:    "ghcr.io/nickheyer/discomodule-steambridge:latest",
+			DockerImage:    "ghcr.io/discohaus/discomodule-steambridge:latest",
 			Category:       "proxy",
 			SupportsProxy:  false,
 			RequiresServer: true,
@@ -288,7 +288,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			DefaultSecurityOpt: []string{"seccomp=unconfined", "apparmor=unconfined"},
 			// Login raises a runtime prompt for the guard code
 			Metadata:      map[string]string{"supports_prompts": "true", "status_path": "/status"},
-			Documentation: "Runs a headless Steam client plus a gateway that terminates Steam Networking Sockets connections and relays them into the DiscoPanel hostname proxy, so wake-on-connect and sleeping-server behavior keep working. Requires a dedicated Steam account (never your personal one). Set STEAM_USERNAME and STEAM_PASSWORD, then start the module. https://store.steampowered.com/account/authorizeddevices -> Disable Guard Code... OR When Steam asks for a Steam Guard code the panel shows an input prompt in the module dialog, enter the current code from the account email or authenticator and login retries automatically. The login session persists in the module data volume. Players connect with the DiscoPanel Bridge app from https://github.com/nickheyer/discomodule-releases/releases (no mods needed, works with any Minecraft version) by running it, entering this module's SteamID64 (shown on the module card while running), and joining localhost in Minecraft. The open source Steam Bridge client mod also works as an alternative. ACCESS_POLICY everyone, friends, or allowlist controls who may connect, with friends meaning friends of the module's Steam account. Voice traffic from Simple Voice Chat and Plasmo Voice tunnels automatically when VOICE_FORWARD is on. Uses Steam AppID 480 (Spacewar), so keep the account disposable.",
+			Documentation: "Runs a headless Steam client plus a gateway that terminates Steam Networking Sockets connections and relays them into the DiscoPanel hostname proxy, so wake-on-connect and sleeping-server behavior keep working. Requires a dedicated Steam account (never your personal one). Set STEAM_USERNAME and STEAM_PASSWORD, then start the module. https://store.steampowered.com/account/authorizeddevices -> Disable Guard Code... OR When Steam asks for a Steam Guard code the panel shows an input prompt in the module dialog, enter the current code from the account email or authenticator and login retries automatically. The login session persists in the module data volume. Players connect with the DiscoPanel Bridge app from https://github.com/discohaus/discomodule-releases/releases (no mods needed, works with any Minecraft version) by running it, entering this module's SteamID64 (shown on the module card while running), and joining localhost in Minecraft. The open source Steam Bridge client mod also works as an alternative. ACCESS_POLICY everyone, friends, or allowlist controls who may connect, with friends meaning friends of the module's Steam account. Voice traffic from Simple Voice Chat and Plasmo Voice tunnels automatically when VOICE_FORWARD is on. Uses Steam AppID 480 (Spacewar), so keep the account disposable.",
 			DefaultMemory: 2048,
 		},
 		{
@@ -296,7 +296,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			Name:           "Playit.gg",
 			Description:    "Publish this server through a free playit.gg tunnel. Players join via your tunnel's public address, no port forwarding or public IP needed.",
 			Type:           v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_BUILTIN,
-			DockerImage:    "ghcr.io/nickheyer/discomodule-playit:latest",
+			DockerImage:    "ghcr.io/discohaus/discomodule-playit:latest",
 			Category:       "proxy",
 			SupportsProxy:  false,
 			RequiresServer: true,
@@ -362,7 +362,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			Name:           "Doctor",
 			Description:    "Global crash doctor. Watches every DiscoPanel server, diagnoses crashes from structured exit reports, disables or sources mods with a full revert trail, and verifies repairs by restarting through the panel.",
 			Type:           v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_BUILTIN,
-			DockerImage:    "ghcr.io/nickheyer/discomodule-doctor:latest",
+			DockerImage:    "ghcr.io/discohaus/discomodule-doctor:latest",
 			Category:       "automation",
 			SupportsProxy:  true,
 			RequiresServer: false,

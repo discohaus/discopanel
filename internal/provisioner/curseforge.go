@@ -13,14 +13,14 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/nickheyer/discopanel/internal/docker"
-	"github.com/nickheyer/discopanel/internal/metrics"
-	"github.com/nickheyer/discopanel/pkg/indexers/fuego"
-	"github.com/nickheyer/discopanel/pkg/minecraft"
-	optionsv1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/options/v1"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
-	"github.com/nickheyer/discopanel/pkg/protometa"
-	"github.com/nickheyer/discopanel/pkg/runtimespec"
+	"github.com/discohaus/discopanel/internal/docker"
+	"github.com/discohaus/discopanel/internal/metrics"
+	"github.com/discohaus/discopanel/pkg/indexers/fuego"
+	"github.com/discohaus/discopanel/pkg/minecraft"
+	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/protometa"
+	"github.com/discohaus/discopanel/pkg/runtimespec"
 	"golang.org/x/sync/errgroup"
 )
 

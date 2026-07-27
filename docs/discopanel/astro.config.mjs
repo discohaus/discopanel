@@ -12,7 +12,7 @@ export default defineConfig({
 			customCss: ['./src/styles/custom.css'],
 			favicon: '/favicon.png',
 			social: [
-				{ icon: 'github', label: 'GitHub', href: 'https://github.com/nickheyer/discopanel' },
+				{ icon: 'github', label: 'GitHub', href: 'https://github.com/discohaus/discopanel' },
 			],
 			plugins: [
 				starlightSidebarTopics(
