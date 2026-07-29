@@ -2,8 +2,12 @@
 title: DiscoPanel
 description: Minecraft server management, simplified.
 template: splash
+head:
+  - tag: title
+    content: DiscoPanel Docs
 hero:
-  tagline: A self-hosted Minecraft server + proxy + modpack manager. Docker-powered, easy to deploy, and it actually works.
+  title: <span class="brand-wordmark">disco<span class="brand-suffix">panel</span></span>
+  tagline: A self-hosted Minecraft server + proxy + modpack manager. Docker-powered, easy to deploy, and it actually works.<a class="brand-byline" href="https://github.com/discohaus"><img src="/discohaus_favicon.svg" alt="" width="20" height="20" /><span>disco<span class="byline-haus">haus</span></span></a>
   image:
     html: |
       <style>
@@ -43,22 +47,14 @@ hero:
           position: absolute;
           width: 100%;
           height: 100%;
-          background-image: url('/discopanel_logo_transparent_512.png');
+          background-image: url('/discopanel_chip.svg');
           background-size: contain;
           background-repeat: no-repeat;
           background-position: center;
-          image-rendering: pixelated;
           backface-visibility: hidden;
         }
         .mc-emblem-back {
           transform: rotateY(180deg);
-        }
-        :root[data-theme="dark"] .mc-emblem-face {
-          filter:
-            drop-shadow(1px 0 0 rgba(50,50,50,0.9))
-            drop-shadow(-1px 0 0 rgba(50,50,50,0.9))
-            drop-shadow(0 1px 0 rgba(50,50,50,0.9))
-            drop-shadow(0 -1px 0 rgba(50,50,50,0.9));
         }
 
         /* Upward lava glow in scene 2D space */

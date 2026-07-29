@@ -7,7 +7,7 @@ description: Build DiscoPanel from source code.
 
 DiscoPanel manages Minecraft servers as Docker containers, so Docker is required both at build time and runtime.
 
-- **Go** 1.24+
+- **Go** 1.25+
 - **Node.js** 22+
 - **Docker** (also used to run [buf](https://buf.build/) for protobuf code generation)
 - **Make**
@@ -16,10 +16,10 @@ DiscoPanel manages Minecraft servers as Docker containers, so Docker is required
 
 ```bash
 # Clone the repo
-git clone https://github.com/discohaus/discopanel.git
+git clone --recurse-submodules https://github.com/discohaus/discopanel.git
 cd discopanel
 
-# Generate protobuf code (Go + TypeScript) via Docker buf
+# Generate code from the protos (Go, TypeScript, storage layer)
 make gen
 
 # Install frontend dependencies and build

@@ -1,11 +1,11 @@
 # DiscoPanel
 
 <div align="center">
-  <img src="web/discopanel/static/g1_256x256.png" alt="DiscoPanel" width="128" height="128" />
+  <img src="https://raw.githubusercontent.com/discohaus/identity/main/assets/discopanel/lockup.svg" alt="DiscoPanel" width="160" height="160" />
   
   **The Minecraft server manager that works**
   
-  [Website](https://discopanel.app) | [Gallery](https://discopanel.app#gallery) | [Discord](https://discord.gg/6Z9yKTbsrP) | [Docker Hub](https://github.com/discohaus/discopanel/pkgs/container/discopanel)
+  [Website](https://discopanel.app) | [Docs](https://docs.discopanel.app) | [Discord](https://discord.gg/6Z9yKTbsrP) | [Container Images](https://github.com/discohaus/discopanel/pkgs/container/discopanel)
 </div>
 
 ---
@@ -21,7 +21,7 @@ Because managing Minecraft servers shouldn't be difficult:
 - **Docker-powered** - Each server runs in its own container. No more "works on my machine" disasters
 - **Multi-server** - Run vanilla, modded, different versions, whatever. They won't fight each other
 - **Smart Proxy** - Players connect through custom hostnames. No more port gymnastics (though basic ports assignment is still available)
-- **Modpack Support** - Native CurseForge integration that actually downloads the mods/modpacks you tell it to
+- **Modpack Support** - Native CurseForge and Modrinth integration that actually downloads the mods/modpacks you tell it to
 - **Web UI** - Clean interface that doesn't look like it crawled out of 2003
 - **Auto-everything** - Auto-start, auto-stop, auto-pause. Set it and forget it
 - **Easily extensible** - With a proto-based API (see proto/discopanel/v1), you can easily generate an api client within your own project
@@ -31,15 +31,16 @@ Because managing Minecraft servers shouldn't be difficult:
 ```bash
 
 # Non-exhaustive list of requirements for building from source:
-# 1. Go (v1.24.5 if that matters)
+# 1. Go 1.25+
 # 2. NodeJs + npm (for building front end)
+# 3. Docker + make (code generation runs buf in docker)
 
 # Clone it
-git clone https://github.com/discohaus/discopanel
+git clone --recurse-submodules https://github.com/discohaus/discopanel
 cd discopanel
 
-# Generate the rpc/api code for server/client using buf in docker
-docker run --rm -v "$(pwd):/workspace" -w /workspace -u "$(id -u):$(id -g)" bufbuild/buf:latest generate
+# Generate the rpc/api code for server/client
+make gen
 
 # Get npm deps and build frontend first
 cd web/discopanel && npm install && npm run build && cd ../..
@@ -54,7 +55,7 @@ go build -o discopanel cmd/discopanel/main.go
 # http://localhost:8080
 ```
 
-> For development, just install `make` (on ubuntu/deb, `sudo apt install make`) and run `make gen` + `make dev` after the above `git clone` and `cd` step. Super easy!
+> For development, run `make gen` + `make dev` after the above `git clone` and `cd` step. Super easy!
 
 ## Docker Run
 
@@ -91,7 +92,7 @@ services:
     # Option 2 (MORE COMPLICATED, ONLY USE IF YOU NEEDED): Use bridge mode with port mapping (default)
     #
     # NOTE: Only specify minecraft server ports (25565 ... etc) for proxied minecraft servers using a hostname. 
-    #       Discopanel will automatically expose ports needed on the managed minecraft server instances. In other
+    #       DiscoPanel will automatically expose ports needed on the managed minecraft server instances. In other
     #       words, only the discopanel web port is needed + proxy port(s).
     # ports:
     #   - "8080:8080"         # DiscoPanel web interface
@@ -130,7 +131,7 @@ services:
 
 ```
 
->> NOTE: Prebuilt binaries coming soon... but just use docker, you'll need it anyways. Ask for help in discord, we'd love to help.
+>> NOTE: Prebuilt binaries for Linux, macOS, and Windows are on the [releases page](https://github.com/discohaus/discopanel/releases)... but just use docker, you'll need it anyways. Ask for help in discord, we'd love to help.
 
 ## Features That Actually Matter
 
@@ -142,7 +143,7 @@ services:
 - Automatic Java version selection (no more version hell, unless you are into that)
 
 ### Proxy System
-- Can be enabled / disabled depending on your preference (disabled by default)
+- Can be enabled / disabled depending on your preference (enabled by default)
 - Automatic routing based on hostname
 - Multiple proxy listeners for different use cases
 - Custom hostnames for each server (`survival.yourserver.com`, `creative.yourserver.com`)
@@ -154,10 +155,17 @@ services:
 >> NOTE: With just the default proxy port 25565:25565 forwarded, you can host a virtually unlimited amount of servers
 
 ### Modpack Integration
-- Direct CurseForge modpack installation
+- Direct CurseForge and Modrinth modpack installation
 - Automatic mod downloading and updates
 - Server pack support for easier distribution
 - Manual mod uploads when automation fails
+
+### Modules
+- Add-ons that run in their own container beside a server
+- Geyser for Bedrock crossplay (phones and consoles)
+- BlueMap 3D web maps, status pages, Prometheus metrics
+- Playit.gg tunnels and Steam Bridge for hosting without port forwarding
+- Doctor, which diagnoses and repairs crashed modded servers on its own
 
 ### Resource Management
 - Per-server memory limits
@@ -166,7 +174,7 @@ services:
 - Detached mode for persistent servers
 
 ### Security
-- Can be enabled / disabled depending on your preference (disabled by default)
+- Enabled by default - local accounts with an admin created on first visit
 - Built-in user authentication system with role-based access
 - Admin, Editor, and Viewer roles
 - Recovery key system (because passwords get forgotten)
@@ -174,12 +182,12 @@ services:
 
 ## FAQ
 
-#### Please look here if you have any issues with running Discopanel or Minecraft servers through Discopanel.
+#### Please look here if you have any issues with running DiscoPanel or Minecraft servers through DiscoPanel.
 <details>
   <summary>
     Failed to start server: [failed_precondition] server container not created or 'ERROR: Failed to create container: failed to create container: Error response from daemon: invalid mount config for type "bind": bind source path does not exist:'
   </summary>
-  This is usually due to a permissions issue. Discopanel runs minecraft server containers as PUID:GID 1000:1000 by default so if that user or group does not have access to the directory that Discopanel is installed in, then that will cause this issue. Using `ls -a` to show permissions on files and directories, `chown` to change ownership of files and directories and `chmod` to change the permissions of files and directories will be very helpful for troubleshooting and solving the issue on a Linux host.
+  This is usually due to a permissions issue. DiscoPanel runs minecraft server containers as PUID:GID 1000:1000 by default so if that user or group does not have access to the directory that DiscoPanel is installed in, then that will cause this issue. Using `ls -a` to show permissions on files and directories, `chown` to change ownership of files and directories and `chmod` to change the permissions of files and directories will be very helpful for troubleshooting and solving the issue on a Linux host.
 </details>
 
 <details>
@@ -209,7 +217,7 @@ proxy:
 ## Requirements
 
 - Docker (obviously)
-- Go 1.24.5+ (only if building from source)
+- Go 1.25+ (only if building from source)
 - A functioning brain (optional but recommended)
 
 ## API
@@ -218,19 +226,20 @@ DiscoPanel has a full REST API if you're into that sort of thing:
 
 ```bash
 # List servers
-curl http://localhost:8080//discopanel.v1.ServerService/ListServers
+curl -X POST http://localhost:8080/discopanel.v1.ServerService/ListServers \
+  -H "Content-Type: application/json" -d '{}'
 
 # Create a server
-curl -X POST http://localhost:8080/discopanel.v1.ServerService/CreateServers \
+curl -X POST http://localhost:8080/discopanel.v1.ServerService/CreateServer \
   -H "Content-Type: application/json" \
   -d '{"name":"My Server","mc_version":"1.20.1","mod_loader":"vanilla"}'
 
 # Start a server
-curl -X POST http://localhost:8080/discopanel.v1.ServerService/RestartServer \
--data '{ "id": "${id}"}'
+curl -X POST http://localhost:8080/discopanel.v1.ServerService/StartServer \
+  -H "Content-Type: application/json" -d '{"id":"<server-id>"}'
 ```
 
->> NOTE: See the API section in the left sidebar of the Discopanel WebUI for all the routes, or join the discord and ask about it!
+>> NOTE: See the API section in the left sidebar of the DiscoPanel WebUI for all the routes, or join the discord and ask about it!
 
 ## Contributing
 
@@ -238,16 +247,11 @@ Found a bug? Want a feature? Open an issue or submit a PR. Just don't make it wo
 
 ### Generating Proto Code
 
-Proto files live in `proto/`. After making changes, regenerate Go and TypeScript code:
+Proto files live in `proto/` and are the source of truth for the entire API. After making changes, regenerate everything (Go, TypeScript, and the storage layer):
 
 ```bash
-# With make (requires Docker)
+# Requires Docker (buf runs containerized)
 make gen
-
-# or
-
-# Without make (...also requires Docker)
-docker run --rm -v "$(pwd):/workspace" -w /workspace bufbuild/buf:latest generate
 ```
 
 ## Docs

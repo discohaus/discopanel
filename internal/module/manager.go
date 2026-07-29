@@ -775,7 +775,11 @@ func (m *Manager) GetModuleStatus(ctx context.Context, moduleID string) (v1.Modu
 	if err != nil {
 		return v1.ModuleStatus_MODULE_STATUS_ERROR, err
 	}
+	return m.StatusForModule(ctx, module)
+}
 
+// Maps container state to status without a row fetch
+func (m *Manager) StatusForModule(ctx context.Context, module *v1.Module) (v1.ModuleStatus, error) {
 	if module.ContainerId == "" {
 		return v1.ModuleStatus_MODULE_STATUS_STOPPED, nil
 	}

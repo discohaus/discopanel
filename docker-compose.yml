@@ -13,7 +13,7 @@ services:
     #       (discopanel-network) at startup so it can reach the minecraft server containers it creates.
     #
     # NOTE: Only specify minecraft server ports (25565 ... etc) for proxied minecraft servers using a hostname. 
-    #       Discopanel will automatically expose ports needed on the managed minecraft server instances. In other
+    #       DiscoPanel will automatically expose ports needed on the managed minecraft server instances. In other
     #       words, only the discopanel web port is needed + proxy port(s).
     # ports:
     #   - "8080:8080"         # DiscoPanel web interface

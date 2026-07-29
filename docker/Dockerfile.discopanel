@@ -29,6 +29,7 @@ COPY web/discopanel/package*.json ./
 RUN npm ci
 
 COPY web/discopanel/ ./
+COPY identity/ /app/identity/
 COPY --from=proto-builder /app/web/discopanel/src/lib/proto ./src/lib/proto/
 COPY --from=proto-builder /app/web/discopanel/static/schemav1.yaml ./static/
 

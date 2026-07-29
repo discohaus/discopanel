@@ -113,7 +113,7 @@ func RuntimeImages() []*v1.DockerImage {
 		images = append(images, &v1.DockerImage{
 			Tag:         RuntimeImageTag(v),
 			DisplayName: fmt.Sprintf("Java %d (discoruntime)", v),
-			Description: fmt.Sprintf("Minimal Temurin %d JRE runtime; server files are provisioned by DiscoPanel", v),
+			Description: fmt.Sprintf("Minimal Temurin %d JRE runtime, server files are provisioned by DiscoPanel", v),
 			Recommended: len(images) == 0,
 		})
 	}

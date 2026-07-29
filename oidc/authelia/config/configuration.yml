@@ -129,7 +129,7 @@ identity_providers:
       id_token: '1h'
       refresh_token: '90m'
 
-    # This policy puts "groups" directly in the ID token. Without it, groups only show up in the UserInfo endpoint, and Discopanel wouldn't read roles.
+    # This policy puts "groups" directly in the ID token. Without it, groups only show up in the UserInfo endpoint, and DiscoPanel wouldn't read roles.
     claims_policies:
       discopanel:
         id_token:

@@ -145,6 +145,13 @@ func countWithin(times []time.Time, window time.Duration) int {
 	return n
 }
 
+// Cached usage sample for one module container
+type ModuleStats struct {
+	CpuPercent  float64
+	MemoryUsage float64
+	LastUpdated time.Time
+}
+
 // Agent process attribution younger than this beats docker stats
 const agentProcFreshFor = 45 * time.Second
 
@@ -253,6 +260,10 @@ type Collector struct {
 	serverContainers   map[string]bool
 	serverContainersMu sync.Mutex
 
+	// Cached module usage samples keyed by module id
+	moduleStats   map[string]*ModuleStats
+	moduleStatsMu sync.RWMutex
+
 	// Proxy counter totals feeding per-window history deltas
 	proxyTraffic    func() map[string]*v1.ProxyRoute
 	lastProxyTotals map[string]*v1.ProxyRoute
@@ -282,6 +293,7 @@ func NewCollector(store *storage.Store, docker *docker.Client, cfg *config.Confi
 		metrics:         make(map[string]*ServerMetrics),
 		lifecycle:       make(map[string]lifecycleState),
 		health:          make(map[string]*containerHealth),
+		moduleStats:     make(map[string]*ModuleStats),
 		collectorConfig: cc,
 	}
 }
@@ -357,6 +369,18 @@ func (c *Collector) GetAllMetrics() map[string]*ServerMetrics {
 		result[id] = m.snapshot()
 	}
 	return result
+}
+
+// Returns cached module usage, nil when unknown
+func (c *Collector) GetModuleStats(moduleID string) *ModuleStats {
+	c.moduleStatsMu.RLock()
+	defer c.moduleStatsMu.RUnlock()
+	s, ok := c.moduleStats[moduleID]
+	if !ok {
+		return nil
+	}
+	cp := *s
+	return &cp
 }
 
 // Collects Docker container stats periodically
@@ -496,6 +520,50 @@ func (c *Collector) collectDockerStats() {
 			m.LastUpdated = time.Now()
 		})
 	}
+
+	c.collectModuleStats(ctx)
+}
+
+// Samples module container usage in parallel
+func (c *Collector) collectModuleStats(ctx context.Context) {
+	modules, err := c.store.ListModules(ctx)
+	if err != nil {
+		c.log.Debug("Metrics collector: failed to list modules: %v", err)
+		return
+	}
+
+	fresh := make(map[string]*ModuleStats, len(modules))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, mod := range modules {
+		if mod.ContainerId == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(moduleID, containerID string) {
+			defer wg.Done()
+			status, err := c.docker.GetContainerStatus(ctx, containerID)
+			if err != nil || status != v1.ServerStatus_SERVER_STATUS_RUNNING {
+				return
+			}
+			stats, err := c.docker.GetContainerStats(ctx, containerID)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			fresh[moduleID] = &ModuleStats{
+				CpuPercent:  stats.CpuPercent,
+				MemoryUsage: stats.MemoryUsage,
+				LastUpdated: time.Now(),
+			}
+			mu.Unlock()
+		}(mod.Id, mod.ContainerId)
+	}
+	wg.Wait()
+
+	c.moduleStatsMu.Lock()
+	c.moduleStats = fresh
+	c.moduleStatsMu.Unlock()
 }
 
 // Collects disk usage for server worlds

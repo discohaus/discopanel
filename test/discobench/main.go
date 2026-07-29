@@ -140,12 +140,12 @@ func runIteration(ctx context.Context, runner *dockerRunner, cfg *Config, scn Sc
 
 	var env []string
 	switch cnt.Kind {
-	case KindDiscopanel:
+	case KindDiscoPanel:
 		jar, err := serverJar(scn, cache)
 		if err != nil {
 			return fail("resolving server jar", err)
 		}
-		if err := prepareDiscopanel(cfg, scn, dataDir, jar); err != nil {
+		if err := prepareDiscoPanel(cfg, scn, dataDir, jar); err != nil {
 			return fail("provisioning data dir", err)
 		}
 		env = discopanelEnv(cfg, cnt.Env)

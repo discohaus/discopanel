@@ -1,23 +1,43 @@
 ---
 title: Contributing
-description: Setting up a development environment, the protobuf workflow, tests, and what pull requests should look like.
+description: How the project is put together, the development workflow, and what pull requests should look like.
 ---
 
 DiscoPanel lives at [github.com/discohaus/discopanel](https://github.com/discohaus/discopanel). Issues and pull requests are welcome. For questions, the [Discord](https://discord.gg/6Z9yKTbsrP) is faster.
 
+## How the project is put together
+
+The panel is one Go process: it embeds the SvelteKit web UI, keeps its state in SQLite, and talks straight to the Docker Engine API. Everything you interact with - the API, the provisioner, the proxy, the scheduler, the module orchestration - is in this repository.
+
+Two pieces ship as container images built from private source:
+
+- **discoruntime** (`ghcr.io/discohaus/discoruntime`) - the minimal image every Minecraft server runs on. The panel installs server software into the data directory, and the container just supervises Java.
+- **discomodule** (`ghcr.io/discohaus/discomodule-*`) - the built-in module images (Geyser, Steam Bridge, Playit.gg, Doctor, and friends).
+
+The contracts between the panel and those images are public and live here, so panel changes never chase private code:
+
+- `proto/discopanel/agent/v1` - the telemetry stream between a running server container and the panel.
+- `proto/discopanel/v1/runtime.proto` and `pkg/runtimespec` - the file contract (`launch.json`, `agent.json`, the manifest) the panel writes into each server's `.discopanel/` folder.
+- `proto/discopanel/v1/doctor.proto` - the shared journal contract for the Doctor module.
+- `pkg/mcproto` and `pkg/moduleprompt` - helper libraries for anyone building their own module.
+
+Panel code never imports the private repos - `make check` fails the build if it does.
+
 ## Toolchain
 
-- **Go** 1.24+
+- **Go** 1.25+
 - **Node.js** 22+
-- **Docker** - needed at build time too: protobuf generation runs [buf](https://buf.build/) in a container, and the tests that touch containers obviously need an engine.
+- **Docker** - protobuf generation runs [buf](https://buf.build/) in a container, and the tests that touch containers need an engine.
 - **Make**
+
+A Nix dev shell with all of the above is available via `nix develop`.
 
 ## First build
 
 ```sh
-git clone https://github.com/discohaus/discopanel.git
+git clone --recurse-submodules https://github.com/discohaus/discopanel.git
 cd discopanel
-make gen      # generate Go + TypeScript from the protos
+make gen      # generate code from the protos
 make deps     # go mod download + npm install
 make dev      # backend (go run) + frontend (vite dev) together
 ```
@@ -26,43 +46,28 @@ make dev      # backend (go run) + frontend (vite dev) together
 
 ## The protobuf workflow
 
-The `.proto` files in `proto/discopanel/v1/` are the source of truth for the entire API. The generated code lands in `pkg/proto` (Go) and `web/discopanel/src/lib/proto` (TypeScript) and is never edited by hand.
+The `.proto` files in `proto/discopanel/` are the source of truth for the entire API and every persisted data model - `storage.proto` holds all of the latter. `make gen` regenerates everything: the Go server code (`pkg/proto`), the TypeScript clients (`web/discopanel/src/lib/proto`), and the GORM storage layer (protogorm generates `internal/db/store.gen.go` from the same protos). None of it is ever edited by hand.
 
-- After changing a proto, run `make gen` (cleans and regenerates both sides).
+- After changing a proto, run `make gen` (cleans and regenerates all of it).
 - `make proto-lint` and `make proto-format` keep the definitions tidy.
 - `make proto-breaking` checks your branch against `main` for breaking API changes.
 
-If you're adding a per-server setting rather than an RPC, you may not need to touch the protos at all - see [the config field pipeline](/development/api-and-data/#adding-a-per-server-setting).
-
-## Tests
+## Tests and checks
 
 ```sh
 make test     # go test ./...
 make lint     # buf lint + frontend eslint/prettier
-make check    # frontend type checking (svelte-check)
+make check    # svelte-check plus the private-import guard
 ```
-
-The end-to-end test boots a real Minecraft server through the full stack (provisioner, container, health, RCON, graceful stop). Run it before releases and whenever you touch the provisioner, the docker client, the runtime entrypoint or the health code:
-
-```sh
-make runtime-local-21    # once, to have a local runtime image
-DISCO_E2E=1 go test ./internal/lifecycle -run TestE2EVanillaServer -v -timeout 20m
-```
-
-Details and knobs in [Lifecycle & Health](/development/lifecycle/#the-end-to-end-test).
-
-## Building images
-
-- `make image` - the panel image.
-- `make runtime-local-<N>` - one runtime variant locally, no push (e.g. `make runtime-local-21`).
-- `make runtime` - every runtime variant, pushed.
-- `make modules` - runtime plus all sidecar module images.
-- CI builds multi-arch (amd64 + arm64) when a `mod-*` git tag is pushed or the Module Builder workflow is dispatched.
 
 ## What pull requests should look like
 
 - **Complete features.** No TODOs, no placeholders, no "wire this up later". If a change spans backend and frontend, ship both halves.
 - **One implementation per concept.** Before adding a structure, a helper or an event type, read how the existing code handles the same concern and extend that instead. Parallel implementations of the same idea get rolled back.
-- **Respect the ownership boundaries.** Server state transitions go through `lifecycle.Manager`, events through `events.Bus`, container work through `internal/docker`. Don't reach around them.
-- **Regenerate, don't hand-edit.** If your diff touches `pkg/proto` or `web/discopanel/src/lib/proto` without a matching proto change, something went wrong.
-- Target `main`, keep the diff focused, and say in the description what you tested (unit tests, e2e, or a manual run).
+- **Respect the ownership boundaries.** Server state transitions go through `lifecycle.Manager`, events through the `pkg/events` bus, container work through `internal/docker`. Don't reach around them.
+- **Regenerate, don't hand-edit.** If your diff touches generated code without a matching proto change, something went wrong.
+- Target `main`, keep the diff focused, and say in the description what you tested.
+
+## Docs
+
+This documentation site lives in `docs/discopanel/` (Astro + Starlight). `make dev-docs` serves it locally on `http://localhost:4321`. If something here is wrong or missing, open an issue or mention it in Discord.

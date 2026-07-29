@@ -364,7 +364,9 @@
 		<div class="flex flex-col items-center gap-3">
 			<div class="flex items-center gap-3">
 				<DiscoLogo class="size-12" spotlight />
-				<span class="text-3xl font-bold tracking-tight">DiscoPanel</span>
+				<span class="font-mono text-3xl font-bold tracking-tight"
+					>disco<span class="text-[#55aa55]">panel</span></span
+				>
 			</div>
 			<p class="text-sm text-muted-foreground">
 				{#if authStatus.firstUserSetup}

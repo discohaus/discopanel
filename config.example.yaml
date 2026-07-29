@@ -89,6 +89,7 @@ module:
   enabled: true
   port_range_min: 8100
   port_range_max: 8199
+  doctor_enabled: true # Built-in Doctor module
 
 # Proxy configuration - ENABLE THIS FOR MINECRAFT ROUTING
 proxy:

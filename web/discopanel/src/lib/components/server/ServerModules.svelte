@@ -167,7 +167,8 @@
 	async function loadTemplates() {
 		try {
 			const response = await rpcClient.module.listModuleTemplates({});
-			templates = response.templates;
+			// Global templates never attach to a server
+			templates = response.templates.filter((t) => !t.global);
 		} catch {
 			toast.error('Failed to load module templates');
 		}

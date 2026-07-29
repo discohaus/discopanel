@@ -173,7 +173,7 @@ func serverProperties(cfg *Config) string {
 }
 
 // Builds preprovisioned data dir the runtime expects
-func prepareDiscopanel(cfg *Config, scn Scenario, dataDir, jarPath string) error {
+func prepareDiscoPanel(cfg *Config, scn Scenario, dataDir, jarPath string) error {
 	if err := os.MkdirAll(filepath.Join(dataDir, ".discopanel"), 0755); err != nil {
 		return err
 	}

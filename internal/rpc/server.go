@@ -215,7 +215,7 @@ func (s *Server) registerServices(mux *http.ServeMux, opts []connect.HandlerOpti
 	taskService := services.NewTaskService(s.store, s.scheduler, s.rec, s.log)
 	userService := services.NewUserService(s.store, s.authManager, s.log)
 	roleService := services.NewRoleService(s.store, s.enforcer, s.log)
-	moduleService := services.NewModuleService(s.store, s.docker, s.moduleManager, s.proxyManager, s.authManager, s.config, s.logStreamer, s.rec, s.log)
+	moduleService := services.NewModuleService(s.store, s.docker, s.moduleManager, s.proxyManager, s.authManager, s.config, s.logStreamer, s.metricsCollector, s.rec, s.log)
 	uploadService := services.NewUploadService(s.uploadManager, s.config, s.log)
 
 	// Register service handlers
@@ -362,6 +362,7 @@ var pollingProcedures = []string{
 	discopanelv1connect.ModuleServiceListModulesProcedure,
 	discopanelv1connect.ModuleServiceListModulePromptsProcedure,
 	discopanelv1connect.ModuleServiceGetModuleStatusSnapshotProcedure,
+	discopanelv1connect.ModuleServiceGetResolvedAliasesProcedure,
 }
 
 // Reports whether a procedure is a polling endpoint

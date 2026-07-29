@@ -1,0 +1,35 @@
+---
+title: Modules
+description: Add-ons that run beside your server - Bedrock crossplay, a 3D web map, a status page, and more.
+---
+
+import geyser from '../../../../../../../identity/assets/geyser/chip.svg';
+import status from '../../../../../../../identity/assets/status/chip.svg';
+import exporter from '../../../../../../../identity/assets/exporter/chip.svg';
+import playit from '../../../../../../../identity/assets/playit/chip.svg';
+import steambridge from '../../../../../../../identity/assets/steambridge/chip.svg';
+import doctor from '../../../../../../../identity/assets/doctor/chip.svg';
+
+Modules are add-ons that run in their own little container next to a Minecraft server. Each server has a **Modules** tab where you can add them, start and stop them, and find their addresses. Modules can auto-start with the server, and DiscoPanel picks their ports for you.
+
+## The modules
+
+- <img class="module-chip-inline" src={geyser.src} alt="" /> **[Geyser](/guides/modules/geyser/)** - Bedrock players join your Java server from phones and consoles.
+- **[BlueMap](/guides/modules/bluemap/)** - a 3D map of your world in the browser.
+- <img class="module-chip-inline" src={status.src} alt="" /> **[Status Panel](/guides/modules/status/)** - a shareable live dashboard for one server.
+- <img class="module-chip-inline" src={exporter.src} alt="" /> **[Prometheus Exporter](/guides/modules/exporter/)** - server stats for Grafana and friends.
+- <img class="module-chip-inline" src={playit.src} alt="" /> **[Playit.gg](/guides/modules/playit/)** - a free public address without port forwarding.
+- <img class="module-chip-inline" src={steambridge.src} alt="" /> **[Steam Bridge](/guides/modules/steambridge/)** - friends join through Steam's network.
+- <img class="module-chip-inline" src={doctor.src} alt="" /> **[Doctor](/guides/modules/doctor/)** - automatic crash repair for modded servers.
+
+## Modules that ask for input
+
+Some modules need a value from you while they run, like a Steam Guard code. A module signals this by serving a small prompt endpoint on its health port, and the panel surfaces it as a card at the top of the module dialog. Type the value, hit submit, and the panel hands it back to the module.
+
+Building your own module? Serve `GET /prompt` returning the pending prompt as JSON (or `204` when nothing is waiting), and accept `POST /prompt` with `{"id","value"}`. The Go helper in `pkg/moduleprompt` does this for you. Set `supports_prompts` to `true` in the template metadata so the panel knows to poll.
+
+## Good to know
+
+- Modules get their web ports assigned automatically (from the range in the panel's `module` config, `8100-8199` by default). The exact URL for each module is shown in its details.
+- A module belongs to one server. Two servers that both want BlueMap each get their own copy. Doctor is the exception, it watches the whole panel.
+- Module files live inside the server's folder under `modules/`, so they're covered by whatever you do with the server folder.

@@ -218,8 +218,8 @@
 				>
 					<DiscoLogo class="size-6" />
 					<span
-						class="truncate text-base font-bold tracking-tight group-data-[collapsible=icon]:hidden"
-						>DiscoPanel</span
+						class="truncate font-mono text-base font-bold tracking-tight group-data-[collapsible=icon]:hidden"
+						>disco<span class="text-[#55aa55]">panel</span></span
 					>
 				</a>
 			</SidebarHeader>

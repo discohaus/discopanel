@@ -34,15 +34,16 @@ var _ discopanelv1connect.ModuleServiceHandler = (*ModuleService)(nil)
 
 // ModuleService implements the Module service
 type ModuleService struct {
-	store         *storage.Store
-	docker        *docker.Client
-	moduleManager *module.Manager
-	proxyManager  *proxy.Manager
-	authManager   *auth.Manager
-	config        *config.Config
-	rec           *metrics.Recorder
-	log           *logger.Logger
-	logStreamer   *logger.LogStreamer
+	store            *storage.Store
+	docker           *docker.Client
+	moduleManager    *module.Manager
+	proxyManager     *proxy.Manager
+	authManager      *auth.Manager
+	config           *config.Config
+	metricsCollector *metrics.Collector
+	rec              *metrics.Recorder
+	log              *logger.Logger
+	logStreamer      *logger.LogStreamer
 }
 
 func NewModuleService(
@@ -53,28 +54,31 @@ func NewModuleService(
 	authManager *auth.Manager,
 	cfg *config.Config,
 	logStreamer *logger.LogStreamer,
+	metricsCollector *metrics.Collector,
 	rec *metrics.Recorder,
 	log *logger.Logger,
 ) *ModuleService {
 	return &ModuleService{
-		store:         store,
-		docker:        docker,
-		moduleManager: moduleManager,
-		proxyManager:  proxyManager,
-		authManager:   authManager,
-		config:        cfg,
-		logStreamer:   logStreamer,
-		rec:           rec,
-		log:           log,
+		store:            store,
+		docker:           docker,
+		moduleManager:    moduleManager,
+		proxyManager:     proxyManager,
+		authManager:      authManager,
+		config:           cfg,
+		logStreamer:      logStreamer,
+		metricsCollector: metricsCollector,
+		rec:              rec,
+		log:              log,
 	}
 }
 
-func (s *ModuleService) applyModuleStats(ctx context.Context, m *v1.Module) {
-	if m.ContainerId == "" || m.Status != v1.ModuleStatus_MODULE_STATUS_RUNNING {
+// Copies cached collector usage onto transient module fields
+func (s *ModuleService) applyModuleStats(m *v1.Module) {
+	if s.metricsCollector == nil || m.ContainerId == "" || m.Status != v1.ModuleStatus_MODULE_STATUS_RUNNING {
 		return
 	}
-	stats, err := s.docker.GetContainerStats(ctx, m.ContainerId)
-	if err != nil {
+	stats := s.metricsCollector.GetModuleStats(m.Id)
+	if stats == nil {
 		return
 	}
 	m.CpuPercent = stats.CpuPercent
@@ -362,19 +366,30 @@ func (s *ModuleService) ListModules(ctx context.Context, req *connect.Request[v1
 	usernames := map[string]string{}
 
 	fullStats := msg.FullStats != nil && *msg.FullStats
+	if fullStats {
+		// Live docker state serves the response, never the row
+		var wg sync.WaitGroup
+		for _, m := range modules {
+			if m.ContainerId == "" {
+				continue
+			}
+			wg.Add(1)
+			go func(mod *v1.Module) {
+				defer wg.Done()
+				if actualStatus, err := s.moduleManager.StatusForModule(ctx, mod); err == nil {
+					mod.Status = actualStatus
+				}
+			}(m)
+		}
+		wg.Wait()
+	}
 	var protoModules []*v1.Module
 	for _, m := range modules {
-		// Live docker state serves the response, never the row
-		if fullStats && m.ContainerId != "" {
-			if actualStatus, err := s.moduleManager.GetModuleStatus(ctx, m.Id); err == nil {
-				m.Status = actualStatus
-			}
-		}
 		if m.ContainerId == "" && m.Status == v1.ModuleStatus_MODULE_STATUS_CREATING && time.Since(m.UpdatedAt.AsTime()) > 30*time.Second {
 			m.Status = v1.ModuleStatus_MODULE_STATUS_ERROR
 		}
 		if fullStats {
-			s.applyModuleStats(ctx, m)
+			s.applyModuleStats(m)
 		}
 
 		serverName := ""
@@ -412,14 +427,14 @@ func (s *ModuleService) GetModule(ctx context.Context, req *connect.Request[v1.G
 
 	// Get actual status from Docker and update if different
 	if module.ContainerId != "" {
-		actualStatus, err := s.moduleManager.GetModuleStatus(ctx, msg.Id)
+		actualStatus, err := s.moduleManager.StatusForModule(ctx, module)
 		if err == nil && actualStatus != module.Status {
 			module.Status = actualStatus
 			s.store.UpdateModule(ctx, module)
 		}
 	}
 
-	s.applyModuleStats(ctx, module)
+	s.applyModuleStats(module)
 
 	module.Template = nil
 	if server, err := s.store.GetServer(ctx, module.ServerId); err == nil {
@@ -457,6 +472,11 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 	template, err := s.store.GetModuleTemplate(ctx, msg.TemplateId)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("template not found"))
+	}
+
+	// Global templates run panel wide, never per server
+	if template.Global {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("this module runs panel wide and cannot attach to a server"))
 	}
 
 	// Use ports from request, or fall back to template defaults

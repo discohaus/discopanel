@@ -29,7 +29,7 @@ import (
 )
 
 func main() {
-	var configPath = flag.String("config", "./config.yaml", "Path to configuration file")
+	var configPath = flag.String("config", "", "Path to config file, default locations searched when empty")
 	flag.Parse()
 
 	// Load configuration

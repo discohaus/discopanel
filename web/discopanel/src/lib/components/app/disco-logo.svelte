@@ -10,88 +10,97 @@
 
 	// Unique ids keep multiple logos from colliding
 	const uid = ++instance;
-	const patternId = `disco-grass-${uid}`;
 	const clipId = `disco-chip-${uid}`;
+
+	// Grass block sprite rows from the discohaus identity system
+	const sprite = [
+		['#3c7f3c', '#55aa55', '#3c7f3c', '#55aa55'],
+		['#55aa55', '#6c472a', '#55aa55', '#6c472a'],
+		['#6c472a', '#8b5e3c', '#6c472a', '#8b5e3c'],
+		['#8b5e3c', '#6c472a', '#8b5e3c', '#6c472a']
+	];
 </script>
 
-<svg viewBox="0 0 24 24" fill="none" class={cn('shrink-0', className)} aria-hidden="true">
+<svg viewBox="0 0 160 160" fill="none" class={cn('shrink-0', className)} aria-hidden="true">
 	<defs>
-		<pattern id={patternId} x="8" y="8" width="4" height="4" patternUnits="userSpaceOnUse">
-			<path fill="#5a5" d="M0 0h4v4H0z" />
-			<path fill="#3c7f3c" d="M0 0h2v2H0z" />
-			<path fill="#8b5e3c" d="M2 2h2v2H2z" />
-		</pattern>
 		<clipPath id={clipId}>
-			<rect x="4" y="4" width="16" height="16" rx="3" />
+			<rect x="20" y="20" width="120" height="120" rx="24" />
 		</clipPath>
 	</defs>
-	<!-- Pins follow text color as quiet detail -->
-	<path
-		class="pins"
-		stroke="currentColor"
-		stroke-width="2"
-		stroke-linecap="round"
-		d="m 12,20 v 2 M 12,2 v 2 m 5,16 v 2 M 17,2 V 4 M 2,12 H 4 M 2,17 H 4 M 2,7 h 2 m 16,5 h 2 m -2,5 h 2 M 20,7 h 2 M 7,20 v 2 M 7,2 v 2"
-	/>
-	<!-- Chip body stays dark in both themes -->
-	<rect class="chip" x="4" y="4" width="16" height="16" rx="3" />
-	<rect x="8" y="8" width="8" height="8" rx="1" fill="url(#{patternId})" />
+	<!-- Four pins per side in the identity pin color -->
+	<g class="pins">
+		{#each [44, 68, 92, 116] as c (c)}
+			<rect x={c - 6} y="6" width="12" height="20" rx="4" />
+			<rect x={c - 6} y="134" width="12" height="20" rx="4" />
+			<rect x="6" y={c - 6} width="20" height="12" rx="4" />
+			<rect x="134" y={c - 6} width="20" height="12" rx="4" />
+		{/each}
+	</g>
+	<!-- Chip body stays ink in both themes -->
+	<rect class="chip" x="20" y="20" width="120" height="120" rx="24" />
+	<g shape-rendering="crispEdges">
+		{#each sprite as row, y (y)}
+			{#each row as fill, x (x)}
+				<rect x={40 + x * 20} y={40 + y * 20} width="20" height="20" {fill} />
+			{/each}
+		{/each}
+	</g>
 	{#if spotlight}
-		<!-- Soft colored lights drift over the chip face -->
+		<!-- Brand beams drift over the chip face -->
 		<g clip-path="url(#{clipId})">
-			<circle class="light light-a" r="6" />
-			<circle class="light light-b" r="5" />
+			<circle class="light light-a" r="40" />
+			<circle class="light light-b" r="33" />
 		</g>
 	{/if}
 </svg>
 
 <style>
 	.pins {
-		opacity: 0.45;
+		fill: #6f6c7c;
 	}
 
 	.chip {
-		fill: oklch(0.22 0.03 291);
+		fill: #26242e;
 	}
 
 	:global(.dark) .chip {
 		stroke: oklch(1 0 0 / 0.22);
-		stroke-width: 0.75;
+		stroke-width: 5;
 	}
 
 	.light {
 		mix-blend-mode: screen;
 		opacity: 0.45;
-		filter: blur(2.5px);
+		filter: blur(16px);
 	}
 
 	.light-a {
-		fill: var(--primary);
+		fill: #e05fc0;
 		animation: disco-sweep-a 7s ease-in-out infinite;
 	}
 
 	.light-b {
-		fill: var(--chart-2);
+		fill: #4fc9e8;
 		animation: disco-sweep-b 9s ease-in-out infinite;
 	}
 
 	@keyframes disco-sweep-a {
 		0%,
 		100% {
-			transform: translate(6px, 5px);
+			transform: translate(40px, 33px);
 		}
 		50% {
-			transform: translate(18px, 17px);
+			transform: translate(120px, 113px);
 		}
 	}
 
 	@keyframes disco-sweep-b {
 		0%,
 		100% {
-			transform: translate(18px, 7px);
+			transform: translate(120px, 47px);
 		}
 		50% {
-			transform: translate(5px, 18px);
+			transform: translate(33px, 120px);
 		}
 	}
 
@@ -101,10 +110,10 @@
 			opacity: 0.25;
 		}
 		.light-a {
-			transform: translate(9px, 8px);
+			transform: translate(60px, 53px);
 		}
 		.light-b {
-			transform: translate(16px, 15px);
+			transform: translate(107px, 100px);
 		}
 	}
 </style>

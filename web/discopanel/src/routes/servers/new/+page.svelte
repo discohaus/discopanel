@@ -9,20 +9,15 @@
 	import { Select, SelectContent, SelectItem, SelectTrigger } from '$lib/components/ui/select';
 	import { Switch } from '$lib/components/ui/switch';
 	import { Badge } from '$lib/components/ui/badge';
-	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { PageHeader, ServerAvatar } from '$lib/components/app';
 	import { rpcClient } from '$lib/api/rpc-client';
 	import { toast } from 'svelte-sonner';
 	import {
 		ArrowLeft,
-		ArrowRight,
 		Camera,
-		Container,
 		Loader2,
-		Network,
 		Package,
 		Sparkles,
-		Users,
 		X,
 		ChevronDown,
 		ChevronUp,
@@ -30,7 +25,6 @@
 		MemoryStick,
 		Cable,
 		Globe,
-		RefreshCw,
 		Rocket
 	} from '@lucide/svelte';
 	import { create } from '@bufbuild/protobuf';
@@ -48,9 +42,11 @@
 	import { enumLabel } from '$lib/proto-meta';
 	import { loadModLoaders } from '$lib/stores/loaders';
 	import AdditionalPortsEditor from '$lib/components/additional-ports-editor.svelte';
+	import ConnectivityCard from '$lib/components/connectivity-card.svelte';
 	import DockerOverridesEditor from '$lib/components/docker-overrides-editor.svelte';
 	import MemorySlider from '$lib/components/memory-slider.svelte';
 	import { getUniqueDockerImages, getDockerImageDisplayName } from '$lib/utils';
+	import { composeHostname } from '$lib/hostname';
 	import { uploadFile } from '$lib/utils/chunked-upload';
 
 	let loading = $state(false);
@@ -104,7 +100,7 @@
 			startImmediately: false,
 			proxyHostname: '',
 			proxyListenerId: '',
-			useBaseUrl: false,
+			useBaseUrl: true,
 			additionalPorts: [],
 			dockerOverrides: undefined,
 			modpackId: '',
@@ -164,6 +160,9 @@
 			} else {
 				console.error('Failed to load proxy listeners:', listeners.reason);
 			}
+
+			// Proxy routing is the preferred default when available
+			useProxyMode = proxyEnabled && proxyListeners.length > 0;
 
 			if (portData.status === 'fulfilled') {
 				formData.port = portData.value.port;
@@ -335,8 +334,9 @@
 	// Address preview mirrored in the summary rail
 	let addressPreview = $derived.by(() => {
 		if (proxyEnabled && useProxyMode) {
-			const host = formData.proxyHostname.trim() || 'your-hostname';
-			const full = formData.useBaseUrl && proxyBaseURL ? `${host}.${proxyBaseURL}` : host;
+			const full =
+				composeHostname(formData.proxyHostname, proxyBaseURL, formData.useBaseUrl) ||
+				'your-hostname';
 			const listenPort = selectedListener?.port ?? 25565;
 			return listenPort === 25565 ? full : `${full}:${listenPort}`;
 		}
@@ -394,7 +394,9 @@
 				modpackVersionId: versionToSend || '',
 				worldUploadSessionId: worldSessionId,
 				// Port zero routes through the proxy hostname
-				port: useProxyMode ? 0 : formData.port
+				port: useProxyMode ? 0 : formData.port,
+				// Direct mode keeps any typed hostname out of the request
+				proxyHostname: useProxyMode ? formData.proxyHostname : ''
 			};
 
 			const response = await rpcClient.server.createServer(createRequest);
@@ -428,57 +430,6 @@
 		<h3 class="text-sm font-semibold">{title}</h3>
 		<p class="mt-0.5 text-xs text-muted-foreground">{desc}</p>
 	</header>
-{/snippet}
-
-{#snippet pathNode(icon: typeof Users, title: string, sub: string, tone: 'active' | 'muted')}
-	{@const Icon = icon}
-	<div
-		class="flex min-w-0 flex-1 basis-40 items-center gap-2.5 rounded-lg border px-3 py-2 {tone ===
-		'active'
-			? 'border-primary/30 bg-primary/5'
-			: 'bg-muted/30'}"
-	>
-		<Icon class="size-4 shrink-0 {tone === 'active' ? 'text-primary' : 'text-muted-foreground'}" />
-		<div class="min-w-0">
-			<p class="truncate text-xs font-medium">{title}</p>
-			<p class="truncate font-mono text-[11px] text-muted-foreground">{sub}</p>
-		</div>
-	</div>
-{/snippet}
-
-{#snippet portField()}
-	<div class="space-y-2">
-		<Label for="port">Server port</Label>
-		<div class="flex items-center gap-2">
-			<Input
-				id="port"
-				type="number"
-				min="1"
-				max="65535"
-				bind:value={formData.port}
-				oninput={(e) => validatePort(Number(e.currentTarget.value))}
-				disabled={loading}
-				class="flex-1 {portError ? 'border-destructive' : ''}"
-			/>
-			<Button
-				type="button"
-				variant="outline"
-				class="shrink-0"
-				onclick={refreshAvailablePort}
-				disabled={loading}
-			>
-				<RefreshCw class="size-3.5" />
-				Auto-assign
-			</Button>
-		</div>
-		{#if portError}
-			<p class="text-xs text-destructive">{portError}</p>
-		{:else}
-			<p class="text-xs text-muted-foreground">
-				Pre-filled with a free port, the Minecraft default is 25565
-			</p>
-		{/if}
-	</div>
 {/snippet}
 
 {#snippet createButton(fullWidth: boolean)}
@@ -832,195 +783,22 @@
 
 			<section class="overflow-hidden rounded-xl border bg-card">
 				{@render sectionHeader('Connectivity', 'How players will reach the server')}
-				<div class="space-y-4 p-4">
-					{#if proxyEnabled}
-						<div class="grid gap-3 sm:grid-cols-2">
-							<button
-								type="button"
-								class="rounded-lg border p-4 text-left transition-colors {!useProxyMode
-									? 'border-primary bg-primary/5'
-									: 'hover:bg-accent/40'}"
-								onclick={() => {
-									useProxyMode = false;
-									formData.proxyHostname = '';
-									portError = '';
-								}}
-								disabled={loading}
-							>
-								<div class="flex items-center gap-2 text-sm font-medium">
-									<Cable class="size-4 text-primary" />
-									Direct port
-								</div>
-								<p class="mt-1 text-xs text-muted-foreground">
-									Players join with this machine's address and a port number
-								</p>
-							</button>
-							<button
-								type="button"
-								class="rounded-lg border p-4 text-left transition-colors {useProxyMode
-									? 'border-primary bg-primary/5'
-									: 'hover:bg-accent/40'}"
-								onclick={() => {
-									useProxyMode = true;
-									if (!formData.proxyHostname) {
-										formData.proxyHostname =
-											formData.name.toLowerCase().replace(/\s+/g, '-') || 'minecraft-server';
-									}
-									portError = '';
-								}}
-								disabled={loading}
-							>
-								<div class="flex items-center gap-2 text-sm font-medium">
-									<Globe class="size-4 text-primary" />
-									Proxy hostname
-								</div>
-								<p class="mt-1 text-xs text-muted-foreground">
-									Players join with a memorable address like {proxyBaseURL
-										? `survival.${proxyBaseURL}`
-										: 'play.example.com'}
-								</p>
-							</button>
-						</div>
-
-						{#if useProxyMode}
-							<div
-								class="grid gap-4 {proxyListeners.length > 1
-									? 'sm:grid-cols-[minmax(0,1fr)_20rem]'
-									: ''}"
-							>
-								<div class="space-y-2">
-									<Label for="proxy_hostname">Hostname</Label>
-									<div class="flex flex-wrap items-center gap-x-4 gap-y-2">
-										<Input
-											id="proxy_hostname"
-											placeholder={proxyBaseURL ? 'survival' : 'survival.example.com'}
-											bind:value={formData.proxyHostname}
-											disabled={loading}
-											class="min-w-48 flex-1 {hostnameMissing ? 'border-destructive' : ''}"
-										/>
-										{#if proxyBaseURL}
-											<div class="flex shrink-0 items-center gap-2">
-												<Checkbox id="use_base_url" bind:checked={formData.useBaseUrl} />
-												<Label for="use_base_url" class="font-normal">
-													Append base domain ({proxyBaseURL})
-												</Label>
-											</div>
-										{/if}
-									</div>
-									{#if hostnameMissing}
-										<p class="text-xs text-destructive">A hostname is required for proxy routing</p>
-									{/if}
-								</div>
-
-								{#if proxyListeners.length > 1}
-									<div class="space-y-2">
-										<Label for="proxy_listener">Proxy listener</Label>
-										<Select
-											type="single"
-											value={formData.proxyListenerId}
-											onValueChange={(v) => (formData.proxyListenerId = v || '')}
-											disabled={loading}
-										>
-											<SelectTrigger id="proxy_listener" class="w-full">
-												<span class="truncate">
-													{selectedListener
-														? `${selectedListener.name} (port ${selectedListener.port})`
-														: 'Select a listener'}
-												</span>
-											</SelectTrigger>
-											<SelectContent>
-												{#each proxyListeners as listener (listener.id)}
-													<SelectItem value={listener.id}>
-														{listener.name} (port {listener.port}){listener.isDefault
-															? ' (default)'
-															: ''}
-													</SelectItem>
-												{/each}
-											</SelectContent>
-										</Select>
-									</div>
-								{/if}
-							</div>
-						{:else}
-							{@render portField()}
-						{/if}
-					{:else}
-						<div class="grid gap-4 sm:grid-cols-2">
-							{@render portField()}
-							<div class="rounded-lg border border-dashed p-3">
-								<div class="flex items-center gap-2 text-sm font-medium">
-									<Globe class="size-4 text-muted-foreground" />
-									Proxy routing is off
-								</div>
-								<p class="mt-1 text-xs text-muted-foreground">
-									With the proxy enabled, players join with a hostname like play.example.com instead
-									of a port number
-								</p>
-							</div>
-						</div>
-					{/if}
-				</div>
-
-				<div class="border-t px-4 py-4">
-					<span class="stat-label">Player address</span>
-					<div
-						class="mt-2 flex items-center justify-between gap-3 rounded-lg border bg-muted/40 py-2 pr-2 pl-4"
-					>
-						<p class="truncate font-mono text-lg" title={addressPreview}>{addressPreview}</p>
-						{#if proxyEnabled && useProxyMode}
-							<span
-								class="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-status-ok/25 bg-status-ok/10 px-2 py-0.5 text-xs font-medium text-status-ok"
-							>
-								<Globe class="size-3" />
-								Routed via proxy
-							</span>
-						{:else}
-							<span
-								class="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-status-idle/25 bg-status-idle/10 px-2 py-0.5 text-xs font-medium text-status-idle"
-							>
-								<Cable class="size-3" />
-								Direct connection
-							</span>
-						{/if}
-					</div>
-					<p class="mt-2 text-xs text-muted-foreground">
-						What players type into their multiplayer server list
-					</p>
-				</div>
-
-				<div class="border-t bg-muted/20 px-4 py-3.5">
-					<div class="flex flex-wrap items-center gap-2">
-						{@render pathNode(
-							Users,
-							'Players',
-							proxyEnabled && useProxyMode ? addressPreview : 'direct connect',
-							'active'
-						)}
-						<ArrowRight class="size-3.5 shrink-0 text-muted-foreground/60" />
-						{#if proxyEnabled && useProxyMode}
-							{@render pathNode(
-								Network,
-								selectedListener?.name || 'Proxy listener',
-								`:${selectedListener?.port ?? 25565}`,
-								'active'
-							)}
-							<ArrowRight class="size-3.5 shrink-0 text-muted-foreground/60" />
-							{@render pathNode(
-								Container,
-								formData.name.trim() || 'New server',
-								'container :25565',
-								'muted'
-							)}
-						{:else}
-							{@render pathNode(
-								Container,
-								formData.name.trim() || 'New server',
-								`container :${formData.port}`,
-								'active'
-							)}
-						{/if}
-					</div>
-				</div>
+				<ConnectivityCard
+					{proxyEnabled}
+					baseUrl={proxyBaseURL}
+					listeners={proxyListeners}
+					serverName={formData.name}
+					deriveHostname={true}
+					disabled={loading}
+					{usedPorts}
+					bind:useProxy={useProxyMode}
+					bind:hostname={formData.proxyHostname}
+					bind:useBaseUrl={formData.useBaseUrl}
+					bind:listenerId={formData.proxyListenerId}
+					bind:port={formData.port}
+					bind:portError
+					onAutoAssignPort={refreshAvailablePort}
+				/>
 			</section>
 
 			<section class="overflow-hidden rounded-xl border bg-card">

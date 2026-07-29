@@ -217,6 +217,8 @@ message UpdateServerRoutingRequest {
   string server_id = 1;
   string proxy_hostname = 2;
   string proxy_listener_id = 3;
+  // Direct mode host port, ignored when hostname set
+  optional int32 port = 4;
 }
 
 // Routing update result

@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -458,8 +459,36 @@ func (s *ProxyService) UpdateServerRouting(ctx context.Context, req *connect.Req
 	listenerChanged := oldProxyListenerID != listenerID
 	proxyModeChanged := (oldProxyHostname == "") != (hostname == "")
 
-	// Recreate container if proxy mode or listener changes
-	needsRecreation := proxyModeChanged || (listenerChanged && hostname != "" && oldProxyHostname != "")
+	// Direct mode binds the requested host port
+	oldPort := server.Port
+	newPort := oldPort
+	if hostname == "" && msg.Port != nil && *msg.Port > 0 {
+		newPort = *msg.Port
+	}
+	if hostname != "" {
+		// Proxied containers always listen on the default inside
+		newPort = storage.MinecraftDefaultPort
+	}
+	portChanged := newPort != oldPort
+
+	if hostname == "" && portChanged {
+		if newPort < 1 || newPort > 65535 {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("port must be between 1 and 65535"))
+		}
+		existing, err := s.store.GetServerByPort(ctx, int(newPort))
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to check port availability"))
+		}
+		if existing != nil && existing.Id != server.Id {
+			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("port already in use by another server"))
+		}
+		if s.config.Proxy.Enabled && slices.Contains(s.config.Proxy.ListenPorts, int(newPort)) {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("port is already in use by the proxy server"))
+		}
+	}
+
+	// Recreate container if proxy mode, listener, or port changes
+	needsRecreation := proxyModeChanged || (listenerChanged && hostname != "" && oldProxyHostname != "") || (portChanged && hostname == "")
 
 	// Removes old route before updating server and hostname
 	if hostnameChanged && oldProxyHostname != "" && s.proxyManager != nil {
@@ -471,9 +500,11 @@ func (s *ProxyService) UpdateServerRouting(ctx context.Context, req *connect.Req
 	// Update server fields
 	server.ProxyHostname = hostname
 	server.ProxyListenerId = listenerID
+	server.Port = newPort
 	fields := map[string]any{
 		"proxy_hostname":    hostname,
 		"proxy_listener_id": listenerID,
+		"port":              newPort,
 	}
 
 	// Handle container recreation if needed

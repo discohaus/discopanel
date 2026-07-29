@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -135,9 +136,13 @@ func Load(configPath string) (*Config, error) {
 	v.SetConfigName("config")
 	v.SetConfigType("yaml")
 
-	// Add config paths
+	// Explicit path wins, a directory joins the search list
 	if configPath != "" {
-		v.AddConfigPath(configPath)
+		if info, err := os.Stat(configPath); err == nil && info.IsDir() {
+			v.AddConfigPath(configPath)
+		} else {
+			v.SetConfigFile(configPath)
+		}
 	}
 	v.AddConfigPath(".")
 	v.AddConfigPath("./config")
@@ -217,7 +222,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("storage.temp_dir", "./tmp")
 
 	// Proxy defaults
-	v.SetDefault("proxy.enabled", false)
+	v.SetDefault("proxy.enabled", true)
 	v.SetDefault("proxy.base_url", "")
 	v.SetDefault("proxy.listen_port", 25565)
 	v.SetDefault("proxy.listen_ports", []int{25565})

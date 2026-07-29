@@ -1565,6 +1565,8 @@ message ModuleTemplate {
   bool default_restart_after_init = 29 [(protogorm.v1.db) = {tag: "default:false"}];
   // Container security options (e.g., "seccomp=unconfined")
   repeated string default_security_opt = 30;
+  // Whether instances run panel wide without a server.
+  bool global = 31 [(protogorm.v1.db) = {tag: "default:false"}];
 }
 
 // Module represents a running module instance attached to a server.
