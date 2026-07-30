@@ -97,7 +97,7 @@ func (m *Manager) executeHook(ctx context.Context, module *v1.Module, hook *v1.M
 
 	// Evaluate condition if specified
 	if hook.Condition != "" {
-		server, err := m.store.GetServer(ctx, serverID)
+		server, err := m.loadServer(ctx, serverID)
 		if err != nil {
 			m.logger.Error("Failed to get server for condition evaluation: %v", err)
 			return

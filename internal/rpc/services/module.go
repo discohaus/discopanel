@@ -25,7 +25,6 @@ import (
 	"github.com/discohaus/discopanel/pkg/logger"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
-	"github.com/discohaus/discopanel/pkg/protometa"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -450,6 +449,43 @@ func (s *ModuleService) GetModule(ctx context.Context, req *connect.Request[v1.G
 	}), nil
 }
 
+// Proxied ports make no sense while the proxy is off
+func (s *ModuleService) rejectProxiedPortsWhileDisabled(ports []*v1.NetworkPort) error {
+	if s.proxyManager.Enabled() {
+		return nil
+	}
+	for _, port := range ports {
+		if port != nil && port.ProxyEnabled {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("proxy is disabled, port %s cannot be proxied", port.Name))
+		}
+	}
+	return nil
+}
+
+// Validates hostname overrides on a port list in place
+func normalizeModulePorts(ports []*v1.NetworkPort) error {
+	for _, port := range ports {
+		if port == nil {
+			continue
+		}
+		hostname := proxy.NormalizeHostname(port.Hostname)
+		if hostname == "" {
+			port.Hostname = ""
+			continue
+		}
+		if !proxy.ValidHostname(hostname) {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid hostname %q on port %s", port.Hostname, port.Name))
+		}
+		switch port.Protocol {
+		case v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT:
+		default:
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("hostnames only apply to http and minecraft ports, not %s", port.Name))
+		}
+		port.Hostname = hostname
+	}
+	return nil
+}
+
 func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v1.CreateModuleRequest]) (*connect.Response[v1.CreateModuleResponse], error) {
 	msg := req.Msg
 	if msg.Name == "" {
@@ -485,15 +521,20 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 		ports = template.Ports
 	}
 
-	// Allocate host ports for any port entries that need it
-	// Track ports allocated in this request to avoid duplicates
+	if err := s.rejectProxiedPortsWhileDisabled(ports); err != nil {
+		return nil, err
+	}
+
+	moduleID := uuid.New().String()
+
+	// Registry allocates host ports for any entries that need one
 	allocatedInRequest := make(map[int]bool)
 	for _, port := range ports {
 		if port == nil || port.ContainerPort == 0 {
 			continue
 		}
 		if port.HostPort == 0 {
-			allocatedPort, err := s.moduleManager.AllocateModulePortExcluding(ctx, allocatedInRequest)
+			allocatedPort, err := s.moduleManager.AllocateModulePortExcluding(ctx, port.Protocol, allocatedInRequest)
 			if err != nil {
 				return nil, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("failed to allocate port: %w", err))
 			}
@@ -502,22 +543,21 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 		}
 	}
 
-	// Verify all ports are available (considering proxy/protocol rules)
-	for _, port := range ports {
-		if port == nil || port.HostPort == 0 {
-			continue
-		}
-		protocol := storage.PortTransport(port.Protocol)
-		conflict, err := s.store.CheckPortAvailability(ctx, int(port.HostPort), protocol, port.ProxyEnabled, server.ProxyHostname, "")
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to check port availability: %w", err))
-		}
-		if conflict != nil {
-			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("port %d/%s: %s (used by %s)", port.HostPort, protometa.Name(protocol), conflict.Reason, conflict.Module.Name))
-		}
+	if err := normalizeModulePorts(ports); err != nil {
+		return nil, err
 	}
 
-	moduleID := uuid.New().String()
+	// Registry checkout guards every port until the row persists
+	netOwner := proxy.NetOwner{Kind: proxy.OwnerModule, ID: moduleID}
+	netReqs := s.proxyManager.ModuleNetRequests(&v1.Module{Id: moduleID, Ports: ports}, server.ProxyHostname)
+	if err := s.proxyManager.EnsureListenersFor(ctx, netReqs); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	netClaim, err := s.proxyManager.CheckoutNetwork(ctx, netOwner, netReqs)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	defer netClaim.Release()
 
 	module := &v1.Module{
 		Id:                    moduleID,
@@ -603,6 +643,12 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 	if err := s.store.CreateModule(ctx, module); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create module: %w", err))
 	}
+	netClaim.Confirm()
+
+	// Reconcile starts any auto created listener sockets
+	if err := s.proxyManager.SyncListeners(ctx); err != nil {
+		s.log.Error("Failed to sync routes after module create: %v", err)
+	}
 	s.rec.Record(ctx, module.ServerId, v1.ServerActionKind_SERVER_ACTION_KIND_MODULE_CREATE, metrics.Attrs{"module": module.Name, "template": template.Name}, "created module %s", module.Name)
 
 	// Create container in background
@@ -659,27 +705,51 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 	if msg.Detached != nil {
 		module.Detached = *msg.Detached
 	}
+	var netClaim *proxy.NetClaim
 	if len(msg.Ports) > 0 {
-		// Get server for hostname context
-		server, err := s.store.GetServer(ctx, module.ServerId)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get server: %w", err))
+		if err := s.rejectProxiedPortsWhileDisabled(msg.Ports); err != nil {
+			return nil, err
 		}
 
-		// Validate new ports are available (excluding current module)
+		// Global modules carry no server hostname context
+		hostname := ""
+		if module.ServerId != "" {
+			server, err := s.store.GetServer(ctx, module.ServerId)
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get server: %w", err))
+			}
+			hostname = server.ProxyHostname
+		}
+
+		// Registry allocates host ports for any entries that need one
+		allocatedInRequest := make(map[int]bool)
 		for _, port := range msg.Ports {
-			if port == nil || port.HostPort == 0 {
+			if port == nil || port.ContainerPort == 0 || port.HostPort != 0 {
 				continue
 			}
-			protocol := storage.PortTransport(port.Protocol)
-			conflict, err := s.store.CheckPortAvailability(ctx, int(port.HostPort), protocol, port.ProxyEnabled, server.ProxyHostname, module.Id)
+			allocatedPort, err := s.moduleManager.AllocateModulePortExcluding(ctx, port.Protocol, allocatedInRequest)
 			if err != nil {
-				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to check port availability: %w", err))
+				return nil, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("failed to allocate port: %w", err))
 			}
-			if conflict != nil {
-				return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("port %d/%s: %s (used by %s)", port.HostPort, protometa.Name(protocol), conflict.Reason, conflict.Module.Name))
-			}
+			port.HostPort = int32(allocatedPort)
+			allocatedInRequest[allocatedPort] = true
 		}
+
+		if err := normalizeModulePorts(msg.Ports); err != nil {
+			return nil, err
+		}
+
+		// Registry checkout guards the new ports until persist
+		netReqs := s.proxyManager.ModuleNetRequests(&v1.Module{Id: module.Id, Ports: msg.Ports}, hostname)
+		if err := s.proxyManager.EnsureListenersFor(ctx, netReqs); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		claim, err := s.proxyManager.CheckoutNetwork(ctx, proxy.NetOwner{Kind: proxy.OwnerModule, ID: module.Id}, netReqs)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		netClaim = claim
+		defer netClaim.Release()
 
 		module.Ports = msg.Ports
 	}
@@ -736,6 +806,12 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 	if err := s.store.UpdateModule(ctx, module); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update module: %w", err))
 	}
+	netClaim.Confirm()
+
+	// Reconcile keeps routes matching the saved ports
+	if err := s.proxyManager.SyncListeners(ctx); err != nil {
+		s.log.Error("Failed to sync routes after module update: %v", err)
+	}
 
 	// Config hash decides whether the container must rebuild
 	if needsRecreate, err := s.moduleManager.NeedsRecreate(ctx, module.Id); err == nil && needsRecreate {
@@ -765,6 +841,15 @@ func (s *ModuleService) DeleteModule(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
 	}
 	module, _ := s.store.GetModule(ctx, msg.Id)
+
+	// System modules only ever disable, never delete
+	if module != nil && module.ServerId == "" {
+		if template, terr := s.store.GetModuleTemplate(ctx, module.TemplateId); terr == nil &&
+			template.Type == v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_BUILTIN {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("system module %s can only be disabled", module.Name))
+		}
+	}
 
 	if err := s.moduleManager.DeleteModule(ctx, msg.Id); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete module: %w", err))
@@ -907,16 +992,15 @@ func (s *ModuleService) GetNextAvailableModulePort(ctx context.Context, req *con
 		return nil, connect.NewError(connect.CodeResourceExhausted, err)
 	}
 
-	usedPorts, err := s.moduleManager.GetUsedModulePorts(ctx)
+	// Registry snapshot backs the client side hints
+	usedPorts, err := s.proxyManager.UsedNetworkPorts(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	var protoUsedPorts []*v1.UsedPort
 	for _, p := range usedPorts {
-		protoUsedPorts = append(protoUsedPorts, &v1.UsedPort{
-			Port: int32(p),
-		})
+		protoUsedPorts = append(protoUsedPorts, &v1.UsedPort{Port: p})
 	}
 
 	return connect.NewResponse(&v1.GetNextAvailableModulePortResponse{
@@ -936,6 +1020,7 @@ func (s *ModuleService) GetAvailableAliases(ctx context.Context, req *connect.Re
 	// Get server context if provided
 	if msg.ServerId != nil && *msg.ServerId != "" {
 		if server, err := s.store.GetServer(ctx, *msg.ServerId); err == nil {
+			s.store.HydrateProxyPorts(ctx, server)
 			aliasCtx.Server = server
 			// Also get server config for server.config.* aliases
 			if serverConfig, err := s.store.GetServerProperties(ctx, *msg.ServerId); err == nil {
@@ -964,6 +1049,7 @@ func (s *ModuleService) GetResolvedAliases(ctx context.Context, req *connect.Req
 
 	if msg.ServerId != nil && *msg.ServerId != "" {
 		if server, err := s.store.GetServer(ctx, *msg.ServerId); err == nil {
+			s.store.HydrateProxyPorts(ctx, server)
 			aliasCtx.Server = server
 			if serverConfig, err := s.store.GetServerProperties(ctx, *msg.ServerId); err == nil {
 				aliasCtx.ServerProperties = serverConfig

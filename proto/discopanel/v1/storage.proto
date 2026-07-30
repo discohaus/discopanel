@@ -653,6 +653,14 @@ enum ModuleProtocol {
   MODULE_PROTOCOL_HTTP = 4 [(discopanel.options.v1.value) = {label: "HTTP"}];
 }
 
+// Wire transport a port rides on
+enum NetworkTransport {
+  option (discopanel.options.v1.enum_type) = {label: "Transport"};
+  NETWORK_TRANSPORT_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  NETWORK_TRANSPORT_TCP = 1 [(discopanel.options.v1.value) = {label: "TCP"}];
+  NETWORK_TRANSPORT_UDP = 2 [(discopanel.options.v1.value) = {label: "UDP"}];
+}
+
 // How a failed config field check is treated
 enum ModuleConfigSeverity {
   option (discopanel.options.v1.enum_type) = {label: "Severity"};
@@ -724,12 +732,20 @@ enum ServerActionKind {
   SERVER_ACTION_KIND_PROVISION_MC_VERSION = 43 [(discopanel.options.v1.value) = {label: "Version Pinned"}];
 }
 
-// Extra port mapping for container
-message AdditionalPort {
-  string name = 1; // User-friendly name for the port (e.g., "BlueMap Web")
-  int32 container_port = 2; // Port inside the container
-  int32 host_port = 3; // Port on the host machine
-  ModuleProtocol protocol = 4; // Defaults to TCP when unspecified
+// One container port for servers and modules alike
+message NetworkPort {
+  // Display name for the port
+  string name = 1;
+  // Port inside the container
+  int32 container_port = 2;
+  // Port on the host, zero auto allocates
+  int32 host_port = 3;
+  // Defaults to tcp when unspecified
+  ModuleProtocol protocol = 4;
+  // Routes through the proxy instead of a host bind
+  bool proxy_enabled = 5;
+  // Overrides the owning server hostname for routed ports
+  string hostname = 6;
 }
 
 // Volume mount configuration for container
@@ -770,20 +786,6 @@ message Permission {
   discopanel.options.v1.ResourceType resource = 1;
   discopanel.options.v1.ActionType action = 2;
   string object_id = 3;
-}
-
-// ModulePort defines a port mapping for a module container.
-message ModulePort {
-  // User-friendly name for this port (e.g., "Web UI", "API").
-  string name = 1;
-  // Port number inside the container.
-  int32 container_port = 2;
-  // Port number on the host. 0 means auto-allocate.
-  int32 host_port = 3;
-  // Defaults to TCP when unspecified.
-  ModuleProtocol protocol = 4;
-  // Whether to route traffic through the DiscoPanel proxy.
-  bool proxy_enabled = 5;
 }
 
 // ModuleConfigOption is one choice for a select config field.
@@ -951,13 +953,6 @@ message Server {
         kind: QUERY_KIND_GET
         where: "agent_token_hash = ? AND agent_token_hash != ''"
         params: ["hash string"]
-      },
-      {
-        name: "GetServerByPort"
-        kind: QUERY_KIND_GET
-        where: "port = ? AND (proxy_hostname IS NULL OR proxy_hostname = '')"
-        params: ["port int"]
-        not_found_nil: true
       }
     ]
   };
@@ -970,7 +965,8 @@ message Server {
   int32 port = 7;
   string proxy_hostname = 8 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_proxy_hostname_listener,where:proxy_hostname != ''"}];
   string proxy_listener_id = 9 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_proxy_hostname_listener,where:proxy_listener_id != ''"}];
-  int32 proxy_port = 10;
+  // Listener host port, computed at read time
+  int32 proxy_port = 10 [(protogorm.v1.db) = {skip: true}];
   int32 max_players = 11 [(protogorm.v1.db) = {tag: "default:20"}];
   int32 memory = 12 [(protogorm.v1.db) = {tag: "default:4096"}]; // Container memory limit in MB
   int32 memory_min = 49 [(protogorm.v1.db) = {tag: "default:0"}]; // JVM initial heap (Xms) in MB
@@ -996,7 +992,7 @@ message Server {
   double tps = 26 [(protogorm.v1.db) = {skip: true}];
 
   // Additional container settings
-  repeated AdditionalPort additional_ports = 27;
+  repeated NetworkPort additional_ports = 27;
   DockerOverrides docker_overrides = 28 [(protogorm.v1.db) = {tag: "type:text"}];
 
   google.protobuf.Timestamp created_at = 29 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
@@ -1043,14 +1039,6 @@ message ProxyListener {
         fk: "proxy_listener_id"
       }
     ]
-    queries: [
-      {
-        name: "GetProxyListenerByPort"
-        kind: QUERY_KIND_GET
-        where: "port = ?"
-        params: ["port int"]
-      }
-    ]
   };
   string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
   string name = 2;
@@ -1060,6 +1048,8 @@ message ProxyListener {
   bool is_default = 6 [(protogorm.v1.db) = {tag: "not null;default:false"}];
   google.protobuf.Timestamp created_at = 7 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
   google.protobuf.Timestamp updated_at = 8 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
+  // Created on demand for a routed port, not by hand
+  bool auto_created = 9 [(protogorm.v1.db) = {tag: "not null;default:false"}];
 }
 
 // A set of permissions and metadata
@@ -1540,7 +1530,7 @@ message ModuleTemplate {
   // When this template was last updated.
   google.protobuf.Timestamp updated_at = 17 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
   // Default port configurations.
-  repeated ModulePort ports = 18;
+  repeated NetworkPort ports = 18;
   // Template IDs this module commonly depends on.
   repeated string suggested_dependencies = 19;
   // Default event hooks for server lifecycle integration.
@@ -1653,7 +1643,7 @@ message Module {
   // Parent server's proxy hostname (for building access URLs).
   string server_proxy_hostname = 23 [(protogorm.v1.db) = {skip: true}];
   // Port configurations.
-  repeated ModulePort ports = 24;
+  repeated NetworkPort ports = 24;
   // Module dependencies.
   repeated ModuleDependency dependencies = 25;
   // Seconds between health checks.

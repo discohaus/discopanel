@@ -61,7 +61,7 @@ func (c *Client) CreateModuleContainer(ctx context.Context, module *v1.Module, t
 			continue
 		}
 
-		dockerProto := protometa.Name(models.PortTransport(port.Protocol))
+		dockerProto := protometa.Name(models.TransportOf(port.Protocol))
 		natPort := nat.Port(fmt.Sprintf("%d/%s", port.ContainerPort, dockerProto))
 		exposedPorts[natPort] = struct{}{}
 

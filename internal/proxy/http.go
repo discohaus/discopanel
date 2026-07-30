@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -14,34 +13,46 @@ import (
 	"github.com/discohaus/discopanel/pkg/logger"
 )
 
-// Handles HTTP reverse proxying keyed by Host header
-type HTTPProxy struct {
-	server       *http.Server
-	routes       map[string]*Route
+// Serves the http lane of a listener socket by Host header
+type httpLane struct {
+	routesMap    map[string]*Route
 	routesMutex  sync.RWMutex
 	proxies      map[string]*httputil.ReverseProxy
 	proxiesMutex sync.Mutex
+	server       *http.Server
+	serverMutex  sync.Mutex
 	logger       *logger.Logger
-	listenAddr   string
-	running      bool
-	runningMutex sync.RWMutex
 }
 
-// Creates a new HTTP reverse proxy instance
-func NewHTTPProxy(cfg *Config) *HTTPProxy {
-	p := &HTTPProxy{
-		routes:     make(map[string]*Route),
-		proxies:    make(map[string]*httputil.ReverseProxy),
-		logger:     cfg.Logger,
-		listenAddr: cfg.ListenAddr,
+// Creates the http lane for one socket
+func newHTTPLane(log *logger.Logger) *httpLane {
+	return &httpLane{
+		routesMap: make(map[string]*Route),
+		proxies:   make(map[string]*httputil.ReverseProxy),
+		logger:    log,
 	}
+}
 
-	p.server = &http.Server{
-		Addr:    cfg.ListenAddr,
-		Handler: p,
+// Serves sniffed connections handed over by the mux
+func (p *httpLane) start(feed *connFeed) {
+	p.serverMutex.Lock()
+	defer p.serverMutex.Unlock()
+	p.server = &http.Server{Handler: p}
+	go func(server *http.Server) {
+		if err := server.Serve(feed); err != nil && err != http.ErrServerClosed && err != net.ErrClosed {
+			p.logger.Error("HTTP lane error: %v", err)
+		}
+	}(p.server)
+}
+
+// Drops in-flight requests, hijacked relays drain on their own
+func (p *httpLane) stop() {
+	p.serverMutex.Lock()
+	defer p.serverMutex.Unlock()
+	if p.server != nil {
+		p.server.Close()
+		p.server = nil
 	}
-
-	return p
 }
 
 // Checks if this is a WebSocket upgrade request
@@ -50,21 +61,21 @@ func isWebSocketRequest(r *http.Request) bool {
 }
 
 // Implements http.Handler for routing requests
-func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (p *httpLane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Extract hostname from Host header
 	hostname := strings.ToLower(strings.Split(r.Host, ":")[0])
 
 	// Find the route, empty hostname key is the catch all
 	p.routesMutex.RLock()
-	route, exists := p.routes[hostname]
+	route, exists := p.routesMap[hostname]
 	if !exists {
-		route, exists = p.routes[""]
+		route, exists = p.routesMap[""]
 	}
 	p.routesMutex.RUnlock()
 
 	if !exists {
 		p.logger.Debug("No route found for hostname: %s", hostname)
-		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		http.Error(w, fmt.Sprintf("DiscoPanel routes nothing at %s on this port", hostname), http.StatusBadGateway)
 		return
 	}
 
@@ -79,7 +90,7 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // Returns the cached reverse proxy for a backend
-func (p *HTTPProxy) proxyFor(backendAddr string) *httputil.ReverseProxy {
+func (p *httpLane) proxyFor(backendAddr string) *httputil.ReverseProxy {
 	p.proxiesMutex.Lock()
 	defer p.proxiesMutex.Unlock()
 
@@ -104,14 +115,14 @@ func (p *HTTPProxy) proxyFor(backendAddr string) *httputil.ReverseProxy {
 }
 
 // Drops cached reverse proxies after route changes
-func (p *HTTPProxy) dropProxies() {
+func (p *httpLane) dropProxies() {
 	p.proxiesMutex.Lock()
 	p.proxies = make(map[string]*httputil.ReverseProxy)
 	p.proxiesMutex.Unlock()
 }
 
 // Handles WebSocket upgrade requests
-func (p *HTTPProxy) handleWebSocket(w http.ResponseWriter, r *http.Request, route *Route) {
+func (p *httpLane) handleWebSocket(w http.ResponseWriter, r *http.Request, route *Route) {
 	// Hijack the client connection
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
@@ -166,108 +177,50 @@ func (p *HTTPProxy) handleWebSocket(w http.ResponseWriter, r *http.Request, rout
 	relay(clientConn, backendConn)
 }
 
-// Adds a new routing rule
-func (p *HTTPProxy) AddRoute(serverID, hostname, backendHost string, backendPort int) {
+// Replaces the lane's route table
+func (p *httpLane) setRoutes(routes map[string]*Route) {
 	p.routesMutex.Lock()
-	hostname = strings.ToLower(strings.Split(hostname, ":")[0])
-	p.routes[hostname] = &Route{
-		ServerID:    serverID,
-		Hostname:    hostname,
-		BackendHost: backendHost,
-		BackendPort: backendPort,
-	}
+	p.routesMap = routes
 	p.routesMutex.Unlock()
-
 	p.dropProxies()
-	p.logger.Info("HTTP proxy added route: hostname=%s backend=%s:%d", hostname, backendHost, backendPort)
+}
+
+// Installs or replaces one route
+func (p *httpLane) upsert(route *Route) {
+	p.routesMutex.Lock()
+	p.routesMap[route.Hostname] = route
+	p.routesMutex.Unlock()
+	p.dropProxies()
+	p.logger.Info("HTTP lane added route: hostname=%s backend=%s:%d", route.Hostname, route.BackendHost, route.BackendPort)
 }
 
 // Removes a routing rule
-func (p *HTTPProxy) RemoveRoute(hostname string) {
+func (p *httpLane) remove(hostname string) {
 	p.routesMutex.Lock()
-	hostname = strings.ToLower(strings.Split(hostname, ":")[0])
-	delete(p.routes, hostname)
+	_, existed := p.routesMap[hostname]
+	delete(p.routesMap, hostname)
 	p.routesMutex.Unlock()
-
-	p.dropProxies()
-	p.logger.Info("HTTP proxy removed route: hostname=%s", hostname)
+	if existed {
+		p.dropProxies()
+		p.logger.Info("HTTP lane removed route: hostname=%s", hostname)
+	}
 }
 
-// Updates the backend for a route
-func (p *HTTPProxy) UpdateRoute(hostname, backendHost string, backendPort int) {
-	p.routesMutex.Lock()
-	hostname = strings.ToLower(strings.Split(hostname, ":")[0])
-	if route, exists := p.routes[hostname]; exists {
-		route.BackendHost = backendHost
-		route.BackendPort = backendPort
-		p.logger.Info("HTTP proxy updated route: hostname=%s backend=%s:%d", hostname, backendHost, backendPort)
-	}
-	p.routesMutex.Unlock()
-
-	p.dropProxies()
+// True when the lane serves nothing
+func (p *httpLane) empty() bool {
+	p.routesMutex.RLock()
+	defer p.routesMutex.RUnlock()
+	return len(p.routesMap) == 0
 }
 
 // Returns a copy of all current routes
-func (p *HTTPProxy) GetRoutes() map[string]*Route {
+func (p *httpLane) routes() []Route {
 	p.routesMutex.RLock()
 	defer p.routesMutex.RUnlock()
 
-	routes := make(map[string]*Route)
-	for k, v := range p.routes {
-		routeCopy := *v
-		routes[k] = &routeCopy
+	out := make([]Route, 0, len(p.routesMap))
+	for _, v := range p.routesMap {
+		out = append(out, *v)
 	}
-	return routes
-}
-
-// Starts the HTTP proxy server
-func (p *HTTPProxy) Start() error {
-	p.runningMutex.Lock()
-	defer p.runningMutex.Unlock()
-
-	if p.running {
-		return fmt.Errorf("HTTP proxy already running")
-	}
-
-	listener, err := net.Listen("tcp", p.listenAddr)
-	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %w", p.listenAddr, err)
-	}
-
-	p.running = true
-
-	go func() {
-		if err := p.server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			p.logger.Error("HTTP proxy error: %v", err)
-		}
-	}()
-
-	p.logger.Info("HTTP proxy started on %s", p.listenAddr)
-	return nil
-}
-
-// Stops the HTTP proxy server
-func (p *HTTPProxy) Stop() error {
-	p.runningMutex.Lock()
-	defer p.runningMutex.Unlock()
-
-	if !p.running {
-		return nil
-	}
-
-	p.running = false
-
-	if err := p.server.Shutdown(context.Background()); err != nil {
-		return fmt.Errorf("failed to shutdown HTTP proxy: %w", err)
-	}
-
-	p.logger.Info("HTTP proxy stopped")
-	return nil
-}
-
-// Returns whether the proxy is running
-func (p *HTTPProxy) IsRunning() bool {
-	p.runningMutex.RLock()
-	defer p.runningMutex.RUnlock()
-	return p.running
+	return out
 }

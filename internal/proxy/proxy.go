@@ -11,23 +11,20 @@ import (
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
-// Common interface for all proxy types
-type Proxier interface {
-	Start() error
-	Stop() error
-	AddRoute(serverID, hostname, backendHost string, backendPort int)
-	RemoveRoute(hostname string)
-	UpdateRoute(hostname, backendHost string, backendPort int)
-	GetRoutes() map[string]*Route
-	IsRunning() bool
-}
-
 // Maps a hostname to a backend server
 type Route struct {
 	ServerID    string
 	Hostname    string
 	BackendHost string
 	BackendPort int
+
+	// Lane the route serves on its socket
+	Protocol v1.ModuleProtocol
+
+	// Attribution for the topology surface
+	OwnerKind string
+	OwnerID   string
+	PortName  string
 
 	// Selects relay, synthetic status, or wake handling
 	State v1.ProxyRouteState

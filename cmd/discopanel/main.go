@@ -128,23 +128,8 @@ func main() {
 			cfg.Proxy.BaseUrl = proxyConfig.BaseUrl
 		}
 
-		// Load listeners and build ports array
-		listeners, err := store.ListProxyListeners(ctx)
-		if err == nil && len(listeners) > 0 {
-			listenPorts := make([]int, 0, len(listeners))
-			for _, l := range listeners {
-				if l.Enabled {
-					listenPorts = append(listenPorts, int(l.Port))
-				}
-			}
-			if len(listenPorts) > 0 {
-				cfg.Proxy.ListenPorts = listenPorts
-				cfg.Proxy.ListenPort = listenPorts[0]
-			}
-		}
-
-		log.Info("Loaded proxy configuration from database: enabled=%v, base_url=%v, listeners=%d",
-			cfg.Proxy.Enabled, cfg.Proxy.BaseUrl, len(cfg.Proxy.ListenPorts))
+		log.Info("Loaded proxy configuration from database: enabled=%v, base_url=%v",
+			cfg.Proxy.Enabled, cfg.Proxy.BaseUrl)
 	}
 
 	// Initialize proxy manager

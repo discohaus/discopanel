@@ -31,7 +31,7 @@ func TestProtoModelSmoke(t *testing.T) {
 		Port:           25565,
 		DataPath:       t.TempDir(),
 		AgentTokenHash: "sekrit-hash",
-		AdditionalPorts: []*v1.AdditionalPort{
+		AdditionalPorts: []*v1.NetworkPort{
 			{Name: "map", ContainerPort: 8100, HostPort: 8100, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_TCP},
 		},
 	}

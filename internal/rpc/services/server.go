@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -69,6 +68,51 @@ type faviconEntry struct {
 	modTime time.Time
 	size    int64
 	dataURI string
+}
+
+// Normalizes additional ports, proxied ones may route
+func normalizeAdditionalPorts(ports []*v1.NetworkPort, proxyOn bool) ([]*v1.NetworkPort, error) {
+	var out []*v1.NetworkPort
+	for _, p := range ports {
+		if p == nil {
+			continue
+		}
+		if p.ContainerPort < 1 || p.ContainerPort > 65535 {
+			return nil, fmt.Errorf("invalid container port %d", p.ContainerPort)
+		}
+		if p.HostPort < 1 || p.HostPort > 65535 {
+			return nil, fmt.Errorf("invalid host port %d", p.HostPort)
+		}
+		if p.ProxyEnabled && !proxyOn {
+			return nil, fmt.Errorf("proxy is disabled, port %s cannot be proxied", p.Name)
+		}
+		protocol := p.Protocol
+		switch protocol {
+		case v1.ModuleProtocol_MODULE_PROTOCOL_UNSPECIFIED:
+			protocol = v1.ModuleProtocol_MODULE_PROTOCOL_TCP
+		case v1.ModuleProtocol_MODULE_PROTOCOL_TCP, v1.ModuleProtocol_MODULE_PROTOCOL_UDP:
+		case v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT:
+			// Hostname routed protocols only work through the proxy
+			if !p.ProxyEnabled {
+				return nil, fmt.Errorf("port %s must enable the proxy to speak %s", p.Name, protometa.Name(protocol))
+			}
+		default:
+			return nil, fmt.Errorf("invalid protocol %s", protometa.Name(protocol))
+		}
+		hostname := proxy.NormalizeHostname(p.Hostname)
+		if hostname != "" && !proxy.ValidHostname(hostname) {
+			return nil, fmt.Errorf("invalid hostname %q on port %s", p.Hostname, p.Name)
+		}
+		out = append(out, &v1.NetworkPort{
+			ContainerPort: p.ContainerPort,
+			HostPort:      p.HostPort,
+			Protocol:      protocol,
+			Name:          p.Name,
+			ProxyEnabled:  p.ProxyEnabled,
+			Hostname:      hostname,
+		})
+	}
+	return out, nil
 }
 
 // NewServerService creates a new server service
@@ -165,27 +209,12 @@ func (s *ServerService) ListServers(ctx context.Context, req *connect.Request[v1
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list servers"))
 	}
 
-	// Get all proxy listeners once for efficiency
-	var listeners map[string]*v1.ProxyListener
-	if s.config.Proxy.Enabled {
-		allListeners, err := s.store.ListProxyListeners(ctx)
-		if err == nil {
-			listeners = make(map[string]*v1.ProxyListener)
-			for _, l := range allListeners {
-				listeners[l.Id] = l
-			}
-		}
+	if err := s.store.HydrateProxyPorts(ctx, servers...); err != nil {
+		s.log.Error("Failed to hydrate proxy ports: %v", err)
 	}
 
 	// Update status from Docker and apply cached metrics
 	for _, server := range servers {
-		// Proxied servers get ProxyPort from the listener
-		if server.ProxyHostname != "" && server.ProxyListenerId != "" && listeners != nil {
-			if listener, ok := listeners[server.ProxyListenerId]; ok {
-				server.ProxyPort = listener.Port
-			}
-		}
-
 		// Icon comes from disk, cheap enough for light polls
 		server.Favicon = s.serverFavicon(server)
 
@@ -219,12 +248,8 @@ func (s *ServerService) GetServer(ctx context.Context, req *connect.Request[v1.G
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
 	}
 
-	// Proxied servers get ProxyPort from the listener
-	if server.ProxyHostname != "" && server.ProxyListenerId != "" {
-		listener, err := s.store.GetProxyListener(ctx, server.ProxyListenerId)
-		if err == nil && listener != nil {
-			server.ProxyPort = listener.Port
-		}
+	if err := s.store.HydrateProxyPorts(ctx, server); err != nil {
+		s.log.Error("Failed to hydrate proxy port: %v", err)
 	}
 
 	// Update status from Docker
@@ -281,19 +306,22 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 	}
 
 	// Handle proxy configuration
-	proxyHostname := msg.ProxyHostname
+	proxyHostname := proxy.NormalizeHostname(msg.ProxyHostname)
 	proxyListenerID := msg.ProxyListenerId
 	port := int(msg.Port)
 
 	if proxyHostname != "" {
+		// Routing needs the proxy on
+		if !s.proxy.Enabled() {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("proxy is disabled"))
+		}
+
 		// If using base URL, append it to the hostname
 		if msg.UseBaseUrl {
-			proxyConfig, _, err := s.store.GetProxyConfig(ctx)
-			if err == nil && proxyConfig.BaseUrl != "" {
-				// Appends base URL only when hostname lacks a domain
-				if !strings.Contains(proxyHostname, ".") {
-					proxyHostname = proxyHostname + "." + proxyConfig.BaseUrl
-				}
+			effectiveBaseURL, _ := s.proxy.EffectiveBaseDomain()
+			// Appends base URL only when hostname lacks a domain
+			if effectiveBaseURL != "" && !strings.Contains(proxyHostname, ".") {
+				proxyHostname = proxy.NormalizeHostname(proxyHostname + "." + effectiveBaseURL)
 			}
 		}
 
@@ -338,23 +366,6 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 		if port == 0 {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("port is required for non-proxy servers"))
 		}
-
-		// Check if port is already in use
-		existing, err := s.store.GetServerByPort(ctx, port)
-		if err != nil {
-			s.log.Error("Failed to check port: %v", err)
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to check port availability"))
-		}
-		if existing != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("port already in use"))
-		}
-
-		// Also check if this port is used by the proxy
-		if s.config.Proxy.Enabled {
-			if slices.Contains(s.config.Proxy.ListenPorts, port) {
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("port is already in use by the proxy server"))
-			}
-		}
 	}
 
 	// Only an explicit valid tag pins, java version drives otherwise
@@ -363,54 +374,31 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 		dockerImage = ""
 	}
 
-	// Validate additional ports
-	var additionalPorts []*v1.AdditionalPort
-	usedPorts := make(map[string]bool)
-
-	for _, protoPort := range msg.AdditionalPorts {
-		// Validate port range
-		if protoPort.ContainerPort < 1 || protoPort.ContainerPort > 65535 {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid container port %d", protoPort.ContainerPort))
-		}
-		if protoPort.HostPort < 1 || protoPort.HostPort > 65535 {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid host port %d", protoPort.HostPort))
-		}
-
-		// Extra ports ride plain tcp or udp only
-		protocol := protoPort.Protocol
-		switch protocol {
-		case v1.ModuleProtocol_MODULE_PROTOCOL_UNSPECIFIED:
-			protocol = v1.ModuleProtocol_MODULE_PROTOCOL_TCP
-		case v1.ModuleProtocol_MODULE_PROTOCOL_TCP, v1.ModuleProtocol_MODULE_PROTOCOL_UDP:
-		default:
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid protocol %s (must be tcp or udp)", protometa.Name(protocol)))
-		}
-
-		// Check for duplicate ports
-		portKey := fmt.Sprintf("%d/%s", protoPort.HostPort, protometa.Name(protocol))
-		if usedPorts[portKey] {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("duplicate host port %d/%s", protoPort.HostPort, protocol))
-		}
-		usedPorts[portKey] = true
-
-		// Check if port conflicts
-		if int(protoPort.HostPort) == port {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("additional port %d conflicts with main server port", protoPort.HostPort))
-		}
-		if s.config.Proxy.Enabled && slices.Contains(s.config.Proxy.ListenPorts, int(protoPort.HostPort)) {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("port %d is already in use by the proxy server", protoPort.HostPort))
-		}
-
-		additionalPorts = append(additionalPorts, &v1.AdditionalPort{
-			ContainerPort: protoPort.ContainerPort,
-			HostPort:      protoPort.HostPort,
-			Protocol:      protocol,
-			Name:          protoPort.Name,
-		})
+	additionalPorts, err := normalizeAdditionalPorts(msg.AdditionalPorts, s.proxy.Enabled())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	// Create server object
 	serverUUID := uuid.New().String()
+
+	// Registry checkout guards every port until the row persists
+	proxyOn := s.proxy.Enabled()
+	netOwner := proxy.NetOwner{Kind: proxy.OwnerServer, ID: serverUUID}
+	var netReqs []proxy.NetRequest
+	if proxyHostname != "" {
+		netReqs = proxy.ServerProxiedNetRequests(proxyHostname, port, additionalPorts, proxyOn)
+	} else {
+		netReqs = proxy.ServerDirectNetRequests(port, additionalPorts, proxyOn)
+	}
+	if err := s.proxy.EnsureListenersFor(ctx, netReqs); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	netClaim, err := s.proxy.CheckoutNetwork(ctx, netOwner, netReqs)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	defer netClaim.Release()
 	serverDataDir := fmt.Sprintf("%s_%s", files.SanitizePathName(msg.Name), serverUUID)
 	serverDataPath := filepath.Join(s.config.Storage.DataDir, "servers", serverDataDir)
 
@@ -454,10 +442,9 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 
 	// When using proxy, set the ports correctly
 	if server.ProxyHostname != "" && proxyListenerID != "" {
-		listener, err := s.store.GetProxyListener(ctx, proxyListenerID)
-		if err == nil && listener != nil {
-			server.ProxyPort = listener.Port
-			server.Port = 25565 // Internal container port for proxied servers
+		server.Port = int32(storage.MinecraftDefaultPort)
+		if err := s.store.HydrateProxyPorts(ctx, server); err != nil {
+			s.log.Error("Failed to hydrate proxy port: %v", err)
 		}
 	}
 
@@ -483,7 +470,13 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 		s.log.Error("Failed to create server: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create server"))
 	}
+	netClaim.Confirm()
 	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_SERVER_CREATE, nil, "created the server")
+
+	// Reconcile starts any auto created listener sockets
+	if err := s.proxy.SyncListeners(ctx); err != nil {
+		s.log.Error("Failed to sync routes after server create: %v", err)
+	}
 
 	// Get the server config
 	serverConfig, err := s.store.GetServerProperties(ctx, server.Id)
@@ -576,19 +569,6 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid port %d", newPort))
 		}
 
-		existing, err := s.store.GetServerByPort(ctx, newPort)
-		if err != nil {
-			s.log.Error("Failed to check port: %v", err)
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to check port availability"))
-		}
-		if existing != nil && existing.Id != server.Id {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("port already in use"))
-		}
-
-		if s.config.Proxy.Enabled && slices.Contains(s.config.Proxy.ListenPorts, newPort) {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("port is already in use by the proxy server"))
-		}
-
 		server.Port = int32(newPort)
 		needsRecreation = true
 	}
@@ -641,52 +621,10 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 
 	// Handle additional ports update
 	if len(msg.AdditionalPorts) > 0 {
-		// Validate additional ports
-		var additionalPorts []*v1.AdditionalPort
-		usedPorts := make(map[string]bool)
-
-		for _, protoPort := range msg.AdditionalPorts {
-			// Validate port range
-			if protoPort.ContainerPort < 1 || protoPort.ContainerPort > 65535 {
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid container port %d", protoPort.ContainerPort))
-			}
-			if protoPort.HostPort < 1 || protoPort.HostPort > 65535 {
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid host port %d", protoPort.HostPort))
-			}
-
-			// Extra ports ride plain tcp or udp only
-			protocol := protoPort.Protocol
-			switch protocol {
-			case v1.ModuleProtocol_MODULE_PROTOCOL_UNSPECIFIED:
-				protocol = v1.ModuleProtocol_MODULE_PROTOCOL_TCP
-			case v1.ModuleProtocol_MODULE_PROTOCOL_TCP, v1.ModuleProtocol_MODULE_PROTOCOL_UDP:
-			default:
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid protocol %s", protometa.Name(protocol)))
-			}
-
-			// Check for duplicate ports
-			portKey := fmt.Sprintf("%d/%s", protoPort.HostPort, protometa.Name(protocol))
-			if usedPorts[portKey] {
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("duplicate host port %d/%s", protoPort.HostPort, protocol))
-			}
-			usedPorts[portKey] = true
-
-			// Check if port conflicts
-			if protoPort.HostPort == server.Port {
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("additional port %d conflicts with main server port", protoPort.HostPort))
-			}
-			if s.config.Proxy.Enabled && slices.Contains(s.config.Proxy.ListenPorts, int(protoPort.HostPort)) {
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("port %d is already in use by the proxy server", protoPort.HostPort))
-			}
-
-			additionalPorts = append(additionalPorts, &v1.AdditionalPort{
-				ContainerPort: protoPort.ContainerPort,
-				HostPort:      protoPort.HostPort,
-				Protocol:      protocol,
-				Name:          protoPort.Name,
-			})
+		additionalPorts, err := normalizeAdditionalPorts(msg.AdditionalPorts, s.proxy.Enabled())
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
-
 		server.AdditionalPorts = additionalPorts
 		needsRecreation = true
 	}
@@ -725,14 +663,44 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 		}
 	}
 
+	// Registry checkout guards the merged network state until persist
+	proxyOn := s.proxy.Enabled()
+	var netReqs []proxy.NetRequest
+	if server.ProxyHostname != "" {
+		netReqs = proxy.PortNetRequests(server.AdditionalPorts, server.ProxyHostname, proxyOn)
+		if listener, lerr := s.store.GetProxyListener(ctx, server.ProxyListenerId); lerr == nil && listener != nil {
+			netReqs = proxy.ServerProxiedNetRequests(server.ProxyHostname, int(listener.Port), server.AdditionalPorts, proxyOn)
+		}
+	} else {
+		netReqs = proxy.ServerDirectNetRequests(int(server.Port), server.AdditionalPorts, proxyOn)
+	}
+	if err := s.proxy.EnsureListenersFor(ctx, netReqs); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	netClaim, err := s.proxy.CheckoutNetwork(ctx, proxy.NetOwner{Kind: proxy.OwnerServer, ID: server.Id}, netReqs)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	defer netClaim.Release()
+
 	// Save server updates first
 	if err := s.store.UpdateServer(ctx, server); err != nil {
 		s.log.Error("Failed to update server: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update server"))
 	}
+	netClaim.Confirm()
+
+	// Reconcile keeps routes matching the saved shape
+	if err := s.proxy.SyncListeners(ctx); err != nil {
+		s.log.Error("Failed to sync routes after server update: %v", err)
+	}
 
 	if needsRecreation {
 		s.recreateAfterConfigChange(ctx, server)
+	}
+
+	if err := s.store.HydrateProxyPorts(ctx, server); err != nil {
+		s.log.Error("Failed to hydrate proxy port: %v", err)
 	}
 
 	return connect.NewResponse(&v1.UpdateServerResponse{
@@ -895,13 +863,6 @@ func (s *ServerService) DeleteServer(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
 	}
 
-	// Remove proxy route if configured
-	if s.proxy != nil && server.ProxyHostname != "" {
-		if err := s.proxy.RemoveServerRoute(server.Id); err != nil {
-			s.log.Error("Failed to remove proxy route: %v", err)
-		}
-	}
-
 	// Delete every module row with its container and token
 	if s.moduleManager != nil {
 		modules, err := s.store.ListServerModules(ctx, server.Id)
@@ -933,6 +894,13 @@ func (s *ServerService) DeleteServer(ctx context.Context, req *connect.Request[v
 	// Delete data directory
 	if err := os.RemoveAll(server.DataPath); err != nil {
 		s.log.Error("Failed to delete server data: %v", err)
+	}
+
+	// Reconcile drops the server's routes
+	if s.proxy != nil {
+		if err := s.proxy.SyncListeners(ctx); err != nil {
+			s.log.Error("Failed to sync routes after server delete: %v", err)
+		}
 	}
 
 	return connect.NewResponse(&v1.DeleteServerResponse{}), nil
@@ -1188,69 +1156,30 @@ func (s *ServerService) ClearServerLogs(ctx context.Context, req *connect.Reques
 
 // GetNextAvailablePort gets the next available port
 func (s *ServerService) GetNextAvailablePort(ctx context.Context, req *connect.Request[v1.GetNextAvailablePortRequest]) (*connect.Response[v1.GetNextAvailablePortResponse], error) {
-	// Get all servers
-	servers, err := s.store.ListServers(ctx)
+	// Registry scan keeps the candidate and rcon shadow free
+	nextPort, err := s.proxy.FindFreePort(ctx, proxy.FreePortOpts{
+		Protocol:   v1.ModuleProtocol_MODULE_PROTOCOL_TCP,
+		Start:      s.config.Proxy.PortRangeMin,
+		End:        65535,
+		RconShadow: true,
+	})
 	if err != nil {
-		s.log.Error("Failed to list servers: %v", err)
+		return nil, connect.NewError(connect.CodeResourceExhausted, err)
+	}
+
+	// Registry snapshot backs the client side hints
+	used, err := s.proxy.UsedNetworkPorts(ctx)
+	if err != nil {
+		s.log.Error("Failed to snapshot used ports: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get available port"))
 	}
-
-	modules, err := s.store.ListModules(ctx)
-	if err != nil {
-		s.log.Error("Failed to list modules: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get available port"))
-	}
-
-	// Maps used ports including RCON shadow bindings
-	usedPortsMap := make(map[int32]bool)
-	for _, server := range servers {
-		if server.ProxyHostname == "" && server.Port > 0 {
-			usedPortsMap[int32(server.Port)] = true
-			usedPortsMap[int32(server.Port+docker.RCONPortOffset)] = true
-		}
-		for _, ap := range server.AdditionalPorts {
-			if ap.GetHostPort() > 0 {
-				usedPortsMap[ap.GetHostPort()] = true
-			}
-		}
-	}
-
-	// Module host ports bind directly on the host
-	for _, mod := range modules {
-		for _, p := range mod.Ports {
-			if p != nil && p.HostPort > 0 {
-				usedPortsMap[p.HostPort] = true
-			}
-		}
-	}
-
-	// Marks proxy listen ports used when proxy enabled
-	if s.config.Proxy.Enabled {
-		for _, port := range s.config.Proxy.ListenPorts {
-			usedPortsMap[int32(port)] = true
-		}
-	}
-
-	// Candidate must keep its own RCON shadow free too
-	var nextPort int32 = 25565
-	for usedPortsMap[nextPort] || usedPortsMap[nextPort+docker.RCONPortOffset] {
-		nextPort++
-		// Safety check to avoid infinite loop
-		if nextPort > 65535 {
-			return nil, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("no available ports"))
-		}
-	}
-
-	// Convert map to proto UsedPort array
-	usedPorts := make([]*v1.UsedPort, 0, len(usedPortsMap))
-	for port := range usedPortsMap {
-		usedPorts = append(usedPorts, &v1.UsedPort{
-			Port: port,
-		})
+	usedPorts := make([]*v1.UsedPort, 0, len(used))
+	for _, port := range used {
+		usedPorts = append(usedPorts, &v1.UsedPort{Port: port})
 	}
 
 	return connect.NewResponse(&v1.GetNextAvailablePortResponse{
-		Port:      nextPort,
+		Port:      int32(nextPort),
 		UsedPorts: usedPorts,
 	}), nil
 }

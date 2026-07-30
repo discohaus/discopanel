@@ -3,10 +3,10 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { EmptyState, ConfirmDialog } from '$lib/components/app';
-	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
+	import { rpcClient, rpcErrorMessage, silentCallOptions } from '$lib/api/rpc-client';
 	import { toast } from 'svelte-sonner';
-	import type { Module } from '$lib/proto/discopanel/v1/storage_pb';
-	import { ModuleStatus } from '$lib/proto/discopanel/v1/storage_pb';
+	import type { Module, ModuleTemplate } from '$lib/proto/discopanel/v1/storage_pb';
+	import { ModuleStatus, ModuleTemplateType } from '$lib/proto/discopanel/v1/storage_pb';
 	import { TONE_BADGE, TONE_BG } from '$lib/server-status';
 	import { moduleStatusMeta } from '$lib/module-status';
 	import { cn } from '$lib/utils';
@@ -36,6 +36,7 @@
 	let { active = true }: Props = $props();
 
 	let modules = $state<Module[]>([]);
+	let templates = $state<ModuleTemplate[]>([]);
 	let loading = $state(true);
 	let actionLoading = $state<string | null>(null);
 	let aliasValues = $state<Record<string, Record<string, string>>>({});
@@ -57,6 +58,12 @@
 		[...modules].sort((a, b) => Number(Boolean(a.serverId)) - Number(Boolean(b.serverId)))
 	);
 
+	// Builtin globals only toggle, never delete
+	let templateTypes = $derived(new Map(templates.map((t) => [t.id, t.type])));
+	function isBuiltinGlobal(module: Module): boolean {
+		return !module.serverId && templateTypes.get(module.templateId) === ModuleTemplateType.BUILTIN;
+	}
+
 	let hasLoaded = $state(false);
 	let pageVisible = $state(true);
 
@@ -69,8 +76,18 @@
 		if (active && !hasLoaded) {
 			hasLoaded = true;
 			loadModules();
+			loadTemplates();
 		}
 	});
+
+	async function loadTemplates() {
+		try {
+			const response = await rpcClient.module.listModuleTemplates({}, silentCallOptions);
+			templates = response.templates;
+		} catch {
+			templates = [];
+		}
+	}
 
 	// Polls while tab active and page visible
 	$effect(() => {
@@ -188,9 +205,7 @@
 			toast.success(`Module "${module.name}" deleted`);
 			await loadModules(true);
 		} catch (error) {
-			toast.error(
-				`Failed to delete module: ${error instanceof Error ? error.message : 'Unknown error'}`
-			);
+			toast.error(rpcErrorMessage(error, 'Failed to delete module'));
 		} finally {
 			actionLoading = null;
 		}
@@ -386,16 +401,18 @@
 							>
 								<Settings class="size-3.5" />
 							</Button>
-							<Button
-								size="icon"
-								variant="ghost"
-								class="size-7 text-status-danger hover:bg-status-danger/10 hover:text-status-danger"
-								onclick={() => requestDelete(module)}
-								disabled={busy}
-								title="Delete module"
-							>
-								<Trash2 class="size-3.5" />
-							</Button>
+							{#if !isBuiltinGlobal(module)}
+								<Button
+									size="icon"
+									variant="ghost"
+									class="size-7 text-status-danger hover:bg-status-danger/10 hover:text-status-danger"
+									onclick={() => requestDelete(module)}
+									disabled={busy}
+									title="Delete module"
+								>
+									<Trash2 class="size-3.5" />
+								</Button>
+							{/if}
 						</div>
 					</div>
 				</div>

@@ -107,6 +107,21 @@ func (m *Manager) seedDoctorModule() {
 	}
 
 	if doctor == nil {
+		ports := doctorPorts(m.config)
+		// Registry moves the doctor off a taken default port
+		if m.proxyManager != nil && len(ports) > 0 {
+			owner := proxy.NetOwner{Kind: proxy.OwnerModule, ID: "builtin-doctor-instance"}
+			probe := &v1.Module{Id: owner.ID, Ports: ports}
+			if err := m.proxyManager.ValidateNetwork(ctx, owner, m.proxyManager.ModuleNetRequests(probe, "")); err != nil {
+				free, ferr := m.AllocateModulePortExcluding(ctx, ports[0].Protocol, nil)
+				if ferr != nil {
+					m.logger.Error("Doctor seed: no free port for doctor: %v", ferr)
+					return
+				}
+				ports[0].HostPort = int32(free)
+			}
+		}
+
 		// Bootstrapped builtins have no owner, supermodule token instead
 		doctor = &v1.Module{
 			Id:                    "builtin-doctor-instance",
@@ -116,7 +131,7 @@ func (m *Manager) seedDoctorModule() {
 			AutoStart:             true,
 			FollowServerLifecycle: false,
 			Memory:                512,
-			Ports:                 doctorPorts(m.config),
+			Ports:                 ports,
 			EnvOverrides:          doctorEnv(),
 			VolumeOverrides:       doctorVolumes(),
 			AccessUrls:            doctorAccessURLs(),
@@ -188,7 +203,7 @@ func (m *Manager) CreateAndStartModule(ctx context.Context, moduleID string, sta
 	// Global modules run without a server attachment
 	var server *v1.Server
 	if module.ServerId != "" {
-		server, err = m.store.GetServer(ctx, module.ServerId)
+		server, err = m.loadServer(ctx, module.ServerId)
 		if err != nil {
 			return fmt.Errorf("failed to get server: %w", err)
 		}
@@ -276,6 +291,18 @@ func (m *Manager) moduleTokenMissing(ctx context.Context, module *v1.Module) boo
 	return err != nil
 }
 
+// Loads a server with transient proxy port filled
+func (m *Manager) loadServer(ctx context.Context, serverID string) (*v1.Server, error) {
+	server, err := m.store.GetServer(ctx, serverID)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.store.HydrateProxyPorts(ctx, server); err != nil {
+		return nil, err
+	}
+	return server, nil
+}
+
 // Sibling modules by name for inter-module alias references
 func (m *Manager) siblingModules(ctx context.Context, module *v1.Module) map[string]*v1.Module {
 	siblings := make(map[string]*v1.Module)
@@ -299,7 +326,7 @@ func (m *Manager) GateModuleConfig(ctx context.Context, module *v1.Module, templ
 	aliasCtx.Config = m.config
 	aliasCtx.Module = module
 	if module.ServerId != "" {
-		if server, err := m.store.GetServer(ctx, module.ServerId); err == nil {
+		if server, err := m.loadServer(ctx, module.ServerId); err == nil {
 			aliasCtx.Server = server
 			if props, err := m.store.GetServerProperties(ctx, module.ServerId); err == nil {
 				aliasCtx.ServerProperties = props
@@ -327,7 +354,7 @@ func (m *Manager) NeedsRecreate(ctx context.Context, moduleID string) (bool, err
 	var server *v1.Server
 	var serverConfig *v1.ServerProperties
 	if module.ServerId != "" {
-		server, err = m.store.GetServer(ctx, module.ServerId)
+		server, err = m.loadServer(ctx, module.ServerId)
 		if err != nil {
 			return false, err
 		}
@@ -421,15 +448,10 @@ func (m *Manager) StartModule(ctx context.Context, moduleID string) error {
 		return fmt.Errorf("failed to update module status: %w", err)
 	}
 
-	// Update proxy route if enabled (handles primary and additional ports)
+	// Reconcile registers the module's routes
 	if m.proxyManager != nil {
-		// Global modules route without a server hostname
-		var server *v1.Server
-		if module.ServerId != "" {
-			server, _ = m.store.GetServer(ctx, module.ServerId)
-		}
-		if err := m.proxyManager.AddModuleRoute(module, server); err != nil {
-			m.logger.Error("Failed to add proxy route for module %s: %v", module.Name, err)
+		if err := m.proxyManager.SyncListeners(ctx); err != nil {
+			m.logger.Error("Failed to sync routes after starting %s: %v", module.Name, err)
 		}
 	}
 
@@ -657,22 +679,6 @@ func (m *Manager) StopModule(ctx context.Context, moduleID string) error {
 		return fmt.Errorf("failed to update module status: %w", err)
 	}
 
-	// Remove proxy routes if any ports have proxy enabled
-	if m.proxyManager != nil {
-		hasProxyPort := false
-		for _, port := range module.Ports {
-			if port != nil && port.ProxyEnabled {
-				hasProxyPort = true
-				break
-			}
-		}
-		if hasProxyPort {
-			if err := m.proxyManager.RemoveModuleRoute(moduleID); err != nil {
-				m.logger.Error("Failed to remove proxy route for module %s: %v", module.Name, err)
-			}
-		}
-	}
-
 	// Stop the container
 	if _, err := m.docker.StopContainer(ctx, module.ContainerId, 30); err != nil {
 		m.logger.Error("Failed to stop module container: %v", err)
@@ -682,6 +688,13 @@ func (m *Manager) StopModule(ctx context.Context, moduleID string) error {
 	module.Status = v1.ModuleStatus_MODULE_STATUS_STOPPED
 	if err := m.store.UpdateModule(ctx, module); err != nil {
 		return fmt.Errorf("failed to update module status: %w", err)
+	}
+
+	// Reconcile drops the module's routes
+	if m.proxyManager != nil {
+		if err := m.proxyManager.SyncListeners(ctx); err != nil {
+			m.logger.Error("Failed to sync routes after stopping %s: %v", module.Name, err)
+		}
 	}
 
 	m.logger.Info("Stopped module: %s", module.Name)
@@ -739,6 +752,12 @@ func (m *Manager) DeleteModule(ctx context.Context, moduleID string) error {
 		return fmt.Errorf("failed to get module: %w", err)
 	}
 
+	// System modules only ever disable, never delete
+	if template, terr := m.store.GetModuleTemplate(ctx, module.TemplateId); terr == nil &&
+		template.Type == v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_BUILTIN && module.ServerId == "" {
+		return fmt.Errorf("system module %s can only be disabled", module.Name)
+	}
+
 	// Stop if running
 	if module.Status == v1.ModuleStatus_MODULE_STATUS_RUNNING {
 		if err := m.StopModule(ctx, moduleID); err != nil {
@@ -763,6 +782,13 @@ func (m *Manager) DeleteModule(ctx context.Context, moduleID string) error {
 	// Delete from database
 	if err := m.store.DeleteModule(ctx, moduleID); err != nil {
 		return fmt.Errorf("failed to delete module from database: %w", err)
+	}
+
+	// Reconcile drops routes now that the row is gone
+	if m.proxyManager != nil {
+		if err := m.proxyManager.SyncListeners(ctx); err != nil {
+			m.logger.Error("Failed to sync routes after deleting %s: %v", module.Name, err)
+		}
 	}
 
 	m.logger.Info("Deleted module: %s", module.Name)
@@ -808,57 +834,17 @@ func (m *Manager) StatusForModule(ctx context.Context, module *v1.Module) (v1.Mo
 
 // Finds an available port for a module
 func (m *Manager) AllocateModulePort(ctx context.Context) (int, error) {
-	return m.AllocateModulePortExcluding(ctx, nil)
+	return m.AllocateModulePortExcluding(ctx, v1.ModuleProtocol_MODULE_PROTOCOL_TCP, nil)
 }
 
-// Finds an available port, excluding given ports
-func (m *Manager) AllocateModulePortExcluding(ctx context.Context, exclude map[int]bool) (int, error) {
-	modules, err := m.store.ListModules(ctx)
-	if err != nil {
-		return 0, err
-	}
-
-	usedPorts := make(map[int]bool)
-	for _, module := range modules {
-		for _, port := range module.Ports {
-			if port != nil && port.HostPort > 0 {
-				usedPorts[int(port.HostPort)] = true
-			}
-		}
-	}
-
-	// Also exclude ports passed in (allocated in same request)
-	for port := range exclude {
-		usedPorts[port] = true
-	}
-
-	// Find an available port in the configured range
-	for port := m.config.Module.PortRangeMin; port <= m.config.Module.PortRangeMax; port++ {
-		if !usedPorts[port] {
-			return port, nil
-		}
-	}
-
-	return 0, fmt.Errorf("no available module ports in range %d-%d", m.config.Module.PortRangeMin, m.config.Module.PortRangeMax)
-}
-
-// Returns all ports currently in use by modules
-func (m *Manager) GetUsedModulePorts(ctx context.Context) ([]int, error) {
-	modules, err := m.store.ListModules(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	ports := make([]int, 0)
-	for _, module := range modules {
-		for _, port := range module.Ports {
-			if port != nil && port.HostPort > 0 {
-				ports = append(ports, int(port.HostPort))
-			}
-		}
-	}
-
-	return ports, nil
+// Registry scan across the configured module port range
+func (m *Manager) AllocateModulePortExcluding(ctx context.Context, protocol v1.ModuleProtocol, exclude map[int]bool) (int, error) {
+	return m.proxyManager.FindFreePort(ctx, proxy.FreePortOpts{
+		Protocol: protocol,
+		Start:    m.config.Module.PortRangeMin,
+		End:      m.config.Module.PortRangeMax,
+		Exclude:  exclude,
+	})
 }
 
 // Reports whether manager is running

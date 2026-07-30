@@ -5,7 +5,7 @@
 	import DefaultProperties from '$lib/components/default-properties.svelte';
 	import UserSettings from '$lib/components/user-settings.svelte';
 	import RoleSettings from '$lib/components/role-settings.svelte';
-	import RoutingSettings from '$lib/components/routing-settings.svelte';
+	import NetworkTopology from '$lib/components/network/network-topology.svelte';
 	import AuthSettings from '$lib/components/auth-settings.svelte';
 	import SupportSettings from '$lib/components/support-settings.svelte';
 	import LogsSettings from '$lib/components/logs-settings.svelte';
@@ -31,9 +31,9 @@
 			desc: 'Default properties applied to newly created servers'
 		},
 		{
-			key: 'routing',
-			label: 'Routing',
-			desc: 'Proxy, listeners, and hostname routes for player connections'
+			key: 'network',
+			label: 'Network',
+			desc: 'Live map of listeners, routes, and everything they reach'
 		},
 		{ key: 'auth', label: 'Auth', desc: 'Login methods, registration, and single sign-on' },
 		{ key: 'logs', label: 'Logs', desc: 'Live DiscoPanel application logs' },
@@ -64,7 +64,9 @@
 	);
 
 	let activeTab = $derived.by(() => {
-		const requested = page.url.searchParams.get('tab');
+		// Old routing bookmarks land on the network tab
+		const raw = page.url.searchParams.get('tab');
+		const requested = raw === 'routing' ? 'network' : raw;
 		if (requested && visibleTabs.some((t) => t.key === requested)) return requested;
 		return defaultTab;
 	});
@@ -144,7 +146,9 @@
 		{/snippet}
 	</TabRail>
 
-	{#if showSettings && (activeTab === 'server-defaults' || activeTab === 'logs')}
+	{#if showSettings && activeTab === 'network'}
+		<NetworkTopology />
+	{:else if showSettings && (activeTab === 'server-defaults' || activeTab === 'logs')}
 		<div class="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col p-4 sm:p-6 2xl:max-w-7xl">
 			{#if activeTab === 'server-defaults'}
 				{#if loading}
@@ -163,9 +167,7 @@
 		<div bind:this={tabPane} class="min-h-0 flex-1 overflow-y-auto">
 			<div class="mx-auto w-full max-w-6xl p-4 sm:p-6 2xl:max-w-7xl">
 				{#if visibleTabs.length > 0}
-					{#if activeTab === 'routing' && showSettings}
-						<RoutingSettings />
-					{:else if activeTab === 'auth' && showSettings}
+					{#if activeTab === 'auth' && showSettings}
 						<AuthSettings />
 					{:else if activeTab === 'support' && showSettings}
 						<SupportSettings />

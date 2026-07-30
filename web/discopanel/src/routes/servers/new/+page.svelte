@@ -46,7 +46,7 @@
 	import DockerOverridesEditor from '$lib/components/docker-overrides-editor.svelte';
 	import MemorySlider from '$lib/components/memory-slider.svelte';
 	import { getUniqueDockerImages, getDockerImageDisplayName } from '$lib/utils';
-	import { composeHostname } from '$lib/hostname';
+	import { composeHostname, playerAddress } from '$lib/hostname';
 	import { uploadFile } from '$lib/utils/chunked-upload';
 
 	let loading = $state(false);
@@ -141,7 +141,7 @@
 
 			if (proxyStatus.status === 'fulfilled') {
 				proxyEnabled = proxyStatus.value.enabled;
-				proxyBaseURL = proxyStatus.value.baseUrl || '';
+				proxyBaseURL = proxyStatus.value.effectiveBaseUrl || '';
 			} else {
 				console.error('Failed to load proxy status:', proxyStatus.reason);
 			}
@@ -337,10 +337,9 @@
 			const full =
 				composeHostname(formData.proxyHostname, proxyBaseURL, formData.useBaseUrl) ||
 				'your-hostname';
-			const listenPort = selectedListener?.port ?? 25565;
-			return listenPort === 25565 ? full : `${full}:${listenPort}`;
+			return playerAddress(full, selectedListener?.port);
 		}
-		return `localhost:${formData.port}`;
+		return `${proxyBaseURL || 'localhost'}:${formData.port}`;
 	});
 
 	let hostnameMissing = $derived(
@@ -954,6 +953,12 @@
 							bind:ports={formData.additionalPorts}
 							disabled={loading}
 							{usedPorts}
+							proxyAvailable={proxyEnabled && useProxyMode}
+							serverHostname={composeHostname(
+								formData.proxyHostname,
+								proxyBaseURL,
+								formData.useBaseUrl
+							)}
 							onchange={(ports) => (formData.additionalPorts = ports)}
 						/>
 

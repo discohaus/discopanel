@@ -94,11 +94,10 @@ module:
 # Proxy configuration - ENABLE THIS FOR MINECRAFT ROUTING
 proxy:
   enabled: true
-  base_url: "mc.example.com" # Your domain for Minecraft servers
+  base_url: "" # Custom domain, empty derives an instant sslip.io domain
+  public_ip: "" # Overrides the address detection for instant domains
   listen_port: 25565 # Primary port to listen on (can also use 443)
-  listen_ports: [25565] # Multiple ports to listen on (listen_port will be added if not present)
   port_range_min: 25565
-  port_range_max: 25665
 
 # Example usage:
 # With proxy enabled and base_url set to "mc.example.com":

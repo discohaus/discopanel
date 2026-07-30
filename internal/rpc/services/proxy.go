@@ -2,14 +2,17 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"slices"
+	"strconv"
 	"strings"
 
 	"connectrpc.com/connect"
+	"github.com/google/uuid"
 	storage "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/docker"
 	"github.com/discohaus/discopanel/internal/metrics"
+	"github.com/discohaus/discopanel/internal/module"
 	"github.com/discohaus/discopanel/internal/proxy"
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/logger"
@@ -22,23 +25,25 @@ var _ discopanelv1connect.ProxyServiceHandler = (*ProxyService)(nil)
 
 // Implements the Proxy service
 type ProxyService struct {
-	store        *storage.Store
-	docker       *docker.Client
-	proxyManager *proxy.Manager
-	config       *config.Config
-	rec          *metrics.Recorder
-	log          *logger.Logger
+	store         *storage.Store
+	docker        *docker.Client
+	proxyManager  *proxy.Manager
+	moduleManager *module.Manager
+	config        *config.Config
+	rec           *metrics.Recorder
+	log           *logger.Logger
 }
 
 // Creates a new proxy service
-func NewProxyService(store *storage.Store, dockerClient *docker.Client, proxyManager *proxy.Manager, cfg *config.Config, rec *metrics.Recorder, log *logger.Logger) *ProxyService {
+func NewProxyService(store *storage.Store, dockerClient *docker.Client, proxyManager *proxy.Manager, moduleManager *module.Manager, cfg *config.Config, rec *metrics.Recorder, log *logger.Logger) *ProxyService {
 	return &ProxyService{
-		store:        store,
-		docker:       dockerClient,
-		proxyManager: proxyManager,
-		config:       cfg,
-		rec:          rec,
-		log:          log,
+		store:         store,
+		docker:        dockerClient,
+		proxyManager:  proxyManager,
+		moduleManager: moduleManager,
+		config:        cfg,
+		rec:           rec,
+		log:           log,
 	}
 }
 
@@ -48,17 +53,28 @@ func (s *ProxyService) GetProxyRoutes(ctx context.Context, req *connect.Request[
 		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("proxy not enabled"))
 	}
 
-	routes := s.proxyManager.GetRoutes()
+	return connect.NewResponse(&v1.GetProxyRoutesResponse{
+		Routes: s.buildProxyRoutes(),
+	}), nil
+}
+
+// Live routes with stats merged and socket attribution
+func (s *ProxyService) buildProxyRoutes() []*v1.ProxyRoute {
+	entries := s.proxyManager.RouteEntries()
 	stats := s.proxyManager.GetRouteStats()
 
 	// Stats snapshots become the rows, route facts fill the rest
-	protoRoutes := make([]*v1.ProxyRoute, 0, len(routes))
-	for _, route := range routes {
+	protoRoutes := make([]*v1.ProxyRoute, 0, len(entries))
+	for _, entry := range entries {
+		route := entry.Route
 		pr := stats[route.ServerID]
 		if pr == nil {
 			pr = &v1.ProxyRoute{}
 		}
-		pr.ServerId = route.ServerID
+		pr.ServerId = ""
+		if route.OwnerKind == proxy.OwnerServer {
+			pr.ServerId = route.OwnerID
+		}
 		pr.Hostname = route.Hostname
 		pr.BackendHost = route.BackendHost
 		pr.BackendPort = int32(route.BackendPort)
@@ -67,12 +83,15 @@ func (s *ProxyService) GetProxyRoutes(ctx context.Context, req *connect.Request[
 		pr.Wakeable = route.Wakeable
 		pr.ProxyProtocol = route.ProxyProtocol
 		pr.PreserveHostname = route.PreserveHost
+		pr.ListenPort = int32(entry.Port)
+		pr.ListenerId = entry.ListenerID
+		pr.OwnerKind = proxy.OwnerKindProto(route.OwnerKind)
+		pr.OwnerId = route.OwnerID
+		pr.PortName = route.PortName
+		pr.Protocol = route.Protocol
 		protoRoutes = append(protoRoutes, pr)
 	}
-
-	return connect.NewResponse(&v1.GetProxyRoutesResponse{
-		Routes: protoRoutes,
-	}), nil
+	return protoRoutes
 }
 
 // Gets proxy status
@@ -82,8 +101,8 @@ func (s *ProxyService) GetProxyStatus(ctx context.Context, req *connect.Request[
 	if err != nil {
 		s.log.Error("Failed to load proxy configuration: %v", err)
 		proxyConfig = &v1.ProxyConfig{
-			Enabled: s.config.Proxy.Enabled,
-			BaseUrl: s.config.Proxy.BaseUrl,
+			Enabled: s.proxyManager.Enabled(),
+			BaseUrl: s.proxyManager.BaseURL(),
 		}
 	}
 
@@ -99,9 +118,15 @@ func (s *ProxyService) GetProxyStatus(ctx context.Context, req *connect.Request[
 		listenPorts[i] = l.Port
 	}
 
-	// Primary port
+	// Default listener carries the primary port
 	var primaryPort int32
-	if len(listenPorts) > 0 {
+	for _, l := range listeners {
+		if l.IsDefault {
+			primaryPort = l.Port
+			break
+		}
+	}
+	if primaryPort == 0 && len(listenPorts) > 0 {
 		primaryPort = listenPorts[0]
 	}
 
@@ -110,30 +135,44 @@ func (s *ProxyService) GetProxyStatus(ctx context.Context, req *connect.Request[
 	activeRoutes := int32(0)
 	if s.proxyManager != nil {
 		running = s.proxyManager.IsRunning()
-		routes := s.proxyManager.GetRoutes()
-		activeRoutes = int32(len(routes))
+		activeRoutes = int32(len(s.proxyManager.RouteEntries()))
 	}
 
+	effectiveBaseURL, baseURLSource := s.proxyManager.EffectiveBaseDomain()
+
 	return connect.NewResponse(&v1.GetProxyStatusResponse{
-		Enabled:      proxyConfig.Enabled,
-		BaseUrl:      proxyConfig.BaseUrl,
-		ListenPorts:  listenPorts,
-		Listeners:    listeners,
-		ListenPort:   primaryPort,
-		Running:      running,
-		ActiveRoutes: activeRoutes,
+		Enabled:          proxyConfig.Enabled,
+		BaseUrl:          proxyConfig.BaseUrl,
+		ListenPorts:      listenPorts,
+		Listeners:        listeners,
+		ListenPort:       primaryPort,
+		Running:          running,
+		ActiveRoutes:     activeRoutes,
+		EffectiveBaseUrl: effectiveBaseURL,
+		BaseUrlSource:    baseURLSource,
 	}), nil
 }
 
 // Updates proxy configuration
 func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Request[v1.UpdateProxyConfigRequest]) (*connect.Response[v1.GetProxyStatusResponse], error) {
 	msg := req.Msg
+	baseURL := proxy.NormalizeHostname(msg.BaseUrl)
+
+	// Disable converts proxied workloads to direct binds first
+	var recreateModules []string
+	if !msg.Enabled && s.proxyManager.Enabled() {
+		ids, err := s.convertForDisable(ctx, msg)
+		if err != nil {
+			return nil, err
+		}
+		recreateModules = ids
+	}
 
 	// Save to database
 	proxyConfig := &v1.ProxyConfig{
 		Id:      "default",
 		Enabled: msg.Enabled,
-		BaseUrl: msg.BaseUrl,
+		BaseUrl: baseURL,
 	}
 
 	if err := s.store.SaveProxyConfig(ctx, proxyConfig); err != nil {
@@ -141,35 +180,268 @@ func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save proxy configuration"))
 	}
 
-	// Update in-memory configuration
-	s.config.Proxy.Enabled = msg.Enabled
-	s.config.Proxy.BaseUrl = msg.BaseUrl
+	s.log.Info("Proxy configuration saved to database: enabled=%v, base_url=%v", msg.Enabled, baseURL)
 
-	s.log.Info("Proxy configuration saved to database: enabled=%v, base_url=%v", msg.Enabled, msg.BaseUrl)
-
-	// Starts or stops the manager to match enabled
+	// Manager owns runtime state and reconciles sockets
 	if s.proxyManager != nil {
-		if msg.Enabled {
-			if _, err := s.proxyManager.EnsureDefaultListener(); err != nil {
-				s.log.Error("Failed to ensure default listener: %v", err)
-			}
+		if err := s.proxyManager.ApplyConfig(ctx, msg.Enabled, baseURL); err != nil {
+			s.log.Error("Failed to apply proxy configuration: %v", err)
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to apply proxy configuration: %w", err))
+		}
+	}
 
-			if !s.proxyManager.IsRunning() {
-				if err := s.proxyManager.Start(); err != nil {
-					s.log.Error("Failed to start proxy manager: %v", err)
-					return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to start proxy: %w", err))
-				}
-			}
-		} else if s.proxyManager.IsRunning() {
-			if err := s.proxyManager.Stop(); err != nil {
-				s.log.Error("Failed to stop proxy manager: %v", err)
-				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to stop proxy: %w", err))
-			}
+	// Converted module ports rebind once sockets are gone
+	for _, id := range recreateModules {
+		if err := s.moduleManager.RecreateModule(ctx, id); err != nil {
+			s.log.Error("Failed to recreate module %s after convert: %v", id, err)
 		}
 	}
 
 	// Return updated status, callers read it like GetProxyStatus
 	return s.GetProxyStatus(ctx, connect.NewRequest(&v1.GetProxyStatusRequest{}))
+}
+
+// Preview what disabling the proxy converts
+func (s *ProxyService) GetProxyDisableImpact(ctx context.Context, req *connect.Request[v1.GetProxyDisableImpactRequest]) (*connect.Response[v1.GetProxyDisableImpactResponse], error) {
+	impact, err := s.computeDisableImpact(ctx, nil)
+	if err != nil {
+		var conflict *proxy.NetConflictError
+		if errors.As(err, &conflict) {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		s.log.Error("Failed to compute disable impact: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to compute disable impact"))
+	}
+	return connect.NewResponse(impact), nil
+}
+
+// Ports that stay busy once the proxy turns off
+func (s *ProxyService) postDisableBusy(ctx context.Context) (map[int]bool, map[int]bool, error) {
+	reservations, err := s.proxyManager.Reservations(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	listeners, err := s.store.ListProxyListeners(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Manual listener rows keep their ports across a disable
+	manualPorts := make(map[int32]bool)
+	for _, l := range listeners {
+		if !l.AutoCreated {
+			manualPorts[l.Port] = true
+		}
+	}
+
+	busyTCP := make(map[int]bool)
+	busyUDP := make(map[int]bool)
+	for _, r := range reservations {
+		pb := r.Proto()
+		switch pb.Kind {
+		case v1.NetworkReservationKind_NETWORK_RESERVATION_KIND_EXCLUSIVE:
+			if pb.Transport == v1.NetworkTransport_NETWORK_TRANSPORT_UDP {
+				busyUDP[int(pb.Port)] = true
+			} else {
+				busyTCP[int(pb.Port)] = true
+			}
+		case v1.NetworkReservationKind_NETWORK_RESERVATION_KIND_SOCKET:
+			if manualPorts[pb.Port] {
+				busyTCP[int(pb.Port)] = true
+			}
+		}
+	}
+	return busyTCP, busyUDP, nil
+}
+
+// Plans direct ports for everything the proxy serves
+func (s *ProxyService) computeDisableImpact(ctx context.Context, overrides map[string]int32) (*v1.GetProxyDisableImpactResponse, error) {
+	impact := &v1.GetProxyDisableImpactResponse{}
+	exclude := make(map[int]bool)
+
+	// Routed and relay claims vanish on disable, plan without them
+	busyTCP, busyUDP, err := s.postDisableBusy(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tcpFree := func(port int) bool {
+		return port > 0 && port <= 65535 && !busyTCP[port] && !exclude[port]
+	}
+
+	servers, err := s.store.ListServers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, server := range servers {
+		if server.ProxyHostname == "" {
+			continue
+		}
+		port := int(overrides[server.Id])
+		if port > 0 {
+			// User picks fail fast with a concrete reason
+			if !tcpFree(port) || !tcpFree(port+docker.RCONPortOffset) {
+				return nil, &proxy.NetConflictError{Port: port, Reason: fmt.Sprintf("port %d or its rcon shadow is not free after disable", port)}
+			}
+		} else {
+			for p := s.config.Proxy.PortRangeMin; ; p++ {
+				if p > 65535 {
+					return nil, &proxy.NetConflictError{Port: 0, Reason: "no free port for a converted server"}
+				}
+				if tcpFree(p) && tcpFree(p+docker.RCONPortOffset) {
+					port = p
+					break
+				}
+			}
+		}
+		exclude[port] = true
+		exclude[port+docker.RCONPortOffset] = true
+		impact.Servers = append(impact.Servers, &v1.ProxiedServerImpact{
+			ServerId:     server.Id,
+			Hostname:     server.ProxyHostname,
+			ProposedPort: int32(port),
+		})
+	}
+
+	modules, err := s.store.ListModules(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, mod := range modules {
+		for _, port := range mod.Ports {
+			if port == nil || !port.ProxyEnabled || port.HostPort <= 0 {
+				continue
+			}
+			busy := busyTCP
+			if storage.TransportOf(port.Protocol) == v1.NetworkTransport_NETWORK_TRANSPORT_UDP {
+				busy = busyUDP
+			}
+			proposed := int(port.HostPort)
+			// Ports keep their number when it stays free
+			if busy[proposed] || exclude[proposed] {
+				found := 0
+				for p := s.config.Module.PortRangeMin; p <= s.config.Module.PortRangeMax; p++ {
+					if !busy[p] && !exclude[p] {
+						found = p
+						break
+					}
+				}
+				if found == 0 {
+					return nil, &proxy.NetConflictError{Port: proposed, Reason: fmt.Sprintf("no free port for module port %s", port.Name)}
+				}
+				proposed = found
+			}
+			exclude[proposed] = true
+			impact.ModulePorts = append(impact.ModulePorts, &v1.ProxiedModulePortImpact{
+				ModuleId:         mod.Id,
+				PortName:         port.Name,
+				CurrentHostPort:  port.HostPort,
+				ProposedHostPort: int32(proposed),
+			})
+		}
+	}
+
+	return impact, nil
+}
+
+// Converts proxied servers and module ports to direct binds
+func (s *ProxyService) convertForDisable(ctx context.Context, msg *v1.UpdateProxyConfigRequest) ([]string, error) {
+	overrides := make(map[string]int32, len(msg.Assignments))
+	for _, a := range msg.Assignments {
+		if a != nil {
+			overrides[a.ServerId] = a.ProposedPort
+		}
+	}
+
+	impact, err := s.computeDisableImpact(ctx, overrides)
+	if err != nil {
+		var conflict *proxy.NetConflictError
+		if errors.As(err, &conflict) {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		s.log.Error("Failed to compute disable impact: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to compute disable impact"))
+	}
+	if len(impact.Servers) == 0 && len(impact.ModulePorts) == 0 {
+		return nil, nil
+	}
+	if !msg.ConvertToDirect {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("%d proxied servers and %d proxied module ports need direct ports first", len(impact.Servers), len(impact.ModulePorts)))
+	}
+
+	// Servers convert one at a time with container recreates
+	for _, sv := range impact.Servers {
+		server, err := s.store.GetServer(ctx, sv.ServerId)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("server %s not found", sv.ServerId))
+		}
+		if err := s.applyServerRouting(ctx, server, "", "", sv.ProposedPort); err != nil {
+			return nil, err
+		}
+	}
+
+	// Module rows flip to direct binds on their landing ports
+	portsByModule := make(map[string]map[string]int32)
+	for _, mp := range impact.ModulePorts {
+		if portsByModule[mp.ModuleId] == nil {
+			portsByModule[mp.ModuleId] = make(map[string]int32)
+		}
+		portsByModule[mp.ModuleId][mp.PortName] = mp.ProposedHostPort
+	}
+	var recreate []string
+	for moduleID, landing := range portsByModule {
+		module, err := s.store.GetModule(ctx, moduleID)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("module %s not found", moduleID))
+		}
+		for _, port := range module.Ports {
+			if port == nil || !port.ProxyEnabled {
+				continue
+			}
+			if proposed, ok := landing[port.Name]; ok {
+				port.HostPort = proposed
+			}
+			port.ProxyEnabled = false
+		}
+
+		claim, err := s.proxyManager.CheckoutNetwork(ctx,
+			proxy.NetOwner{Kind: proxy.OwnerModule, ID: module.Id},
+			s.proxyManager.ModuleNetRequests(module, ""))
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+
+		if err := s.store.UpdateModule(ctx, module); err != nil {
+			claim.Release()
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update module %s", module.Name))
+		}
+		claim.Confirm()
+
+		if module.ContainerId != "" {
+			recreate = append(recreate, module.Id)
+		}
+	}
+
+	// Auto listener rows retire with their routed demand
+	if listeners, lerr := s.store.ListProxyListeners(ctx); lerr == nil {
+		referenced := make(map[string]bool)
+		if servers, serr := s.store.ListServers(ctx); serr == nil {
+			for _, server := range servers {
+				if server.ProxyListenerId != "" {
+					referenced[server.ProxyListenerId] = true
+				}
+			}
+		}
+		for _, l := range listeners {
+			if l.AutoCreated && !l.IsDefault && !referenced[l.Id] {
+				if err := s.store.DeleteProxyListener(ctx, l.Id); err != nil {
+					s.log.Error("Failed to retire auto listener on port %d: %v", l.Port, err)
+				}
+			}
+		}
+	}
+
+	return recreate, nil
 }
 
 // Gets proxy listeners
@@ -183,7 +455,7 @@ func (s *ProxyService) GetProxyListeners(ctx context.Context, req *connect.Reque
 	// Get all servers to count usage
 	servers, _ := s.store.ListServers(ctx)
 
-	// Convert to proto format with server count
+	// Convert to proto format with usage counts
 	protoListeners := make([]*v1.ProxyListenerWithCount, len(listeners))
 	for i, listener := range listeners {
 		// Count servers using this listener
@@ -195,8 +467,9 @@ func (s *ProxyService) GetProxyListeners(ctx context.Context, req *connect.Reque
 		}
 
 		protoListeners[i] = &v1.ProxyListenerWithCount{
-			Listener:    listener,
-			ServerCount: count,
+			Listener:      listener,
+			ServerCount:   count,
+			WorkloadCount: int32(s.listenerDemand(ctx, listener.Port)),
 		}
 	}
 
@@ -209,26 +482,23 @@ func (s *ProxyService) GetProxyListeners(ctx context.Context, req *connect.Reque
 func (s *ProxyService) CreateProxyListener(ctx context.Context, req *connect.Request[v1.CreateProxyListenerRequest]) (*connect.Response[v1.CreateProxyListenerResponse], error) {
 	msg := req.Msg
 
-	// Validate port
-	if msg.Port < 1 || msg.Port > 65535 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid port number"))
-	}
+	// Concurrent creates must see each other, so id comes first
+	listenerID := uuid.New().String()
 
-	// Check if port is already in use
-	existing, _ := s.store.GetProxyListenerByPort(ctx, int(msg.Port))
-	if existing != nil {
-		return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("port already in use by another listener"))
+	// Registry checkout guards the socket until the row persists
+	netClaim, err := s.proxyManager.CheckoutNetwork(ctx, proxy.NetOwner{Kind: proxy.OwnerListener, ID: listenerID},
+		[]proxy.NetRequest{{
+			Port:   int(msg.Port),
+			Socket: true,
+			Detail: msg.Name,
+		}})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeAlreadyExists, err)
 	}
-
-	// Check if port is used by a non-proxied server
-	servers, _ := s.store.ListServers(ctx)
-	for _, server := range servers {
-		if server.ProxyHostname == "" && server.Port == msg.Port {
-			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("port already in use by a non-proxied server"))
-		}
-	}
+	defer netClaim.Release()
 
 	listener := &v1.ProxyListener{
+		Id:          listenerID,
 		Name:        msg.Name,
 		Description: msg.Description,
 		Port:        msg.Port,
@@ -240,16 +510,46 @@ func (s *ProxyService) CreateProxyListener(ctx context.Context, req *connect.Req
 		s.log.Error("Failed to create proxy listener: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create proxy listener"))
 	}
+	netClaim.Confirm()
 
-	// Add the listener to the proxy manager if it's running
-	if s.proxyManager != nil {
-		if err := s.proxyManager.AddListener(listener); err != nil {
-			s.log.Error("Failed to add listener to proxy manager: %v", err)
-			// Non-critical, proxy restart picks it up later
+	// A new default demotes every other default
+	if listener.IsDefault {
+		if listeners, lerr := s.store.ListProxyListeners(ctx); lerr == nil {
+			for _, l := range listeners {
+				if l.Id != listener.Id && l.IsDefault {
+					l.IsDefault = false
+					s.store.UpdateProxyListener(ctx, l)
+				}
+			}
 		}
 	}
 
+	// Reconcile starts the socket when the proxy is on
+	if err := s.proxyManager.SyncListeners(ctx); err != nil {
+		s.log.Error("Failed to sync listeners: %v", err)
+	}
+
 	return connect.NewResponse(&v1.CreateProxyListenerResponse{Listener: listener}), nil
+}
+
+// Routed and relay reservations riding a listener port
+func (s *ProxyService) listenerDemand(ctx context.Context, port int32) int {
+	reservations, err := s.proxyManager.Reservations(ctx)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, r := range reservations {
+		pb := r.Proto()
+		if pb.Port != port {
+			continue
+		}
+		if pb.Kind == v1.NetworkReservationKind_NETWORK_RESERVATION_KIND_ROUTED ||
+			pb.Kind == v1.NetworkReservationKind_NETWORK_RESERVATION_KIND_RELAY {
+			count++
+		}
+	}
+	return count
 }
 
 // Updates a proxy listener
@@ -259,6 +559,37 @@ func (s *ProxyService) UpdateProxyListener(ctx context.Context, req *connect.Req
 	listener, err := s.store.GetProxyListener(ctx, msg.Id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("listener not found"))
+	}
+
+	// Ports pin at creation, routed workloads name them
+	if msg.Port != 0 && msg.Port != listener.Port {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("listener ports cannot change, create a new listener instead"))
+	}
+
+	// The sole default stays default until another takes over
+	if listener.IsDefault && !msg.IsDefault {
+		hasOther := false
+		if listeners, lerr := s.store.ListProxyListeners(ctx); lerr == nil {
+			for _, l := range listeners {
+				if l.Id != listener.Id && l.IsDefault {
+					hasOther = true
+					break
+				}
+			}
+		}
+		if !hasOther {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("make another listener the default first"))
+		}
+	}
+
+	// Disable needs the routed workloads moved first
+	if listener.Enabled && !msg.Enabled {
+		if demand := s.listenerDemand(ctx, listener.Port); demand > 0 {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("%d routed workloads use port %d, move them first", demand, listener.Port))
+		}
 	}
 
 	// Update fields
@@ -278,33 +609,14 @@ func (s *ProxyService) UpdateProxyListener(ctx context.Context, req *connect.Req
 		}
 	}
 
-	oldPort := listener.Port
-	if msg.Port != 0 && msg.Port != int32(oldPort) {
-		listener.Port = msg.Port // Update port if provided and different
-	}
-
 	if err := s.store.UpdateProxyListener(ctx, listener); err != nil {
 		s.log.Error("Failed to update proxy listener: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update proxy listener"))
 	}
 
-	// Handle proxy manager updates if running
-	if s.proxyManager != nil {
-		// If port changed, remove old and add new
-		if oldPort != listener.Port {
-			s.proxyManager.RemoveListener(int(oldPort))
-			if listener.Enabled {
-				if err := s.proxyManager.AddListener(listener); err != nil {
-					s.log.Error("Failed to add updated listener to proxy manager: %v", err)
-				}
-			}
-		} else if !listener.Enabled {
-			// If disabled, remove it
-			s.proxyManager.RemoveListener(int(listener.Port))
-		} else if listener.Enabled {
-			// Re-adds listener if enabled and port unchanged
-			s.proxyManager.AddListener(listener)
-		}
+	// Reconcile moves sockets and keeps routes registered
+	if err := s.proxyManager.SyncListeners(ctx); err != nil {
+		s.log.Error("Failed to sync listeners: %v", err)
 	}
 
 	return connect.NewResponse(&v1.UpdateProxyListenerResponse{Listener: listener}), nil
@@ -312,14 +624,26 @@ func (s *ProxyService) UpdateProxyListener(ctx context.Context, req *connect.Req
 
 // Deletes a proxy listener
 func (s *ProxyService) DeleteProxyListener(ctx context.Context, req *connect.Request[v1.DeleteProxyListenerRequest]) (*connect.Response[v1.DeleteProxyListenerResponse], error) {
-	// Needs listener first to know which port to remove
 	listener, err := s.store.GetProxyListener(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("listener not found"))
 	}
 
+	// The proxy keeps one listener minimum while enabled
+	if s.proxyManager.Enabled() {
+		if listeners, lerr := s.store.ListProxyListeners(ctx); lerr == nil && len(listeners) <= 1 {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("the proxy needs at least one listener"))
+		}
+	}
+
+	if demand := s.listenerDemand(ctx, listener.Port); demand > 0 {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("%d routed workloads use port %d, move them first", demand, listener.Port))
+	}
+
 	if err := s.store.DeleteProxyListener(ctx, req.Msg.Id); err != nil {
-		if strings.Contains(err.Error(), "servers are using it") {
+		if strings.Contains(err.Error(), "still referenced by") {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 		} else {
 			s.log.Error("Failed to delete proxy listener: %v", err)
@@ -327,12 +651,9 @@ func (s *ProxyService) DeleteProxyListener(ctx context.Context, req *connect.Req
 		}
 	}
 
-	// Remove the listener from the proxy manager if it's running
-	if s.proxyManager != nil {
-		if err := s.proxyManager.RemoveListener(int(listener.Port)); err != nil {
-			s.log.Error("Failed to remove listener from proxy manager: %v", err)
-			// Non-critical, proxy restart cleans it up later
-		}
+	// Reconcile stops the socket and promotes a new default
+	if err := s.proxyManager.SyncListeners(ctx); err != nil {
+		s.log.Error("Failed to sync listeners: %v", err)
 	}
 
 	return connect.NewResponse(&v1.DeleteProxyListenerResponse{}), nil
@@ -346,19 +667,22 @@ func (s *ProxyService) GetServerRouting(ctx context.Context, req *connect.Reques
 	}
 
 	// Get suggested hostname if not set
+	effectiveBaseURL, baseURLSource := s.proxyManager.EffectiveBaseDomain()
 	suggestedHostname := ""
-	if server.ProxyHostname == "" && s.config.Proxy.BaseUrl != "" {
-		suggestedHostname = strings.ToLower(strings.ReplaceAll(server.Name, " ", "-")) + "." + s.config.Proxy.BaseUrl
+	if server.ProxyHostname == "" && effectiveBaseURL != "" {
+		candidate := proxy.NormalizeHostname(strings.ReplaceAll(server.Name, " ", "-") + "." + effectiveBaseURL)
+		if proxy.ValidHostname(candidate) {
+			suggestedHostname = candidate
+		}
 	}
 
 	// Check if proxy is enabled and get current route
 	var currentRoute *v1.ServerRoute
 	if s.proxyManager != nil {
-		routes := s.proxyManager.GetRoutes()
-		for hostname, route := range routes {
-			if route.ServerID == server.Id {
+		for _, entry := range s.proxyManager.RouteEntries() {
+			if entry.Route.OwnerKind == proxy.OwnerServer && entry.Route.OwnerID == server.Id {
 				currentRoute = &v1.ServerRoute{
-					Hostname: hostname,
+					Hostname: entry.Route.Hostname,
 					Active:   true,
 				}
 				break
@@ -367,21 +691,71 @@ func (s *ProxyService) GetServerRouting(ctx context.Context, req *connect.Reques
 	}
 
 	// Get listen port from the listener if assigned
-	listenPort := int32(s.config.Proxy.ListenPort)
+	var listenPort int32
 	if server.ProxyListenerId != "" {
 		if listener, err := s.store.GetProxyListener(ctx, server.ProxyListenerId); err == nil {
-			listenPort = int32(listener.Port)
+			listenPort = listener.Port
+		}
+	}
+	if listenPort == 0 {
+		// Default listener row carries the fallback port
+		if listeners, err := s.store.ListProxyListeners(ctx); err == nil {
+			for _, l := range listeners {
+				if l.IsDefault {
+					listenPort = l.Port
+					break
+				}
+			}
+			if listenPort == 0 && len(listeners) > 0 {
+				listenPort = listeners[0].Port
+			}
 		}
 	}
 
 	return connect.NewResponse(&v1.GetServerRoutingResponse{
-		ProxyEnabled:      s.config.Proxy.Enabled,
+		ProxyEnabled:      s.proxyManager.Enabled(),
 		ProxyHostname:     server.ProxyHostname,
 		ProxyListenerId:   server.ProxyListenerId,
 		SuggestedHostname: suggestedHostname,
-		BaseUrl:           s.config.Proxy.BaseUrl,
+		BaseUrl:           s.proxyManager.BaseURL(),
 		ListenPort:        listenPort,
 		CurrentRoute:      currentRoute,
+		EffectiveBaseUrl:  effectiveBaseURL,
+		BaseUrlSource:     baseURLSource,
+	}), nil
+}
+
+// Full network snapshot for the topology view
+func (s *ProxyService) GetNetworkTopology(ctx context.Context, req *connect.Request[v1.GetNetworkTopologyRequest]) (*connect.Response[v1.GetNetworkTopologyResponse], error) {
+	if s.proxyManager == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("proxy manager not available"))
+	}
+
+	reservations, err := s.proxyManager.Reservations(ctx)
+	if err != nil {
+		s.log.Error("Failed to derive reservations: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to derive reservations"))
+	}
+	protoReservations := make([]*v1.NetworkReservation, len(reservations))
+	for i, r := range reservations {
+		protoReservations[i] = r.Proto()
+	}
+
+	panelPort := 0
+	if p, err := strconv.Atoi(s.config.Server.Port); err == nil {
+		panelPort = p
+	}
+
+	effectiveBaseURL, baseURLSource := s.proxyManager.EffectiveBaseDomain()
+
+	return connect.NewResponse(&v1.GetNetworkTopologyResponse{
+		ProxyEnabled:     s.proxyManager.Enabled(),
+		ProxyRunning:     s.proxyManager.IsRunning(),
+		EffectiveBaseUrl: effectiveBaseURL,
+		BaseUrlSource:    baseURLSource,
+		PanelPort:        int32(panelPort),
+		Reservations:     protoReservations,
+		Routes:           s.buildProxyRoutes(),
 	}), nil
 }
 
@@ -394,27 +768,14 @@ func (s *ProxyService) UpdateServerRouting(ctx context.Context, req *connect.Req
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
 	}
 
-	// Store old values to detect changes
-	oldProxyHostname := server.ProxyHostname
 	oldProxyListenerID := server.ProxyListenerId
 
-	// Validate and normalize hostname
-	hostname := strings.TrimSpace(strings.ToLower(msg.ProxyHostname))
-	if hostname != "" {
-		if strings.Contains(hostname, " ") || strings.Contains(hostname, "://") {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid hostname format"))
-		}
+	// Normalize hostname, registry checkout validates it later
+	hostname := proxy.NormalizeHostname(msg.ProxyHostname)
 
-		// Check for conflicts with other servers
-		servers, err := s.store.ListServers(ctx)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to check hostname conflicts"))
-		}
-		for _, srv := range servers {
-			if srv.Id != server.Id && srv.ProxyHostname == hostname {
-				return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("hostname already in use by another server"))
-			}
-		}
+	// Routing needs the proxy on
+	if hostname != "" && !s.proxyManager.Enabled() {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("proxy is disabled"))
 	}
 
 	// Determine new listener ID
@@ -454,6 +815,25 @@ func (s *ProxyService) UpdateServerRouting(ctx context.Context, req *connect.Req
 		listenerID = ""
 	}
 
+	requestedPort := int32(0)
+	if msg.Port != nil {
+		requestedPort = *msg.Port
+	}
+	if err := s.applyServerRouting(ctx, server, hostname, listenerID, requestedPort); err != nil {
+		return nil, err
+	}
+
+	return connect.NewResponse(&v1.UpdateServerRoutingResponse{
+		Hostname:        hostname,
+		ProxyListenerId: listenerID,
+	}), nil
+}
+
+// Applies a routing shape to one server end to end
+func (s *ProxyService) applyServerRouting(ctx context.Context, server *v1.Server, hostname, listenerID string, requestedPort int32) error {
+	oldProxyHostname := server.ProxyHostname
+	oldProxyListenerID := server.ProxyListenerId
+
 	// Detect what changed
 	hostnameChanged := oldProxyHostname != hostname
 	listenerChanged := oldProxyListenerID != listenerID
@@ -462,8 +842,21 @@ func (s *ProxyService) UpdateServerRouting(ctx context.Context, req *connect.Req
 	// Direct mode binds the requested host port
 	oldPort := server.Port
 	newPort := oldPort
-	if hostname == "" && msg.Port != nil && *msg.Port > 0 {
-		newPort = *msg.Port
+	if hostname == "" && requestedPort > 0 {
+		newPort = requestedPort
+	}
+	// Conversions without a pick get a registry port
+	if hostname == "" && oldProxyHostname != "" && requestedPort <= 0 {
+		free, ferr := s.proxyManager.FindFreePort(ctx, proxy.FreePortOpts{
+			Protocol:   v1.ModuleProtocol_MODULE_PROTOCOL_TCP,
+			Start:      s.config.Proxy.PortRangeMin,
+			End:        65535,
+			RconShadow: true,
+		})
+		if ferr != nil {
+			return connect.NewError(connect.CodeResourceExhausted, ferr)
+		}
+		newPort = int32(free)
 	}
 	if hostname != "" {
 		// Proxied containers always listen on the default inside
@@ -471,31 +864,29 @@ func (s *ProxyService) UpdateServerRouting(ctx context.Context, req *connect.Req
 	}
 	portChanged := newPort != oldPort
 
-	if hostname == "" && portChanged {
-		if newPort < 1 || newPort > 65535 {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("port must be between 1 and 65535"))
+	// Registry checkout guards the new network shape until persist
+	proxyOn := s.proxyManager.Enabled()
+	var netReqs []proxy.NetRequest
+	if hostname != "" {
+		listener, lerr := s.store.GetProxyListener(ctx, listenerID)
+		if lerr != nil || listener == nil {
+			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("proxy listener not found"))
 		}
-		existing, err := s.store.GetServerByPort(ctx, int(newPort))
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to check port availability"))
-		}
-		if existing != nil && existing.Id != server.Id {
-			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("port already in use by another server"))
-		}
-		if s.config.Proxy.Enabled && slices.Contains(s.config.Proxy.ListenPorts, int(newPort)) {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("port is already in use by the proxy server"))
-		}
+		netReqs = proxy.ServerProxiedNetRequests(hostname, int(listener.Port), server.AdditionalPorts, proxyOn)
+	} else {
+		netReqs = proxy.ServerDirectNetRequests(int(newPort), server.AdditionalPorts, proxyOn)
 	}
+	if err := s.proxyManager.EnsureListenersFor(ctx, netReqs); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	netClaim, err := s.proxyManager.CheckoutNetwork(ctx, proxy.NetOwner{Kind: proxy.OwnerServer, ID: server.Id}, netReqs)
+	if err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	defer netClaim.Release()
 
 	// Recreate container if proxy mode, listener, or port changes
 	needsRecreation := proxyModeChanged || (listenerChanged && hostname != "" && oldProxyHostname != "") || (portChanged && hostname == "")
-
-	// Removes old route before updating server and hostname
-	if hostnameChanged && oldProxyHostname != "" && s.proxyManager != nil {
-		if err := s.proxyManager.RemoveRouteByHostname(oldProxyHostname, oldProxyListenerID); err != nil {
-			s.log.Error("Failed to remove old proxy route: %v", err)
-		}
-	}
 
 	// Update server fields
 	server.ProxyHostname = hostname
@@ -512,7 +903,7 @@ func (s *ProxyService) UpdateServerRouting(ctx context.Context, req *connect.Req
 		serverConfig, err := s.store.GetServerProperties(ctx, server.Id)
 		if err != nil {
 			s.log.Error("Failed to get server config: %v", err)
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get server configuration"))
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get server configuration"))
 		}
 
 		result, err := s.docker.RecreateContainer(ctx, server.ContainerId, server, serverConfig, nil)
@@ -524,10 +915,6 @@ func (s *ProxyService) UpdateServerRouting(ctx context.Context, req *connect.Req
 			} else {
 				server.Status = v1.ServerStatus_SERVER_STATUS_ERROR
 				server.ContainerId = ""
-				// Remove route since there's no valid container
-				if s.proxyManager != nil && hostname != "" {
-					s.proxyManager.RemoveRouteByHostname(hostname, listenerID)
-				}
 			}
 		} else {
 			server.ContainerId = result.NewContainerID
@@ -555,18 +942,16 @@ func (s *ProxyService) UpdateServerRouting(ctx context.Context, req *connect.Req
 
 	// Save only the columns this request owns
 	if err := s.store.UpdateServerFields(ctx, server.Id, fields); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update server"))
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update server"))
 	}
+	netClaim.Confirm()
 
-	// Add/update new route if proxy is enabled
-	if hostname != "" && s.proxyManager != nil {
-		if err := s.proxyManager.UpdateServerRoute(server); err != nil {
-			s.log.Error("Failed to update proxy route: %v", err)
+	// Reconcile drops stale routes and registers new ones
+	if s.proxyManager != nil {
+		if err := s.proxyManager.SyncListeners(ctx); err != nil {
+			s.log.Error("Failed to sync routes after routing change: %v", err)
 		}
 	}
 
-	return connect.NewResponse(&v1.UpdateServerRoutingResponse{
-		Hostname:        hostname,
-		ProxyListenerId: listenerID,
-	}), nil
+	return nil
 }

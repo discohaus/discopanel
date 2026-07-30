@@ -285,6 +285,7 @@ func (s *Scheduler) executeTask(task *v1.ScheduledTask, trigger v1.TaskTrigger, 
 		s.log.Error("Task %s: server not found: %v", task.Name, err)
 		return nil, err
 	}
+	s.store.HydrateProxyPorts(ctx, server)
 
 	// Checks if server is online, webhook tasks always fire
 	if task.RequireOnline && task.TaskType != v1.TaskType_TASK_TYPE_WEBHOOK && server.Status != v1.ServerStatus_SERVER_STATUS_RUNNING {

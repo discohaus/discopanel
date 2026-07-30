@@ -2,25 +2,42 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
+	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { Select, SelectContent, SelectItem, SelectTrigger } from '$lib/components/ui/select';
 	import { Plus, X, AlertCircle } from '@lucide/svelte';
-	import type { AdditionalPort } from '$lib/proto/discopanel/v1/storage_pb';
+	import type { NetworkPort } from '$lib/proto/discopanel/v1/storage_pb';
 	import {
-		AdditionalPortSchema,
+		NetworkPortSchema,
 		ModuleProtocol,
 		ModuleProtocolSchema
 	} from '$lib/proto/discopanel/v1/storage_pb';
 	import { create } from '@bufbuild/protobuf';
 	import { enumLabel } from '$lib/proto-meta';
+	import { isRelayProtocol } from '$lib/components/network/topology-data';
 
 	interface Props {
-		ports?: AdditionalPort[];
+		ports?: NetworkPort[];
 		disabled?: boolean;
 		usedPorts?: Record<number, boolean>;
-		onchange?: (ports: AdditionalPort[]) => void;
+		proxyAvailable?: boolean;
+		serverHostname?: string;
+		onchange?: (ports: NetworkPort[]) => void;
 	}
 
-	let { ports = $bindable([]), disabled = false, usedPorts = {}, onchange }: Props = $props();
+	let {
+		ports = $bindable([]),
+		disabled = false,
+		usedPorts = {},
+		proxyAvailable = false,
+		serverHostname = '',
+		onchange
+	}: Props = $props();
+
+	let protocolOptions = $derived(
+		proxyAvailable
+			? [ModuleProtocol.TCP, ModuleProtocol.UDP, ModuleProtocol.MINECRAFT, ModuleProtocol.HTTP]
+			: [ModuleProtocol.TCP, ModuleProtocol.UDP]
+	);
 
 	// Derived per row so removals never misalign errors
 	let portErrors = $derived.by(() => {
@@ -28,10 +45,15 @@
 			const value = Number(port.hostPort);
 			if (!value) return '';
 			if (value < 1 || value > 65535) return 'Port must be between 1 and 65535';
-			if (usedPorts[value]) return `Port ${value} is already in use`;
-			const duplicate = ports.some(
-				(p, i) => i !== index && p.hostPort === value && p.protocol === port.protocol
-			);
+			if (!port.proxyEnabled && usedPorts[value]) return `Port ${value} is already in use`;
+			const duplicate = ports.some((p, i) => {
+				if (i === index || Number(p.hostPort) !== value) return false;
+				if (p.protocol !== port.protocol) return false;
+				// Routed rows may share a port on different hostnames
+				const routed = port.proxyEnabled && p.proxyEnabled && !isRelayProtocol(port.protocol);
+				if (routed) return (p.hostname || '') === (port.hostname || '');
+				return true;
+			});
 			if (duplicate)
 				return `Duplicate port ${value}/${enumLabel(ModuleProtocolSchema, port.protocol || ModuleProtocol.TCP)}`;
 			return '';
@@ -39,7 +61,7 @@
 	});
 
 	function addPort() {
-		const newPort = create(AdditionalPortSchema, {
+		const newPort = create(NetworkPortSchema, {
 			name: '',
 			containerPort: findNextAvailablePort(),
 			hostPort: findNextAvailablePort(),
@@ -54,7 +76,7 @@
 		onchange?.(ports);
 	}
 
-	function updatePort(index: number, field: keyof AdditionalPort, value: string | number) {
+	function updatePort(index: number, field: keyof NetworkPort, value: string | number | boolean) {
 		ports[index] = {
 			...ports[index],
 			[field]: value
@@ -143,15 +165,15 @@
 								{disabled}
 							>
 								<SelectTrigger class="h-8 w-full text-xs">
-									<span>{enumLabel(ModuleProtocolSchema, port.protocol || ModuleProtocol.TCP)}</span>
+									<span>{enumLabel(ModuleProtocolSchema, port.protocol || ModuleProtocol.TCP)}</span
+									>
 								</SelectTrigger>
 								<SelectContent>
-									<SelectItem value={String(ModuleProtocol.TCP)}>
-										{enumLabel(ModuleProtocolSchema, ModuleProtocol.TCP)}
-									</SelectItem>
-									<SelectItem value={String(ModuleProtocol.UDP)}>
-										{enumLabel(ModuleProtocolSchema, ModuleProtocol.UDP)}
-									</SelectItem>
+									{#each protocolOptions as proto (proto)}
+										<SelectItem value={String(proto)}>
+											{enumLabel(ModuleProtocolSchema, proto)}
+										</SelectItem>
+									{/each}
 								</SelectContent>
 							</Select>
 						</div>
@@ -169,6 +191,37 @@
 							</Button>
 						</div>
 					</div>
+
+					{#if proxyAvailable}
+						<div class="flex flex-wrap items-center gap-x-4 gap-y-1.5 pl-1">
+							<label class="flex cursor-pointer items-center gap-2">
+								<Checkbox
+									checked={port.proxyEnabled}
+									onCheckedChange={(v) => updatePort(index, 'proxyEnabled', !!v)}
+									{disabled}
+								/>
+								<span class="text-xs">Route through proxy</span>
+							</label>
+							{#if port.proxyEnabled && isRelayProtocol(port.protocol)}
+								<span class="rounded-full border px-1.5 py-px text-[10px] text-muted-foreground">
+									relay
+								</span>
+							{/if}
+							{#if port.proxyEnabled && !isRelayProtocol(port.protocol)}
+								<Input
+									type="text"
+									placeholder={serverHostname || 'any hostname'}
+									bind:value={port.hostname}
+									{disabled}
+									onchange={() => updatePort(index, 'hostname', port.hostname)}
+									class="h-7 w-56 font-mono text-xs"
+								/>
+								<span class="text-[11px] text-muted-foreground">
+									Empty inherits the server hostname
+								</span>
+							{/if}
+						</div>
+					{/if}
 
 					{#if portErrors[index]}
 						<div class="flex items-center gap-1.5 pl-1 text-destructive">

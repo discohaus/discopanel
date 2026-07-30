@@ -3,9 +3,8 @@ package proxy
 import (
 	"context"
 	"fmt"
-	"maps"
-	"strings"
 	"sync"
+	"time"
 
 	db "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/docker"
@@ -16,16 +15,30 @@ import (
 
 // Handles proxy lifecycle and manages routes
 type Manager struct {
-	proxies       map[int]Proxier // Map of port -> Proxy instance (TCP or UDP)
-	listenerPorts map[int]bool    // Ports serving hostname-routed server listeners
-	statsBase     map[string]*v1.ProxyRoute
-	statsLast     map[string]*v1.ProxyRoute
-	store         *db.Store
-	docker        *docker.Client
-	config        *config.ProxyConfig
-	logger        *logger.Logger
-	mu            sync.Mutex
-	gate          ServerGate
+	tcpSockets  map[int]*ListenerSocket
+	udpSockets  map[int]*UDPProxy
+	listenerIDs map[int]string
+	statsBase   map[string]*v1.ProxyRoute
+	statsLast   map[string]*v1.ProxyRoute
+	store       *db.Store
+	docker      *docker.Client
+	config      *config.ProxyConfig
+	appCfg      *config.Config
+	logger      *logger.Logger
+	mu          sync.Mutex
+	gate        ServerGate
+
+	// Runtime toggle state owned by the manager
+	enabled bool
+	baseURL string
+
+	// Cached outbound address for instant domains
+	detectedIP string
+	detectedAt time.Time
+
+	// Granted checkouts awaiting their callers' persists
+	pendingClaims map[uint64]pendingClaim
+	claimSeq      uint64
 }
 
 // Registers the wake gate, must be called before Start
@@ -33,25 +46,56 @@ func (m *Manager) SetServerGate(gate ServerGate) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.gate = gate
-	for _, p := range m.proxies {
-		if mp, ok := p.(*MinecraftProxy); ok {
-			mp.SetGate(gate)
-		}
+	for _, sock := range m.tcpSockets {
+		sock.SetGate(gate)
 	}
 }
 
 // Creates a new proxy manager
 func NewManager(store *db.Store, dockerClient *docker.Client, cfg *config.Config, logger *logger.Logger) *Manager {
 	return &Manager{
-		proxies:       make(map[int]Proxier),
-		listenerPorts: make(map[int]bool),
+		tcpSockets:    make(map[int]*ListenerSocket),
+		udpSockets:    make(map[int]*UDPProxy),
+		listenerIDs:   make(map[int]string),
 		statsBase:     make(map[string]*v1.ProxyRoute),
 		statsLast:     make(map[string]*v1.ProxyRoute),
 		store:         store,
 		docker:        dockerClient,
 		config:        &cfg.Proxy,
+		appCfg:        cfg,
 		logger:        logger,
+		enabled:       cfg.Proxy.Enabled,
+		baseURL:       cfg.Proxy.BaseUrl,
+		pendingClaims: make(map[uint64]pendingClaim),
 	}
+}
+
+// Reports the runtime proxy toggle
+func (m *Manager) Enabled() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.enabled
+}
+
+// Reports the configured custom base domain
+func (m *Manager) BaseURL() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.baseURL
+}
+
+// Applies a config change and reconciles running sockets
+func (m *Manager) ApplyConfig(ctx context.Context, enabled bool, baseURL string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.enabled = enabled
+	m.baseURL = baseURL
+
+	if !enabled {
+		return m.stopAllLocked()
+	}
+	return m.syncListenersLocked(ctx)
 }
 
 // Resolves a container IP on the panel network
@@ -64,88 +108,370 @@ func (m *Manager) Start() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if !m.config.Enabled {
+	if !m.enabled {
 		m.logger.Info("Proxy is disabled in configuration")
 		return nil
 	}
 
-	// Ensure a default listener exists when proxy is enabled
-	if _, err := m.ensureDefaultListenerLocked(); err != nil {
-		m.logger.Error("Failed to ensure default listener: %v", err)
+	if err := m.syncListenersLocked(context.Background()); err != nil {
+		return err
+	}
+	m.logger.Info("Proxy manager started")
+	return nil
+}
+
+// Reconciles sockets and routes against database state
+func (m *Manager) SyncListeners(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.syncListenersLocked(ctx)
+}
+
+// Full reconcile pass, caller must hold the lock
+func (m *Manager) syncListenersLocked(ctx context.Context) error {
+	if !m.enabled {
+		return nil
 	}
 
-	// Get all proxy listeners from database
-	listeners, err := m.store.ListProxyListeners(context.Background())
+	if err := m.ensureListenerInvariantsLocked(ctx); err != nil {
+		m.logger.Error("Failed to reconcile listener rows: %v", err)
+	}
+
+	listeners, err := m.store.ListProxyListeners(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to load proxy listeners: %w", err)
 	}
 
-	// Create a proxy instance for each enabled listener
-	for _, listener := range listeners {
-		if !listener.Enabled {
+	desired := make(map[int]*v1.ProxyListener, len(listeners))
+	byID := make(map[string]*v1.ProxyListener, len(listeners))
+	for _, l := range listeners {
+		if l.Enabled {
+			desired[int(l.Port)] = l
+			byID[l.Id] = l
+		}
+	}
+
+	// Sockets for removed or disabled listeners stop first
+	for port, sock := range m.tcpSockets {
+		if desired[port] != nil {
 			continue
 		}
+		if err := sock.Stop(); err != nil {
+			m.logger.Error("Failed to stop listener socket on port %d: %v", port, err)
+		}
+		delete(m.tcpSockets, port)
+		delete(m.listenerIDs, port)
+		m.logger.Info("Stopped listener socket on port %d", port)
+	}
+	for port, up := range m.udpSockets {
+		if desired[port] != nil {
+			continue
+		}
+		up.Stop()
+		delete(m.udpSockets, port)
+	}
 
-		listenAddr := fmt.Sprintf(":%d", listener.Port)
-		proxy := NewMinecraftProxy(&Config{
-			ListenAddr: listenAddr,
+	// Missing sockets start, running ones stay untouched
+	for port, listener := range desired {
+		m.listenerIDs[port] = listener.Id
+		if _, ok := m.tcpSockets[port]; ok {
+			continue
+		}
+		sock := NewListenerSocket(&Config{
+			ListenAddr: fmt.Sprintf(":%d", port),
 			Logger:     m.logger,
 			Gate:       m.gate,
 		})
-
-		m.proxies[int(listener.Port)] = proxy
-		m.listenerPorts[int(listener.Port)] = true
-		m.logger.Info("Created Minecraft proxy for listener %s on port %d", listener.Name, listener.Port)
+		if err := sock.Start(); err != nil {
+			m.logger.Error("Failed to start listener %s on port %d: %v", listener.Name, port, err)
+			continue
+		}
+		m.tcpSockets[port] = sock
+		m.logger.Info("Started listener %s on port %d", listener.Name, port)
 	}
 
-	// Load existing server routes
-	servers, err := m.store.ListServers(context.Background())
+	tcpRoutes, udpRoutes := m.desiredRoutesLocked(ctx, byID)
+
+	// Route tables replace wholesale, stale entries die here
+	for port, sock := range m.tcpSockets {
+		sock.SetRoutes(tcpRoutes[port])
+	}
+
+	// UDP relay sockets follow their routes
+	for port, route := range udpRoutes {
+		if desired[port] == nil {
+			continue
+		}
+		up, ok := m.udpSockets[port]
+		if !ok {
+			up = NewUDPProxy(&Config{ListenAddr: fmt.Sprintf(":%d", port), Logger: m.logger})
+			if err := up.Start(); err != nil {
+				m.logger.Error("Failed to start udp relay on port %d: %v", port, err)
+				continue
+			}
+			m.udpSockets[port] = up
+		}
+		up.SetRoute(route)
+	}
+	for port, up := range m.udpSockets {
+		if _, ok := udpRoutes[port]; ok && desired[port] != nil {
+			continue
+		}
+		up.Stop()
+		delete(m.udpSockets, port)
+	}
+
+	return nil
+}
+
+// Desired route tables derived from rows and containers
+func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[string]*v1.ProxyListener) (map[int][]Route, map[int]Route) {
+	tcpRoutes := make(map[int][]Route)
+	udpRoutes := make(map[int]Route)
+
+	servers, err := m.store.ListServers(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to load servers: %w", err)
+		m.logger.Error("Failed to load servers for route sync: %v", err)
+		return tcpRoutes, udpRoutes
 	}
-
-	// Map to track which listener each server uses
-	listenerMap := make(map[string]*v1.ProxyListener)
-	for _, listener := range listeners {
-		listenerMap[listener.Id] = listener
+	serversByID := make(map[string]*v1.Server, len(servers))
+	for _, server := range servers {
+		serversByID[server.Id] = server
 	}
 
 	for _, server := range servers {
-		// Registers routes even for stopped wakeable servers
-		if server.ProxyHostname == "" || server.ProxyListenerId == "" {
-			continue
+		// Game routes register even for stopped wakeable servers
+		if server.ProxyHostname != "" {
+			if listener := listenersByID[server.ProxyListenerId]; listener != nil {
+				route, want, err := m.desiredRoute(server, server.ProxyHostname)
+				if err != nil {
+					m.logger.Error("Failed to build route for server %s: %v", server.Name, err)
+				} else if want {
+					port := int(listener.Port)
+					tcpRoutes[port] = append(tcpRoutes[port], route)
+				}
+			}
 		}
 
-		listener, ok := listenerMap[server.ProxyListenerId]
-		if !ok || !listener.Enabled {
-			m.logger.Error("Server %s has invalid or disabled listener %s", server.Name, server.ProxyListenerId)
+		// Extra proxied ports need a live container backend
+		if !hasProxyPorts(server.AdditionalPorts) || server.ContainerId == "" {
 			continue
 		}
-
-		mp, ok := m.proxies[int(listener.Port)].(*MinecraftProxy)
-		if !ok {
-			m.logger.Error("No proxy instance for port %d", listener.Port)
+		switch server.Status {
+		case v1.ServerStatus_SERVER_STATUS_RUNNING, v1.ServerStatus_SERVER_STATUS_PAUSED, v1.ServerStatus_SERVER_STATUS_UNHEALTHY:
+		default:
 			continue
 		}
-
-		route, want, err := m.desiredRoute(server, m.generateHostname(server))
+		ip, err := m.containerIP(server.ContainerId)
 		if err != nil {
-			m.logger.Error("Failed to build route for server %s: %v", server.Name, err)
+			m.logger.Debug("No container IP for server %s: %v", server.Name, err)
 			continue
 		}
-		if want {
-			mp.UpsertServerRoute(route)
+		appendPortRoutes(tcpRoutes, udpRoutes, server.AdditionalPorts, server.ProxyHostname,
+			OwnerServer, server.Id, ip, func(p *v1.NetworkPort) int { return int(p.ContainerPort) })
+	}
+
+	modules, err := m.store.ListModules(ctx)
+	if err != nil {
+		m.logger.Error("Failed to load modules for route sync: %v", err)
+		return tcpRoutes, udpRoutes
+	}
+	for _, mod := range modules {
+		if mod.ContainerId == "" || mod.Status != v1.ModuleStatus_MODULE_STATUS_RUNNING {
+			continue
+		}
+		if !hasProxyPorts(mod.Ports) {
+			continue
+		}
+		ip, err := m.containerIP(mod.ContainerId)
+		if err != nil {
+			m.logger.Debug("No container IP for module %s: %v", mod.Name, err)
+			continue
+		}
+		hostname := ""
+		if srv := serversByID[mod.ServerId]; srv != nil {
+			hostname = srv.ProxyHostname
+		}
+		module := mod
+		appendPortRoutes(tcpRoutes, udpRoutes, mod.Ports, hostname,
+			OwnerModule, mod.Id, ip, func(p *v1.NetworkPort) int { return m.moduleContainerPort(module, p) })
+	}
+
+	return tcpRoutes, udpRoutes
+}
+
+// Adds one port list's routes onto the desired tables
+func appendPortRoutes(tcpRoutes map[int][]Route, udpRoutes map[int]Route, ports []*v1.NetworkPort, fallbackHostname, ownerKind, ownerID, backendHost string, containerPort func(*v1.NetworkPort) int) {
+	for _, port := range ports {
+		if port == nil || !port.ProxyEnabled || port.HostPort <= 0 {
+			continue
+		}
+		backendPort := containerPort(port)
+		if backendPort == 0 {
+			continue
+		}
+		route := Route{
+			ServerID:    fmt.Sprintf("%s-port-%d", ownerID, port.HostPort),
+			OwnerKind:   ownerKind,
+			OwnerID:     ownerID,
+			PortName:    port.Name,
+			BackendHost: backendHost,
+			BackendPort: backendPort,
+			Protocol:    port.Protocol,
+		}
+		hostPort := int(port.HostPort)
+		switch port.Protocol {
+		case v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT:
+			hostname := NormalizeHostname(port.Hostname)
+			if hostname == "" {
+				hostname = fallbackHostname
+			}
+			// Handshake routing cannot match without a hostname
+			if hostname == "" && port.Protocol == v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT {
+				continue
+			}
+			route.Hostname = hostname
+			tcpRoutes[hostPort] = append(tcpRoutes[hostPort], route)
+		case v1.ModuleProtocol_MODULE_PROTOCOL_UDP:
+			udpRoutes[hostPort] = route
+		default:
+			route.Protocol = v1.ModuleProtocol_MODULE_PROTOCOL_TCP
+			tcpRoutes[hostPort] = append(tcpRoutes[hostPort], route)
+		}
+	}
+}
+
+// True when any port wants proxy routing
+func hasProxyPorts(ports []*v1.NetworkPort) bool {
+	for _, port := range ports {
+		if port != nil && port.ProxyEnabled && port.HostPort != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// Keeps listener rows matching demand and default rules
+func (m *Manager) ensureListenerInvariantsLocked(ctx context.Context) error {
+	// Routed and relay demand keyed by port
+	all, err := m.reservationsLocked(ctx)
+	if err != nil {
+		return err
+	}
+	demand := make(map[int]bool)
+	for _, r := range all {
+		if r.Kind == kindRouted || r.Kind == kindRelay {
+			demand[r.Port] = true
+		}
+	}
+	// Unsettled checkouts count as demand too
+	m.sweepClaimsLocked()
+	for _, claim := range m.pendingClaims {
+		for _, r := range claim.held {
+			if r.Kind == kindRouted || r.Kind == kindRelay {
+				demand[r.Port] = true
+			}
 		}
 	}
 
-	// Start all proxy instances
-	for port, proxy := range m.proxies {
-		if err := proxy.Start(); err != nil {
-			return fmt.Errorf("failed to start proxy on port %d: %w", port, err)
+	listeners, err := m.store.ListProxyListeners(ctx)
+	if err != nil {
+		return err
+	}
+
+	// First run bootstraps the primary listener
+	if len(listeners) == 0 {
+		port, err := m.findFreePortLocked(ctx, FreePortOpts{
+			Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_TCP,
+			Start:    m.config.PortRangeMin,
+			End:      65535,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to find a port for the default listener: %w", err)
+		}
+		listener := &v1.ProxyListener{
+			Id:        "default",
+			Port:      int32(port),
+			Name:      "Primary",
+			IsDefault: true,
+			Enabled:   true,
+		}
+		if err := m.store.CreateProxyListener(ctx, listener); err != nil {
+			return fmt.Errorf("failed to create default listener: %w", err)
+		}
+		m.logger.Info("Created default proxy listener on port %d", port)
+		listeners = []*v1.ProxyListener{listener}
+	}
+
+	servers, err := m.store.ListServers(ctx)
+	if err != nil {
+		return err
+	}
+	referenced := make(map[string]bool)
+	for _, server := range servers {
+		if server.ProxyListenerId != "" {
+			referenced[server.ProxyListenerId] = true
 		}
 	}
 
-	m.logger.Info("Proxy manager started")
+	// Idle auto rows leave, demand recreates them later
+	kept := listeners[:0]
+	for _, l := range listeners {
+		if l.AutoCreated && !l.IsDefault && !demand[int(l.Port)] && !referenced[l.Id] {
+			if err := m.store.DeleteProxyListener(ctx, l.Id); err == nil {
+				m.logger.Info("Removed idle auto listener on port %d", l.Port)
+				continue
+			}
+		}
+		kept = append(kept, l)
+	}
+	listeners = kept
+
+	// Missing rows appear for routed and relay ports
+	have := make(map[int]bool, len(listeners))
+	for _, l := range listeners {
+		have[int(l.Port)] = true
+	}
+	for port := range demand {
+		if have[port] {
+			continue
+		}
+		listener, err := m.createListenerRowLocked(ctx, port)
+		if err != nil {
+			m.logger.Error("Failed to auto create listener for port %d: %v", port, err)
+			continue
+		}
+		listeners = append(listeners, listener)
+	}
+
+	// Exactly one default listener at all times
+	var defaults []*v1.ProxyListener
+	for _, l := range listeners {
+		if l.IsDefault {
+			defaults = append(defaults, l)
+		}
+	}
+	if len(defaults) == 0 && len(listeners) > 0 {
+		promote := listeners[0]
+		for _, l := range listeners {
+			if !l.AutoCreated {
+				promote = l
+				break
+			}
+		}
+		promote.IsDefault = true
+		if err := m.store.UpdateProxyListener(ctx, promote); err == nil {
+			m.logger.Info("Promoted listener %s to default", promote.Name)
+		}
+	} else if len(defaults) > 1 {
+		for _, l := range defaults[1:] {
+			l.IsDefault = false
+			if err := m.store.UpdateProxyListener(ctx, l); err == nil {
+				m.logger.Info("Demoted extra default listener %s", l.Name)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -153,64 +479,64 @@ func (m *Manager) Start() error {
 func (m *Manager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.stopAllLocked()
+}
 
-	if len(m.proxies) == 0 {
+// Stops every socket, caller must hold the lock
+func (m *Manager) stopAllLocked() error {
+	if len(m.tcpSockets) == 0 && len(m.udpSockets) == 0 {
 		return nil
 	}
 
 	var lastErr error
-	for port, proxy := range m.proxies {
-		if err := proxy.Stop(); err != nil {
-			lastErr = fmt.Errorf("failed to stop proxy on port %d: %w", port, err)
-			m.logger.Error("Failed to stop proxy on port %d: %v", port, err)
+	for port, sock := range m.tcpSockets {
+		if err := sock.Stop(); err != nil {
+			lastErr = fmt.Errorf("failed to stop listener on port %d: %w", port, err)
+			m.logger.Error("Failed to stop listener on port %d: %v", port, err)
 		}
 	}
+	for _, up := range m.udpSockets {
+		up.Stop()
+	}
 
-	m.proxies = make(map[int]Proxier)
-	m.listenerPorts = make(map[int]bool)
+	m.tcpSockets = make(map[int]*ListenerSocket)
+	m.udpSockets = make(map[int]*UDPProxy)
+	m.listenerIDs = make(map[int]string)
 	m.logger.Info("Proxy manager stopped")
 	return lastErr
 }
 
-// Reconciles a server route with its current status
+// Reconciles a server's game route with its current status
 func (m *Manager) UpdateServerRoute(server *v1.Server) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if len(m.proxies) == 0 || !m.config.Enabled {
+	if !m.enabled || server.ProxyHostname == "" || server.ProxyListenerId == "" {
 		return nil
-	}
-
-	// Get the listener for this server
-	if server.ProxyListenerId == "" {
-		return nil // No listener assigned
 	}
 
 	listener, err := m.store.GetProxyListener(context.Background(), server.ProxyListenerId)
 	if err != nil {
 		return fmt.Errorf("failed to get proxy listener: %w", err)
 	}
-
 	if !listener.Enabled {
-		return nil // Listener is disabled
+		return nil
 	}
 
-	// Get the proxy instance for this listener's port
-	mp, ok := m.proxies[int(listener.Port)].(*MinecraftProxy)
+	sock, ok := m.tcpSockets[int(listener.Port)]
 	if !ok {
-		return fmt.Errorf("no proxy instance for port %d", listener.Port)
+		return fmt.Errorf("no listener socket for port %d", listener.Port)
 	}
 
-	hostname := m.generateHostname(server)
-	route, want, err := m.desiredRoute(server, hostname)
+	route, want, err := m.desiredRoute(server, server.ProxyHostname)
 	if err != nil {
 		return err
 	}
 	if !want {
-		mp.RemoveRoute(hostname)
+		sock.RemoveRoute(v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT, server.ProxyHostname)
 		return nil
 	}
-	mp.UpsertServerRoute(route)
+	sock.UpsertServerRoute(route)
 	return nil
 }
 
@@ -224,7 +550,10 @@ func (m *Manager) desiredRoute(server *v1.Server, hostname string) (route Route,
 
 	route = Route{
 		ServerID:      server.Id,
+		OwnerKind:     OwnerServer,
+		OwnerID:       server.Id,
 		Hostname:      hostname,
+		Protocol:      v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT,
 		BackendPort:   docker.DefaultMinecraftPort,
 		ProxyProtocol: propEnabled(cfg, func(c *v1.ServerProperties) *bool { return c.EnableProxyProtocol }),
 		PreserveHost:  propEnabled(cfg, func(c *v1.ServerProperties) *bool { return c.ProxyPreserveHostname }),
@@ -301,87 +630,32 @@ func bootMOTD(server *v1.Server, cfg *v1.ServerProperties) string {
 	return fmt.Sprintf("%s is %s - join in a moment", server.Name, phase)
 }
 
-// Removes a route for a server
-func (m *Manager) RemoveServerRoute(serverID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if len(m.proxies) == 0 || !m.config.Enabled {
-		return nil
-	}
-
-	server, err := m.store.GetServer(context.Background(), serverID)
-	if err != nil {
-		return err
-	}
-
-	hostname := m.generateHostname(server)
-
-	// Remove from all proxies since listener may have changed
-	for _, proxy := range m.proxies {
-		proxy.RemoveRoute(hostname)
-	}
-
-	return nil
+// One live route with its socket attribution
+type RouteEntry struct {
+	Port       int
+	ListenerID string
+	Route      *Route
 }
 
-// Removes a route using the hostname
-func (m *Manager) RemoveRouteByHostname(hostname string, listenerID string) error {
+// Returns every live route across all sockets
+func (m *Manager) RouteEntries() []RouteEntry {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if len(m.proxies) == 0 || !m.config.Enabled || hostname == "" {
-		return nil
-	}
-
-	// If listenerID provided, only remove from that specific listener's proxy
-	if listenerID != "" {
-		listener, err := m.store.GetProxyListener(context.Background(), listenerID)
-		if err == nil && listener != nil {
-			if proxy, ok := m.proxies[int(listener.Port)]; ok {
-				proxy.RemoveRoute(hostname)
-				m.logger.Info("Removed route %s from listener port %d", hostname, listener.Port)
-				return nil
-			}
+	var entries []RouteEntry
+	for port, sock := range m.tcpSockets {
+		listenerID := m.listenerIDs[port]
+		for _, route := range sock.Routes() {
+			r := route
+			entries = append(entries, RouteEntry{Port: port, ListenerID: listenerID, Route: &r})
 		}
 	}
-
-	// Otherwise remove from all proxies
-	for port, proxy := range m.proxies {
-		proxy.RemoveRoute(hostname)
-		m.logger.Debug("Removed route %s from port %d", hostname, port)
+	for port, up := range m.udpSockets {
+		if route, ok := up.Route(); ok {
+			entries = append(entries, RouteEntry{Port: port, ListenerID: m.listenerIDs[port], Route: &route})
+		}
 	}
-
-	return nil
-}
-
-// Generates the hostname for a server
-func (m *Manager) generateHostname(server *v1.Server) string {
-	// Use custom hostname if set
-	if server.ProxyHostname != "" {
-		return server.ProxyHostname
-	}
-
-	// Otherwise use default pattern
-	if m.config.BaseUrl != "" {
-		// Use server name as subdomain
-		return fmt.Sprintf("%s.%s", strings.ToLower(strings.ReplaceAll(server.Name, " ", "-")), m.config.BaseUrl)
-	}
-	// Fallback to using server ID
-	return fmt.Sprintf("server-%s.minecraft.mc", server.Id)
-}
-
-// Returns all current routes from all proxies
-func (m *Manager) GetRoutes() map[string]*Route {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	allRoutes := make(map[string]*Route)
-	for _, proxy := range m.proxies {
-		maps.Copy(allRoutes, proxy.GetRoutes())
-	}
-
-	return allRoutes
+	return entries
 }
 
 // Returns whether any proxy is running
@@ -389,123 +663,8 @@ func (m *Manager) IsRunning() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	for _, proxy := range m.proxies {
-		if proxy.IsRunning() {
-			return true
-		}
-	}
-
-	return false
-}
-
-// Creates and starts a proxy for a new listener
-func (m *Manager) AddListener(listener *v1.ProxyListener) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if !m.config.Enabled || !listener.Enabled {
-		return nil
-	}
-
-	// Check if proxy already exists for this port
-	if _, exists := m.proxies[int(listener.Port)]; exists {
-		return fmt.Errorf("proxy already exists for port %d", listener.Port)
-	}
-
-	// Create new proxy instance
-	listenAddr := fmt.Sprintf(":%d", listener.Port)
-	proxy := NewMinecraftProxy(&Config{
-		ListenAddr: listenAddr,
-		Logger:     m.logger,
-		Gate:       m.gate,
-	})
-
-	// Start the proxy
-	if err := proxy.Start(); err != nil {
-		return fmt.Errorf("failed to start proxy on port %d: %w", listener.Port, err)
-	}
-
-	m.proxies[int(listener.Port)] = proxy
-	m.listenerPorts[int(listener.Port)] = true
-	m.logger.Info("Added and started Minecraft proxy for listener %s on port %d", listener.Name, listener.Port)
-
-	return nil
-}
-
-// Stops and removes a proxy instance for a listener
-func (m *Manager) RemoveListener(port int) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	proxy, exists := m.proxies[port]
-	if !exists {
-		return nil // Already removed or doesn't exist
-	}
-
-	// Stop the proxy
-	if err := proxy.Stop(); err != nil {
-		m.logger.Error("Failed to stop proxy on port %d: %v", port, err)
-	}
-
-	delete(m.proxies, port)
-	delete(m.listenerPorts, port)
-	m.logger.Info("Removed proxy for port %d", port)
-
-	return nil
-}
-
-// Adds proxy routes for a module's ports
-func (m *Manager) AddModuleRoute(module *v1.Module, server *v1.Server) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if !m.config.Enabled || !hasProxyPorts(module) {
-		return nil
-	}
-
-	// Get the container IP first
-	if module.ContainerId == "" {
-		return fmt.Errorf("module has no container ID")
-	}
-
-	containerIP, err := m.containerIP(module.ContainerId)
-	if err != nil {
-		return fmt.Errorf("failed to get module container IP: %w", err)
-	}
-
-	// Hostless modules route every hostname on their port
-	hostname := ""
-	if server != nil {
-		hostname = server.ProxyHostname
-	}
-
-	// Add routes for all proxy-enabled ports
-	for _, port := range module.Ports {
-		if port == nil || !port.ProxyEnabled || port.HostPort == 0 {
-			continue
-		}
-
-		protocol := port.Protocol
-
-		// Handshake routing cannot match without a hostname
-		if hostname == "" && protocol == v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT {
-			continue
-		}
-
-		routeID := fmt.Sprintf("%s-port-%d", module.Id, port.HostPort)
-		if err := m.addPortRouteUnlocked(routeID, hostname, containerIP,
-			int(port.HostPort), m.moduleContainerPort(module, port), protocol, module.Name, port.Name); err != nil {
-			m.logger.Error("Failed to add port route for %s: %v", port.Name, err)
-		}
-	}
-
-	return nil
-}
-
-// True when any port wants proxy routing
-func hasProxyPorts(module *v1.Module) bool {
-	for _, port := range module.Ports {
-		if port != nil && port.ProxyEnabled && port.HostPort != 0 {
+	for _, sock := range m.tcpSockets {
+		if sock.IsRunning() {
 			return true
 		}
 	}
@@ -513,7 +672,7 @@ func hasProxyPorts(module *v1.Module) bool {
 }
 
 // Resolves a container port from the template when unset
-func (m *Manager) moduleContainerPort(module *v1.Module, port *v1.ModulePort) int {
+func (m *Manager) moduleContainerPort(module *v1.Module, port *v1.NetworkPort) int {
 	if port.ContainerPort != 0 {
 		return int(port.ContainerPort)
 	}
@@ -530,204 +689,14 @@ func (m *Manager) moduleContainerPort(module *v1.Module, port *v1.ModulePort) in
 	return 0
 }
 
-// Adds a single port route, caller must hold lock
-func (m *Manager) addPortRouteUnlocked(routeID, hostname, containerIP string, hostPort, containerPort int, protocol v1.ModuleProtocol, moduleName, portName string) error {
-	if containerPort == 0 {
-		return fmt.Errorf("no container port declared for %s", portName)
-	}
-
-	// Check if a proxy already exists for this port
-	proxy, exists := m.proxies[hostPort]
-	if !exists {
-		listenAddr := fmt.Sprintf(":%d", hostPort)
-		cfg := &Config{
-			ListenAddr: listenAddr,
-			Logger:     m.logger,
-		}
-
-		// Create appropriate proxy type based on protocol
-		switch protocol {
-		case v1.ModuleProtocol_MODULE_PROTOCOL_UDP:
-			proxy = NewUDPProxy(cfg)
-			m.logger.Info("Created UDP proxy for port %d", hostPort)
-		case v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT:
-			proxy = NewMinecraftProxy(cfg)
-			m.logger.Info("Created Minecraft proxy for port %d", hostPort)
-		case v1.ModuleProtocol_MODULE_PROTOCOL_HTTP:
-			proxy = NewHTTPProxy(cfg)
-			m.logger.Info("Created HTTP proxy for port %d", hostPort)
-		default:
-			// Raw TCP forwarding covers tcp and unspecified
-			proxy = NewTCPProxy(cfg)
-			m.logger.Info("Created TCP proxy for port %d", hostPort)
-		}
-
-		// Start the proxy
-		if err := proxy.Start(); err != nil {
-			return fmt.Errorf("failed to start module proxy on port %d: %w", hostPort, err)
-		}
-
-		m.proxies[hostPort] = proxy
-	}
-
-	// Add route
-	proxy.AddRoute(routeID, hostname, containerIP, containerPort)
-	m.logger.Info("Added module route: %s:%d -> %s:%d (module: %s, port: %s, protocol: %s)",
-		hostname, hostPort, containerIP, containerPort, moduleName, portName, protocol)
-
-	return nil
-}
-
-// Removes proxy routes for a module's ports
-func (m *Manager) RemoveModuleRoute(moduleID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if !m.config.Enabled {
-		return nil
-	}
-
-	// Find the module to get its ports
-	module, err := m.store.GetModule(context.Background(), moduleID)
-	if err != nil {
-		return err
-	}
-
-	// Hostless modules registered under the catch all key
-	hostname := ""
-	if module.ServerId != "" {
-		server, err := m.store.GetServer(context.Background(), module.ServerId)
-		if err != nil {
-			return err
-		}
-		hostname = server.ProxyHostname
-	}
-
-	// Remove all port routes
-	for _, port := range module.Ports {
-		if port == nil || port.HostPort == 0 {
-			continue
-		}
-		m.removePortRouteUnlocked(int(port.HostPort), hostname, module.Name, port.Name)
-	}
-
-	return nil
-}
-
-// Removes a port route, prunes empty proxies, lock held
-func (m *Manager) removePortRouteUnlocked(hostPort int, hostname, moduleName, portName string) {
-	proxy, exists := m.proxies[hostPort]
-	if !exists {
-		return // No proxy for this port
-	}
-
-	proxy.RemoveRoute(hostname)
-	m.logger.Info("Removed module route: %s:%d (module: %s, port: %s)", hostname, hostPort, moduleName, portName)
-
-	// Check if this proxy has any remaining routes
-	routes := proxy.GetRoutes()
-	if len(routes) == 0 {
-		// Stop and remove the proxy since it's no longer needed
-		if err := proxy.Stop(); err != nil {
-			m.logger.Error("Failed to stop module proxy on port %d: %v", hostPort, err)
-		}
-		delete(m.proxies, hostPort)
-		m.logger.Info("Removed unused module proxy for port %d", hostPort)
-	}
-}
-
-// Updates proxy routes for a module's ports
-func (m *Manager) UpdateModuleRoute(module *v1.Module, server *v1.Server) error {
-	if !m.config.Enabled || !hasProxyPorts(module) {
-		return nil
-	}
-
-	if module.ContainerId == "" {
-		return nil
-	}
-
-	// Get the container IP
-	containerIP, err := m.containerIP(module.ContainerId)
-	if err != nil {
-		return fmt.Errorf("failed to get module container IP: %w", err)
-	}
-
-	// Hostless modules route every hostname on their port
-	hostname := ""
-	if server != nil {
-		hostname = server.ProxyHostname
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Update routes for all proxy-enabled ports
-	for _, port := range module.Ports {
-		if port == nil || !port.ProxyEnabled || port.HostPort == 0 {
-			continue
-		}
-
-		protocol := port.Protocol
-
-		// Handshake routing cannot match without a hostname
-		if hostname == "" && protocol == v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT {
-			continue
-		}
-
-		containerPort := m.moduleContainerPort(module, port)
-		proxy, exists := m.proxies[int(port.HostPort)]
-		if !exists {
-			// Need to add it
-			routeID := fmt.Sprintf("%s-port-%d", module.Id, port.HostPort)
-			if err := m.addPortRouteUnlocked(routeID, hostname, containerIP,
-				int(port.HostPort), containerPort, protocol, module.Name, port.Name); err != nil {
-				m.logger.Error("Failed to add port route for %s: %v", port.Name, err)
-			}
-			continue
-		}
-
-		if containerPort == 0 {
-			m.logger.Error("No container port declared for %s", port.Name)
-			continue
-		}
-		proxy.UpdateRoute(hostname, containerIP, containerPort)
-		m.logger.Info("Updated module route: %s:%d -> %s:%d (module: %s, port: %s)",
-			hostname, port.HostPort, containerIP, containerPort, module.Name, port.Name)
-	}
-
-	return nil
-}
-
-// Returns all module proxy routes
-func (m *Manager) GetModuleRoutes() map[int]map[string]*Route {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	moduleRoutes := make(map[int]map[string]*Route)
-
-	// Non-listener ports all belong to modules
-	for port, proxy := range m.proxies {
-		if m.listenerPorts[port] {
-			continue
-		}
-		moduleRoutes[port] = proxy.GetRoutes()
-	}
-
-	return moduleRoutes
-}
-
-// Aggregates per-server route counters from every listener
+// Aggregates per-route counters from every listener socket
 func (m *Manager) GetRouteStats() map[string]*v1.ProxyRoute {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	stats := make(map[string]*v1.ProxyRoute)
-	for _, proxy := range m.proxies {
-		mp, ok := proxy.(*MinecraftProxy)
-		if !ok {
-			continue
-		}
-		for id, raw := range mp.StatsSnapshots() {
+	for _, sock := range m.tcpSockets {
+		for id, raw := range sock.StatsSnapshots() {
 			if countersReset(m.statsLast[id], raw) {
 				m.statsBase[id] = addCounters(m.statsBase[id], m.statsLast[id])
 			}
@@ -769,49 +738,4 @@ func addCounters(base, cur *v1.ProxyRoute) *v1.ProxyRoute {
 		BytesToClient:       base.BytesToClient + cur.BytesToClient,
 		LastProtocolVersion: cur.LastProtocolVersion,
 	}
-}
-
-// Creates default proxy listener if proxy is enabled
-func (m *Manager) EnsureDefaultListener() (*v1.ProxyListener, error) {
-	if !m.config.Enabled {
-		return nil, nil
-	}
-	return m.ensureDefaultListenerLocked()
-}
-
-// Assumes caller has already verified proxy is enabled
-func (m *Manager) ensureDefaultListenerLocked() (*v1.ProxyListener, error) {
-	ctx := context.Background()
-
-	// Check if any listeners exist
-	listeners, err := m.store.ListProxyListeners(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get proxy listeners: %w", err)
-	}
-
-	if len(listeners) > 0 {
-		return nil, nil
-	}
-
-	// Find an available port using the store function
-	port, err := m.store.FindAvailableListenerPort(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find available port: %w", err)
-	}
-
-	// Create default listener
-	defaultListener := &v1.ProxyListener{
-		Id:        "default",
-		Port:      int32(port),
-		Name:      "Primary",
-		IsDefault: true,
-		Enabled:   true,
-	}
-
-	if err := m.store.CreateProxyListener(ctx, defaultListener); err != nil {
-		return nil, fmt.Errorf("failed to create default listener: %w", err)
-	}
-
-	m.logger.Info("Created default proxy listener on port %d", port)
-	return defaultListener, nil
 }

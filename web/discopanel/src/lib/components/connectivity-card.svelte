@@ -2,24 +2,11 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import { Button } from '$lib/components/ui/button';
-	import {
-		Select,
-		SelectContent,
-		SelectItem,
-		SelectTrigger
-	} from '$lib/components/ui/select';
+	import { Select, SelectContent, SelectItem, SelectTrigger } from '$lib/components/ui/select';
 	import { CopyButton } from '$lib/components/app';
-	import {
-		ArrowRight,
-		Cable,
-		Container,
-		Globe,
-		Network,
-		RefreshCw,
-		Users
-	} from '@lucide/svelte';
+	import { ArrowRight, Cable, Container, Globe, Network, RefreshCw, Users } from '@lucide/svelte';
 	import type { ProxyListener } from '$lib/proto/discopanel/v1/storage_pb';
-	import { composeHostname, hostnameSlug } from '$lib/hostname';
+	import { composeHostname, hostnameSlug, playerAddress } from '$lib/hostname';
 
 	let {
 		proxyEnabled = false,
@@ -58,10 +45,14 @@
 	} = $props();
 
 	let hostnameEdited = $state(false);
+	let hostnameTouched = $state(false);
 
 	let selectedListener = $derived(listeners.find((l) => l.id === listenerId));
 	let composedHostname = $derived(composeHostname(hostname, baseUrl, useBaseUrl));
-	let hostnameMissing = $derived(proxyEnabled && useProxy && hostname.trim().length === 0);
+	// Pristine fields stay quiet until visited
+	let hostnameMissing = $derived(
+		proxyEnabled && useProxy && hostnameTouched && hostname.trim().length === 0
+	);
 	let hasDot = $derived(hostname.includes('.'));
 	let proxied = $derived(proxyEnabled && useProxy);
 
@@ -69,10 +60,10 @@
 	let addressPreview = $derived.by(() => {
 		if (proxied) {
 			const host = composedHostname || (baseUrl ? `your-hostname.${baseUrl}` : 'your-hostname');
-			const listenPort = selectedListener?.port ?? 25565;
-			return listenPort === 25565 ? host : `${host}:${listenPort}`;
+			return playerAddress(host, selectedListener?.port);
 		}
-		return `localhost:${port}`;
+		// Base domain resolves to this machine for direct joins
+		return `${baseUrl || 'localhost'}:${port}`;
 	});
 
 	// Follows the server name until edited by hand
@@ -153,10 +144,6 @@
 		</div>
 		{#if portError}
 			<p class="text-xs text-destructive">{portError}</p>
-		{:else}
-			<p class="text-xs text-muted-foreground">
-				Pre-filled with a free port, the Minecraft default is 25565
-			</p>
 		{/if}
 	</div>
 {/snippet}
@@ -183,11 +170,7 @@
 						Recommended
 					</span>
 				</div>
-				<p class="mt-1 text-xs text-muted-foreground">
-					Players join with a memorable address like {baseUrl
-						? `survival.${baseUrl}`
-						: 'play.example.com'}
-				</p>
+				<p class="mt-1 text-xs text-muted-foreground">Players join by hostname</p>
 			</button>
 			<button
 				type="button"
@@ -203,14 +186,12 @@
 					<Cable class="size-4 text-primary" />
 					Direct port
 				</div>
-				<p class="mt-1 text-xs text-muted-foreground">
-					Players join with this machine's address and a port number
-				</p>
+				<p class="mt-1 text-xs text-muted-foreground">Players join by IP and port</p>
 			</button>
 		</div>
 
 		{#if useProxy}
-			<div class="grid gap-4 {listeners.length > 1 ? 'sm:grid-cols-[minmax(0,1fr)_20rem]' : ''}">
+			<div class="grid gap-4 {listeners.length > 0 ? 'sm:grid-cols-[minmax(0,1fr)_20rem]' : ''}">
 				<div class="space-y-2">
 					<Label for="proxy_hostname">Hostname</Label>
 					<div class="flex">
@@ -218,7 +199,11 @@
 							id="proxy_hostname"
 							placeholder={baseUrl ? 'survival' : 'survival.example.com'}
 							bind:value={hostname}
-							oninput={(e) => (hostnameEdited = e.currentTarget.value.length > 0)}
+							oninput={(e) => {
+								hostnameEdited = e.currentTarget.value.length > 0;
+								hostnameTouched = true;
+							}}
+							onblur={() => (hostnameTouched = true)}
 							{disabled}
 							class="min-w-0 flex-1 {baseUrl ? 'rounded-r-none' : ''} {hostnameMissing ||
 							hostnameError
@@ -229,7 +214,7 @@
 							<button
 								type="button"
 								aria-pressed={useBaseUrl}
-								title={useBaseUrl ? 'Base domain appended, click to detach' : 'Click to append the base domain'}
+								title={useBaseUrl ? 'Click to detach' : 'Click to append'}
 								onclick={() => (useBaseUrl = !useBaseUrl)}
 								{disabled}
 								class="inline-flex shrink-0 items-center rounded-r-md border border-l-0 border-input px-3 font-mono text-xs transition-colors {useBaseUrl &&
@@ -245,14 +230,6 @@
 						<p class="text-xs text-destructive">A hostname is required for proxy routing</p>
 					{:else if hostnameError}
 						<p class="text-xs text-destructive">{hostnameError}</p>
-					{:else if baseUrl && useBaseUrl && hasDot}
-						<p class="text-xs text-muted-foreground">
-							Full domain entered, base domain not appended
-						</p>
-					{:else if baseUrl && useBaseUrl}
-						<p class="text-xs text-muted-foreground">Base domain appended automatically</p>
-					{:else}
-						<p class="text-xs text-muted-foreground">Enter the full domain players will use</p>
 					{/if}
 				</div>
 
@@ -281,6 +258,20 @@
 							</SelectContent>
 						</Select>
 					</div>
+				{:else if listeners.length === 1}
+					<div class="space-y-2">
+						<Label for="proxy_listener_static">Proxy listener</Label>
+						<div
+							id="proxy_listener_static"
+							class="flex h-9 items-center gap-2 rounded-md border bg-muted/40 px-3 text-sm"
+						>
+							<Network class="size-3.5 shrink-0 text-muted-foreground" />
+							<span class="min-w-0 truncate">{listeners[0].name}</span>
+							<span class="ml-auto shrink-0 font-mono text-xs text-muted-foreground">
+								:{listeners[0].port}
+							</span>
+						</div>
+					</div>
 				{/if}
 			</div>
 		{:else}
@@ -294,10 +285,7 @@
 					<Globe class="size-4 text-muted-foreground" />
 					Proxy routing is off
 				</div>
-				<p class="mt-1 text-xs text-muted-foreground">
-					With the proxy enabled, players join with a hostname like play.example.com instead of a
-					port number
-				</p>
+				<p class="mt-1 text-xs text-muted-foreground">Enable the proxy to use hostnames</p>
 			</div>
 		</div>
 	{/if}
@@ -337,7 +325,6 @@
 			<CopyButton text={addressPreview} label="Copy address" />
 		</div>
 	</div>
-	<p class="mt-2 text-xs text-muted-foreground">What players type into their multiplayer server list</p>
 </div>
 
 <div class="border-t bg-muted/20 px-4 py-3.5">
@@ -348,7 +335,7 @@
 			{@render pathNode(
 				Network,
 				selectedListener?.name || 'Proxy listener',
-				`:${selectedListener?.port ?? 25565}`,
+				selectedListener ? `:${selectedListener.port}` : 'listener',
 				'active'
 			)}
 			<ArrowRight class="size-3.5 shrink-0 text-muted-foreground/60" />

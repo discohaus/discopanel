@@ -251,7 +251,7 @@ message CreateModuleTemplateRequest {
   // Usage documentation.
   string documentation = 13;
   // Default port configurations.
-  repeated ModulePort ports = 14;
+  repeated NetworkPort ports = 14;
   // Suggested dependency template IDs.
   repeated string suggested_dependencies = 15;
   // Default event hooks.
@@ -298,7 +298,7 @@ message UpdateModuleTemplateRequest {
   optional string icon = 12;
   optional string category = 13;
   optional string documentation = 14;
-  repeated ModulePort ports = 15;
+  repeated NetworkPort ports = 15;
   repeated string suggested_dependencies = 16;
   repeated ModuleEventHook default_hooks = 17;
   map<string, string> metadata = 18;
@@ -377,7 +377,7 @@ message CreateModuleRequest {
   // Start the container immediately after creation.
   bool start_immediately = 12;
   // Port configurations. Defaults to template ports if empty.
-  repeated ModulePort ports = 13;
+  repeated NetworkPort ports = 13;
   // Module dependencies.
   repeated ModuleDependency dependencies = 14;
   // Seconds between health checks.
@@ -423,7 +423,7 @@ message UpdateModuleRequest {
   optional bool auto_start = 8;
   optional bool follow_server_lifecycle = 9;
   optional bool detached = 10;
-  repeated ModulePort ports = 11;
+  repeated NetworkPort ports = 11;
   repeated ModuleDependency dependencies = 12;
   optional int32 health_check_interval = 13;
   optional int32 health_check_timeout = 14;

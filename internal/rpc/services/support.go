@@ -696,13 +696,28 @@ func (s *SupportService) addSystemInfoToBundle(ctx context.Context, tarWriter *t
 		}
 	}
 
+	// Database rows carry the live proxy truth
+	proxyEnabled := false
+	var proxyPorts []int32
+	if proxyConfig, _, err := s.store.GetProxyConfig(ctx); err == nil {
+		proxyEnabled = proxyConfig.Enabled
+	}
+	listeners, listenersErr := s.store.ListProxyListeners(ctx)
+	if listenersErr == nil {
+		for _, l := range listeners {
+			if l.Enabled {
+				proxyPorts = append(proxyPorts, l.Port)
+			}
+		}
+	}
+
 	// Build config info
 	configInfo := &v1.ConfigInfo{
 		StorageDir:     s.config.Storage.DataDir,
 		TempDir:        s.config.Storage.TempDir,
 		DatabasePath:   s.config.Database.Path,
-		ProxyEnabled:   s.config.Proxy.Enabled,
-		ProxyPorts:     toInt32Slice(s.config.Proxy.ListenPorts),
+		ProxyEnabled:   proxyEnabled,
+		ProxyPorts:     proxyPorts,
 		ServerHost:     s.config.Server.Host,
 		ServerPort:     s.config.Server.Port,
 		LoggingEnabled: s.config.Logging.Enabled,
@@ -712,17 +727,14 @@ func (s *SupportService) addSystemInfoToBundle(ctx context.Context, tarWriter *t
 
 	// Build proxy config if enabled
 	var proxyConfigInfo *v1.ProxyConfigInfo
-	if s.config.Proxy.Enabled {
+	if proxyEnabled {
 		proxyConfig, _, err := s.store.GetProxyConfig(ctx)
 		if err == nil {
 			proxyConfigInfo = &v1.ProxyConfigInfo{
 				Enabled: proxyConfig.Enabled,
 				BaseUrl: proxyConfig.BaseUrl,
 			}
-
-			// Get proxy listeners
-			listeners, err := s.store.ListProxyListeners(ctx)
-			if err == nil {
+			if listenersErr == nil {
 				for _, listener := range listeners {
 					proxyConfigInfo.Listeners = append(proxyConfigInfo.Listeners, &v1.ProxyListenerInfo{
 						Name:      listener.Name,
@@ -817,14 +829,6 @@ func addFileToTar(tw *tar.Writer, sourcePath, destPath string) error {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return !os.IsNotExist(err)
-}
-
-func toInt32Slice(intSlice []int) []int32 {
-	result := make([]int32, len(intSlice))
-	for i, v := range intSlice {
-		result[i] = int32(v)
-	}
-	return result
 }
 
 // Gets version information for the application

@@ -23,7 +23,7 @@
 		ModuleTemplate,
 		Module,
 		ModuleConfigField,
-		ModulePort,
+		NetworkPort,
 		ModuleDependency,
 		ModuleEventHook,
 		VolumeMount
@@ -38,7 +38,7 @@
 		TriggeredEventType,
 		ModuleProtocol,
 		ModuleProtocolSchema,
-		ModulePortSchema,
+		NetworkPortSchema,
 		ModuleDependencySchema,
 		ModuleEventHookSchema,
 		VolumeMountSchema
@@ -88,7 +88,13 @@
 		value: string;
 	}
 
-	type ConfigSection = 'general' | 'configuration' | 'ports' | 'environment' | 'volumes' | 'advanced';
+	type ConfigSection =
+		| 'general'
+		| 'configuration'
+		| 'ports'
+		| 'environment'
+		| 'volumes'
+		| 'advanced';
 
 	let {
 		open = $bindable(),
@@ -122,7 +128,7 @@
 	let startImmediately = $state(true);
 	let envVars = $state<EnvVar[]>([]);
 	let volumes = $state<VolumeMount[]>([]);
-	let ports = $state<ModulePort[]>([]);
+	let ports = $state<NetworkPort[]>([]);
 	let dependencies = $state<ModuleDependency[]>([]);
 	let healthCheckInterval = $state(30);
 	let healthCheckTimeout = $state(5);
@@ -137,8 +143,8 @@
 	let promptSubmitting = $state(false);
 
 	let serverId = $derived(mode === 'create' ? server?.id : module?.serverId);
-	let hasProxy = $derived(
-		mode === 'create' ? !!server?.proxyHostname : !!module?.serverProxyHostname
+	let serverHost = $derived(
+		(mode === 'create' ? server?.proxyHostname : module?.serverProxyHostname) ?? ''
 	);
 	let activeTemplate = $derived(mode === 'create' ? selectedTemplate : editTemplate);
 	let configFields = $derived(activeTemplate?.configFields ?? []);
@@ -258,12 +264,13 @@
 	function addPort() {
 		ports = [
 			...ports,
-			create(ModulePortSchema, {
+			create(NetworkPortSchema, {
 				name: '',
 				containerPort: 0,
 				hostPort: 0,
 				protocol: ModuleProtocol.TCP,
-				proxyEnabled: true
+				proxyEnabled: true,
+				hostname: ''
 			})
 		];
 	}
@@ -311,7 +318,10 @@
 	];
 
 	function getEventActionLabel(a: ModuleEventAction): string {
-		return enumLabel(ModuleEventActionSchema, a) || enumLabel(ModuleEventActionSchema, ModuleEventAction.UNSPECIFIED);
+		return (
+			enumLabel(ModuleEventActionSchema, a) ||
+			enumLabel(ModuleEventActionSchema, ModuleEventAction.UNSPECIFIED)
+		);
 	}
 
 	async function loadServerModules() {
@@ -365,30 +375,19 @@
 	async function selectTemplate(template: ModuleTemplate) {
 		selectedTemplate = template;
 		name = template.name;
-		const [portResponse] = await Promise.all([
-			rpcClient.module
-				.getNextAvailableModulePort({ serverId: serverId || '' })
-				.catch(() => ({ port: 8100 })),
-			loadServerModules()
-		]);
+		await loadServerModules();
 		const fieldKeys = new Set(template.configFields.map((f) => f.env));
 		envVars = parseEnvVars(template.defaultEnv).filter((e) => !fieldKeys.has(e.key));
 		seedConfigValues(template.configFields, {});
 		volumes = template.defaultVolumes.map((v) => clone(VolumeMountSchema, v));
-		ports = template.ports.map((p) => clone(ModulePortSchema, p));
+		// Zero host ports stay zero, backend registry allocates them
+		ports = template.ports.map((p) => clone(NetworkPortSchema, p));
 		memory = template.defaultMemory;
 		uid = template.defaultUid;
 		gid = template.defaultGid;
 		initCommand = template.defaultInitCommand;
 		initCommandDelay = template.defaultInitCommandDelay;
 		restartAfterInit = template.defaultRestartAfterInit;
-		let nextPort = portResponse.port;
-		for (const port of ports) {
-			if (port.hostPort === 0) {
-				port.hostPort = nextPort;
-				nextPort++;
-			}
-		}
 		eventHooks = template.defaultHooks.map((h) => clone(ModuleEventHookSchema, h));
 		metadata = parseMetadata(template.metadata);
 		step = 'configure';
@@ -422,16 +421,21 @@
 	function showWarnings(): Promise<boolean> {
 		const w: string[] = [];
 
-		if (ports.some((p) => p.proxyEnabled) && !hasProxy) {
+		const blindMinecraft = ports.some(
+			(p) =>
+				p.proxyEnabled &&
+				p.protocol === ModuleProtocol.MINECRAFT &&
+				!p.hostname.trim() &&
+				!serverHost
+		);
+		if (blindMinecraft) {
 			w.push(
-				"One or more ports have proxy enabled, but this server has no proxy hostname configured. Proxy-routed ports won't be accessible from the host"
+				'Minecraft ports route by hostname. Without one here or on the server, players cannot reach them.'
 			);
 		}
 
 		if (ports.some((p) => p.hostPort === 0 && p.containerPort > 0)) {
-			w.push(
-				'One or more ports have no host port assigned. They will not be accessible from outside the container.'
-			);
+			w.push('Ports without a host port will be auto-assigned a free one on save.');
 		}
 
 		if (memory < 64) {
@@ -485,7 +489,7 @@
 				restartAfterInit = module.restartAfterInit;
 				envVars = parseEnvVars(module.envOverrides);
 				volumes = module.volumeOverrides.map((v) => clone(VolumeMountSchema, v));
-				ports = module.ports.map((p) => clone(ModulePortSchema, p));
+				ports = module.ports.map((p) => clone(NetworkPortSchema, p));
 				dependencies = module.dependencies.map((d) => clone(ModuleDependencySchema, d));
 				healthCheckInterval = module.healthCheckInterval || 30;
 				healthCheckTimeout = module.healthCheckTimeout || 5;
@@ -847,7 +851,11 @@
 												}}
 											/>
 										{/if}
-										<Button size="sm" disabled={promptSubmitting || !promptValue} onclick={submitPrompt}>
+										<Button
+											size="sm"
+											disabled={promptSubmitting || !promptValue}
+											onclick={submitPrompt}
+										>
 											{#if promptSubmitting}
 												<Loader2 class="size-4 animate-spin" />
 											{:else}
@@ -1018,7 +1026,8 @@
 														</div>
 														<Switch
 															checked={configValues[field.env] === 'true'}
-															onCheckedChange={(v) => (configValues[field.env] = v ? 'true' : 'false')}
+															onCheckedChange={(v) =>
+																(configValues[field.env] = v ? 'true' : 'false')}
 														/>
 													</label>
 												{:else}
@@ -1043,7 +1052,8 @@
 															</SelectTrigger>
 															<SelectContent>
 																{#each field.options as opt (opt.value)}
-																	<SelectItem value={opt.value}>{opt.label || opt.value}</SelectItem>
+																	<SelectItem value={opt.value}>{opt.label || opt.value}</SelectItem
+																	>
 																{/each}
 															</SelectContent>
 														</Select>
@@ -1123,7 +1133,11 @@
 													</div>
 													<div class="space-y-1.5">
 														<Label>Host port</Label>
-														<Input type="number" bind:value={port.hostPort} placeholder="8080" />
+														<Input
+															type="number"
+															bind:value={port.hostPort}
+															placeholder="0 = auto"
+														/>
 													</div>
 													<div class="space-y-1.5">
 														<Label>Container port</Label>
@@ -1161,32 +1175,60 @@
 													</div>
 												</div>
 
-												<label class="flex w-fit cursor-pointer items-center gap-2">
-													<Checkbox bind:checked={port.proxyEnabled} />
-													<span class="text-sm">Enable proxy for this port</span>
-												</label>
+												<div class="flex flex-wrap items-center gap-3">
+													<label class="flex w-fit cursor-pointer items-center gap-2">
+														<Checkbox bind:checked={port.proxyEnabled} />
+														<span class="text-sm">Enable proxy for this port</span>
+													</label>
+													{#if port.proxyEnabled && (port.protocol === ModuleProtocol.TCP || port.protocol === ModuleProtocol.UDP)}
+														<span
+															class="rounded-full border px-1.5 py-px text-[10px] text-muted-foreground"
+														>
+															relay
+														</span>
+													{/if}
+												</div>
 
-												{#if port.proxyEnabled && !hasProxy}
+												{#if port.proxyEnabled && (port.protocol === ModuleProtocol.TCP || port.protocol === ModuleProtocol.UDP)}
+													<p class="text-xs text-muted-foreground">
+														Forwards raw traffic through the listener port
+													</p>
+												{/if}
+
+												{#if port.proxyEnabled && (port.protocol === ModuleProtocol.HTTP || port.protocol === ModuleProtocol.MINECRAFT)}
+													<div class="space-y-1.5">
+														<Label>Hostname</Label>
+														<Input
+															bind:value={port.hostname}
+															placeholder={serverHost ||
+																(port.protocol === ModuleProtocol.HTTP
+																	? 'any hostname'
+																	: 'needs a hostname')}
+															class="font-mono"
+														/>
+														<p class="text-xs text-muted-foreground">
+															Leave empty to inherit the server hostname
+														</p>
+													</div>
+												{/if}
+
+												{#if port.proxyEnabled && port.protocol === ModuleProtocol.MINECRAFT && !port.hostname.trim() && !serverHost}
 													<div
 														class="flex items-start gap-2 rounded-md border border-status-warn/30 bg-status-warn/10 p-3"
 													>
 														<Info class="mt-0.5 size-4 shrink-0 text-status-warn" />
 														<div class="flex-1 space-y-2 text-xs">
 															<p class="text-status-warn">
-																This server has no proxy hostname configured. Proxy-routed ports
-																won't be accessible from the host.
+																Minecraft routing matches hostnames. Without one this port cannot
+																receive players.
 															</p>
 															<Button
 																variant="outline"
 																size="sm"
 																class="h-7 text-xs"
-																onclick={() => {
-																	port.proxyEnabled = false;
-																	if (port.protocol === ModuleProtocol.HTTP)
-																		port.protocol = ModuleProtocol.TCP;
-																}}
+																onclick={() => (port.proxyEnabled = false)}
 															>
-																Fix: switch to direct TCP binding
+																Fix: switch to direct binding
 															</Button>
 														</div>
 													</div>

@@ -282,7 +282,7 @@ func (c *Client) CreateContainer(ctx context.Context, server *v1.Server, serverC
 		nat.Port(fmt.Sprintf("%d/tcp", DefaultRCONPort)): struct{}{},
 	}
 	for _, port := range server.AdditionalPorts {
-		protocol := protometa.Name(models.PortTransport(port.GetProtocol()))
+		protocol := protometa.Name(models.TransportOf(port.GetProtocol()))
 		exposedPorts[nat.Port(fmt.Sprintf("%d/%s", port.GetContainerPort(), protocol))] = struct{}{}
 	}
 
@@ -300,7 +300,11 @@ func (c *Client) CreateContainer(ctx context.Context, server *v1.Server, serverC
 	}
 	// Add additional port bindings
 	for _, port := range server.AdditionalPorts {
-		protocol := protometa.Name(models.PortTransport(port.GetProtocol()))
+		// Proxied ports reach the container over the panel network
+		if port.GetProxyEnabled() {
+			continue
+		}
+		protocol := protometa.Name(models.TransportOf(port.GetProtocol()))
 		portKey := nat.Port(fmt.Sprintf("%d/%s", port.GetContainerPort(), protocol))
 		portBindings[portKey] = []nat.PortBinding{
 			{HostIP: "0.0.0.0", HostPort: fmt.Sprintf("%d", port.GetHostPort())},

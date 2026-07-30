@@ -286,7 +286,7 @@ message CreateServerRequest {
   string proxy_hostname = 14;
   string proxy_listener_id = 15;
   bool use_base_url = 16;
-  repeated AdditionalPort additional_ports = 17;
+  repeated NetworkPort additional_ports = 17;
   DockerOverrides docker_overrides = 18;
   string world_upload_session_id = 21; // Uploaded world zip to import at create
 }
@@ -315,7 +315,7 @@ message UpdateServerRequest {
   reserved "tps_command";
   string modpack_id = 13;
   string modpack_version_id = 14;
-  repeated AdditionalPort additional_ports = 15;
+  repeated NetworkPort additional_ports = 15;
   DockerOverrides docker_overrides = 16;
 }
 

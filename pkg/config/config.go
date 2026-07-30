@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 
 	"github.com/go-viper/mapstructure/v2"
@@ -85,10 +84,9 @@ type StorageConfig struct {
 type ProxyConfig struct {
 	Enabled      bool   `mapstructure:"enabled" json:"enabled"`
 	BaseUrl      string `mapstructure:"base_url" json:"base_url"`
-	ListenPort   int    `mapstructure:"listen_port" json:"listen_port"`   // Primary listen port
-	ListenPorts  []int  `mapstructure:"listen_ports" json:"listen_ports"` // Multiple listen ports
+	PublicIp     string `mapstructure:"public_ip" json:"public_ip"` // Overrides instant domain detection
+	ListenPort   int    `mapstructure:"listen_port" json:"listen_port"` // Primary listen port
 	PortRangeMin int    `mapstructure:"port_range_min" json:"port_range_min"`
-	PortRangeMax int    `mapstructure:"port_range_max" json:"port_range_max"`
 }
 
 type ModuleConfig struct {
@@ -224,10 +222,9 @@ func setDefaults(v *viper.Viper) {
 	// Proxy defaults
 	v.SetDefault("proxy.enabled", true)
 	v.SetDefault("proxy.base_url", "")
+	v.SetDefault("proxy.public_ip", "")
 	v.SetDefault("proxy.listen_port", 25565)
-	v.SetDefault("proxy.listen_ports", []int{25565})
 	v.SetDefault("proxy.port_range_min", 25565)
-	v.SetDefault("proxy.port_range_max", 25665)
 
 	// Module defaults
 	v.SetDefault("module.enabled", true)
@@ -298,25 +295,8 @@ func validateConfig(cfg *Config) error {
 	}
 
 	// Validate port ranges
-	if cfg.Proxy.PortRangeMin >= cfg.Proxy.PortRangeMax {
-		return fmt.Errorf("proxy port range min must be less than max")
-	}
-
 	if cfg.Module.PortRangeMin >= cfg.Module.PortRangeMax {
 		return fmt.Errorf("module port range min must be less than max")
-	}
-
-	// Ensure ListenPorts includes Primary ListenPort
-	if cfg.Proxy.Enabled {
-		if len(cfg.Proxy.ListenPorts) == 0 {
-			cfg.Proxy.ListenPorts = []int{cfg.Proxy.ListenPort}
-		} else {
-			// Make sure the primary port is in the list
-			hasPort := slices.Contains(cfg.Proxy.ListenPorts, cfg.Proxy.ListenPort)
-			if !hasPort {
-				cfg.Proxy.ListenPorts = append([]int{cfg.Proxy.ListenPort}, cfg.Proxy.ListenPorts...)
-			}
-		}
 	}
 
 	// Validate custom Docker labels do not use reserved namespace 'discopanel.'

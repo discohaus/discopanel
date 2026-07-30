@@ -68,6 +68,7 @@
 	let stopped = $derived(server.status === ServerStatus.STOPPED);
 	let proxied = $derived(server.proxyHostname !== '');
 	let displayFavicon = $derived(uploadedFavicon || server.favicon);
+	let usedPorts = $state<Record<number, boolean>>({});
 
 	function safeToString(data?: unknown): string | undefined {
 		if (!data) return undefined;
@@ -185,15 +186,21 @@
 	async function loadOptions() {
 		try {
 			loadingOptions = true;
-			const [versions, loaders, images, hostMemory] = await Promise.all([
+			const [versions, loaders, images, hostMemory, portData] = await Promise.all([
 				rpcClient.minecraft.getMinecraftVersions({}),
 				loadModLoaders(),
 				rpcClient.minecraft.getDockerImages({}),
-				rpcClient.server.getHostMemory({})
+				rpcClient.server.getHostMemory({}),
+				rpcClient.server.getNextAvailablePort({}).catch(() => null)
 			]);
 			minecraftVersions = versions;
 			modLoaders = loaders;
 			dockerImages = images;
+			// Backend registry is authoritative, this only hints early
+			const ownExtra = new Set((server.additionalPorts ?? []).map((p) => p.hostPort));
+			usedPorts = Object.fromEntries(
+				portData?.usedPorts?.filter((p) => !ownExtra.has(p.port)).map((p) => [p.port, true]) ?? []
+			);
 			hostTotalMb = Number(hostMemory.totalMb);
 			memoryAllocations = hostMemory.allocations.map((a) => ({
 				serverId: a.serverId,
@@ -538,7 +545,10 @@
 					<div id="panel-additionalPorts" class="min-w-0 {ring('panel-additionalPorts')}">
 						<AdditionalPortsEditor
 							bind:ports={formData.additionalPorts}
+							{usedPorts}
 							disabled={saving}
+							proxyAvailable={proxied}
+							serverHostname={server.proxyHostname}
 							onchange={(ports) => (formData.additionalPorts = ports)}
 						/>
 					</div>

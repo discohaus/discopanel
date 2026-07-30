@@ -22,14 +22,14 @@
 		ModuleEventAction,
 		ModuleEventActionSchema,
 		ModuleEventHookSchema,
-		ModulePortSchema,
+		NetworkPortSchema,
 		ModuleProtocol,
 		ModuleProtocolSchema,
 		TriggeredEventType,
 		VolumeMountSchema,
 		type ModuleConfigField,
 		type ModuleEventHook,
-		type ModulePort,
+		type NetworkPort,
 		type ModuleTemplate,
 		type VolumeMount
 	} from '$lib/proto/discopanel/v1/storage_pb';
@@ -67,7 +67,14 @@
 		value: string;
 	}
 
-	type ConfigSection = 'basic' | 'docker' | 'fields' | 'ports' | 'environment' | 'volumes' | 'advanced';
+	type ConfigSection =
+		| 'basic'
+		| 'docker'
+		| 'fields'
+		| 'ports'
+		| 'environment'
+		| 'volumes'
+		| 'advanced';
 
 	let { open = $bindable(), mode = 'create', template, onSuccess }: Props = $props();
 
@@ -93,7 +100,7 @@
 	let defaultRestartAfterInit = $state(false);
 	let envVars = $state<EnvVar[]>([]);
 	let volumes = $state<VolumeMount[]>([]);
-	let ports = $state<ModulePort[]>([]);
+	let ports = $state<NetworkPort[]>([]);
 	let suggestedDependencies = $state('');
 	let defaultHooks = $state<ModuleEventHook[]>([]);
 	let metadata = $state<MetadataEntry[]>([]);
@@ -189,7 +196,7 @@
 	function addPort() {
 		ports = [
 			...ports,
-			create(ModulePortSchema, {
+			create(NetworkPortSchema, {
 				name: '',
 				containerPort: 0,
 				hostPort: 0,
@@ -335,7 +342,7 @@
 
 		envVars = Object.entries(t.defaultEnv).map(([key, value]) => ({ key, value }));
 		volumes = t.defaultVolumes.map((v) => clone(VolumeMountSchema, v));
-		ports = t.ports.map((p) => clone(ModulePortSchema, p));
+		ports = t.ports.map((p) => clone(NetworkPortSchema, p));
 		configFields = t.configFields.map((f) => clone(ModuleConfigFieldSchema, f));
 		suggestedDependencies = t.suggestedDependencies.join(', ');
 		defaultHooks = t.defaultHooks.map((h) => clone(ModuleEventHookSchema, h));
@@ -723,7 +730,11 @@
 											<div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
 												<div class="space-y-2">
 													<Label>Env variable *</Label>
-													<Input bind:value={field.env} placeholder="SECRET_KEY" class="font-mono" />
+													<Input
+														bind:value={field.env}
+														placeholder="SECRET_KEY"
+														class="font-mono"
+													/>
 												</div>
 												<div class="space-y-2">
 													<Label>Label</Label>
@@ -1009,7 +1020,10 @@
 													>
 														<SelectTrigger class="w-full">
 															<span class="uppercase">
-																{enumLabel(ModuleProtocolSchema, port.protocol || ModuleProtocol.TCP)}
+																{enumLabel(
+																	ModuleProtocolSchema,
+																	port.protocol || ModuleProtocol.TCP
+																)}
 															</span>
 														</SelectTrigger>
 														<SelectContent>
@@ -1281,7 +1295,9 @@
 																		<div class="flex flex-col">
 																			<span>{getEventActionLabel(a)}</span>
 																			{#if enumDesc(ModuleEventActionSchema, a)}
-																				<span class="text-xs text-muted-foreground">{enumDesc(ModuleEventActionSchema, a)}</span>
+																				<span class="text-xs text-muted-foreground"
+																					>{enumDesc(ModuleEventActionSchema, a)}</span
+																				>
 																			{/if}
 																		</div>
 																	</SelectItem>

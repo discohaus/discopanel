@@ -19,7 +19,7 @@ const (
 )
 
 // Default web port for the seeded doctor instance
-func doctorPorts(cfg *config.Config) []*v1.ModulePort {
+func doctorPorts(cfg *config.Config) []*v1.NetworkPort {
 	port := int32(8190)
 	proxied := false
 	if cfg != nil {
@@ -29,7 +29,7 @@ func doctorPorts(cfg *config.Config) []*v1.ModulePort {
 		// Direct host bind keeps doctor reachable without proxy
 		proxied = cfg.Proxy.Enabled
 	}
-	return []*v1.ModulePort{
+	return []*v1.NetworkPort{
 		{Name: "Web", ContainerPort: 8190, HostPort: port, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, ProxyEnabled: proxied},
 	}
 }
@@ -70,7 +70,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			SupportsProxy:  true,
 			RequiresServer: true,
 			Icon:           "users",
-			Ports: []*v1.ModulePort{
+			Ports: []*v1.NetworkPort{
 				{Name: "Bedrock", ContainerPort: 19132, HostPort: 0, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_UDP, ProxyEnabled: true},
 			},
 			DefaultAccessUrls: []string{"http://{{host.hostname}}:{{module.ports.Bedrock.host_port}}"},
@@ -104,7 +104,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			SupportsProxy:  true,
 			RequiresServer: true,
 			Icon:           "chart-bar",
-			Ports: []*v1.ModulePort{
+			Ports: []*v1.NetworkPort{
 				{Name: "Metrics", ContainerPort: 9225, HostPort: 0, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, ProxyEnabled: true},
 			},
 			DefaultAccessUrls: []string{"http://{{host.hostname}}:{{module.ports.Metrics.host_port}}/metrics"},
@@ -128,7 +128,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			RequiresServer: true,
 			Icon:           "map",
 			DefaultCmd:     "-r -u -w",
-			Ports: []*v1.ModulePort{
+			Ports: []*v1.NetworkPort{
 				{Name: "Web", ContainerPort: 8100, HostPort: 0, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, ProxyEnabled: true},
 			},
 			DefaultAccessUrls: []string{"http://{{host.hostname}}:{{module.ports.Web.host_port}}"},
@@ -158,7 +158,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			SupportsProxy:  true,
 			RequiresServer: true,
 			Icon:           "monitor",
-			Ports: []*v1.ModulePort{
+			Ports: []*v1.NetworkPort{
 				{Name: "Web", ContainerPort: 8181, HostPort: 0, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, ProxyEnabled: true},
 			},
 			DefaultAccessUrls: []string{"http://{{host.hostname}}:{{module.ports.Web.host_port}}"},
@@ -181,7 +181,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			SupportsProxy:  false,
 			RequiresServer: true,
 			Icon:           "gamepad-2",
-			Ports: []*v1.ModulePort{
+			Ports: []*v1.NetworkPort{
 				{Name: "Status", ContainerPort: 8200, HostPort: 0, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, ProxyEnabled: false},
 			},
 			DefaultEnv: map[string]string{
@@ -301,7 +301,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			SupportsProxy:  false,
 			RequiresServer: true,
 			Icon:           "globe",
-			Ports: []*v1.ModulePort{
+			Ports: []*v1.NetworkPort{
 				{Name: "Status", ContainerPort: 8201, HostPort: 0, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, ProxyEnabled: false},
 			},
 			DefaultAccessUrls: []string{"https://playit.gg/account/tunnels"},
@@ -368,7 +368,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			RequiresServer: false,
 			Global:         true,
 			Icon:           "stethoscope",
-			Ports: []*v1.ModulePort{
+			Ports: []*v1.NetworkPort{
 				{Name: "Web", ContainerPort: 8190, HostPort: 0, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, ProxyEnabled: true},
 			},
 			DefaultAccessUrls: doctorAccessURLs(),

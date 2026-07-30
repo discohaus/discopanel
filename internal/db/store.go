@@ -31,6 +31,39 @@ func InContainerPort(s *v1.Server) int {
 	return int(s.Port)
 }
 
+// Fills transient proxy port from listener rows
+func (s *Store) HydrateProxyPorts(ctx context.Context, servers ...*v1.Server) error {
+	needed := false
+	for _, server := range servers {
+		if server != nil && server.ProxyListenerId != "" {
+			needed = true
+			break
+		}
+	}
+	if !needed {
+		return nil
+	}
+	listeners, err := s.ListProxyListeners(ctx)
+	if err != nil {
+		return err
+	}
+	byID := make(map[string]int32, len(listeners))
+	for _, l := range listeners {
+		byID[l.Id] = l.Port
+	}
+	for _, server := range servers {
+		if server == nil {
+			continue
+		}
+		if server.ProxyHostname != "" {
+			server.ProxyPort = byID[server.ProxyListenerId]
+		} else {
+			server.ProxyPort = 0
+		}
+	}
+	return nil
+}
+
 // Splits the platform's force include list into patterns
 func ForceIncludePatterns(loader v1.ModLoader, cfg *v1.ServerProperties) []string {
 	if cfg == nil {
@@ -460,10 +493,11 @@ func (s *Store) GetProxyConfig(ctx context.Context) (*v1.ProxyConfig, bool, erro
 	err := s.db.WithContext(ctx).First(&config).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Missing row mirrors the file config defaults
 			return &v1.ProxyConfig{
 				Id:      "default",
-				Enabled: false,
-				BaseUrl: "",
+				Enabled: s.cfg.Proxy.Enabled,
+				BaseUrl: s.cfg.Proxy.BaseUrl,
 			}, true, nil
 		}
 		return nil, false, err
@@ -477,52 +511,6 @@ func (s *Store) SaveProxyConfig(ctx context.Context, config *v1.ProxyConfig) err
 		config.Id = "default"
 	}
 	return s.UpdateProxyConfig(ctx, config)
-}
-
-// Finds first available port for a proxy listener
-func (s *Store) FindAvailableListenerPort(ctx context.Context) (int, error) {
-	const startPort = 25565
-	const maxPort = 65535
-
-	listeners, err := s.ListProxyListeners(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get proxy listeners: %w", err)
-	}
-
-	servers, err := s.ListServers(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to list servers: %w", err)
-	}
-
-	// Ports held by listeners and directly bound servers
-	usedPorts := make(map[int]bool)
-	for _, l := range listeners {
-		usedPorts[int(l.Port)] = true
-	}
-	for _, srv := range servers {
-		if srv.ProxyHostname == "" && srv.Port > 0 {
-			usedPorts[int(srv.Port)] = true
-		}
-	}
-
-	for port := startPort; port <= maxPort; port++ {
-		if usedPorts[port] {
-			continue
-		}
-
-		// Checks for a non-proxied module already bound to this port
-		conflict, err := s.CheckPortAvailability(ctx, port, v1.ModuleProtocol_MODULE_PROTOCOL_TCP, false, "", "")
-		if err != nil {
-			return 0, fmt.Errorf("failed to check port availability: %w", err)
-		}
-		if conflict != nil {
-			continue
-		}
-
-		return port, nil
-	}
-
-	return 0, fmt.Errorf("no available ports found starting from %d", startPort)
 }
 
 // Seeds the fixed system roles when missing
@@ -650,88 +638,12 @@ func (s *Store) CleanOldTaskExecutions(ctx context.Context, olderThan time.Time,
 	return nil
 }
 
-// Finds a module that uses the specified host port
-func (s *Store) GetModuleByHostPort(ctx context.Context, port int) (*v1.Module, error) {
-	modules, err := s.ListModules(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, module := range modules {
-		for _, p := range module.Ports {
-			if p != nil && int(p.HostPort) == port {
-				return module, nil
-			}
-		}
-	}
-
-	return nil, nil
-}
-
-// Describes a port conflict between modules
-type PortConflict struct {
-	Module   *v1.Module
-	Port     int
-	Protocol v1.ModuleProtocol
-	Reason   string
-}
-
-// Wire protocol behind a port protocol, unspecified reads tcp
-func PortTransport(p v1.ModuleProtocol) v1.ModuleProtocol {
+// Transport a protocol rides on, unspecified reads tcp
+func TransportOf(p v1.ModuleProtocol) v1.NetworkTransport {
 	if p == v1.ModuleProtocol_MODULE_PROTOCOL_UDP {
-		return v1.ModuleProtocol_MODULE_PROTOCOL_UDP
+		return v1.NetworkTransport_NETWORK_TRANSPORT_UDP
 	}
-	return v1.ModuleProtocol_MODULE_PROTOCOL_TCP
-}
-
-// Checks port availability across proxied and non-proxied modules
-func (s *Store) CheckPortAvailability(ctx context.Context, hostPort int, protocol v1.ModuleProtocol, proxyEnabled bool, hostname string, excludeModuleID string) (*PortConflict, error) {
-	modules, err := s.ListModules(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	transport := PortTransport(protocol)
-	for _, module := range modules {
-		if module.Id == excludeModuleID {
-			continue
-		}
-
-		for _, p := range module.Ports {
-			if p == nil || int(p.HostPort) != hostPort {
-				continue
-			}
-
-			// TCP and UDP use separate port spaces
-			if PortTransport(p.Protocol) != transport {
-				continue
-			}
-
-			// Non-proxied ports bind directly to host
-			if !proxyEnabled || !p.ProxyEnabled {
-				return &PortConflict{
-					Module:   module,
-					Port:     hostPort,
-					Protocol: protocol,
-					Reason:   "port is bound directly to host by another module",
-				}, nil
-			}
-
-			// Proxied UDP is exclusive, no hostname routing
-			if transport == v1.ModuleProtocol_MODULE_PROTOCOL_UDP {
-				return &PortConflict{
-					Module:   module,
-					Port:     hostPort,
-					Protocol: protocol,
-					Reason:   "UDP proxy port already in use",
-				}, nil
-			}
-
-			// Proxied TCP allows hostname routing, never a conflict
-		}
-	}
-
-	return nil, nil
+	return v1.NetworkTransport_NETWORK_TRANSPORT_TCP
 }
 
 // Returns enabled tasks subscribed to an event for a server

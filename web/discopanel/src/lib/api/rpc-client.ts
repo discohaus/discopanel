@@ -29,6 +29,12 @@ import { UserService } from '$lib/proto/discopanel/v1/user_pb';
 import { RoleService } from '$lib/proto/discopanel/v1/role_pb';
 import { ModuleService } from '$lib/proto/discopanel/v1/module_pb';
 
+// Bare backend reason for inline error surfaces
+export function rpcErrorMessage(error: unknown, fallback: string): string {
+	if (error instanceof ConnectError) return error.rawMessage || fallback;
+	return error instanceof Error ? error.message : fallback;
+}
+
 // Header to mark requests as silent / no loader
 const SILENT_HEADER = 'X-Silent-Request';
 

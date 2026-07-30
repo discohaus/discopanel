@@ -15,6 +15,13 @@ export function splitHostname(full: string, baseUrl: string): { host: string; us
 	return { host: full, useBase: false };
 }
 
+// Player facing address, default port stays implicit
+export function playerAddress(host: string, listenerPort?: number): string {
+	if (!host) return '';
+	if (listenerPort && listenerPort !== 25565) return `${host}:${listenerPort}`;
+	return host;
+}
+
 // Turns a display name into a hostname slug
 export function hostnameSlug(name: string): string {
 	return name

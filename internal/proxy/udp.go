@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/discohaus/discopanel/pkg/logger"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
 const (
@@ -26,7 +27,7 @@ type UDPProxy struct {
 
 	backendHost string
 	backendPort int
-	serverID    string
+	route       Route
 
 	conn    *net.UDPConn
 	running bool
@@ -116,60 +117,29 @@ func (p *UDPProxy) Stop() error {
 	return nil
 }
 
-// Sets the backend, only one route supported
-func (p *UDPProxy) AddRoute(serverID, hostname, backendHost string, backendPort int) {
+// Sets the relay backend, only one route supported
+func (p *UDPProxy) SetRoute(route Route) {
+	route.Protocol = v1.ModuleProtocol_MODULE_PROTOCOL_UDP
 	p.mu.Lock()
-	changed := p.backendHost != backendHost || p.backendPort != backendPort
-	p.serverID = serverID
-	p.backendHost = backendHost
-	p.backendPort = backendPort
+	changed := p.backendHost != route.BackendHost || p.backendPort != route.BackendPort
+	p.route = route
+	p.backendHost = route.BackendHost
+	p.backendPort = route.BackendPort
 	p.mu.Unlock()
 	if changed {
 		p.flushSessions()
+		p.logger.Info("UDP relay route set: %s -> %s:%d", p.listenAddr, route.BackendHost, route.BackendPort)
 	}
-	p.logger.Info("UDP proxy route set: %s -> %s:%d", p.listenAddr, backendHost, backendPort)
 }
 
-// Removes the backend route
-func (p *UDPProxy) RemoveRoute(hostname string) {
-	p.mu.Lock()
-	p.serverID = ""
-	p.backendHost = ""
-	p.backendPort = 0
-	p.mu.Unlock()
-	p.logger.Info("UDP proxy route removed: %s", p.listenAddr)
-}
-
-// Updates the backend address, dropping sessions on change
-func (p *UDPProxy) UpdateRoute(hostname, backendHost string, backendPort int) {
-	p.mu.Lock()
-	changed := p.backendHost != backendHost || p.backendPort != backendPort
-	p.backendHost = backendHost
-	p.backendPort = backendPort
-	p.mu.Unlock()
-	if changed {
-		p.flushSessions()
-	}
-	p.logger.Info("UDP proxy route updated: %s -> %s:%d", p.listenAddr, backendHost, backendPort)
-}
-
-// Returns the current route, UDP only has one
-func (p *UDPProxy) GetRoutes() map[string]*Route {
+// Returns the relay route, UDP only has one
+func (p *UDPProxy) Route() (Route, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-
 	if p.backendHost == "" {
-		return make(map[string]*Route)
+		return Route{}, false
 	}
-
-	return map[string]*Route{
-		"udp": {
-			ServerID:    p.serverID,
-			Hostname:    "udp",
-			BackendHost: p.backendHost,
-			BackendPort: p.backendPort,
-		},
-	}
+	return p.route, true
 }
 
 // Returns whether the proxy is running

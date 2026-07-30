@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
 	import { resolve } from '$app/paths';
-	import { rpcClient } from '$lib/api/rpc-client';
+	import { rpcClient, rpcErrorMessage, silentCallOptions } from '$lib/api/rpc-client';
 	import { toast } from 'svelte-sonner';
 	import { Button } from '$lib/components/ui/button';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
@@ -20,11 +20,17 @@
 		RotateCcw,
 		RefreshCw
 	} from '@lucide/svelte';
-	import type { Server, ProxyListener } from '$lib/proto/discopanel/v1/storage_pb';
-	import { ServerStatus } from '$lib/proto/discopanel/v1/storage_pb';
-	import type { GetServerRoutingResponse, ProxyRoute } from '$lib/proto/discopanel/v1/proxy_pb';
+	import type { Server, ProxyListener, Module } from '$lib/proto/discopanel/v1/storage_pb';
+	import { ModuleProtocol, ServerStatus } from '$lib/proto/discopanel/v1/storage_pb';
+	import {
+		BaseUrlSource,
+		NetworkOwnerKind,
+		type GetServerRoutingResponse,
+		type ProxyRoute
+	} from '$lib/proto/discopanel/v1/proxy_pb';
 	import { routeStateLabel, routeStateClass, routeStatsSummary } from '$lib/proxy-route';
 	import { composeHostname, splitHostname } from '$lib/hostname';
+	import { laneLabel } from '$lib/components/network/topology-data';
 
 	let { server, active = true }: { server: Server; active?: boolean } = $props();
 
@@ -32,8 +38,9 @@
 	let saving = $state(false);
 	let routingInfo = $state<GetServerRoutingResponse | null>(null);
 	let allRoutes = $state<ProxyRoute[]>([]);
+	let allModules = $state<Module[]>([]);
 	let listeners = $state<ProxyListener[]>([]);
-	let usedPorts = $state<Record<number, boolean>>({});
+	let rawUsedPorts = $state<number[]>([]);
 
 	let useProxy = $state(false);
 	let hostname = $state('');
@@ -47,6 +54,14 @@
 
 	// Resolves route server ids to friendly names
 	let serverNames = $derived(new Map($serversStore.map((s) => [s.id, s.name])));
+	let modulesById = $derived(new Map(allModules.map((m) => [m.id, m])));
+
+	// Own held direct port stays out of the conflict map
+	let usedPorts = $derived(
+		Object.fromEntries(
+			rawUsedPorts.filter((p) => original.useProxy || p !== original.port).map((p) => [p, true])
+		)
+	);
 
 	// Reload whenever the tab shows a different server
 	let loadedServerId = $state('');
@@ -86,7 +101,7 @@
 					.filter((l): l is ProxyListener => l !== undefined && l.enabled) ?? [];
 
 			const full = routing.proxyHostname || '';
-			const split = splitHostname(full, routing.baseUrl || '');
+			const split = splitHostname(full, routing.effectiveBaseUrl || '');
 			useProxy = full !== '';
 			hostname = split.host;
 			useBaseUrl = full ? split.useBase : true;
@@ -95,12 +110,7 @@
 				listenerId = (listeners.find((l) => l.isDefault) ?? listeners[0]).id;
 			}
 
-			// Own direct port stays out of the conflict map
-			usedPorts = Object.fromEntries(
-				portData?.usedPorts
-					?.filter((p) => useProxy || p.port !== server.port)
-					.map((p) => [p.port, true]) ?? []
-			);
+			rawUsedPorts = portData?.usedPorts?.map((p) => p.port) ?? [];
 			// Proxied rows carry no usable host port yet
 			port = useProxy ? portData?.port || 25565 : server.port;
 			portError = '';
@@ -114,8 +124,12 @@
 
 	async function loadAllRoutes() {
 		try {
-			const response = await rpcClient.proxy.getProxyRoutes({});
-			allRoutes = response.routes;
+			const [routeData, moduleData] = await Promise.all([
+				rpcClient.proxy.getProxyRoutes({}),
+				rpcClient.module.listModules({}, silentCallOptions).catch(() => null)
+			]);
+			allRoutes = routeData.routes;
+			allModules = moduleData?.modules ?? [];
 		} catch {
 			// Route list is optional context
 		}
@@ -125,28 +139,42 @@
 		try {
 			const portData = await rpcClient.server.getNextAvailablePort({});
 			port = portData.port;
-			usedPorts = Object.fromEntries(
-				portData.usedPorts
-					?.filter((p) => original.useProxy || p.port !== original.port)
-					.map((p) => [p.port, true]) ?? []
-			);
+			rawUsedPorts = portData.usedPorts?.map((p) => p.port) ?? [];
 			portError = '';
 		} catch {
 			// Keeps the typed port on failure
 		}
 	}
 
-	let composed = $derived(composeHostname(hostname, routingInfo?.baseUrl ?? '', useBaseUrl));
+	let composed = $derived(
+		composeHostname(hostname, routingInfo?.effectiveBaseUrl ?? '', useBaseUrl)
+	);
 
+	let selectedListenerPort = $derived(
+		listeners.find((l) => l.id === listenerId)?.port ?? routingInfo?.listenPort ?? 0
+	);
+
+	// Instant domains resolve on their own, custom ones need DNS
+	let needsDns = $derived.by(() => {
+		if (!routingInfo || !composed) return false;
+		if (routingInfo.baseUrlSource !== BaseUrlSource.AUTO) return true;
+		return !composed.endsWith(routingInfo.effectiveBaseUrl);
+	});
+
+	// Conflicts need the same port, lane, and hostname
 	let hostnameError = $derived.by(() => {
 		if (!useProxy || !composed) return '';
 		const hostnameRegex =
 			/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
 		if (!hostnameRegex.test(composed)) return 'Invalid hostname format';
 		const conflict = allRoutes.find(
-			(route) => route.hostname.toLowerCase() === composed && route.serverId !== server.id
+			(route) =>
+				route.protocol === ModuleProtocol.MINECRAFT &&
+				route.listenPort === selectedListenerPort &&
+				route.hostname.toLowerCase() === composed &&
+				!(route.ownerKind === NetworkOwnerKind.SERVER && route.ownerId === server.id)
 		);
-		if (conflict) return 'Hostname already in use by another server';
+		if (conflict) return `Hostname already routed for minecraft on port ${conflict.listenPort}`;
 		return '';
 	});
 
@@ -183,11 +211,7 @@
 			toast.success(useProxy ? 'Routing saved' : 'Direct connection saved');
 			await loadAll();
 		} catch (error: unknown) {
-			if (error instanceof Error && error.message.includes('Conflict')) {
-				toast.error('Hostname already in use by another server');
-			} else {
-				toast.error('Failed to save routing configuration');
-			}
+			toast.error(rpcErrorMessage(error, 'Failed to save routing configuration'));
 		} finally {
 			saving = false;
 		}
@@ -195,7 +219,7 @@
 
 	function discardChanges() {
 		useProxy = original.useProxy;
-		const split = splitHostname(original.hostname, routingInfo?.baseUrl ?? '');
+		const split = splitHostname(original.hostname, routingInfo?.effectiveBaseUrl ?? '');
 		hostname = split.host;
 		useBaseUrl = original.hostname ? split.useBase : true;
 		listenerId = original.listenerId;
@@ -203,16 +227,48 @@
 		portError = '';
 	}
 
-	let routeLive = $derived(
-		!!routingInfo?.currentRoute && server.status === ServerStatus.RUNNING
-	);
+	let routeLive = $derived(!!routingInfo?.currentRoute && server.status === ServerStatus.RUNNING);
 
-	// Own route pinned first in the shared route table
+	// Direct ports read plain, proxied ones read as lanes
+	function portProtoLabel(p: { protocol: ModuleProtocol; proxyEnabled: boolean }): string {
+		const label = laneLabel(p.protocol);
+		return p.proxyEnabled ? label : label.replace(' relay', '');
+	}
+
+	// Resolved identity for one route row
+	function routeOwner(route: ProxyRoute): { label: string; serverId: string; self: boolean } {
+		if (route.ownerKind === NetworkOwnerKind.SERVER) {
+			if (route.ownerId === server.id) return { label: 'This server', serverId: '', self: true };
+			return {
+				label: serverNames.get(route.ownerId) ?? route.ownerId.slice(0, 8),
+				serverId: route.ownerId,
+				self: false
+			};
+		}
+		if (route.ownerKind === NetworkOwnerKind.MODULE) {
+			const module = modulesById.get(route.ownerId);
+			if (!module) return { label: route.ownerId.slice(0, 8), serverId: '', self: false };
+			const parent = module.serverId === server.id ? 'this server' : module.serverName;
+			return {
+				label: parent ? `${module.name} · ${parent}` : module.name,
+				serverId: '',
+				self: module.serverId === server.id
+			};
+		}
+		return { label: '', serverId: '', self: false };
+	}
+
+	// Own routes pinned first in the shared route table
 	let sortedRoutes = $derived(
 		[...allRoutes].sort((a, b) => {
-			if (a.serverId === server.id) return -1;
-			if (b.serverId === server.id) return 1;
-			return a.hostname.localeCompare(b.hostname);
+			const selfA = routeOwner(a).self ? 0 : 1;
+			const selfB = routeOwner(b).self ? 0 : 1;
+			return (
+				selfA - selfB ||
+				a.listenPort - b.listenPort ||
+				a.hostname.localeCompare(b.hostname) ||
+				a.protocol - b.protocol
+			);
 		})
 	);
 </script>
@@ -227,11 +283,11 @@
 		<EmptyState
 			icon={Network}
 			title="Proxy routing is disabled"
-			description="With the proxy enabled, players connect through a hostname like play.example.com instead of a port number."
+			description="Turn on the proxy to route this server by hostname."
 		>
 			{#if showSettingsLink}
-				<Button href="{resolve('/settings')}?tab=routing" variant="outline">
-					Open routing settings
+				<Button href="{resolve('/settings')}?tab=network" variant="outline">
+					Open network settings
 					<ArrowUpRight class="size-3.5" />
 				</Button>
 			{/if}
@@ -247,7 +303,7 @@
 
 			<ConnectivityCard
 				proxyEnabled={routingInfo.proxyEnabled}
-				baseUrl={routingInfo.baseUrl}
+				baseUrl={routingInfo.effectiveBaseUrl}
 				{listeners}
 				serverName={server.name}
 				routeActive={hasChanges ? null : routeLive}
@@ -263,16 +319,12 @@
 				onAutoAssignPort={refreshAvailablePort}
 			/>
 
-			{#if useProxy && composed && !hostnameError}
+			{#if useProxy && composed && !hostnameError && needsDns}
 				<div class="border-t px-4 py-3">
 					<Alert>
 						<AlertCircle class="size-4" />
 						<AlertDescription>
-							<p class="mb-1 font-medium">DNS configuration required</p>
-							<p class="text-sm">
-								Add a DNS record pointing
-								<code class="font-mono">{composed}</code> to this machine's IP address.
-							</p>
+							Point a DNS record for <code class="font-mono">{composed}</code> at this machine
 						</AlertDescription>
 					</Alert>
 				</div>
@@ -331,15 +383,17 @@
 					</div>
 					<span class="tabular font-mono text-sm">{server.port}</span>
 				</div>
-				{#each server.additionalPorts || [] as port (port.name + port.hostPort)}
+				{#each server.additionalPorts || [] as extra (extra.name + extra.hostPort)}
 					<div class="flex items-center justify-between px-4 py-2.5">
 						<div class="min-w-0">
-							<p class="truncate text-sm font-medium">{port.name || 'Additional port'}</p>
+							<p class="truncate text-sm font-medium">{extra.name || 'Additional port'}</p>
 							<p class="text-xs text-muted-foreground">
-								container {port.containerPort} · {port.protocol || 'tcp'}
+								container {extra.containerPort} · {portProtoLabel(extra)}{extra.proxyEnabled
+									? ' · proxied'
+									: ''}
 							</p>
 						</div>
-						<span class="tabular font-mono text-sm">{port.hostPort}</span>
+						<span class="tabular font-mono text-sm">{extra.hostPort}</span>
 					</div>
 				{/each}
 			</div>
@@ -349,33 +403,43 @@
 			<section class="overflow-hidden rounded-xl border bg-card">
 				<header class="border-b bg-muted/30 px-4 py-3">
 					<h3 class="text-sm font-semibold">Active routes</h3>
-					<p class="mt-0.5 text-xs text-muted-foreground">
-						Every hostname the proxy currently serves
-					</p>
+					<p class="mt-0.5 text-xs text-muted-foreground">Everything the proxy currently serves</p>
 				</header>
 				<div class="divide-y">
-					{#each sortedRoutes as route (route.serverId)}
-						{@const isSelf = route.serverId === server.id}
+					{#each sortedRoutes as route (`${route.listenPort}:${route.protocol}:${route.hostname}:${route.ownerId}:${route.portName}`)}
+						{@const owner = routeOwner(route)}
 						{@const stats = routeStatsSummary(route)}
 						<div
-							class="flex items-center justify-between gap-3 px-4 py-2.5 {isSelf
+							class="flex items-center justify-between gap-3 px-4 py-2.5 {owner.self
 								? 'bg-primary/[0.03]'
 								: ''}"
 						>
 							<div class="min-w-0">
-								<p class="truncate font-mono text-sm">{route.hostname}</p>
-								{#if isSelf}
+								<div class="flex flex-wrap items-center gap-2">
+									<p class="truncate font-mono text-sm">{route.hostname || 'any hostname'}</p>
+									<span
+										class="rounded-full border px-1.5 py-px font-mono text-[10px] text-muted-foreground"
+									>
+										{laneLabel(route.protocol)}
+									</span>
+									<span class="font-mono text-xs text-muted-foreground">:{route.listenPort}</span>
+								</div>
+								{#if owner.self && route.ownerKind === NetworkOwnerKind.SERVER}
 									<p class="text-xs font-medium text-primary">This server</p>
-								{:else if serverNames.get(route.serverId)}
+								{:else if owner.serverId}
 									<a
-										href={resolve(`/servers/${route.serverId}`)}
+										href={resolve(`/servers/${owner.serverId}`)}
 										class="text-xs text-muted-foreground hover:text-foreground hover:underline"
 									>
-										{serverNames.get(route.serverId)}
+										{owner.label}
 									</a>
-								{:else}
-									<p class="font-mono text-xs text-muted-foreground">
-										{route.serverId.slice(0, 8)}
+								{:else if owner.label}
+									<p
+										class="text-xs {owner.self
+											? 'font-medium text-primary'
+											: 'text-muted-foreground'}"
+									>
+										{owner.label}
 									</p>
 								{/if}
 								{#if stats}

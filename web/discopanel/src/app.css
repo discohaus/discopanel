@@ -250,11 +250,60 @@ html:not(.dark) :is([data-slot='card'], .bg-card):not([class*='shadow-l'], [clas
 }
 
 html:not(.dark) [data-slot='button']:is(.bg-secondary, .bg-background) {
-	--tw-shadow:
-		inset 0 1px 0 oklch(1 0 0 / 50%), inset 0 -1px 0 oklch(0.25 0.012 106 / 12%),
+	--tw-shadow: inset 0 1px 0 oklch(1 0 0 / 50%), inset 0 -1px 0 oklch(0.25 0.012 106 / 12%),
 		0 1px 2px oklch(0.25 0.012 106 / 14%);
 }
 
 html:not(.dark) :is([data-slot='input'], [data-slot='textarea'], [data-slot='select-trigger']) {
 	--tw-shadow: inset 0 1px 2px oklch(0.25 0.012 106 / 12%);
+}
+
+/* Topology canvas maps xyflow onto app tokens */
+.topology-flow {
+	--xy-background-color: transparent;
+	--xy-edge-stroke-default: color-mix(in oklch, var(--muted-foreground) 45%, transparent);
+	--xy-edge-stroke-width-default: 1.5;
+	--xy-minimap-background-color-default: var(--card);
+	--xy-minimap-mask-background-color-default: color-mix(
+		in oklch,
+		var(--background) 65%,
+		transparent
+	);
+	--xy-minimap-node-background-color-default: color-mix(
+		in oklch,
+		var(--muted-foreground) 40%,
+		transparent
+	);
+	--xy-minimap-node-stroke-color-default: transparent;
+	--xy-controls-button-background-color-default: var(--card);
+	--xy-controls-button-background-color-hover-default: var(--accent);
+	--xy-controls-button-color-default: var(--foreground);
+	--xy-controls-button-color-hover-default: var(--foreground);
+	--xy-controls-button-border-color-default: var(--border);
+	--xy-attribution-background-color-default: transparent;
+}
+
+.topology-flow .svelte-flow__handle {
+	opacity: 0;
+	pointer-events: none;
+}
+
+.topology-flow .svelte-flow__node {
+	cursor: pointer;
+}
+
+.topology-flow .topo-edge-ok .svelte-flow__edge-path {
+	stroke: var(--status-ok);
+}
+
+.topology-flow .topo-edge-busy .svelte-flow__edge-path {
+	stroke: var(--status-busy);
+}
+
+.topology-flow .topo-edge-sleep .svelte-flow__edge-path {
+	stroke: var(--status-sleep);
+}
+
+.topology-flow .topo-edge-idle .svelte-flow__edge-path {
+	stroke: color-mix(in oklch, var(--status-idle) 60%, transparent);
 }

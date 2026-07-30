@@ -76,6 +76,20 @@ service ProxyService {
       object_id_field: "server_id"
     };
   }
+  // Full network topology snapshot
+  rpc GetNetworkTopology(GetNetworkTopologyRequest) returns (GetNetworkTopologyResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_PROXY
+      action: ACTION_TYPE_READ
+    };
+  }
+  // Preview what disabling the proxy converts
+  rpc GetProxyDisableImpact(GetProxyDisableImpactRequest) returns (GetProxyDisableImpactResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_PROXY
+      action: ACTION_TYPE_READ
+    };
+  }
 }
 
 // Route serving state
@@ -90,8 +104,70 @@ enum ProxyRouteState {
   PROXY_ROUTE_STATE_OFFLINE = 3 [(discopanel.options.v1.value) = {label: "Offline"}];
 }
 
+// Where the effective base domain comes from
+enum BaseUrlSource {
+  option (discopanel.options.v1.enum_type) = {label: "Base Domain Source"};
+  BASE_URL_SOURCE_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  // Admin supplied custom domain
+  BASE_URL_SOURCE_CUSTOM = 1 [(discopanel.options.v1.value) = {label: "Custom"}];
+  // Derived instant sslip.io domain
+  BASE_URL_SOURCE_AUTO = 2 [(discopanel.options.v1.value) = {label: "Instant"}];
+}
+
+// How a reservation occupies its port
+enum NetworkReservationKind {
+  option (discopanel.options.v1.enum_type) = {label: "Reservation Kind"};
+  NETWORK_RESERVATION_KIND_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  // Direct host bind owns the port outright
+  NETWORK_RESERVATION_KIND_EXCLUSIVE = 1 [(discopanel.options.v1.value) = {label: "Direct bind"}];
+  // Shared proxy listener socket
+  NETWORK_RESERVATION_KIND_SOCKET = 2 [(discopanel.options.v1.value) = {label: "Listener socket"}];
+  // Hostname route inside a shared socket
+  NETWORK_RESERVATION_KIND_ROUTED = 3 [(discopanel.options.v1.value) = {label: "Routed"}];
+  // Hostnameless fallback forward, one per transport per port
+  NETWORK_RESERVATION_KIND_RELAY = 4 [(discopanel.options.v1.value) = {label: "Relay"}];
+}
+
+// Who holds a network reservation
+enum NetworkOwnerKind {
+  option (discopanel.options.v1.enum_type) = {label: "Reservation Owner"};
+  NETWORK_OWNER_KIND_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  NETWORK_OWNER_KIND_SERVER = 1 [(discopanel.options.v1.value) = {label: "Server"}];
+  NETWORK_OWNER_KIND_MODULE = 2 [(discopanel.options.v1.value) = {label: "Module"}];
+  NETWORK_OWNER_KIND_LISTENER = 3 [(discopanel.options.v1.value) = {label: "Listener"}];
+  NETWORK_OWNER_KIND_PANEL = 4 [(discopanel.options.v1.value) = {label: "Panel"}];
+}
+
+// One checked out slice of the host network space
+message NetworkReservation {
+  int32 port = 1;
+  NetworkTransport transport = 2;
+  NetworkReservationKind kind = 3;
+  ModuleProtocol protocol = 4;
+  // Empty hostname means catch all
+  string hostname = 5;
+  NetworkOwnerKind owner_kind = 6;
+  string owner_id = 7;
+  string detail = 8;
+}
+
+// Empty topology request
+message GetNetworkTopologyRequest {}
+
+// Full network picture for the topology view
+message GetNetworkTopologyResponse {
+  bool proxy_enabled = 1;
+  bool proxy_running = 2;
+  string effective_base_url = 3;
+  BaseUrlSource base_url_source = 4;
+  int32 panel_port = 5;
+  repeated NetworkReservation reservations = 6;
+  repeated ProxyRoute routes = 7;
+}
+
 // Active proxy connection
 message ProxyRoute {
+  // Owning server id, empty for module routes
   string server_id = 1;
   string hostname = 2;
   string backend_host = 3;
@@ -109,6 +185,16 @@ message ProxyRoute {
   int64 logins = 15;
   int64 status_pings = 16;
   int64 wakes = 17;
+  // Socket the route rides on
+  int32 listen_port = 18;
+  // Owning listener id, empty for module port sockets
+  string listener_id = 19;
+  NetworkOwnerKind owner_kind = 20;
+  string owner_id = 21;
+  // Module port name for module routes
+  string port_name = 22;
+  // Protocol lane the route serves on its socket
+  ModuleProtocol protocol = 23;
 }
 
 // Empty routes request
@@ -131,12 +217,45 @@ message GetProxyStatusResponse {
   int32 listen_port = 5; // Primary port
   bool running = 6;
   int32 active_routes = 7;
+  // Base domain actually in effect
+  string effective_base_url = 8;
+  BaseUrlSource base_url_source = 9;
 }
 
 // Proxy settings to update
 message UpdateProxyConfigRequest {
   bool enabled = 1;
   string base_url = 2;
+  // Converts proxied servers to direct ports on disable
+  bool convert_to_direct = 3;
+  // Port picks for the convert, missing servers auto assign
+  repeated ProxiedServerImpact assignments = 4;
+}
+
+// Empty impact request
+message GetProxyDisableImpactRequest {}
+
+// One proxied server and its proposed direct port
+message ProxiedServerImpact {
+  string server_id = 1;
+  string hostname = 2;
+  // Rcon shadows at plus ten
+  int32 proposed_port = 3;
+}
+
+// One proxied module port and its landing spot
+message ProxiedModulePortImpact {
+  string module_id = 1;
+  string port_name = 2;
+  int32 current_host_port = 3;
+  // Differs when the direct bind would collide
+  int32 proposed_host_port = 4;
+}
+
+// Everything a disable would convert
+message GetProxyDisableImpactResponse {
+  repeated ProxiedServerImpact servers = 1;
+  repeated ProxiedModulePortImpact module_ports = 2;
 }
 
 // Empty listeners request
@@ -146,6 +265,8 @@ message GetProxyListenersRequest {}
 message ProxyListenerWithCount {
   ProxyListener listener = 1;
   int32 server_count = 2;
+  // Routed and relay reservations riding this port
+  int32 workload_count = 3;
 }
 
 // All configured listeners
@@ -210,6 +331,9 @@ message GetServerRoutingResponse {
   int32 listen_port = 5;
   optional ServerRoute current_route = 6;
   string proxy_listener_id = 7;
+  // Base domain actually in effect
+  string effective_base_url = 8;
+  BaseUrlSource base_url_source = 9;
 }
 
 // Hostname and listener to assign
