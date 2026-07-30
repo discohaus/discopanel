@@ -67,6 +67,9 @@ const (
 	// Bounds how long a client may take to handshake
 	handshakeTimeout = 10 * time.Second
 
+	// Short wait for bytes that disambiguate 0xfe openers
+	legacyPeekGrace = 250 * time.Millisecond
+
 	// Bounds a single backend connection attempt
 	backendDialTimeout = 5 * time.Second
 

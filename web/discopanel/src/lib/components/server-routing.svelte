@@ -157,6 +157,8 @@
 	// Instant domains resolve on their own, custom ones need DNS
 	let needsDns = $derived.by(() => {
 		if (!routingInfo || !composed) return false;
+		// Preset sslip domains carry the address in the name
+		if (composed.endsWith('.sslip.io')) return false;
 		if (routingInfo.baseUrlSource !== BaseUrlSource.AUTO) return true;
 		return !composed.endsWith(routingInfo.effectiveBaseUrl);
 	});

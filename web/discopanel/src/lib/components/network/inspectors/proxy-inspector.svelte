@@ -1,12 +1,33 @@
+<script lang="ts" module>
+	import type {
+		AddressCandidate,
+		CheckNetworkReachabilityResponse
+	} from '$lib/proto/discopanel/v1/proxy_pb';
+
+	// Probe results survive inspector remounts
+	let cachedProbe: { result: CheckNetworkReachabilityResponse; at: number } | null = null;
+	const PROBE_CACHE_MS = 5 * 60 * 1000;
+</script>
+
 <script lang="ts">
-	import { rpcClient } from '$lib/api/rpc-client';
-	import { BaseUrlSource } from '$lib/proto/discopanel/v1/proxy_pb';
+	import { onMount } from 'svelte';
+	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
+	import { AddressSource, BaseUrlSource } from '$lib/proto/discopanel/v1/proxy_pb';
 	import { Input } from '$lib/components/ui/input';
 	import { Button } from '$lib/components/ui/button';
 	import { Switch } from '$lib/components/ui/switch';
-	import { CopyButton } from '$lib/components/app';
 	import { toast } from 'svelte-sonner';
-	import { Globe, Loader2, Network, RotateCcw, Save, Zap } from '@lucide/svelte';
+	import {
+		AlertTriangle,
+		Check,
+		Globe,
+		Loader2,
+		Network,
+		RadioTower,
+		RotateCcw,
+		Save,
+		Zap
+	} from '@lucide/svelte';
 
 	let {
 		enabled,
@@ -33,9 +54,11 @@
 	} = $props();
 
 	let draftEnabled = $state(false);
-	let domainMode = $state<'instant' | 'custom'>('instant');
 	let customDomain = $state('');
 	let saving = $state(false);
+	let candidates = $state<AddressCandidate[]>([]);
+	let probing = $state(false);
+	let probe = $state<CheckNetworkReachabilityResponse | null>(cachedProbe?.result ?? null);
 
 	// Saved snapshot drives dirty detection
 	let seeded = $state('');
@@ -44,13 +67,50 @@
 		if (seeded === snapshot) return;
 		seeded = snapshot;
 		draftEnabled = enabled;
-		domainMode = baseUrl ? 'custom' : 'instant';
 		customDomain = baseUrl;
 	});
 
-	let draftBaseUrl = $derived(domainMode === 'custom' ? customDomain.trim() : '');
+	let draftBaseUrl = $derived(customDomain.trim().toLowerCase());
 	let dirty = $derived(draftEnabled !== enabled || draftBaseUrl !== baseUrl);
-	let instantDomain = $derived(baseUrlSource === BaseUrlSource.CUSTOM ? '' : effectiveBaseUrl);
+	let autoDomain = $derived(candidates[0]?.domain ?? (baseUrlSource === BaseUrlSource.AUTO ? effectiveBaseUrl : ''));
+
+	let probeFailures = $derived(
+		probe?.ports.filter((p) => p.checked && !p.reachable) ?? []
+	);
+	let probeUnknown = $derived(probe?.ports.filter((p) => !p.checked) ?? []);
+
+	onMount(() => {
+		loadCandidates();
+		if (!cachedProbe || Date.now() - cachedProbe.at > PROBE_CACHE_MS) {
+			runProbe(true);
+		}
+	});
+
+	async function loadCandidates() {
+		try {
+			const res = await rpcClient.proxy.getNetworkAddresses({}, silentCallOptions);
+			candidates = res.candidates;
+		} catch {
+			// Presets are optional sugar
+		}
+	}
+
+	async function runProbe(silent = false) {
+		if (probing) return;
+		probing = true;
+		try {
+			const result = await rpcClient.proxy.checkNetworkReachability(
+				{},
+				silent ? silentCallOptions : undefined
+			);
+			probe = result;
+			cachedProbe = { result, at: Date.now() };
+		} catch {
+			if (!silent) toast.error('Reachability check failed');
+		} finally {
+			probing = false;
+		}
+	}
 
 	function toggleEnabled(next: boolean) {
 		if (!next && enabled && hasProxiedWorkloads) {
@@ -63,8 +123,25 @@
 
 	function discard() {
 		draftEnabled = enabled;
-		domainMode = baseUrl ? 'custom' : 'instant';
 		customDomain = baseUrl;
+	}
+
+	// Soft echo validation, warns without blocking the save
+	async function validateSavedDomain(domain: string) {
+		try {
+			const result = await rpcClient.proxy.checkNetworkReachability(
+				{ target: domain },
+				silentCallOptions
+			);
+			const failed = result.ports.filter((p) => p.checked && !p.reachable);
+			if (failed.length > 0) {
+				toast.warning(
+					`${domain} saved, but ${failed.length} ${failed.length === 1 ? 'port is' : 'ports are'} not reachable through it yet`
+				);
+			}
+		} catch {
+			toast.warning(`${domain} saved, but it does not resolve to this machine yet`);
+		}
 	}
 
 	async function save() {
@@ -75,6 +152,9 @@
 				baseUrl: draftBaseUrl
 			});
 			toast.success('Proxy configuration saved');
+			if (draftEnabled && draftBaseUrl) {
+				validateSavedDomain(draftBaseUrl);
+			}
 			await onChanged();
 		} catch {
 			toast.error('Failed to save proxy configuration');
@@ -119,63 +199,124 @@
 		{#if draftEnabled}
 			<div class="space-y-2">
 				<span class="stat-label">Domain</span>
-				<div class="grid gap-2" role="radiogroup" aria-label="Base domain">
-					<button
-						type="button"
-						role="radio"
-						aria-checked={domainMode === 'instant'}
-						class="rounded-lg border p-3 text-left transition-colors {domainMode === 'instant'
-							? 'border-primary bg-primary/5'
-							: 'hover:bg-accent/40'}"
-						onclick={() => (domainMode = 'instant')}
-					>
-						<div class="flex items-center gap-2 text-sm font-medium">
-							<Zap class="size-4 text-primary" />
-							Built-in domain
-						</div>
-						{#if instantDomain}
-							<div class="mt-1.5 flex items-center justify-between gap-2">
-								<p class="truncate font-mono text-xs text-muted-foreground">{instantDomain}</p>
-								<CopyButton text={instantDomain} label="Copy domain" />
-							</div>
-							<p class="mt-1 text-xs text-muted-foreground">
-								Made from this machine's IP, works with zero setup
-							</p>
-						{:else if domainMode === 'instant'}
-							<p class="mt-1 text-xs text-muted-foreground">No address detected yet</p>
-						{/if}
-					</button>
-					<button
-						type="button"
-						role="radio"
-						aria-checked={domainMode === 'custom'}
-						class="rounded-lg border p-3 text-left transition-colors {domainMode === 'custom'
-							? 'border-primary bg-primary/5'
-							: 'hover:bg-accent/40'}"
-						onclick={() => (domainMode = 'custom')}
-					>
-						<div class="flex items-center gap-2 text-sm font-medium">
-							<Globe class="size-4 text-primary" />
-							Domain you own
-						</div>
-						{#if domainMode === 'custom'}
-							<Input
-								type="text"
-								bind:value={customDomain}
-								placeholder="minecraft.example.com"
-								class="mt-2 h-8"
-								onclick={(e) => e.stopPropagation()}
-							/>
-							<p class="mt-1.5 text-xs text-muted-foreground">
-								Needs a DNS record pointing at this machine
-							</p>
-						{:else}
-							<p class="mt-1 text-xs text-muted-foreground">Use a domain you already bought</p>
-						{/if}
-					</button>
-				</div>
+				<Input
+					type="text"
+					bind:value={customDomain}
+					placeholder="minecraft.example.com"
+					class="font-mono text-sm"
+				/>
+				<p class="text-xs text-muted-foreground">
+					{#if draftBaseUrl}
+						Server hostnames live under this domain
+					{:else if autoDomain}
+						Empty follows the best detected address
+					{:else}
+						No address detected yet
+					{/if}
+				</p>
+
+				{#if candidates.length > 0}
+					<div class="overflow-hidden rounded-lg border">
+						<button
+							type="button"
+							class="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-accent/40 {!draftBaseUrl
+								? 'bg-primary/5'
+								: ''}"
+							onclick={() => (customDomain = '')}
+						>
+							<Zap class="size-3.5 shrink-0 text-primary" />
+							<span class="min-w-0 flex-1">
+								<span class="block text-xs font-medium">Automatic</span>
+								{#if autoDomain}
+									<span class="block truncate font-mono text-[11px] text-muted-foreground">
+										{autoDomain}
+									</span>
+								{/if}
+							</span>
+							{#if !draftBaseUrl}
+								<Check class="size-3.5 shrink-0 text-primary" />
+							{/if}
+						</button>
+						{#each candidates as candidate (candidate.ip)}
+							{@const active = draftBaseUrl === candidate.domain}
+							<button
+								type="button"
+								class="flex w-full items-center gap-2 border-t px-3 py-2 text-left transition-colors hover:bg-accent/40 {active
+									? 'bg-primary/5'
+									: ''}"
+								onclick={() => (customDomain = candidate.domain)}
+							>
+								<Globe class="size-3.5 shrink-0 text-muted-foreground" />
+								<span class="min-w-0 flex-1 truncate font-mono text-xs">{candidate.domain}</span>
+								<span class="shrink-0 rounded-full border px-1.5 text-[10px] text-muted-foreground">
+									{candidate.source === AddressSource.PUBLIC ? 'public' : 'lan'}
+								</span>
+								{#if active}
+									<Check class="size-3.5 shrink-0 text-primary" />
+								{/if}
+							</button>
+						{/each}
+					</div>
+					<p class="text-xs text-muted-foreground">Pick a preset or point your own DNS here</p>
+				{/if}
 			</div>
 		{/if}
+
+		<div class="space-y-2">
+			<div class="flex items-center justify-between gap-2">
+				<span class="stat-label">Reachability</span>
+				<Button size="sm" variant="ghost" class="h-7 px-2 text-xs" onclick={() => runProbe()} disabled={probing}>
+					{#if probing}
+						<Loader2 class="size-3.5 animate-spin" />
+					{:else}
+						<RadioTower class="size-3.5" />
+					{/if}
+					Check now
+				</Button>
+			</div>
+			{#if probe}
+				{#if probeFailures.length > 0}
+					<div
+						class="flex items-start gap-2 rounded-lg border border-status-busy/30 bg-status-busy/10 p-2.5 text-xs text-status-busy"
+					>
+						<AlertTriangle class="mt-px size-3.5 shrink-0" />
+						<span>
+							{probeFailures.length}
+							{probeFailures.length === 1 ? 'port is' : 'ports are'} not reachable from outside, check
+							your router's port forwarding
+						</span>
+					</div>
+				{:else if probe.ports.some((p) => p.checked)}
+					<p class="flex items-center gap-1.5 text-xs text-status-ok">
+						<Check class="size-3.5" />
+						Checked ports answer at {probe.ip}
+					</p>
+				{/if}
+				<div class="divide-y rounded-lg border">
+					{#each probe.ports as port (`${port.port}/${port.transport}`)}
+						<div class="flex items-center justify-between gap-2 px-3 py-1.5 text-xs">
+							<span class="min-w-0 truncate">
+								<span class="font-mono">:{port.port}</span>
+								{#if port.detail}
+									<span class="text-muted-foreground"> · {port.detail}</span>
+								{/if}
+							</span>
+							{#if !port.checked}
+								<span class="shrink-0 text-muted-foreground">unknown</span>
+							{:else if port.reachable}
+								<Check class="size-3.5 shrink-0 text-status-ok" />
+							{:else}
+								<AlertTriangle class="size-3.5 shrink-0 text-status-busy" />
+							{/if}
+						</div>
+					{/each}
+				</div>
+			{:else if probing}
+				<p class="text-xs text-muted-foreground">Probing bound ports</p>
+			{:else}
+				<p class="text-xs text-muted-foreground">No probe has run yet</p>
+			{/if}
+		</div>
 	</div>
 
 	{#if dirty}

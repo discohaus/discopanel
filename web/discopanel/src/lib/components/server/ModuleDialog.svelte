@@ -652,6 +652,7 @@
 					followServerLifecycle,
 					detached,
 					ports: portsPayload,
+					clearPorts: portsPayload.length === 0,
 					dependencies: depsPayload,
 					healthCheckInterval,
 					healthCheckTimeout,

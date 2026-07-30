@@ -249,10 +249,8 @@ func main() {
 						if err := rpcServer.StartLogStreaming(server.Id, server.ContainerId); err != nil {
 							log.Error("Failed to start log streaming for running server %s: %v", server.Name, err)
 						}
-						if server.ProxyHostname != "" {
-							if err := proxyManager.UpdateServerRoute(server); err != nil {
-								log.Error("Failed to update proxy route for %s: %v", server.Name, err)
-							}
+						if err := proxyManager.SyncServerRoutes(ctx, server); err != nil {
+							log.Error("Failed to update proxy routes for %s: %v", server.Name, err)
 						}
 						return
 					}
@@ -305,6 +303,8 @@ func main() {
 					continue
 				}
 
+				// Port route rebuilds batch into one sync per tick
+				needSync := false
 				for _, server := range servers {
 					if server.ContainerId == "" {
 						continue
@@ -322,6 +322,36 @@ func main() {
 						if err := proxyManager.UpdateServerRoute(server); err != nil {
 							log.Error("Failed to update proxy route for %s: %v", server.Name, err)
 						}
+					}
+					if proxy.HasProxyPorts(server.AdditionalPorts) {
+						needSync = true
+					}
+				}
+
+				// Crashed modules must drop their routes too
+				modules, err := store.ListModules(ctx)
+				if err == nil {
+					for _, mod := range modules {
+						if mod.ContainerId == "" {
+							continue
+						}
+						status, serr := moduleManager.StatusForModule(ctx, mod)
+						if serr != nil || mod.Status == status {
+							continue
+						}
+						mod.Status = status
+						if err := store.UpdateModule(ctx, mod); err != nil {
+							log.Error("Failed to update module status: %v", err)
+						}
+						if proxy.HasProxyPorts(mod.Ports) {
+							needSync = true
+						}
+					}
+				}
+
+				if needSync {
+					if err := proxyManager.SyncListeners(ctx); err != nil {
+						log.Error("Failed to sync proxy routes: %v", err)
 					}
 				}
 			case <-stopMonitor:

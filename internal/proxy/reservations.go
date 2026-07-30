@@ -111,7 +111,14 @@ type NetClaim struct {
 
 // Marks the checkout persisted, derivation takes over
 func (c *NetClaim) Confirm() {
-	c.settle()
+	if c == nil || c.m == nil {
+		return
+	}
+	logger := c.m.logger
+	if !c.settle() {
+		// Persist landed after the sweep, rows may now clash
+		logger.Warn("Network claim confirmed after expiry, run a sync to surface conflicts")
+	}
 }
 
 // Drops the checkout after a failed persist
@@ -119,14 +126,16 @@ func (c *NetClaim) Release() {
 	c.settle()
 }
 
-func (c *NetClaim) settle() {
+func (c *NetClaim) settle() bool {
 	if c == nil || c.m == nil {
-		return
+		return true
 	}
 	c.m.mu.Lock()
+	_, present := c.m.pendingClaims[c.id]
 	delete(c.m.pendingClaims, c.id)
 	c.m.mu.Unlock()
 	c.m = nil
+	return present
 }
 
 var hostnamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`)
@@ -415,6 +424,7 @@ func (m *Manager) sweepClaimsLocked() {
 	now := time.Now()
 	for id, claim := range m.pendingClaims {
 		if now.Sub(claim.created) > claimTTL {
+			m.logger.Warn("Network claim by %s %s expired unsettled, conflicts possible", claim.owner.Kind, claim.owner.ID)
 			delete(m.pendingClaims, id)
 		}
 	}

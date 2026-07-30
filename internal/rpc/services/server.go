@@ -396,6 +396,10 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 	}
 	netClaim, err := s.proxy.CheckoutNetwork(ctx, netOwner, netReqs)
 	if err != nil {
+		// Reconcile retires any listener row made just above
+		if serr := s.proxy.SyncListeners(ctx); serr != nil {
+			s.log.Error("Failed to sync after checkout failure: %v", serr)
+		}
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	defer netClaim.Release()
@@ -627,6 +631,9 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 		}
 		server.AdditionalPorts = additionalPorts
 		needsRecreation = true
+	} else if msg.ClearAdditionalPorts && len(server.AdditionalPorts) > 0 {
+		server.AdditionalPorts = nil
+		needsRecreation = true
 	}
 
 	// Handle docker overrides update
@@ -679,6 +686,10 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 	}
 	netClaim, err := s.proxy.CheckoutNetwork(ctx, proxy.NetOwner{Kind: proxy.OwnerServer, ID: server.Id}, netReqs)
 	if err != nil {
+		// Reconcile retires any listener row made just above
+		if serr := s.proxy.SyncListeners(ctx); serr != nil {
+			s.log.Error("Failed to sync after checkout failure: %v", serr)
+		}
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	defer netClaim.Release()

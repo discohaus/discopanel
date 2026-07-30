@@ -2,7 +2,8 @@
 	import { rpcClient } from '$lib/api/rpc-client';
 	import type {
 		ProxiedModulePortImpact,
-		ProxiedServerImpact
+		ProxiedServerImpact,
+		ProxiedServerPortImpact
 	} from '$lib/proto/discopanel/v1/proxy_pb';
 	import type { Module } from '$lib/proto/discopanel/v1/storage_pb';
 	import {
@@ -39,6 +40,7 @@
 	let applyError = $state('');
 	let servers = $state<ProxiedServerImpact[]>([]);
 	let modulePorts = $state<ProxiedModulePortImpact[]>([]);
+	let serverPorts = $state<ProxiedServerPortImpact[]>([]);
 	let ports = $state<Record<string, number>>({});
 
 	let serverNames = $derived(new Map($serversStore.map((s) => [s.id, s.name])));
@@ -54,6 +56,7 @@
 			.then((impact) => {
 				servers = impact.servers;
 				modulePorts = impact.modulePorts;
+				serverPorts = impact.serverPorts;
 				ports = Object.fromEntries(impact.servers.map((s) => [s.serverId, s.proposedPort]));
 			})
 			.catch((error: unknown) => {
@@ -76,7 +79,9 @@
 	}
 
 	let hasErrors = $derived(servers.some((s) => portError(s.serverId)));
-	let empty = $derived(servers.length === 0 && modulePorts.length === 0);
+	let empty = $derived(
+		servers.length === 0 && modulePorts.length === 0 && serverPorts.length === 0
+	);
 
 	async function apply() {
 		applying = true;
@@ -150,6 +155,28 @@
 										<p class="mt-1 text-[11px] text-destructive">{error}</p>
 									{/if}
 								</div>
+							</div>
+						{/each}
+					</div>
+				{/if}
+
+				{#if serverPorts.length > 0}
+					<div class="divide-y rounded-lg border">
+						{#each serverPorts as impact (impact.serverId + impact.portName + impact.currentHostPort)}
+							<div class="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+								<p class="min-w-0 truncate">
+									{serverNames.get(impact.serverId) ?? impact.serverId.slice(0, 8)}
+									<span class="text-xs text-muted-foreground">
+										· {impact.portName || 'extra port'}
+									</span>
+								</p>
+								<span class="shrink-0 font-mono text-xs">
+									{#if impact.currentHostPort !== impact.proposedHostPort}
+										:{impact.currentHostPort} → :{impact.proposedHostPort}
+									{:else}
+										:{impact.proposedHostPort}
+									{/if}
+								</span>
 							</div>
 						{/each}
 					</div>

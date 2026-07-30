@@ -36,6 +36,12 @@ type Manager struct {
 	detectedIP string
 	detectedAt time.Time
 
+	// Cached router address from internet echo services
+	publicIP    string
+	publicAt    time.Time
+	publicTried time.Time
+	refreshOnce sync.Once
+
 	// Granted checkouts awaiting their callers' persists
 	pendingClaims map[uint64]pendingClaim
 	claimSeq      uint64
@@ -98,13 +104,24 @@ func (m *Manager) ApplyConfig(ctx context.Context, enabled bool, baseURL string)
 	return m.syncListenersLocked(ctx)
 }
 
+// Bounds docker inspects so a hung daemon cannot wedge syncs
+const containerInspectTimeout = 5 * time.Second
+
 // Resolves a container IP on the panel network
-func (m *Manager) containerIP(containerID string) (string, error) {
-	return m.docker.ContainerIP(context.Background(), containerID)
+func (m *Manager) containerIP(ctx context.Context, containerID string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	inspectCtx, cancel := context.WithTimeout(ctx, containerInspectTimeout)
+	defer cancel()
+	return m.docker.ContainerIP(inspectCtx, containerID)
 }
 
 // Initializes and starts the proxy if enabled
 func (m *Manager) Start() error {
+	// Address cache warms even while the proxy is off
+	m.startAddressRefresh()
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -243,7 +260,7 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 		// Game routes register even for stopped wakeable servers
 		if server.ProxyHostname != "" {
 			if listener := listenersByID[server.ProxyListenerId]; listener != nil {
-				route, want, err := m.desiredRoute(server, server.ProxyHostname)
+				route, want, err := m.desiredRoute(ctx, server, server.ProxyHostname)
 				if err != nil {
 					m.logger.Error("Failed to build route for server %s: %v", server.Name, err)
 				} else if want {
@@ -254,7 +271,7 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 		}
 
 		// Extra proxied ports need a live container backend
-		if !hasProxyPorts(server.AdditionalPorts) || server.ContainerId == "" {
+		if !HasProxyPorts(server.AdditionalPorts) || server.ContainerId == "" {
 			continue
 		}
 		switch server.Status {
@@ -262,7 +279,7 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 		default:
 			continue
 		}
-		ip, err := m.containerIP(server.ContainerId)
+		ip, err := m.containerIP(ctx, server.ContainerId)
 		if err != nil {
 			m.logger.Debug("No container IP for server %s: %v", server.Name, err)
 			continue
@@ -280,10 +297,10 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 		if mod.ContainerId == "" || mod.Status != v1.ModuleStatus_MODULE_STATUS_RUNNING {
 			continue
 		}
-		if !hasProxyPorts(mod.Ports) {
+		if !HasProxyPorts(mod.Ports) {
 			continue
 		}
-		ip, err := m.containerIP(mod.ContainerId)
+		ip, err := m.containerIP(ctx, mod.ContainerId)
 		if err != nil {
 			m.logger.Debug("No container IP for module %s: %v", mod.Name, err)
 			continue
@@ -342,7 +359,7 @@ func appendPortRoutes(tcpRoutes map[int][]Route, udpRoutes map[int]Route, ports 
 }
 
 // True when any port wants proxy routing
-func hasProxyPorts(ports []*v1.NetworkPort) bool {
+func HasProxyPorts(ports []*v1.NetworkPort) bool {
 	for _, port := range ports {
 		if port != nil && port.ProxyEnabled && port.HostPort != 0 {
 			return true
@@ -515,7 +532,8 @@ func (m *Manager) UpdateServerRoute(server *v1.Server) error {
 		return nil
 	}
 
-	listener, err := m.store.GetProxyListener(context.Background(), server.ProxyListenerId)
+	ctx := context.Background()
+	listener, err := m.store.GetProxyListener(ctx, server.ProxyListenerId)
 	if err != nil {
 		return fmt.Errorf("failed to get proxy listener: %w", err)
 	}
@@ -528,7 +546,7 @@ func (m *Manager) UpdateServerRoute(server *v1.Server) error {
 		return fmt.Errorf("no listener socket for port %d", listener.Port)
 	}
 
-	route, want, err := m.desiredRoute(server, server.ProxyHostname)
+	route, want, err := m.desiredRoute(ctx, server, server.ProxyHostname)
 	if err != nil {
 		return err
 	}
@@ -540,9 +558,23 @@ func (m *Manager) UpdateServerRoute(server *v1.Server) error {
 	return nil
 }
 
+// Reconciles every route a server owns after status changes
+func (m *Manager) SyncServerRoutes(ctx context.Context, server *v1.Server) error {
+	var firstErr error
+	if server.ProxyHostname != "" {
+		firstErr = m.UpdateServerRoute(server)
+	}
+	// Extra proxied ports only reconcile in a full pass
+	if HasProxyPorts(server.AdditionalPorts) {
+		if err := m.SyncListeners(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 // Derives the route a server should serve right now
-func (m *Manager) desiredRoute(server *v1.Server, hostname string) (route Route, want bool, err error) {
-	ctx := context.Background()
+func (m *Manager) desiredRoute(ctx context.Context, server *v1.Server, hostname string) (route Route, want bool, err error) {
 	cfg, cfgErr := m.store.GetServerProperties(ctx, server.Id)
 	if cfgErr != nil {
 		cfg = nil
@@ -566,7 +598,7 @@ func (m *Manager) desiredRoute(server *v1.Server, hostname string) (route Route,
 		if server.ContainerId == "" {
 			return Route{}, false, fmt.Errorf("server %s has no container", server.Name)
 		}
-		ip, ipErr := m.containerIP(server.ContainerId)
+		ip, ipErr := m.containerIP(ctx, server.ContainerId)
 		if ipErr != nil {
 			return Route{}, false, fmt.Errorf("failed to get container IP: %w", ipErr)
 		}
@@ -578,7 +610,7 @@ func (m *Manager) desiredRoute(server *v1.Server, hostname string) (route Route,
 		route.State = v1.ProxyRouteState_PROXY_ROUTE_STATE_STARTING
 		route.Motd = bootMOTD(server, cfg)
 		if server.ContainerId != "" {
-			if ip, ipErr := m.containerIP(server.ContainerId); ipErr == nil {
+			if ip, ipErr := m.containerIP(ctx, server.ContainerId); ipErr == nil {
 				route.BackendHost = ip
 			}
 		}

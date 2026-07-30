@@ -555,6 +555,10 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 	}
 	netClaim, err := s.proxyManager.CheckoutNetwork(ctx, netOwner, netReqs)
 	if err != nil {
+		// Reconcile retires any listener row made just above
+		if serr := s.proxyManager.SyncListeners(ctx); serr != nil {
+			s.log.Error("Failed to sync after checkout failure: %v", serr)
+		}
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	defer netClaim.Release()
@@ -746,12 +750,18 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 		}
 		claim, err := s.proxyManager.CheckoutNetwork(ctx, proxy.NetOwner{Kind: proxy.OwnerModule, ID: module.Id}, netReqs)
 		if err != nil {
+			// Reconcile retires any listener row made just above
+			if serr := s.proxyManager.SyncListeners(ctx); serr != nil {
+				s.log.Error("Failed to sync after checkout failure: %v", serr)
+			}
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 		netClaim = claim
 		defer netClaim.Release()
 
 		module.Ports = msg.Ports
+	} else if msg.ClearPorts {
+		module.Ports = nil
 	}
 	if len(msg.Dependencies) > 0 {
 		module.Dependencies = msg.Dependencies

@@ -145,12 +145,12 @@ func (m *Manager) persistContainer(ctx context.Context, server *v1.Server) error
 	})
 }
 
-// Reconciles proxy route after status change for pinging clients
+// Reconciles proxy routes after status change for pinging clients
 func (m *Manager) syncRoute(server *v1.Server) {
-	if m.proxy == nil || server.ProxyHostname == "" {
+	if m.proxy == nil {
 		return
 	}
-	if err := m.proxy.UpdateServerRoute(server); err != nil {
+	if err := m.proxy.SyncServerRoutes(context.Background(), server); err != nil {
 		m.log.Debug("lifecycle: proxy route sync for %s: %v", server.Name, err)
 	}
 }
@@ -289,9 +289,9 @@ func (m *Manager) Start(ctx context.Context, serverID string) error {
 	m.setPaused(server.Id, false)
 	m.resetIdle(server.Id)
 
-	if m.proxy != nil && server.ProxyHostname != "" {
-		if err := m.proxy.UpdateServerRoute(server); err != nil {
-			m.log.Error("lifecycle: failed to update proxy route for %s: %v", server.Name, err)
+	if m.proxy != nil {
+		if err := m.proxy.SyncServerRoutes(ctx, server); err != nil {
+			m.log.Error("lifecycle: failed to update proxy routes for %s: %v", server.Name, err)
 		}
 	}
 

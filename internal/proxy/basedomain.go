@@ -11,6 +11,9 @@ import (
 // Detection cache lifetime, addresses move on dhcp
 const ipCacheTTL = 5 * time.Minute
 
+// Public address cache lifetime before falling back
+const publicIPTTL = 30 * time.Minute
+
 // Finds the address other machines reach this host on
 func detectOutboundIPv4(override string) (string, bool) {
 	if override != "" {
@@ -64,18 +67,43 @@ func (m *Manager) effectiveBaseDomainLocked() (string, v1.BaseUrlSource) {
 	if m.baseURL != "" {
 		return m.baseURL, v1.BaseUrlSource_BASE_URL_SOURCE_CUSTOM
 	}
+	if ip, ok := m.bestAutoIPLocked(); ok {
+		return sslipDomain(ip), v1.BaseUrlSource_BASE_URL_SOURCE_AUTO
+	}
+	return "", v1.BaseUrlSource_BASE_URL_SOURCE_UNSPECIFIED
+}
 
+// Config override read live for tests and reloads
+func (m *Manager) overrideIPLocked() string {
+	if m.appCfg == nil {
+		return ""
+	}
+	if ip := net.ParseIP(m.appCfg.Proxy.PublicIp); ip != nil && ip.To4() != nil {
+		return ip.To4().String()
+	}
+	return ""
+}
+
+// Best instant address, override then public then lan
+func (m *Manager) bestAutoIPLocked() (string, bool) {
+	if ip := m.overrideIPLocked(); ip != "" {
+		return ip, true
+	}
+	if m.publicIP != "" && time.Since(m.publicAt) <= publicIPTTL {
+		return m.publicIP, true
+	}
+	return m.lanIPLocked()
+}
+
+// Cached lan address, detection is cheap and local
+func (m *Manager) lanIPLocked() (string, bool) {
 	if m.detectedIP == "" || time.Since(m.detectedAt) > ipCacheTTL {
-		override := ""
-		if m.appCfg != nil {
-			override = m.appCfg.Proxy.PublicIp
-		}
-		ip, ok := detectOutboundIPv4(override)
+		ip, ok := detectOutboundIPv4("")
 		if !ok {
-			return "", v1.BaseUrlSource_BASE_URL_SOURCE_UNSPECIFIED
+			return "", false
 		}
 		m.detectedIP = ip
 		m.detectedAt = time.Now()
 	}
-	return sslipDomain(m.detectedIP), v1.BaseUrlSource_BASE_URL_SOURCE_AUTO
+	return m.detectedIP, true
 }

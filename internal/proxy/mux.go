@@ -328,6 +328,14 @@ func (s *ListenerSocket) handleConnection(raw net.Conn) {
 	// Legacy ping detection, big handshakes also start 0xfe
 	if first[0] == mcproto.LegacyPingByte {
 		peeked, _ := br.Peek(br.Buffered())
+		if len(peeked) < 3 {
+			// Grace peek separates split handshakes from bare pings
+			raw.SetReadDeadline(time.Now().Add(legacyPeekGrace))
+			if more, err := br.Peek(3); err == nil {
+				peeked = more
+			}
+			raw.SetReadDeadline(time.Now().Add(handshakeTimeout))
+		}
 		if len(peeked) < 3 || peeked[2] != 0x00 {
 			defer raw.Close()
 			s.serveLegacyPing(raw, peeked)

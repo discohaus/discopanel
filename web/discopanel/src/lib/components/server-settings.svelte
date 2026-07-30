@@ -217,7 +217,12 @@
 		if (!dirty || saving) return;
 		saving = true;
 		try {
-			await rpcClient.server.updateServer(create(UpdateServerRequestSchema, formData));
+			await rpcClient.server.updateServer(
+				create(UpdateServerRequestSchema, {
+					...formData,
+					clearAdditionalPorts: (formData.additionalPorts?.length ?? 0) === 0
+				})
+			);
 			toast.success(
 				stopped ? 'Settings saved' : 'Settings saved. Restart the server to apply changes.'
 			);

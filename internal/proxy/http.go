@@ -37,7 +37,12 @@ func newHTTPLane(log *logger.Logger) *httpLane {
 func (p *httpLane) start(feed *connFeed) {
 	p.serverMutex.Lock()
 	defer p.serverMutex.Unlock()
-	p.server = &http.Server{Handler: p}
+	// Header stalls drop, bodies stay open for long streams
+	p.server = &http.Server{
+		Handler:           p,
+		ReadHeaderTimeout: 30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
 	go func(server *http.Server) {
 		if err := server.Serve(feed); err != nil && err != http.ErrServerClosed && err != net.ErrClosed {
 			p.logger.Error("HTTP lane error: %v", err)
@@ -62,8 +67,17 @@ func isWebSocketRequest(r *http.Request) bool {
 
 // Implements http.Handler for routing requests
 func (p *httpLane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Extract hostname from Host header
-	hostname := strings.ToLower(strings.Split(r.Host, ":")[0])
+	// Reachability probes bounce off before any routing
+	if nonce, ok := strings.CutPrefix(r.URL.Path, echoPathPrefix); ok {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Discopanel-Echo", "1")
+		fmt.Fprint(w, nonce)
+		return
+	}
+
+	// Same normalizer as route keys, trailing dots included
+	hostname := normalizeHostname(r.Host)
 
 	// Find the route, empty hostname key is the catch all
 	p.routesMutex.RLock()

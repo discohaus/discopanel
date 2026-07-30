@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"testing"
+	"time"
 
 	"github.com/discohaus/discopanel/pkg/config"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
@@ -40,9 +41,16 @@ func TestEffectiveBaseDomain(t *testing.T) {
 		t.Fatalf("instant domain not derived, got %q %v", base, src)
 	}
 
-	// Cache serves the second call without re-detection
-	auto.appCfg.Proxy.PublicIp = "192.0.2.9"
-	if cached, _ := auto.EffectiveBaseDomain(); cached != base {
-		t.Fatalf("cache miss, got %q want %q", cached, base)
+	// Override beats a detected public address
+	auto.publicIP = "203.0.113.7"
+	auto.publicAt = time.Now()
+	if got, _ := auto.EffectiveBaseDomain(); got != base {
+		t.Fatalf("override lost to public ip, got %q want %q", got, base)
+	}
+
+	// Public address wins once the override clears
+	auto.appCfg.Proxy.PublicIp = ""
+	if got, _ := auto.EffectiveBaseDomain(); got != "203-0-113-7.sslip.io" {
+		t.Fatalf("public ip not preferred, got %q", got)
 	}
 }

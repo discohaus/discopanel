@@ -90,6 +90,20 @@ service ProxyService {
       action: ACTION_TYPE_READ
     };
   }
+  // List candidate instant domain addresses
+  rpc GetNetworkAddresses(GetNetworkAddressesRequest) returns (GetNetworkAddressesResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_PROXY
+      action: ACTION_TYPE_READ
+    };
+  }
+  // Probe bound ports through an address
+  rpc CheckNetworkReachability(CheckNetworkReachabilityRequest) returns (CheckNetworkReachabilityResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_PROXY
+      action: ACTION_TYPE_READ
+    };
+  }
 }
 
 // Route serving state
@@ -252,10 +266,20 @@ message ProxiedModulePortImpact {
   int32 proposed_host_port = 4;
 }
 
+// One proxied server extra port and its landing spot
+message ProxiedServerPortImpact {
+  string server_id = 1;
+  string port_name = 2;
+  int32 current_host_port = 3;
+  // Differs when the direct bind would collide
+  int32 proposed_host_port = 4;
+}
+
 // Everything a disable would convert
 message GetProxyDisableImpactResponse {
   repeated ProxiedServerImpact servers = 1;
   repeated ProxiedModulePortImpact module_ports = 2;
+  repeated ProxiedServerPortImpact server_ports = 3;
 }
 
 // Empty listeners request
@@ -349,4 +373,53 @@ message UpdateServerRoutingRequest {
 message UpdateServerRoutingResponse {
   string hostname = 1;
   string proxy_listener_id = 2;
+}
+
+// Which network an address candidate lives on
+enum AddressSource {
+  option (discopanel.options.v1.enum_type) = {label: "Address Source"};
+  ADDRESS_SOURCE_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  // Router address seen from the internet
+  ADDRESS_SOURCE_PUBLIC = 1 [(discopanel.options.v1.value) = {label: "Public"}];
+  // Host address on the local network
+  ADDRESS_SOURCE_LAN = 2 [(discopanel.options.v1.value) = {label: "LAN"}];
+}
+
+// One address the panel can be reached on
+message AddressCandidate {
+  string ip = 1;
+  // Instant sslip.io domain for the address
+  string domain = 2;
+  AddressSource source = 3;
+}
+
+// Empty candidates request
+message GetNetworkAddressesRequest {}
+
+// Candidates ordered most viable first
+message GetNetworkAddressesResponse {
+  repeated AddressCandidate candidates = 1;
+}
+
+// Address or hostname to probe, empty picks best candidate
+message CheckNetworkReachabilityRequest {
+  string target = 1;
+}
+
+// Probe result for one bound host port
+message PortReachability {
+  int32 port = 1;
+  NetworkTransport transport = 2;
+  // False when the transport cannot be probed
+  bool checked = 3;
+  bool reachable = 4;
+  // True when the echo proved it reached this panel
+  bool confirmed = 5;
+  string detail = 6;
+}
+
+// Reachability report for one address
+message CheckNetworkReachabilityResponse {
+  string ip = 1;
+  repeated PortReachability ports = 2;
 }

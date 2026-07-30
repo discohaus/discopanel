@@ -438,6 +438,8 @@ message UpdateModuleRequest {
   optional string init_command = 22;
   optional int32 init_command_delay = 23;
   optional bool restart_after_init = 24;
+  // Empty repeated cannot signal removal on its own
+  bool clear_ports = 25;
 }
 
 // UpdateModuleResponse contains the updated module.

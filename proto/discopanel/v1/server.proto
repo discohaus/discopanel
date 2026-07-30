@@ -317,6 +317,8 @@ message UpdateServerRequest {
   string modpack_version_id = 14;
   repeated NetworkPort additional_ports = 15;
   DockerOverrides docker_overrides = 16;
+  // Empty repeated cannot signal removal on its own
+  bool clear_additional_ports = 19;
 }
 
 // Updated server instance
