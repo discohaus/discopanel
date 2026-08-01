@@ -125,7 +125,7 @@
 	async function loadAllRoutes() {
 		try {
 			const [routeData, moduleData] = await Promise.all([
-				rpcClient.proxy.getProxyRoutes({}),
+				rpcClient.proxy.getProxyRoutes({}, silentCallOptions),
 				rpcClient.module.listModules({}, silentCallOptions).catch(() => null)
 			]);
 			allRoutes = routeData.routes;
@@ -134,6 +134,20 @@
 			// Route list is optional context
 		}
 	}
+
+	// Route states keep themselves fresh while the tab shows
+	$effect(() => {
+		if (!active) return;
+		const timer = setInterval(async () => {
+			try {
+				const routeData = await rpcClient.proxy.getProxyRoutes({}, silentCallOptions);
+				allRoutes = routeData.routes;
+			} catch {
+				// Poll failures keep the last snapshot
+			}
+		}, 5000);
+		return () => clearInterval(timer);
+	});
 
 	async function refreshAvailablePort() {
 		try {

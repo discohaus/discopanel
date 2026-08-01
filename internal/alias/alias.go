@@ -22,6 +22,25 @@ type Host struct {
 	Hostname string `json:"hostname"`
 }
 
+// Panel wide hostname authority injected at startup
+var hostnameSource func() string
+
+// Registers the resolver behind host.hostname
+func SetHostnameSource(fn func() string) {
+	hostnameSource = fn
+}
+
+// Best hostname for the current context
+func resolveHostname(ctx *Context) string {
+	if ctx.Server != nil && ctx.Server.ProxyHostname != "" {
+		return ctx.Server.ProxyHostname
+	}
+	if hostnameSource != nil {
+		return hostnameSource()
+	}
+	return ""
+}
+
 // Objects available for alias resolution
 type Context struct {
 	Server           *v1.Server
@@ -51,14 +70,7 @@ func (ctx *Context) populateComputed() {
 		ctx.Host = &Host{UID: os.Getuid(), GID: os.Getgid()}
 	}
 	if ctx.Host.Hostname == "" {
-		if ctx.Server != nil && ctx.Server.ProxyHostname != "" {
-			ctx.Host.Hostname = ctx.Server.ProxyHostname
-		} else if ctx.Config != nil && ctx.Config.Server.Host != "" {
-			ctx.Host.Hostname = ctx.Config.Server.Host
-			if ctx.Host.Hostname == "0.0.0.0" {
-				ctx.Host.Hostname = "localhost"
-			}
-		}
+		ctx.Host.Hostname = resolveHostname(ctx)
 	}
 }
 

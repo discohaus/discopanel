@@ -50,13 +50,7 @@
 		onModuleCount?: (count: number) => void;
 	}
 
-	let {
-		server,
-		active = false,
-		prompts = [],
-		onPromptAnswered,
-		onModuleCount
-	}: Props = $props();
+	let { server, active = false, prompts = [], onPromptAnswered, onModuleCount }: Props = $props();
 
 	let modules = $state<Module[]>([]);
 	let templates = $state<ModuleTemplate[]>([]);
@@ -503,16 +497,22 @@
 									{@const resolved = resolve(url, module.id)}
 									<div class="flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1.5">
 										<ExternalLink class="size-3 shrink-0 text-muted-foreground" />
-										<!-- eslint-disable svelte/no-navigation-without-resolve -- external URL -->
-										<a
-											href={resolved}
-											target="_blank"
-											rel="noopener noreferrer"
-											class="truncate font-mono text-xs text-primary hover:underline"
-										>
-											{resolved}
-										</a>
-										<!-- eslint-enable svelte/no-navigation-without-resolve -->
+										{#if resolved.includes('{{')}
+											<span class="truncate font-mono text-xs text-muted-foreground"
+												>{resolved}</span
+											>
+										{:else}
+											<!-- eslint-disable svelte/no-navigation-without-resolve -- external URL -->
+											<a
+												href={resolved}
+												target="_blank"
+												rel="noopener noreferrer"
+												class="truncate font-mono text-xs text-primary hover:underline"
+											>
+												{resolved}
+											</a>
+											<!-- eslint-enable svelte/no-navigation-without-resolve -->
+										{/if}
 									</div>
 								{/each}
 							</div>

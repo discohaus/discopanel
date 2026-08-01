@@ -55,6 +55,17 @@ func (s *ListenerSocket) statsFor(serverID string) *RouteStats {
 	return st
 }
 
+// Forgets counters matching the predicate
+func (s *ListenerSocket) DropStats(match func(string) bool) {
+	s.statsMu.Lock()
+	for id := range s.stats {
+		if match(id) {
+			delete(s.stats, id)
+		}
+	}
+	s.statsMu.Unlock()
+}
+
 // Copies every route's counters for the API
 func (s *ListenerSocket) StatsSnapshots() map[string]*v1.ProxyRoute {
 	s.statsMu.Lock()
@@ -121,11 +132,16 @@ func (s *ListenerSocket) removeMCRoute(hostname string) {
 func (s *ListenerSocket) lookupMCRoute(hostname string) (Route, bool) {
 	s.routesMu.RLock()
 	defer s.routesMu.RUnlock()
-	route, exists := s.mcRoutes[hostname]
-	if !exists {
-		return Route{}, false
+	if route, exists := s.mcRoutes[hostname]; exists {
+		return *route, true
 	}
-	return *route, true
+	// Raw ip and typo joins land on an only route
+	if len(s.mcRoutes) == 1 {
+		for _, route := range s.mcRoutes {
+			return *route, true
+		}
+	}
+	return Route{}, false
 }
 
 // Finds backend for a parsed handshake, wakes sleepers, relays
@@ -140,7 +156,8 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 			return
 		}
 		clientConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		mcproto.WriteLoginDisconnect(clientConn, fmt.Sprintf("No server is available at %s", hostname))
+		mcproto.WriteLoginDisconnect(clientConn,
+			fmt.Sprintf("No server answers at %s. Join with the address shown in the panel.", hostname))
 		return
 	}
 

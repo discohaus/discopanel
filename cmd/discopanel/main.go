@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+
+	"github.com/discohaus/discopanel/internal/alias"
 	"github.com/discohaus/discopanel/internal/command"
 	storage "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/docker"
@@ -135,9 +138,19 @@ func main() {
 	// Initialize proxy manager
 	proxyManager := proxy.NewManager(store, dockerClient, cfg, log)
 
-	// Start proxy if enabled
+	// Aliases resolve host.hostname through the proxy manager
+	alias.SetHostnameSource(proxyManager.PanelHostname)
+
+	// Panel http serves on loopback behind the panel socket
+	panelLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		log.Fatal("Failed to bind the panel backend: %v", err)
+	}
+	proxyManager.SetPanelBackend(panelLn.Addr().(*net.TCPAddr).Port)
+
+	// Start proxy manager, the panel socket must come up
 	if err := proxyManager.Start(); err != nil {
-		log.Error("Failed to start proxy manager: %v", err)
+		log.Fatal("Failed to start proxy manager: %v", err)
 	}
 	defer proxyManager.Stop()
 
@@ -362,16 +375,15 @@ func main() {
 
 	// No body deadlines, agent streams stay open for hours
 	srv := &http.Server{
-		Addr:              fmt.Sprintf("%s:%s", cfg.Server.Host, cfg.Server.Port),
 		Handler:           rpcServer.Handler(),
 		ReadHeaderTimeout: time.Duration(cfg.Server.ReadHeaderTimeout) * time.Second,
 		IdleTimeout:       time.Duration(cfg.Server.IdleTimeout) * time.Second,
 	}
 
-	// Start server in goroutine
+	// Panel socket terminates tls and relays plain http here
 	go func() {
 		log.Info("Starting DiscoPanel on %s:%s", cfg.Server.Host, cfg.Server.Port)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(panelLn); err != nil && err != http.ErrServerClosed {
 			log.Fatal("Failed to start server: %v", err)
 		}
 	}()

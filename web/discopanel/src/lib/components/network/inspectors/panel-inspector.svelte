@@ -2,6 +2,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { CopyButton } from '$lib/components/app';
 	import { PanelsTopLeft, X } from '@lucide/svelte';
+	import { panelHost } from '$lib/utils/host';
 
 	let {
 		port,
@@ -14,8 +15,11 @@
 	} = $props();
 
 	let address = $derived.by(() => {
-		const host = baseUrl || 'localhost';
-		return port === 80 ? `http://${host}` : `http://${host}:${port}`;
+		const host = panelHost(baseUrl);
+		// Advertise the protocol the browser actually used
+		const secure = window.location.protocol === 'https:';
+		const proto = secure ? 'https' : 'http';
+		return port === (secure ? 443 : 80) ? `${proto}://${host}` : `${proto}://${host}:${port}`;
 	});
 </script>
 
@@ -46,15 +50,21 @@
 
 		<div class="space-y-2 text-sm">
 			<div class="flex items-center justify-between gap-3">
-				<span class="text-muted-foreground">Port</span>
+				<span class="text-muted-foreground">Listener</span>
 				<span class="font-mono text-xs">:{port}/tcp</span>
 			</div>
 			<div class="flex items-center justify-between gap-3">
 				<span class="text-muted-foreground">Serves</span>
 				<span class="text-xs">Web UI and API</span>
 			</div>
+			<div class="flex items-center justify-between gap-3">
+				<span class="text-muted-foreground">Also answers</span>
+				<span class="text-xs">Self checks and certificate validation</span>
+			</div>
 		</div>
 
-		<p class="text-xs text-muted-foreground">Binds the host directly, does not pass the proxy</p>
+		<p class="text-xs text-muted-foreground">
+			This port always stays open. It is how you reach DiscoPanel itself.
+		</p>
 	</div>
 </div>

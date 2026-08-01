@@ -24,12 +24,14 @@
 	let {
 		open = $bindable(false),
 		baseUrl,
+		strictHttps,
 		modules,
 		usedPorts,
 		onConverted
 	}: {
 		open?: boolean;
 		baseUrl: string;
+		strictHttps: boolean;
 		modules: Module[];
 		usedPorts: number[];
 		onConverted: () => Promise<void>;
@@ -90,6 +92,7 @@
 			await rpcClient.proxy.updateProxyConfig({
 				enabled: false,
 				baseUrl,
+				strictHttps,
 				convertToDirect: true,
 				assignments: servers.map((s) => ({
 					serverId: s.serverId,

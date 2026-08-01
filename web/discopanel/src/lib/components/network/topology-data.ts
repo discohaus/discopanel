@@ -41,7 +41,6 @@ export interface SourceNodeData extends Record<string, unknown> {
 }
 
 export interface EntryNodeData extends Record<string, unknown> {
-	variant: 'panel' | 'port';
 	title: string;
 	port: number;
 	sub: string;
@@ -55,6 +54,8 @@ export interface ListenerNodeData extends Record<string, unknown> {
 	isDefault: boolean;
 	enabled: boolean;
 	autoCreated: boolean;
+	// Panel listener, permanent and undeletable
+	panel: boolean;
 	state: 'active' | 'idle' | 'disabled';
 	routeCount: number;
 	selection: Selection;
@@ -89,7 +90,7 @@ export interface ActionNodeData extends Record<string, unknown> {
 }
 
 export interface BackendNodeData extends Record<string, unknown> {
-	kind: 'server' | 'module';
+	kind: 'server' | 'module' | 'panel';
 	name: string;
 	favicon: string;
 	statusServer: Server | null;
@@ -171,7 +172,8 @@ export function buildGraph(
 	listeners: ProxyListenerWithCount[],
 	servers: Server[],
 	modules: Module[],
-	selection: Selection
+	selection: Selection,
+	dnsProvider = ''
 ): TopologyGraph {
 	const nodes: Node[] = [];
 	const edges: Edge[] = [];
@@ -231,16 +233,36 @@ export function buildGraph(
 		selection: { kind: 'overview' }
 	} satisfies SourceNodeData);
 
-	// Panel entry always present
-	addNode('panel', 'entry', 1, HEIGHTS.entry, 0, {
-		variant: 'panel',
-		title: 'DiscoPanel',
-		port: topology.panelPort,
-		sub: `web ui :${topology.panelPort}`,
-		active: true,
-		selection: { kind: 'panel' }
-	} satisfies EntryNodeData);
-	addEdge('players', 'panel', 'topo-edge-idle', false);
+	// Detected provider resolving the base domain
+	if (dnsProvider) {
+		addNode('dns-provider', 'entry', 0, HEIGHTS.entry, 0, {
+			title: dnsProvider,
+			port: 0,
+			sub: 'dns provider',
+			active: true,
+			selection: { kind: 'overview' }
+		} satisfies EntryNodeData);
+	}
+
+	addNode(
+		'panel',
+		'backend',
+		4,
+		HEIGHTS.backend,
+		0,
+		{
+			kind: 'panel',
+			name: 'DiscoPanel',
+			favicon: '',
+			statusServer: null,
+			moduleRunning: true,
+			extraPorts: [],
+			nested: false,
+			parentName: '',
+			selection: { kind: 'panel' }
+		} satisfies BackendNodeData,
+		{ group: 'panel' }
+	);
 
 	// Reservations split by kind before building lanes
 	const socketRes: NetworkReservation[] = [];
@@ -278,17 +300,20 @@ export function buildGraph(
 		enabled: boolean;
 		isDefault: boolean;
 		autoCreated: boolean;
+		panel: boolean;
 	}[] = [];
 	for (const res of socketRes) {
+		const isPanel = res.ownerKind === NetworkOwnerKind.PANEL;
 		const row = rowsById.get(res.ownerId);
 		seenRows.add(res.ownerId);
 		listenerEntries.push({
 			id: `listener:${res.ownerId}`,
 			port: res.port,
-			name: row?.name || res.detail || `Port ${res.port}`,
+			name: isPanel ? 'DiscoPanel' : row?.name || res.detail || `Port ${res.port}`,
 			enabled: row?.enabled ?? true,
 			isDefault: row?.isDefault ?? false,
-			autoCreated: row?.autoCreated ?? false
+			autoCreated: row?.autoCreated ?? false,
+			panel: isPanel
 		});
 	}
 	for (const lwc of listeners) {
@@ -300,7 +325,8 @@ export function buildGraph(
 			name: row.name,
 			enabled: row.enabled,
 			isDefault: row.isDefault,
-			autoCreated: row.autoCreated
+			autoCreated: row.autoCreated,
+			panel: row.id === 'panel'
 		});
 	}
 
@@ -338,7 +364,8 @@ export function buildGraph(
 			name: `Port ${port}`,
 			enabled: true,
 			isDefault: false,
-			autoCreated: true
+			autoCreated: true,
+			panel: false
 		});
 	}
 	listenerEntries.sort((a, b) => a.port - b.port);
@@ -363,9 +390,14 @@ export function buildGraph(
 			isDefault: entry.isDefault,
 			enabled: entry.enabled,
 			autoCreated: entry.autoCreated,
+			panel: entry.panel,
 			state,
 			routeCount: laneCountByPort.get(entry.port) ?? 0,
-			selection: rowId ? { kind: 'listener', id: rowId } : { kind: 'overview' }
+			selection: entry.panel
+				? { kind: 'panel' }
+				: rowId
+					? { kind: 'listener', id: rowId }
+					: { kind: 'overview' }
 		} satisfies ListenerNodeData);
 		const cls =
 			entry.enabled && topology.proxyEnabled && running ? 'topo-edge-ok' : 'topo-edge-idle';
@@ -384,6 +416,10 @@ export function buildGraph(
 	const backendBand = new Map<string, number>();
 	const backendTargets = new Map<string, { kind: 'server' | 'module'; id: string }>();
 	const targetBackend = (ownerKind: NetworkOwnerKind, ownerId: string, band: number): string => {
+		// Panel routes land on the fixed panel backend node
+		if (ownerKind === NetworkOwnerKind.PANEL) {
+			return 'panel';
+		}
 		const kind = ownerKind === NetworkOwnerKind.SERVER ? 'server' : 'module';
 		const nodeId = `${kind}:${ownerId}`;
 		backendTargets.set(nodeId, { kind, id: ownerId });
@@ -443,8 +479,16 @@ export function buildGraph(
 			continue;
 		}
 
+		// Panel named claim collapses into its catch all node
+		const panelCatchAll = lane.routes.some(
+			(r) => r.ownerKind === NetworkOwnerKind.PANEL && !r.hostname
+		);
+		const laneRoutes = panelCatchAll
+			? lane.routes.filter((r) => !(r.ownerKind === NetworkOwnerKind.PANEL && r.hostname))
+			: lane.routes;
+
 		// Hostname routes sorted with the catch all last
-		const sorted = [...lane.routes].sort((a, b) =>
+		const sorted = [...laneRoutes].sort((a, b) =>
 			(a.hostname || '~').localeCompare(b.hostname || '~')
 		);
 		const reservedKeys = new Set<string>();
@@ -547,7 +591,6 @@ export function buildGraph(
 				? serversById.get(res.ownerId)
 				: modulesById.get(res.ownerId);
 		addNode(id, 'entry', 1, HEIGHTS.entry, 1, {
-			variant: 'port',
 			title: `:${res.port}`,
 			port: res.port,
 			sub: `direct ${transport}`,

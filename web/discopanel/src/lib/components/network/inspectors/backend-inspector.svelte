@@ -4,6 +4,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { CopyButton, ServerAvatar, StatusBadge } from '$lib/components/app';
 	import { playerAddress } from '$lib/hostname';
+	import { panelHost } from '$lib/utils/host';
 	import type { ExposedPort } from '../topology-data';
 	import { ArrowUpRight, Container, X } from '@lucide/svelte';
 
@@ -28,8 +29,7 @@
 		if (!server) return '';
 		if (server.proxyHostname) return playerAddress(server.proxyHostname, listenPort);
 		if (!server.port) return '';
-		const host = baseUrl || 'localhost';
-		return `${host}:${server.port}`;
+		return `${panelHost(baseUrl)}:${server.port}`;
 	});
 </script>
 

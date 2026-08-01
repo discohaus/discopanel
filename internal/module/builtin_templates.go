@@ -379,7 +379,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			DefaultUid:        doctorUID,
 			DefaultGid:        doctorGID,
 			Metadata:          map[string]string{"module_role": "doctor"},
-			Documentation:     "Runs as a single global module for the whole panel. Discovers servers through the DiscoPanel API, watches their exit history on the shared data volume, and repairs crash loops with reversible mod disables, re-enables, and dependency installs from CurseForge or Modrinth using the panel API keys. Configure it from the Doctor category in Settings, with per-server overrides on each server's properties page. Doctor Mode observe diagnoses without acting, and Install Missing Dependencies off disables downloads. Stop the module or turn off auto start to disable it entirely.",
+			Documentation:     "Runs as a single global module for the whole panel. Discovers servers through the DiscoPanel API, watches their exit history on the shared data volume, and repairs crash loops with reversible mod disables, re-enables, and dependency installs from CurseForge or Modrinth using the panel API keys. Configure it from the Doctor category in Settings, with per-server overrides on each server's properties page. Doctor Mode observe diagnoses without acting, and Install Missing Dependencies off disables downloads.",
 			DefaultMemory:     512,
 		},
 	}

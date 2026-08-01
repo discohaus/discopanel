@@ -13,6 +13,7 @@
 	import AliasHelper from '$lib/components/ui/AliasHelper.svelte';
 	import DynamicIcon from '$lib/components/ui/DynamicIcon.svelte';
 	import ModuleTemplateMenu from './ModuleTemplateMenu.svelte';
+	import CoverageHint from '$lib/components/network/coverage-hint.svelte';
 	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { toast } from 'svelte-sonner';
 	import { cn } from '$lib/utils';
@@ -45,6 +46,7 @@
 	} from '$lib/proto/discopanel/v1/storage_pb';
 	import { create, clone } from '@bufbuild/protobuf';
 	import { enumLabel } from '$lib/proto-meta';
+	import { tlsModeLabel, tlsModeOptions } from '$lib/components/network/network-copy';
 	import { evaluateConfigField, groupedConfigFields } from '$lib/module-config';
 	import type { ConfigFieldIssue } from '$lib/module-config';
 	import { SERVER_EVENT_TYPES, getEventTypeLabel } from '$lib/utils/events';
@@ -62,6 +64,7 @@
 		Plus,
 		Save,
 		Settings,
+		ShieldCheck,
 		SlidersHorizontal,
 		Trash2,
 		Variable,
@@ -148,6 +151,8 @@
 	);
 	let activeTemplate = $derived(mode === 'create' ? selectedTemplate : editTemplate);
 	let configFields = $derived(activeTemplate?.configFields ?? []);
+	// Panel owned modules only take network and resource edits
+	let systemLocked = $derived(mode === 'edit' && !module?.serverId);
 
 	let configIssues = $derived.by(() => {
 		const issues: Record<string, ConfigFieldIssue | null> = {};
@@ -640,6 +645,15 @@
 					restartAfterInit
 				});
 				toast.success(`Module "${name}" created`);
+			} else if (module && systemLocked) {
+				// Panel owns everything else on a system module
+				await rpcClient.module.updateModule({
+					id: module.id,
+					memory,
+					cpuLimit,
+					ports: portsPayload
+				});
+				toast.success(`Module "${module.name}" updated`);
 			} else if (module) {
 				await rpcClient.module.updateModule({
 					id: module.id,
@@ -870,12 +884,26 @@
 						</div>
 					{/if}
 
+					{#if systemLocked}
+						<div class="flex items-center gap-2 border-b bg-primary/[0.04] px-6 py-2.5">
+							<ShieldCheck class="size-4 shrink-0 text-primary" />
+							<p class="text-xs text-muted-foreground">
+								Managed by DiscoPanel. Only network settings and resource limits can change.
+							</p>
+						</div>
+					{/if}
+
 					<div class="flex-1 overflow-y-auto p-6">
 						{#if activeSection === 'general'}
 							<div class="space-y-6">
 								<div class="space-y-2">
 									<Label for="module-name">Module name</Label>
-									<Input id="module-name" bind:value={name} placeholder="Enter module name" />
+									<Input
+										id="module-name"
+										bind:value={name}
+										placeholder="Enter module name"
+										disabled={systemLocked}
+									/>
 									<p class="text-xs text-muted-foreground">
 										A unique identifier for this module instance
 									</p>
@@ -920,6 +948,7 @@
 												bind:value={uid}
 												placeholder={'{{host.uid}}'}
 												class="font-mono"
+												disabled={systemLocked}
 											/>
 											<p class="text-xs text-muted-foreground">User ID or alias</p>
 										</div>
@@ -930,44 +959,58 @@
 												bind:value={gid}
 												placeholder={'{{host.gid}}'}
 												class="font-mono"
+												disabled={systemLocked}
 											/>
 											<p class="text-xs text-muted-foreground">Group ID or alias</p>
 										</div>
 									</div>
 								</div>
 
-								<div class="space-y-3">
-									<h3 class="text-sm font-semibold">Lifecycle behavior</h3>
-									<div class="divide-y rounded-lg border bg-card">
-										<label class="flex cursor-pointer items-center justify-between gap-4 p-3">
-											<div>
-												<span class="text-sm font-medium">Auto-start</span>
-												<p class="text-xs text-muted-foreground">
-													Automatically start this module when the server starts
-												</p>
-											</div>
-											<Switch bind:checked={autoStart} />
-										</label>
-										<label class="flex cursor-pointer items-center justify-between gap-4 p-3">
-											<div>
-												<span class="text-sm font-medium">Follow server lifecycle</span>
-												<p class="text-xs text-muted-foreground">
-													Stop this module when the server stops
-												</p>
-											</div>
-											<Switch bind:checked={followServerLifecycle} />
-										</label>
-										<label class="flex cursor-pointer items-center justify-between gap-4 p-3">
-											<div>
-												<span class="text-sm font-medium">Detached mode</span>
-												<p class="text-xs text-muted-foreground">
-													Run independently of the server lifecycle
-												</p>
-											</div>
-											<Switch bind:checked={detached} />
-										</label>
+								{#if systemLocked}
+									<div class="space-y-3">
+										<h3 class="text-sm font-semibold">Lifecycle behavior</h3>
+										<div class="flex items-start gap-2 rounded-lg border bg-card p-3">
+											<ShieldCheck class="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+											<p class="text-xs text-muted-foreground">
+												This module runs for the whole panel. Use the Enabled switch on the Modules
+												page to turn it on or off, and that choice survives panel restarts.
+											</p>
+										</div>
 									</div>
-								</div>
+								{:else}
+									<div class="space-y-3">
+										<h3 class="text-sm font-semibold">Lifecycle behavior</h3>
+										<div class="divide-y rounded-lg border bg-card">
+											<label class="flex cursor-pointer items-center justify-between gap-4 p-3">
+												<div>
+													<span class="text-sm font-medium">Auto-start</span>
+													<p class="text-xs text-muted-foreground">
+														Automatically start this module when the server starts
+													</p>
+												</div>
+												<Switch bind:checked={autoStart} />
+											</label>
+											<label class="flex cursor-pointer items-center justify-between gap-4 p-3">
+												<div>
+													<span class="text-sm font-medium">Follow server lifecycle</span>
+													<p class="text-xs text-muted-foreground">
+														Stop this module when the server stops
+													</p>
+												</div>
+												<Switch bind:checked={followServerLifecycle} />
+											</label>
+											<label class="flex cursor-pointer items-center justify-between gap-4 p-3">
+												<div>
+													<span class="text-sm font-medium">Detached mode</span>
+													<p class="text-xs text-muted-foreground">
+														Run independently of the server lifecycle
+													</p>
+												</div>
+												<Switch bind:checked={detached} />
+											</label>
+										</div>
+									</div>
+								{/if}
 
 								{#if mode === 'create'}
 									<label
@@ -1104,10 +1147,12 @@
 									<p class="text-sm text-muted-foreground">
 										{ports.length} port{ports.length === 1 ? '' : 's'} configured
 									</p>
-									<Button size="sm" onclick={addPort}>
-										<Plus class="size-4" />
-										Add port
-									</Button>
+									{#if !systemLocked}
+										<Button size="sm" onclick={addPort}>
+											<Plus class="size-4" />
+											Add port
+										</Button>
+									{/if}
 								</div>
 
 								{#if ports.length > 0}
@@ -1116,21 +1161,27 @@
 											<div class="space-y-3 rounded-lg border bg-card p-4">
 												<div class="flex items-center justify-between">
 													<span class="stat-label">Port {i + 1}</span>
-													<Button
-														variant="ghost"
-														size="icon"
-														class="size-8 text-muted-foreground hover:text-destructive"
-														onclick={() => removePort(i)}
-													>
-														<Trash2 class="size-4" />
-														<span class="sr-only">Remove port</span>
-													</Button>
+													{#if !systemLocked}
+														<Button
+															variant="ghost"
+															size="icon"
+															class="size-8 text-muted-foreground hover:text-destructive"
+															onclick={() => removePort(i)}
+														>
+															<Trash2 class="size-4" />
+															<span class="sr-only">Remove port</span>
+														</Button>
+													{/if}
 												</div>
 
 												<div class="grid gap-3 sm:grid-cols-4">
 													<div class="space-y-1.5">
 														<Label>Name</Label>
-														<Input bind:value={port.name} placeholder="http" />
+														<Input
+															bind:value={port.name}
+															placeholder="http"
+															disabled={systemLocked}
+														/>
 													</div>
 													<div class="space-y-1.5">
 														<Label>Host port</Label>
@@ -1146,6 +1197,7 @@
 															type="number"
 															bind:value={port.containerPort}
 															placeholder="8080"
+															disabled={systemLocked}
 														/>
 													</div>
 													<div class="space-y-1.5">
@@ -1153,6 +1205,7 @@
 														<Select
 															type="single"
 															value={String(port.protocol)}
+															disabled={systemLocked}
 															onValueChange={(v) => {
 																if (v) port.protocol = Number(v);
 															}}
@@ -1210,7 +1263,37 @@
 														<p class="text-xs text-muted-foreground">
 															Leave empty to inherit the server hostname
 														</p>
+														{#if port.protocol === ModuleProtocol.HTTP}
+															<CoverageHint hostname={port.hostname.trim() || serverHost} />
+														{/if}
 													</div>
+													{#if port.protocol === ModuleProtocol.HTTP}
+														<div class="space-y-1.5">
+															<Label>HTTPS posture</Label>
+															<Select
+																type="single"
+																value={String(port.tlsMode)}
+																onValueChange={(v) => {
+																	if (v) port.tlsMode = Number(v);
+																}}
+															>
+																<SelectTrigger class="w-full sm:w-56">
+																	<span>{tlsModeLabel(port.tlsMode)}</span>
+																</SelectTrigger>
+																<SelectContent>
+																	{#each tlsModeOptions as option (option.value)}
+																		<SelectItem value={String(option.value)}>
+																			{option.label}
+																		</SelectItem>
+																	{/each}
+																</SelectContent>
+															</Select>
+															<p class="text-xs text-muted-foreground">
+																HTTPS only sends every visitor to the secure address. HTTP only
+																keeps this port unencrypted.
+															</p>
+														</div>
+													{/if}
 												{/if}
 
 												{#if port.proxyEnabled && port.protocol === ModuleProtocol.MINECRAFT && !port.hostname.trim() && !serverHost}
@@ -1244,10 +1327,12 @@
 											title="No ports configured"
 											description="Add ports to expose container services"
 										>
-											<Button variant="outline" size="sm" onclick={addPort}>
-												<Plus class="size-4" />
-												Add port
-											</Button>
+											{#if !systemLocked}
+												<Button variant="outline" size="sm" onclick={addPort}>
+													<Plus class="size-4" />
+													Add port
+												</Button>
+											{/if}
 										</EmptyState>
 									</div>
 								{/if}
@@ -1258,10 +1343,12 @@
 									<p class="text-sm text-muted-foreground">
 										{envVars.length} variable{envVars.length === 1 ? '' : 's'} defined
 									</p>
-									<Button size="sm" onclick={addEnvVar}>
-										<Plus class="size-4" />
-										Add variable
-									</Button>
+									{#if !systemLocked}
+										<Button size="sm" onclick={addEnvVar}>
+											<Plus class="size-4" />
+											Add variable
+										</Button>
+									{/if}
 								</div>
 
 								{#if envVars.length > 0}
@@ -1272,22 +1359,26 @@
 													bind:value={env.key}
 													placeholder="VARIABLE_NAME"
 													class="w-56 font-mono"
+													disabled={systemLocked}
 												/>
 												<span class="text-muted-foreground">=</span>
 												<Input
 													bind:value={env.value}
 													placeholder="value"
 													class="flex-1 font-mono"
+													disabled={systemLocked}
 												/>
-												<Button
-													variant="ghost"
-													size="icon"
-													class="size-8 shrink-0 text-muted-foreground hover:text-destructive"
-													onclick={() => removeEnvVar(i)}
-												>
-													<Trash2 class="size-4" />
-													<span class="sr-only">Remove variable</span>
-												</Button>
+												{#if !systemLocked}
+													<Button
+														variant="ghost"
+														size="icon"
+														class="size-8 shrink-0 text-muted-foreground hover:text-destructive"
+														onclick={() => removeEnvVar(i)}
+													>
+														<Trash2 class="size-4" />
+														<span class="sr-only">Remove variable</span>
+													</Button>
+												{/if}
 											</div>
 										{/each}
 									</div>
@@ -1298,10 +1389,12 @@
 											title="No environment variables"
 											description="Add variables to configure the container"
 										>
-											<Button variant="outline" size="sm" onclick={addEnvVar}>
-												<Plus class="size-4" />
-												Add variable
-											</Button>
+											{#if !systemLocked}
+												<Button variant="outline" size="sm" onclick={addEnvVar}>
+													<Plus class="size-4" />
+													Add variable
+												</Button>
+											{/if}
 										</EmptyState>
 									</div>
 								{/if}
@@ -1312,10 +1405,12 @@
 									<p class="text-sm text-muted-foreground">
 										{volumes.length} volume{volumes.length === 1 ? '' : 's'} mounted
 									</p>
-									<Button size="sm" onclick={addVolume}>
-										<Plus class="size-4" />
-										Add volume
-									</Button>
+									{#if !systemLocked}
+										<Button size="sm" onclick={addVolume}>
+											<Plus class="size-4" />
+											Add volume
+										</Button>
+									{/if}
 								</div>
 
 								{#if volumes.length > 0}
@@ -1324,15 +1419,17 @@
 											<div class="space-y-3 rounded-lg border bg-card p-4">
 												<div class="flex items-center justify-between">
 													<span class="stat-label">Volume {i + 1}</span>
-													<Button
-														variant="ghost"
-														size="icon"
-														class="size-8 text-muted-foreground hover:text-destructive"
-														onclick={() => removeVolume(i)}
-													>
-														<Trash2 class="size-4" />
-														<span class="sr-only">Remove volume</span>
-													</Button>
+													{#if !systemLocked}
+														<Button
+															variant="ghost"
+															size="icon"
+															class="size-8 text-muted-foreground hover:text-destructive"
+															onclick={() => removeVolume(i)}
+														>
+															<Trash2 class="size-4" />
+															<span class="sr-only">Remove volume</span>
+														</Button>
+													{/if}
 												</div>
 
 												<div class="grid gap-3 sm:grid-cols-2">
@@ -1342,6 +1439,7 @@
 															bind:value={vol.source}
 															placeholder="/host/path"
 															class="font-mono"
+															disabled={systemLocked}
 														/>
 													</div>
 													<div class="space-y-1.5">
@@ -1350,6 +1448,7 @@
 															bind:value={vol.target}
 															placeholder="/container/path"
 															class="font-mono"
+															disabled={systemLocked}
 														/>
 													</div>
 												</div>
@@ -1358,6 +1457,7 @@
 													<label class="flex cursor-pointer items-center gap-2">
 														<Checkbox
 															checked={vol.readOnly}
+															disabled={systemLocked}
 															onCheckedChange={(checked) => {
 																vol.readOnly = !!checked;
 																if (vol.readOnly) {
@@ -1370,6 +1470,7 @@
 													<label class="flex cursor-pointer items-center gap-2">
 														<Checkbox
 															checked={vol.createDir}
+															disabled={systemLocked}
 															onCheckedChange={(checked) => {
 																vol.createDir = !!checked;
 																if (vol.createDir) {
@@ -1390,16 +1491,18 @@
 											title="No volumes mounted"
 											description="Mount host directories to persist data"
 										>
-											<Button variant="outline" size="sm" onclick={addVolume}>
-												<Plus class="size-4" />
-												Add volume
-											</Button>
+											{#if !systemLocked}
+												<Button variant="outline" size="sm" onclick={addVolume}>
+													<Plus class="size-4" />
+													Add volume
+												</Button>
+											{/if}
 										</EmptyState>
 									</div>
 								{/if}
 							</div>
 						{:else if activeSection === 'advanced'}
-							<div class="space-y-8">
+							<fieldset class="min-w-0 space-y-8" disabled={systemLocked}>
 								<section class="space-y-3">
 									<div class="flex items-start justify-between gap-2">
 										<div>
@@ -1706,7 +1809,7 @@
 										</div>
 									{/if}
 								</section>
-							</div>
+							</fieldset>
 						{/if}
 					</div>
 

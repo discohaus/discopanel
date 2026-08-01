@@ -30,6 +30,9 @@
 	</div>
 	<div class="mt-1 flex items-center gap-2 pl-6">
 		<span class="font-mono text-[11px] text-muted-foreground">:{d.port}</span>
+		{#if d.panel}
+			<span class="rounded-full border px-1.5 text-[10px] text-muted-foreground">panel</span>
+		{/if}
 		{#if d.autoCreated}
 			<span class="rounded-full border px-1.5 text-[10px] text-muted-foreground">auto</span>
 		{/if}

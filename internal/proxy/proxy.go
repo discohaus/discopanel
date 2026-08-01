@@ -26,6 +26,9 @@ type Route struct {
 	OwnerID   string
 	PortName  string
 
+	// Https posture for http lane routes
+	TlsMode v1.RouteTlsMode
+
 	// Selects relay, synthetic status, or wake handling
 	State v1.ProxyRouteState
 	// Lets a login cold-start an offline server
@@ -61,6 +64,7 @@ type Config struct {
 	ListenAddr string // Host and port to listen on
 	Logger     *logger.Logger
 	Gate       ServerGate
+	Certs      *certStore // Tls termination material, nil disables the lane
 }
 
 const (

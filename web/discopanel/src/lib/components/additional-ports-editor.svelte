@@ -14,6 +14,7 @@
 	import { create } from '@bufbuild/protobuf';
 	import { enumLabel } from '$lib/proto-meta';
 	import { isRelayProtocol } from '$lib/components/network/topology-data';
+	import { tlsModeLabel, tlsModeOptions } from '$lib/components/network/network-copy';
 
 	interface Props {
 		ports?: NetworkPort[];
@@ -210,7 +211,10 @@
 							{#if port.proxyEnabled && !isRelayProtocol(port.protocol)}
 								<Input
 									type="text"
-									placeholder={serverHostname || 'any hostname'}
+									placeholder={serverHostname ||
+										(port.protocol === ModuleProtocol.MINECRAFT
+											? 'hostname required'
+											: 'any hostname')}
 									bind:value={port.hostname}
 									{disabled}
 									onchange={() => updatePort(index, 'hostname', port.hostname)}
@@ -218,6 +222,28 @@
 								/>
 								<span class="text-[11px] text-muted-foreground">
 									Empty inherits the server hostname
+								</span>
+							{/if}
+							{#if port.proxyEnabled && port.protocol === ModuleProtocol.HTTP}
+								<Select
+									type="single"
+									value={String(port.tlsMode)}
+									onValueChange={(v) => updatePort(index, 'tlsMode', Number(v))}
+									{disabled}
+								>
+									<SelectTrigger class="h-7 w-36 text-xs" title="HTTPS posture for this hostname">
+										<span>{tlsModeLabel(port.tlsMode)}</span>
+									</SelectTrigger>
+									<SelectContent>
+										{#each tlsModeOptions as option (option.value)}
+											<SelectItem value={String(option.value)}>{option.label}</SelectItem>
+										{/each}
+									</SelectContent>
+								</Select>
+							{/if}
+							{#if port.proxyEnabled && port.protocol === ModuleProtocol.MINECRAFT && !(port.hostname ?? '').trim() && !serverHostname}
+								<span class="text-[11px] text-status-busy">
+									Minecraft routing matches hostnames. Without one this port cannot receive players.
 								</span>
 							{/if}
 						</div>

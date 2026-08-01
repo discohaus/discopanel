@@ -4,6 +4,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Select, SelectContent, SelectItem, SelectTrigger } from '$lib/components/ui/select';
 	import { CopyButton } from '$lib/components/app';
+	import { panelHost } from '$lib/utils/host';
 	import { ArrowRight, Cable, Container, Globe, Network, RefreshCw, Users } from '@lucide/svelte';
 	import type { ProxyListener } from '$lib/proto/discopanel/v1/storage_pb';
 	import { composeHostname, hostnameSlug, playerAddress } from '$lib/hostname';
@@ -63,7 +64,7 @@
 			return playerAddress(host, selectedListener?.port);
 		}
 		// Base domain resolves to this machine for direct joins
-		return `${baseUrl || 'localhost'}:${port}`;
+		return `${panelHost(baseUrl)}:${port}`;
 	});
 
 	// Follows the server name until edited by hand

@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -24,6 +26,7 @@ type ListenerSocket struct {
 	routesMu sync.RWMutex
 
 	httpLane *httpLane
+	certs    *certStore
 
 	stats   map[string]*RouteStats
 	statsMu sync.Mutex
@@ -45,7 +48,8 @@ func NewListenerSocket(cfg *Config) *ListenerSocket {
 	return &ListenerSocket{
 		mcRoutes:   make(map[string]*Route),
 		stats:      make(map[string]*RouteStats),
-		httpLane:   newHTTPLane(cfg.Logger),
+		httpLane:   newHTTPLane(cfg.Logger, cfg.Certs.acmeManager()),
+		certs:      cfg.Certs,
 		logger:     cfg.Logger,
 		listenAddr: cfg.ListenAddr,
 		ctx:        ctx,
@@ -248,6 +252,13 @@ func (c *recordedConn) stopRecording() {
 	c.buf.Reset()
 }
 
+// Snapshots recorded bytes and stops recording
+func (c *recordedConn) take() []byte {
+	pending := append([]byte(nil), c.buf.Bytes()...)
+	c.stopRecording()
+	return pending
+}
+
 // Serves buffered sniff bytes ahead of the live socket
 type replayConn struct {
 	net.Conn
@@ -310,7 +321,7 @@ func (s *ListenerSocket) handleConnection(raw net.Conn) {
 
 	// Pure relay ports skip the sniff entirely
 	if s.relayOnly() {
-		s.serveRelay(raw, rec)
+		s.serveRelay(raw, rec.take())
 		return
 	}
 
@@ -318,7 +329,7 @@ func (s *ListenerSocket) handleConnection(raw net.Conn) {
 	if err != nil {
 		// Silent clients still reach a configured relay
 		if _, ok := s.relayRoute(); ok {
-			s.serveRelay(raw, rec)
+			s.serveRelay(raw, rec.take())
 			return
 		}
 		raw.Close()
@@ -341,6 +352,9 @@ func (s *ListenerSocket) handleConnection(raw net.Conn) {
 			s.serveLegacyPing(raw, peeked)
 			return
 		}
+	} else if first[0] == tlsRecordByte && s.certs != nil && sniffTLS(br) {
+		s.serveTLS(raw, rec, br)
+		return
 	} else if sniffHTTP(br) {
 		s.serveHTTPConn(rec, raw)
 		return
@@ -349,7 +363,7 @@ func (s *ListenerSocket) handleConnection(raw net.Conn) {
 	handshake, err := mcproto.ReadHandshakePacket(br)
 	if err != nil {
 		if _, ok := s.relayRoute(); ok {
-			s.serveRelay(raw, rec)
+			s.serveRelay(raw, rec.take())
 			return
 		}
 		s.logger.Debug("Unrecognized protocol from %s on %s: %v", raw.RemoteAddr(), s.listenAddr, err)
@@ -362,8 +376,8 @@ func (s *ListenerSocket) handleConnection(raw net.Conn) {
 	s.serveMinecraft(raw, br, handshake)
 }
 
-// Forwards recorded bytes then splices raw sockets
-func (s *ListenerSocket) serveRelay(raw net.Conn, rec *recordedConn) {
+// Forwards sniffed bytes then splices raw sockets
+func (s *ListenerSocket) serveRelay(raw net.Conn, pending []byte) {
 	defer raw.Close()
 
 	route, ok := s.relayRoute()
@@ -379,23 +393,111 @@ func (s *ListenerSocket) serveRelay(raw net.Conn, rec *recordedConn) {
 	}
 	defer backendConn.Close()
 
-	if rec.buf.Len() > 0 {
-		if _, err := backendConn.Write(rec.buf.Bytes()); err != nil {
+	if len(pending) > 0 {
+		if _, err := backendConn.Write(pending); err != nil {
 			return
 		}
 	}
-	rec.stopRecording()
 
 	raw.SetDeadline(time.Time{})
 	relay(raw, backendConn)
 }
 
+// First byte every tls record starts with
+const tlsRecordByte = 0x16
+
+// Separates tls records from short minecraft handshakes
+func sniffTLS(br *bufio.Reader) bool {
+	peeked, err := br.Peek(2)
+	if err != nil {
+		return false
+	}
+	// Record version major 0x03 never opens an mc packet
+	return peeked[1] == 0x03
+}
+
+// Terminates or passes through a tls connection
+func (s *ListenerSocket) serveTLS(raw net.Conn, rec *recordedConn, br *bufio.Reader) {
+	// Buffered bytes replay ahead of the live recorder
+	buffered, _ := br.Peek(br.Buffered())
+	sni, protos, ok := peekClientHelloSNI(io.MultiReader(bytes.NewReader(buffered), rec))
+	pending := rec.take()
+
+	if !ok {
+		if _, hasRelay := s.relayRoute(); hasRelay {
+			s.serveRelay(raw, pending)
+			return
+		}
+		s.logger.Debug("Unreadable tls hello from %s on %s", raw.RemoteAddr(), s.listenAddr)
+		raw.Close()
+		return
+	}
+
+	// Validation handshakes always terminate, never relay
+	if !isALPNChallenge(protos) {
+		plain := s.httpLane.tlsModeFor(sni) == v1.RouteTlsMode_ROUTE_TLS_MODE_PLAIN
+		if plain || !s.certs.hasMatch(sni) {
+			// Unmatched names pass through to a relay backend
+			if _, hasRelay := s.relayRoute(); hasRelay {
+				s.serveRelay(raw, pending)
+				return
+			}
+			// Plain only hostnames never terminate here
+			if plain {
+				raw.Close()
+				return
+			}
+		}
+	}
+
+	// Stored certificates answer, unmatched names fail handshake
+	raw.SetReadDeadline(time.Time{})
+	tlsConn := tls.Server(&replayConn{Conn: raw, pending: pending}, s.certs.laneTLSConfig())
+	if !s.feed.Push(tlsConn) {
+		raw.Close()
+	}
+}
+
+// Blocks writes so a handshake stops after the hello
+type readOnlyConn struct {
+	r io.Reader
+}
+
+func (c readOnlyConn) Read(p []byte) (int, error)  { return c.r.Read(p) }
+func (c readOnlyConn) Write(p []byte) (int, error) { return 0, io.ErrClosedPipe }
+func (c readOnlyConn) Close() error                { return nil }
+func (c readOnlyConn) LocalAddr() net.Addr         { return nil }
+func (c readOnlyConn) RemoteAddr() net.Addr        { return nil }
+func (c readOnlyConn) SetDeadline(time.Time) error { return nil }
+func (c readOnlyConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+func (c readOnlyConn) SetWriteDeadline(time.Time) error {
+	return nil
+}
+
+// Reads the client hello, reports server name and protocols
+func peekClientHelloSNI(r io.Reader) (string, []string, bool) {
+	var sni string
+	var protos []string
+	parsed := false
+	conf := &tls.Config{
+		GetConfigForClient: func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
+			sni = chi.ServerName
+			protos = chi.SupportedProtos
+			parsed = true
+			return nil, nil
+		},
+	}
+	// Handshake dies on the blocked write after the hello
+	tls.Server(readOnlyConn{r: r}, conf).Handshake()
+	return sni, protos, parsed
+}
+
 // Hands an http connection to the lane server
 func (s *ListenerSocket) serveHTTPConn(rec *recordedConn, raw net.Conn) {
 	raw.SetReadDeadline(time.Time{})
-	pending := append([]byte(nil), rec.buf.Bytes()...)
-	rec.stopRecording()
-	if !s.feed.Push(&replayConn{Conn: raw, pending: pending}) {
+	if !s.feed.Push(&replayConn{Conn: raw, pending: rec.take()}) {
 		raw.Close()
 	}
 }

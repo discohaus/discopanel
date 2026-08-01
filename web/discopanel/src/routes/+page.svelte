@@ -13,6 +13,7 @@
 	} from '$lib/components/app';
 	import MetricsSparkline from '$lib/components/metrics-sparkline.svelte';
 	import { rpcClient } from '$lib/api/rpc-client';
+	import { panelHost } from '$lib/utils/host';
 	import { serversStore, sortServersByActivity, claimFullStats } from '$lib/stores/servers';
 	import { currentUser, canAccessSettings } from '$lib/stores/auth';
 	import {
@@ -152,7 +153,7 @@
 	});
 
 	function address(server: Server): string {
-		return server.proxyHostname || `localhost:${server.port}`;
+		return server.proxyHostname || `${panelHost()}:${server.port}`;
 	}
 
 	async function power(server: Server, start: boolean) {

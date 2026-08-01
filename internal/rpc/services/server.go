@@ -907,11 +907,12 @@ func (s *ServerService) DeleteServer(ctx context.Context, req *connect.Request[v
 		s.log.Error("Failed to delete server data: %v", err)
 	}
 
-	// Reconcile drops the server's routes
+	// Reconcile drops the server's routes and counters
 	if s.proxy != nil {
 		if err := s.proxy.SyncListeners(ctx); err != nil {
 			s.log.Error("Failed to sync routes after server delete: %v", err)
 		}
+		s.proxy.DropOwnerStats(server.Id)
 	}
 
 	return connect.NewResponse(&v1.DeleteServerResponse{}), nil

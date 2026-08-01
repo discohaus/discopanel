@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +22,7 @@ Example w/ one port (one listener):
 On its TCP socket:
 unlimited minecraft routes (hostname namespace per protocol),
 unlimited HTTP routes (own namespace, same hostname as an MC route is legal because the protocol sniff disambiguates before any hostname table is consulted),
+the panel holds two claims on its own port, the catch all plus a named route on the base domain, so nothing can take the panel's hostname while other hostnames still multiplex,
 plus at most one hostname-less TCP relay as the fallback when neither parser matches.
 
 On its UDP socket:
@@ -39,6 +39,9 @@ const (
 	OwnerListener = "listener"
 	OwnerPanel    = "panel"
 )
+
+// Listener row id reserved for the panel port
+const PanelListenerID = "panel"
 
 // How a reservation occupies its port
 type resKind int
@@ -148,6 +151,64 @@ func NormalizeHostname(hostname string) string {
 // Reports whether a hostname passes the routing pattern
 func ValidHostname(hostname string) bool {
 	return hostnamePattern.MatchString(hostname)
+}
+
+// One active hostname and everyone declaring it
+type HostnameClaim struct {
+	Hostname string
+	Owners   []NetOwner
+}
+
+// Deduped hostnames currently routed through the proxy
+func (m *Manager) ActiveHostnames(ctx context.Context) []HostnameClaim {
+	m.mu.Lock()
+	reservations, err := m.reservationsLocked(ctx)
+	base, _ := m.effectiveBaseDomainLocked()
+	m.mu.Unlock()
+	if err != nil {
+		reservations = nil
+	}
+
+	byName := make(map[string]*HostnameClaim)
+	add := func(hostname string, owner NetOwner) {
+		name := normalizeHostname(hostname)
+		if name == "" {
+			return
+		}
+		claim, ok := byName[name]
+		if !ok {
+			claim = &HostnameClaim{Hostname: name}
+			byName[name] = claim
+		}
+		for _, have := range claim.Owners {
+			if have == owner {
+				return
+			}
+		}
+		claim.Owners = append(claim.Owners, owner)
+	}
+
+	// Base domain itself serves the panel
+	if base != "" {
+		add(base, NetOwner{Kind: OwnerPanel, ID: OwnerPanel})
+	}
+	for _, r := range reservations {
+		if r.Kind != kindRouted || r.Hostname == "" {
+			continue
+		}
+		add(r.Hostname, NetOwner{Kind: r.OwnerKind, ID: r.OwnerID})
+	}
+
+	names := make([]string, 0, len(byName))
+	for name := range byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]HostnameClaim, len(names))
+	for i, name := range names {
+		out[i] = *byName[name]
+	}
+	return out
 }
 
 // Turns one request into a validated reservation
@@ -292,13 +353,34 @@ func ServerProxiedNetRequests(hostname string, listenerPort int, additional []*v
 func (m *Manager) reservationsLocked(ctx context.Context) ([]Reservation, error) {
 	var all []Reservation
 
-	// Panel web port stays off limits
-	if m.appCfg != nil {
-		if p, err := strconv.Atoi(m.appCfg.Server.Port); err == nil && p > 0 {
+	// Panel socket multiplexes like any listener port
+	if p := m.panelWebPort(); p > 0 {
+		all = append(all, Reservation{
+			Port:      p,
+			Transport: v1.NetworkTransport_NETWORK_TRANSPORT_TCP,
+			Kind:      kindSocket,
+			OwnerKind: OwnerPanel,
+			OwnerID:   OwnerPanel,
+			Detail:    "web interface",
+		})
+		// Web ui answers every hostname the port misses
+		all = append(all, Reservation{
+			Port:      p,
+			Transport: v1.NetworkTransport_NETWORK_TRANSPORT_TCP,
+			Kind:      kindRouted,
+			Protocol:  v1.ModuleProtocol_MODULE_PROTOCOL_HTTP,
+			OwnerKind: OwnerPanel,
+			OwnerID:   OwnerPanel,
+			Detail:    "web interface",
+		})
+		// Panel's own hostname gets a named claim
+		if base, _ := m.effectiveBaseDomainLocked(); base != "" {
 			all = append(all, Reservation{
 				Port:      p,
 				Transport: v1.NetworkTransport_NETWORK_TRANSPORT_TCP,
-				Kind:      kindExclusive,
+				Kind:      kindRouted,
+				Protocol:  v1.ModuleProtocol_MODULE_PROTOCOL_HTTP,
+				Hostname:  NormalizeHostname(base),
 				OwnerKind: OwnerPanel,
 				OwnerID:   OwnerPanel,
 				Detail:    "web interface",
@@ -314,6 +396,10 @@ func (m *Manager) reservationsLocked(ctx context.Context) ([]Reservation, error)
 	listenersByID := make(map[string]*v1.ProxyListener, len(listeners))
 	for _, l := range listeners {
 		listenersByID[l.Id] = l
+		// Panel row rides the panel socket reservation above
+		if l.Id == PanelListenerID {
+			continue
+		}
 		all = append(all, Reservation{
 			Port:      int(l.Port),
 			Transport: v1.NetworkTransport_NETWORK_TRANSPORT_TCP,

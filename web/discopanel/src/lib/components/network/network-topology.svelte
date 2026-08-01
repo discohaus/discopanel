@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
 	import {
 		SvelteFlow,
 		Background,
@@ -59,18 +60,44 @@
 	let listeners = $state<ProxyListenerWithCount[]>([]);
 	let modules = $state<Module[]>([]);
 	let baseUrl = $state('');
+	let strictHttps = $state(false);
 	let selection = $state<Selection>({ kind: 'overview' });
 	let disableOpen = $state(false);
 
 	let nodes = $state.raw<Node[]>([]);
 	let edges = $state.raw<Edge[]>([]);
 
+	let dnsProviderName = $state('');
+	let dnsProviderFor = '';
+
 	// Graph rebuilds whenever any input changes
 	$effect(() => {
 		if (!topology) return;
-		const graph = buildGraph(topology, listeners, $serversStore, modules, selection);
+		const graph = buildGraph(
+			topology,
+			listeners,
+			$serversStore,
+			modules,
+			selection,
+			dnsProviderName
+		);
 		nodes = graph.nodes;
 		edges = graph.edges;
+	});
+
+	// Provider detection follows the effective base domain
+	$effect(() => {
+		const domain = topology?.effectiveBaseUrl ?? '';
+		if (!domain || domain.endsWith('.sslip.io') || dnsProviderFor === domain) return;
+		dnsProviderFor = domain;
+		rpcClient.proxy
+			.getDnsSetup({ domain }, silentCallOptions)
+			.then((res) => {
+				dnsProviderName = res.providerFound ? res.providerName : '';
+			})
+			.catch(() => {
+				dnsProviderName = '';
+			});
 	});
 
 	let usedPorts = $derived(topology ? [...new Set(topology.reservations.map((r) => r.port))] : []);
@@ -104,6 +131,7 @@
 			listeners = lst.listeners;
 			modules = mods.modules;
 			baseUrl = status.baseUrl;
+			strictHttps = status.strictHttps;
 			loadError = false;
 		} catch {
 			loadError = true;
@@ -124,6 +152,7 @@
 			listeners = lst.listeners;
 			modules = mods.modules;
 			baseUrl = status.baseUrl;
+			strictHttps = status.strictHttps;
 			loadError = false;
 		} catch {
 			// Silent polls swallow transient failures
@@ -461,9 +490,11 @@
 							{baseUrl}
 							effectiveBaseUrl={topology.effectiveBaseUrl}
 							baseUrlSource={topology.baseUrlSource}
+							{strictHttps}
 							listenerCount={listeners.length}
 							{routeCount}
 							{hasProxiedWorkloads}
+							initialPanel={page.url.searchParams.get('panel') ?? ''}
 							onRequestDisable={() => (disableOpen = true)}
 							onChanged={onMutated}
 						/>
@@ -474,4 +505,11 @@
 	{/if}
 </div>
 
-<DisableProxyDialog bind:open={disableOpen} {baseUrl} {modules} {usedPorts} {onConverted} />
+<DisableProxyDialog
+	bind:open={disableOpen}
+	{baseUrl}
+	{strictHttps}
+	{modules}
+	{usedPorts}
+	{onConverted}
+/>

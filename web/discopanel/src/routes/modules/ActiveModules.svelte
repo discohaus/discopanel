@@ -1,12 +1,13 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
+	import { Switch } from '$lib/components/ui/switch';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { EmptyState, ConfirmDialog } from '$lib/components/app';
 	import { rpcClient, rpcErrorMessage, silentCallOptions } from '$lib/api/rpc-client';
 	import { toast } from 'svelte-sonner';
-	import type { Module, ModuleTemplate } from '$lib/proto/discopanel/v1/storage_pb';
-	import { ModuleStatus, ModuleTemplateType } from '$lib/proto/discopanel/v1/storage_pb';
+	import type { Module } from '$lib/proto/discopanel/v1/storage_pb';
+	import { ModuleStatus } from '$lib/proto/discopanel/v1/storage_pb';
 	import { TONE_BADGE, TONE_BG } from '$lib/server-status';
 	import { moduleStatusMeta } from '$lib/module-status';
 	import { cn } from '$lib/utils';
@@ -36,7 +37,6 @@
 	let { active = true }: Props = $props();
 
 	let modules = $state<Module[]>([]);
-	let templates = $state<ModuleTemplate[]>([]);
 	let loading = $state(true);
 	let actionLoading = $state<string | null>(null);
 	let aliasValues = $state<Record<string, Record<string, string>>>({});
@@ -58,10 +58,26 @@
 		[...modules].sort((a, b) => Number(Boolean(a.serverId)) - Number(Boolean(b.serverId)))
 	);
 
-	// Builtin globals only toggle, never delete
-	let templateTypes = $derived(new Map(templates.map((t) => [t.id, t.type])));
-	function isBuiltinGlobal(module: Module): boolean {
-		return !module.serverId && templateTypes.get(module.templateId) === ModuleTemplateType.BUILTIN;
+	// Auto start is the persisted enable bit for system modules
+	async function handleToggleSystem(module: Module, enabled: boolean) {
+		actionLoading = module.id;
+		const running =
+			module.status === ModuleStatus.RUNNING || moduleStatusMeta(module.status).transitional;
+		try {
+			await rpcClient.module.updateModule({ id: module.id, autoStart: enabled });
+			if (enabled) {
+				if (!running) await rpcClient.module.startModule({ id: module.id });
+				toast.success(`Enabling ${module.name}...`);
+			} else {
+				if (running) await rpcClient.module.stopModule({ id: module.id });
+				toast.success(`${module.name} disabled`);
+			}
+		} catch (error) {
+			toast.error(rpcErrorMessage(error, `Failed to ${enabled ? 'enable' : 'disable'} module`));
+		} finally {
+			await loadModules(true);
+			actionLoading = null;
+		}
 	}
 
 	let hasLoaded = $state(false);
@@ -76,18 +92,8 @@
 		if (active && !hasLoaded) {
 			hasLoaded = true;
 			loadModules();
-			loadTemplates();
 		}
 	});
-
-	async function loadTemplates() {
-		try {
-			const response = await rpcClient.module.listModuleTemplates({}, silentCallOptions);
-			templates = response.templates;
-		} catch {
-			templates = [];
-		}
-	}
 
 	// Polls while tab active and page visible
 	$effect(() => {
@@ -245,6 +251,10 @@
 				{@const busy = actionLoading === module.id}
 				{@const meta = moduleStatusMeta(module.status)}
 				{@const isSystem = !module.serverId}
+				{@const disabled = isSystem && !module.autoStart && !meta.transitional}
+				{@const badge = disabled
+					? { label: 'Disabled', tone: 'sleep' as const }
+					: { label: meta.label, tone: meta.tone }}
 				<div
 					class={cn(
 						'group flex flex-col rounded-lg border bg-card p-4 transition-colors hover:border-primary/20',
@@ -267,17 +277,17 @@
 								<span
 									class={cn(
 										'inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium',
-										TONE_BADGE[meta.tone]
+										TONE_BADGE[badge.tone]
 									)}
 								>
 									<span
 										class={cn(
 											'size-1.5 rounded-full',
-											TONE_BG[meta.tone],
+											TONE_BG[badge.tone],
 											meta.transitional && 'animate-pulse'
 										)}
 									></span>
-									{meta.label}
+									{badge.label}
 								</span>
 							</div>
 							<div class="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -295,7 +305,32 @@
 							</div>
 						</div>
 						<div class="flex shrink-0 items-center gap-1">
-							{#if module.status === ModuleStatus.STOPPED || module.status === ModuleStatus.ERROR}
+							{#if isSystem}
+								{#if module.status === ModuleStatus.RUNNING}
+									<Button
+										size="icon"
+										variant="ghost"
+										class="size-8"
+										onclick={() => handleRestartModule(module)}
+										disabled={busy}
+										title="Restart module"
+									>
+										<RotateCw class="size-4" />
+									</Button>
+								{/if}
+								<label class="flex cursor-pointer items-center gap-2 pl-1">
+									<span class="text-xs text-muted-foreground">Enabled</span>
+									{#if busy}
+										<Loader2 class="size-4 animate-spin text-muted-foreground" />
+									{:else}
+										<Switch
+											checked={module.autoStart}
+											onCheckedChange={(v) => handleToggleSystem(module, v)}
+											aria-label="Enable module"
+										/>
+									{/if}
+								</label>
+							{:else if module.status === ModuleStatus.STOPPED || module.status === ModuleStatus.ERROR}
 								<Button
 									size="icon"
 									variant="ghost"
@@ -359,16 +394,20 @@
 								{@const resolved = resolve(url, module.id)}
 								<div class="flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1.5">
 									<ExternalLink class="size-3 shrink-0 text-muted-foreground" />
-									<!-- eslint-disable svelte/no-navigation-without-resolve -- external URL -->
-									<a
-										href={resolved}
-										target="_blank"
-										rel="noopener noreferrer"
-										class="truncate font-mono text-xs text-primary hover:underline"
-									>
-										{resolved}
-									</a>
-									<!-- eslint-enable svelte/no-navigation-without-resolve -->
+									{#if resolved.includes('{{')}
+										<span class="truncate font-mono text-xs text-muted-foreground">{resolved}</span>
+									{:else}
+										<!-- eslint-disable svelte/no-navigation-without-resolve -- external URL -->
+										<a
+											href={resolved}
+											target="_blank"
+											rel="noopener noreferrer"
+											class="truncate font-mono text-xs text-primary hover:underline"
+										>
+											{resolved}
+										</a>
+										<!-- eslint-enable svelte/no-navigation-without-resolve -->
+									{/if}
 								</div>
 							{/each}
 						</div>
@@ -376,7 +415,7 @@
 
 					<div class="mt-3 flex items-center justify-between gap-2 border-t pt-2.5">
 						<div class="flex min-w-0 items-center gap-1">
-							{#if module.autoStart}
+							{#if module.autoStart && !isSystem}
 								<Badge variant="secondary">Auto-start</Badge>
 							{/if}
 						</div>
@@ -401,7 +440,7 @@
 							>
 								<Settings class="size-3.5" />
 							</Button>
-							{#if !isBuiltinGlobal(module)}
+							{#if !isSystem}
 								<Button
 									size="icon"
 									variant="ghost"

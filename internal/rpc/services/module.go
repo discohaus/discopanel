@@ -864,6 +864,9 @@ func (s *ModuleService) DeleteModule(ctx context.Context, req *connect.Request[v
 	if err := s.moduleManager.DeleteModule(ctx, msg.Id); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete module: %w", err))
 	}
+	if s.proxyManager != nil {
+		s.proxyManager.DropOwnerStats(msg.Id)
+	}
 	if module != nil {
 		s.rec.Record(ctx, module.ServerId, v1.ServerActionKind_SERVER_ACTION_KIND_MODULE_DELETE, metrics.Attrs{"module": module.Name}, "deleted module %s", module.Name)
 	}

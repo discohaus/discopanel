@@ -47,6 +47,7 @@
 	import MemorySlider from '$lib/components/memory-slider.svelte';
 	import { getUniqueDockerImages, getDockerImageDisplayName } from '$lib/utils';
 	import { composeHostname, playerAddress } from '$lib/hostname';
+	import { panelHost } from '$lib/utils/host';
 	import { uploadFile } from '$lib/utils/chunked-upload';
 
 	let loading = $state(false);
@@ -339,7 +340,7 @@
 				'your-hostname';
 			return playerAddress(full, selectedListener?.port);
 		}
-		return `${proxyBaseURL || 'localhost'}:${formData.port}`;
+		return `${panelHost(proxyBaseURL)}:${formData.port}`;
 	});
 
 	let hostnameMissing = $derived(

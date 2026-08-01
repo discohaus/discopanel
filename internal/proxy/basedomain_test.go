@@ -48,9 +48,23 @@ func TestEffectiveBaseDomain(t *testing.T) {
 		t.Fatalf("override lost to public ip, got %q want %q", got, base)
 	}
 
-	// Public address wins once the override clears
+	// Unconfirmed wan never wins automatic
 	auto.appCfg.Proxy.PublicIp = ""
+	if got, _ := auto.EffectiveBaseDomain(); got == "203-0-113-7.sslip.io" {
+		t.Fatalf("unconfirmed public ip preferred, got %q", got)
+	}
+
+	// Echo confirmed wan wins automatic
+	auto.wanIP = "203.0.113.7"
+	auto.wanChecked = true
+	auto.wanConfirmed = true
 	if got, _ := auto.EffectiveBaseDomain(); got != "203-0-113-7.sslip.io" {
-		t.Fatalf("public ip not preferred, got %q", got)
+		t.Fatalf("confirmed public ip not preferred, got %q", got)
+	}
+
+	// Verdict for a stale address never carries over
+	auto.publicIP = "198.51.100.9"
+	if got, _ := auto.EffectiveBaseDomain(); got == "198-51-100-9.sslip.io" {
+		t.Fatalf("verdict leaked onto a fresh address, got %q", got)
 	}
 }

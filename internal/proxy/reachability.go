@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -38,11 +39,17 @@ var publicIPEndpoints = []string{
 // Path prefix the http lane reflects for probes
 const echoPathPrefix = "/.discopanel/echo/"
 
+// First wan verdict waits for sockets to bind
+const wanVerdictDelay = 10 * time.Second
+
 // One address the panel might be reached on
 type AddressCandidate struct {
-	IP     string
-	Domain string
-	Source v1.AddressSource
+	IP        string
+	Domain    string
+	Source    v1.AddressSource
+	Checked   bool
+	Reachable bool
+	Confirmed bool
 }
 
 // Probe result for one bound host port
@@ -53,6 +60,7 @@ type PortProbe struct {
 	Reachable bool
 	Confirmed bool
 	Detail    string
+	Note      v1.ProbeNote
 }
 
 // Asks internet echo services for the router address
@@ -108,13 +116,58 @@ func (m *Manager) startAddressRefresh() {
 	m.refreshOnce.Do(func() {
 		go func() {
 			m.RefreshAddresses(context.Background())
+			time.Sleep(wanVerdictDelay)
+			m.refreshWANVerdict(context.Background())
 			ticker := time.NewTicker(addressRefreshInterval)
 			defer ticker.Stop()
 			for range ticker.C {
 				m.RefreshAddresses(context.Background())
+				m.refreshWANVerdict(context.Background())
 			}
 		}()
 	})
+}
+
+// Wan address the verdict applies to right now
+func (m *Manager) wanTargetLocked() string {
+	if ip := m.overrideIPLocked(); ip != "" {
+		return ip
+	}
+	return m.publicIP
+}
+
+// Refreshes the wan verdict through one echo sweep
+func (m *Manager) refreshWANVerdict(ctx context.Context) {
+	m.mu.Lock()
+	target := m.wanTargetLocked()
+	m.mu.Unlock()
+	if target == "" {
+		return
+	}
+	probes := m.ProbeReachability(ctx, target)
+	m.RecordWANVerdict(target, probes)
+}
+
+// Stores a wan probe verdict for automatic resolution
+func (m *Manager) RecordWANVerdict(ip string, probes []PortProbe) {
+	var checked, reachable, confirmed bool
+	for _, p := range probes {
+		checked = checked || p.Checked
+		reachable = reachable || p.Reachable
+		confirmed = confirmed || p.Confirmed
+	}
+	if !checked {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ip == "" || ip != m.wanTargetLocked() {
+		return
+	}
+	m.wanIP = ip
+	m.wanChecked = true
+	m.wanReachable = reachable
+	m.wanConfirmed = confirmed
 }
 
 // Candidate addresses ordered most viable first
@@ -136,7 +189,14 @@ func (m *Manager) AddressCandidates(ctx context.Context) []AddressCandidate {
 			return
 		}
 		seen[ip] = true
-		out = append(out, AddressCandidate{IP: ip, Domain: sslipDomain(ip), Source: source})
+		c := AddressCandidate{IP: ip, Domain: sslipDomain(ip), Source: source}
+		// Wan verdict rides on its matching candidate
+		if ip == m.wanIP && m.wanChecked {
+			c.Checked = true
+			c.Reachable = m.wanReachable
+			c.Confirmed = m.wanConfirmed
+		}
+		out = append(out, c)
 	}
 
 	add(m.overrideIPLocked(), v1.AddressSource_ADDRESS_SOURCE_PUBLIC)
@@ -183,7 +243,8 @@ func (m *Manager) ProbeReachability(ctx context.Context, ip string) []PortProbe 
 		case kindSocket:
 			add(probeTarget{port: r.Port, transport: r.Transport, echo: listenerUp[r.Port], detail: r.Detail})
 		case kindExclusive:
-			add(probeTarget{port: r.Port, transport: r.Transport, detail: r.Detail})
+			// Panel answers echoes just like listener sockets
+			add(probeTarget{port: r.Port, transport: r.Transport, echo: r.OwnerKind == OwnerPanel, detail: r.Detail})
 		}
 	}
 
@@ -193,13 +254,19 @@ func (m *Manager) ProbeReachability(ctx context.Context, ip string) []PortProbe 
 	}
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].port < ordered[j].port })
 
+	// Specific binds never answer on loopback
+	localHosts := []string{"127.0.0.1"}
+	if lan := m.LanIP(); lan != "" {
+		localHosts = append(localHosts, lan)
+	}
+
 	results := make([]PortProbe, len(ordered))
 	var wg sync.WaitGroup
 	for i, target := range ordered {
 		wg.Add(1)
 		go func(i int, t probeTarget) {
 			defer wg.Done()
-			results[i] = probeOne(ctx, ip, t)
+			results[i] = probeOne(ctx, ip, localHosts, t)
 		}(i, target)
 	}
 	wg.Wait()
@@ -207,31 +274,41 @@ func (m *Manager) ProbeReachability(ctx context.Context, ip string) []PortProbe 
 }
 
 // Runs local precheck then the external roundtrip
-func probeOne(ctx context.Context, ip string, t probeTarget) PortProbe {
+func probeOne(ctx context.Context, ip string, localHosts []string, t probeTarget) PortProbe {
 	probe := PortProbe{Port: t.port, Transport: t.transport, Detail: t.detail}
 
 	if t.transport == v1.NetworkTransport_NETWORK_TRANSPORT_UDP {
-		probe.Detail = "udp cannot be probed"
+		probe.Note = v1.ProbeNote_PROBE_NOTE_UNPROBEABLE
 		return probe
 	}
 
 	// Closed local ports prove nothing about the router
-	local := net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", t.port))
-	if conn, err := net.DialTimeout("tcp", local, localProbeTimeout); err != nil {
-		probe.Detail = "not currently bound"
+	bound := false
+	for _, host := range localHosts {
+		local := net.JoinHostPort(host, fmt.Sprintf("%d", t.port))
+		if conn, err := net.DialTimeout("tcp", local, localProbeTimeout); err == nil {
+			conn.Close()
+			bound = true
+			break
+		}
+	}
+	if !bound {
+		probe.Note = v1.ProbeNote_PROBE_NOTE_UNBOUND
 		return probe
-	} else {
-		conn.Close()
 	}
 
 	probe.Checked = true
 	addr := net.JoinHostPort(ip, fmt.Sprintf("%d", t.port))
 	if t.echo {
 		reachable, confirmed := echoProbe(ctx, addr)
+		// Tls fronted sockets still echo through a handshake
+		if reachable && !confirmed && tlsEchoProbe(ctx, addr) {
+			confirmed = true
+		}
 		probe.Reachable = reachable
 		probe.Confirmed = confirmed
 		if reachable && !confirmed {
-			probe.Detail = "another service answered"
+			probe.Note = v1.ProbeNote_PROBE_NOTE_INTERCEPTED
 		}
 		return probe
 	}
@@ -248,23 +325,112 @@ func probeOne(ctx context.Context, ip string, t probeTarget) PortProbe {
 
 // Proves a roundtrip lands on this panel's own socket
 func echoProbe(ctx context.Context, addr string) (bool, bool) {
-	nonceBytes := make([]byte, 12)
-	if _, err := rand.Read(nonceBytes); err != nil {
+	nonce, ok := echoNonce()
+	if !ok {
 		return false, false
 	}
-	nonce := hex.EncodeToString(nonceBytes)
-
 	d := net.Dialer{Timeout: probeTimeout}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return false, false
 	}
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(probeTimeout))
+	return true, echoRoundtrip(conn, nonce)
+}
 
+// Echo roundtrip through a tls handshake
+func tlsEchoProbe(ctx context.Context, addr string) bool {
+	nonce, ok := echoNonce()
+	if !ok {
+		return false
+	}
+	d := tls.Dialer{
+		NetDialer: &net.Dialer{Timeout: probeTimeout},
+		Config:    &tls.Config{InsecureSkipVerify: true},
+	}
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	return echoRoundtrip(conn, nonce)
+}
+
+// Random nonce for one echo attempt
+func echoNonce() (string, bool) {
+	nonceBytes := make([]byte, 12)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return "", false
+	}
+	return hex.EncodeToString(nonceBytes), true
+}
+
+// Sends the echo request and checks the reflection
+func echoRoundtrip(conn net.Conn, nonce string) bool {
+	conn.SetDeadline(time.Now().Add(probeTimeout))
 	fmt.Fprintf(conn, "GET %s%s HTTP/1.1\r\nHost: echo\r\nConnection: close\r\n\r\n", echoPathPrefix, nonce)
 	body, _ := io.ReadAll(io.LimitReader(conn, 4096))
-	return true, strings.Contains(string(body), nonce)
+	return strings.Contains(string(body), nonce)
+}
+
+// Ports a public authority validates through
+var acmeProbePorts = []int{80, 443}
+
+// Probes the literal acme challenge path for a domain
+func (m *Manager) ProbeChallengePath(ctx context.Context, domain string) (string, []PortProbe, bool, error) {
+	ip, err := ResolveProbeTarget(ctx, domain)
+	if err != nil {
+		return "", nil, false, err
+	}
+	probes := make([]PortProbe, len(acmeProbePorts))
+	var wg sync.WaitGroup
+	for i, port := range acmeProbePorts {
+		wg.Add(1)
+		go func(i, port int) {
+			defer wg.Done()
+			probes[i] = challengeProbe(ctx, ip, port)
+		}(i, port)
+	}
+	wg.Wait()
+	ok := false
+	for _, p := range probes {
+		ok = ok || p.Confirmed
+	}
+	return ip, probes, ok, nil
+}
+
+// One validation port roundtrip, plain then tls
+func challengeProbe(ctx context.Context, ip string, port int) PortProbe {
+	probe := PortProbe{
+		Port:      port,
+		Transport: v1.NetworkTransport_NETWORK_TRANSPORT_TCP,
+		Checked:   true,
+		Detail:    "authority validation port",
+	}
+	addr := net.JoinHostPort(ip, fmt.Sprintf("%d", port))
+	reachable, confirmed := echoProbe(ctx, addr)
+	if reachable && !confirmed && tlsEchoProbe(ctx, addr) {
+		confirmed = true
+	}
+	probe.Reachable = reachable
+	probe.Confirmed = confirmed
+	if reachable && !confirmed {
+		probe.Note = v1.ProbeNote_PROBE_NOTE_INTERCEPTED
+	}
+	return probe
+}
+
+// Answers a reachability echo request when addressed
+func HandleEcho(w http.ResponseWriter, r *http.Request) bool {
+	nonce, ok := strings.CutPrefix(r.URL.Path, echoPathPrefix)
+	if !ok {
+		return false
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Discopanel-Echo", "1")
+	fmt.Fprint(w, nonce)
+	return true
 }
 
 // Resolves a probe target into one usable ipv4

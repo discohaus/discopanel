@@ -3,10 +3,11 @@
 	import { isUp, TONE_BG, type StatusTone } from '$lib/server-status';
 	import { CopyButton, MotdText } from '$lib/components/app';
 	import { Users, Radio } from '@lucide/svelte';
+	import { panelHost } from '$lib/utils/host';
 
 	let { server }: { server: Server } = $props();
 
-	let address = $derived(server.proxyHostname || `localhost:${server.port}`);
+	let address = $derived(server.proxyHostname || `${panelHost()}:${server.port}`);
 	let up = $derived(isUp(server.status));
 	let maxPlayers = $derived(server.maxPlayersSlp || server.maxPlayers);
 	let fillPercent = $derived(maxPlayers > 0 ? (server.playersOnline / maxPlayers) * 100 : 0);
