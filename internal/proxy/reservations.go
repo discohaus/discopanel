@@ -22,7 +22,7 @@ Example w/ one port (one listener):
 On its TCP socket:
 unlimited minecraft routes (hostname namespace per protocol),
 unlimited HTTP routes (own namespace, same hostname as an MC route is legal because the protocol sniff disambiguates before any hostname table is consulted),
-the panel holds two claims on its own port, the catch all plus a named route on the base domain, so nothing can take the panel's hostname while other hostnames still multiplex,
+the panel claims its own port with the catch all plus a named route per panel hostname, so nothing can take the panel's names while other hostnames still multiplex,
 plus at most one hostname-less TCP relay as the fallback when neither parser matches.
 
 On its UDP socket:
@@ -153,60 +153,65 @@ func ValidHostname(hostname string) bool {
 	return hostnamePattern.MatchString(hostname)
 }
 
-// One active hostname and everyone declaring it
-type HostnameClaim struct {
-	Hostname string
-	Owners   []NetOwner
-}
-
-// Deduped hostnames currently routed through the proxy
-func (m *Manager) ActiveHostnames(ctx context.Context) []HostnameClaim {
-	m.mu.Lock()
-	reservations, err := m.reservationsLocked(ctx)
-	base, _ := m.effectiveBaseDomainLocked()
-	m.mu.Unlock()
-	if err != nil {
-		reservations = nil
-	}
-
-	byName := make(map[string]*HostnameClaim)
-	add := func(hostname string, owner NetOwner) {
-		name := normalizeHostname(hostname)
-		if name == "" {
-			return
-		}
-		claim, ok := byName[name]
-		if !ok {
-			claim = &HostnameClaim{Hostname: name}
-			byName[name] = claim
-		}
-		for _, have := range claim.Owners {
-			if have == owner {
-				return
-			}
-		}
-		claim.Owners = append(claim.Owners, owner)
-	}
-
-	// Base domain itself serves the panel
-	if base != "" {
-		add(base, NetOwner{Kind: OwnerPanel, ID: OwnerPanel})
-	}
-	for _, r := range reservations {
-		if r.Kind != kindRouted || r.Hostname == "" {
+// Canonical hostname set, sorted so order never means anything
+func NormalizeHostnames(names []string) ([]string, error) {
+	var out []string
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		name = NormalizeHostname(name)
+		if name == "" || seen[name] {
 			continue
 		}
-		add(r.Hostname, NetOwner{Kind: r.OwnerKind, ID: r.OwnerID})
+		if !ValidHostname(name) {
+			return nil, fmt.Errorf("invalid hostname %q", name)
+		}
+		seen[name] = true
+		out = append(out, name)
 	}
+	sort.Strings(out)
+	return out, nil
+}
 
-	names := make([]string, 0, len(byName))
-	for name := range byName {
-		names = append(names, name)
+// Checks panel names against the registry before persist
+func (m *Manager) ValidatePanelHostnames(ctx context.Context, hostnames []string) error {
+	port := m.panelWebPort()
+	if port <= 0 || len(hostnames) == 0 {
+		return nil
 	}
-	sort.Strings(names)
-	out := make([]HostnameClaim, len(names))
-	for i, name := range names {
-		out[i] = *byName[name]
+	var reqs []NetRequest
+	for _, name := range hostnames {
+		reqs = append(reqs, NetRequest{
+			Port:     port,
+			Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP,
+			Routed:   true,
+			Hostname: name,
+			Detail:   "web interface",
+		})
+	}
+	return m.ValidateNetwork(ctx, NetOwner{Kind: OwnerPanel, ID: OwnerPanel}, reqs)
+}
+
+// Hostnames a routed port serves, minecraft needs at least one
+func routedHostnames(port *v1.NetworkPort, fallback []string) []string {
+	var out []string
+	seen := make(map[string]bool)
+	for _, name := range port.Hostnames {
+		name = NormalizeHostname(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		out = fallback
+	}
+	if len(out) == 0 {
+		// Http still serves as the port's catch all
+		if port.Protocol == v1.ModuleProtocol_MODULE_PROTOCOL_HTTP {
+			return []string{""}
+		}
+		return nil
 	}
 	return out
 }
@@ -285,15 +290,15 @@ func conflictReason(want, holder *Reservation) string {
 }
 
 // Builds reservation requests for a module's ports
-func (m *Manager) ModuleNetRequests(module *v1.Module, serverHostname string) []NetRequest {
+func (m *Manager) ModuleNetRequests(module *v1.Module, serverHostnames []string) []NetRequest {
 	m.mu.Lock()
 	enabled := m.enabled
 	m.mu.Unlock()
-	return PortNetRequests(module.Ports, serverHostname, enabled)
+	return PortNetRequests(module.Ports, serverHostnames, enabled)
 }
 
-// One request per port, shape decided by protocol and flags
-func PortNetRequests(ports []*v1.NetworkPort, fallbackHostname string, proxyOn bool) []NetRequest {
+// One request per port and hostname pair
+func PortNetRequests(ports []*v1.NetworkPort, fallbackHostnames []string, proxyOn bool) []NetRequest {
 	var reqs []NetRequest
 	for _, port := range ports {
 		if port == nil || port.HostPort <= 0 {
@@ -307,16 +312,13 @@ func PortNetRequests(ports []*v1.NetworkPort, fallbackHostname string, proxyOn b
 		if port.ProxyEnabled && proxyOn {
 			switch port.Protocol {
 			case v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT:
-				hostname := NormalizeHostname(port.Hostname)
-				if hostname == "" {
-					hostname = fallbackHostname
+				for _, hostname := range routedHostnames(port, fallbackHostnames) {
+					routed := req
+					routed.Routed = true
+					routed.Hostname = hostname
+					reqs = append(reqs, routed)
 				}
-				// Handshake routing cannot match without a hostname
-				if hostname == "" && port.Protocol == v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT {
-					continue
-				}
-				req.Routed = true
-				req.Hostname = hostname
+				continue
 			default:
 				req.Relay = true
 			}
@@ -332,21 +334,22 @@ func ServerDirectNetRequests(port int, additional []*v1.NetworkPort, proxyOn boo
 		{Port: port, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_TCP, Detail: "game port"},
 		{Port: port + docker.RCONPortOffset, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_TCP, Detail: "rcon port"},
 	}
-	return append(reqs, PortNetRequests(additional, "", proxyOn)...)
+	return append(reqs, PortNetRequests(additional, nil, proxyOn)...)
 }
 
 // Builds reservation requests for a proxied server
-func ServerProxiedNetRequests(hostname string, listenerPort int, additional []*v1.NetworkPort, proxyOn bool) []NetRequest {
-	reqs := []NetRequest{
-		{
+func ServerProxiedNetRequests(hostnames []string, listenerPort int, additional []*v1.NetworkPort, proxyOn bool) []NetRequest {
+	var reqs []NetRequest
+	for _, hostname := range hostnames {
+		reqs = append(reqs, NetRequest{
 			Port:     listenerPort,
 			Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT,
 			Routed:   true,
 			Hostname: hostname,
 			Detail:   "proxy route",
-		},
+		})
 	}
-	return append(reqs, PortNetRequests(additional, hostname, proxyOn)...)
+	return append(reqs, PortNetRequests(additional, hostnames, proxyOn)...)
 }
 
 // Derives every live reservation from the database and config
@@ -373,14 +376,14 @@ func (m *Manager) reservationsLocked(ctx context.Context) ([]Reservation, error)
 			OwnerID:   OwnerPanel,
 			Detail:    "web interface",
 		})
-		// Panel's own hostname gets a named claim
-		if base, _ := m.effectiveBaseDomainLocked(); base != "" {
+		// Every panel hostname gets a named claim
+		for _, name := range m.panelNames {
 			all = append(all, Reservation{
 				Port:      p,
 				Transport: v1.NetworkTransport_NETWORK_TRANSPORT_TCP,
 				Kind:      kindRouted,
 				Protocol:  v1.ModuleProtocol_MODULE_PROTOCOL_HTTP,
-				Hostname:  NormalizeHostname(base),
+				Hostname:  name,
 				OwnerKind: OwnerPanel,
 				OwnerID:   OwnerPanel,
 				Detail:    "web interface",
@@ -419,17 +422,17 @@ func (m *Manager) reservationsLocked(ctx context.Context) ([]Reservation, error)
 		serversByID[s.Id] = s
 		owner := NetOwner{Kind: OwnerServer, ID: s.Id}
 		var reqs []NetRequest
-		if s.ProxyHostname != "" {
+		if len(s.ProxyHostnames) > 0 {
 			listener := listenersByID[s.ProxyListenerId]
 			if listener == nil {
-				reqs = PortNetRequests(s.AdditionalPorts, s.ProxyHostname, m.enabled)
+				reqs = PortNetRequests(s.AdditionalPorts, s.ProxyHostnames, m.enabled)
 			} else {
-				reqs = ServerProxiedNetRequests(s.ProxyHostname, int(listener.Port), s.AdditionalPorts, m.enabled)
+				reqs = ServerProxiedNetRequests(s.ProxyHostnames, int(listener.Port), s.AdditionalPorts, m.enabled)
 			}
 		} else if s.Port > 0 {
 			reqs = ServerDirectNetRequests(int(s.Port), s.AdditionalPorts, m.enabled)
 		} else {
-			reqs = PortNetRequests(s.AdditionalPorts, "", m.enabled)
+			reqs = PortNetRequests(s.AdditionalPorts, nil, m.enabled)
 		}
 		for _, req := range reqs {
 			if res, err := m.reservationFromRequest(owner, req); err == nil {
@@ -444,11 +447,11 @@ func (m *Manager) reservationsLocked(ctx context.Context) ([]Reservation, error)
 	}
 	for _, mod := range modules {
 		owner := NetOwner{Kind: OwnerModule, ID: mod.Id}
-		hostname := ""
+		var hostnames []string
 		if srv := serversByID[mod.ServerId]; srv != nil {
-			hostname = srv.ProxyHostname
+			hostnames = srv.ProxyHostnames
 		}
-		for _, req := range PortNetRequests(mod.Ports, hostname, m.enabled) {
+		for _, req := range PortNetRequests(mod.Ports, hostnames, m.enabled) {
 			if res, err := m.reservationFromRequest(owner, req); err == nil {
 				all = append(all, res)
 			}
@@ -618,7 +621,8 @@ func (m *Manager) EnsureListenersFor(ctx context.Context, reqs []NetRequest) err
 		have[int(l.Port)] = true
 	}
 	for _, port := range ports {
-		if have[port] {
+		// Panel socket serves its own port, never a row here
+		if have[port] || port == m.panelWebPort() {
 			continue
 		}
 		if _, err := m.createListenerRowLocked(ctx, port); err != nil {

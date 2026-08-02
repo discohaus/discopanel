@@ -23,15 +23,14 @@
 
 	let {
 		open = $bindable(false),
-		baseUrl,
-		strictHttps,
+		hostnames,
 		modules,
 		usedPorts,
 		onConverted
 	}: {
 		open?: boolean;
-		baseUrl: string;
-		strictHttps: boolean;
+		// Saved panel hostnames the disable keeps intact
+		hostnames: string[];
 		modules: Module[];
 		usedPorts: number[];
 		onConverted: () => Promise<void>;
@@ -91,12 +90,11 @@
 		try {
 			await rpcClient.proxy.updateProxyConfig({
 				enabled: false,
-				baseUrl,
-				strictHttps,
+				hostnames,
 				convertToDirect: true,
 				assignments: servers.map((s) => ({
 					serverId: s.serverId,
-					hostname: s.hostname,
+					hostnames: s.hostnames,
 					proposedPort: ports[s.serverId] ?? s.proposedPort
 				}))
 			});
@@ -142,7 +140,7 @@
 										{serverNames.get(impact.serverId) ?? impact.serverId.slice(0, 8)}
 									</p>
 									<p class="truncate font-mono text-xs text-muted-foreground line-through">
-										{impact.hostname}
+										{impact.hostnames.join(', ')}
 									</p>
 								</div>
 								<div class="w-28 shrink-0">

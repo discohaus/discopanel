@@ -3,76 +3,50 @@
 	import { Label } from '$lib/components/ui/label';
 	import { Button } from '$lib/components/ui/button';
 	import { Select, SelectContent, SelectItem, SelectTrigger } from '$lib/components/ui/select';
-	import { CopyButton } from '$lib/components/app';
+	import { AddressSelect } from '$lib/components/app';
 	import { panelHost } from '$lib/utils/host';
-	import { ArrowRight, Cable, Container, Globe, Network, RefreshCw, Users } from '@lucide/svelte';
+	import { Cable, Globe, Network, RefreshCw } from '@lucide/svelte';
 	import type { ProxyListener } from '$lib/proto/discopanel/v1/storage_pb';
-	import { composeHostname, hostnameSlug, playerAddress } from '$lib/hostname';
+	import HostnameListInput from '$lib/components/network/hostname-list-input.svelte';
+	import { hostnameSlug, playerAddress } from '$lib/hostname';
 
 	let {
 		proxyEnabled = false,
-		baseUrl = '',
 		listeners = [],
 		serverName = '',
-		deriveHostname = false,
 		routeActive = null,
 		disabled = false,
 		usedPorts = {},
 		hostnameError = '',
 		useProxy = $bindable(false),
-		hostname = $bindable(''),
-		useBaseUrl = $bindable(true),
+		hostnames = $bindable([]),
 		listenerId = $bindable(''),
 		port = $bindable(25565),
 		portError = $bindable(''),
 		onAutoAssignPort = undefined
 	}: {
 		proxyEnabled?: boolean;
-		baseUrl?: string;
 		listeners?: ProxyListener[];
 		serverName?: string;
-		deriveHostname?: boolean;
 		routeActive?: boolean | null;
 		disabled?: boolean;
 		usedPorts?: Record<number, boolean>;
 		hostnameError?: string;
 		useProxy?: boolean;
-		hostname?: string;
-		useBaseUrl?: boolean;
+		hostnames?: string[];
 		listenerId?: string;
 		port?: number;
 		portError?: string;
 		onAutoAssignPort?: () => void | Promise<void>;
 	} = $props();
 
-	let hostnameEdited = $state(false);
-	let hostnameTouched = $state(false);
-
 	let selectedListener = $derived(listeners.find((l) => l.id === listenerId));
-	let composedHostname = $derived(composeHostname(hostname, baseUrl, useBaseUrl));
-	// Pristine fields stay quiet until visited
-	let hostnameMissing = $derived(
-		proxyEnabled && useProxy && hostnameTouched && hostname.trim().length === 0
-	);
-	let hasDot = $derived(hostname.includes('.'));
 	let proxied = $derived(proxyEnabled && useProxy);
 
-	// Address players type into their server list
-	let addressPreview = $derived.by(() => {
-		if (proxied) {
-			const host = composedHostname || (baseUrl ? `your-hostname.${baseUrl}` : 'your-hostname');
-			return playerAddress(host, selectedListener?.port);
-		}
-		// Base domain resolves to this machine for direct joins
-		return `${panelHost(baseUrl)}:${port}`;
-	});
-
-	// Follows the server name until edited by hand
-	$effect(() => {
-		if (deriveHostname && useProxy && !hostnameEdited) {
-			hostname = hostnameSlug(serverName);
-		}
-	});
+	// Rows double as the joinable player addresses
+	function addressFor(name: string): string {
+		return playerAddress(name, selectedListener?.port);
+	}
 
 	function validatePort(p: number) {
 		if (p < 1 || p > 65535) {
@@ -89,9 +63,6 @@
 	function chooseProxy() {
 		useProxy = true;
 		portError = '';
-		if (!hostname) {
-			hostname = hostnameSlug(serverName) || 'minecraft-server';
-		}
 	}
 
 	function chooseDirect() {
@@ -99,22 +70,6 @@
 		validatePort(port);
 	}
 </script>
-
-{#snippet pathNode(icon: typeof Users, title: string, sub: string, tone: 'active' | 'muted')}
-	{@const Icon = icon}
-	<div
-		class="flex min-w-0 flex-1 basis-40 items-center gap-2.5 rounded-lg border px-3 py-2 {tone ===
-		'active'
-			? 'border-primary/30 bg-primary/5'
-			: 'bg-muted/30'}"
-	>
-		<Icon class="size-4 shrink-0 {tone === 'active' ? 'text-primary' : 'text-muted-foreground'}" />
-		<div class="min-w-0">
-			<p class="truncate text-xs font-medium">{title}</p>
-			<p class="truncate font-mono text-[11px] text-muted-foreground">{sub}</p>
-		</div>
-	</div>
-{/snippet}
 
 {#snippet portField()}
 	<div class="space-y-2">
@@ -131,13 +86,7 @@
 				class="flex-1 {portError ? 'border-destructive' : ''}"
 			/>
 			{#if onAutoAssignPort}
-				<Button
-					type="button"
-					variant="outline"
-					class="shrink-0"
-					onclick={onAutoAssignPort}
-					{disabled}
-				>
+				<Button type="button" variant="outline" class="shrink-0" onclick={onAutoAssignPort} {disabled}>
 					<RefreshCw class="size-3.5" />
 					Auto-assign
 				</Button>
@@ -162,14 +111,9 @@
 				onclick={chooseProxy}
 				{disabled}
 			>
-				<div class="flex flex-wrap items-center gap-2 text-sm font-medium">
+				<div class="flex items-center gap-2 text-sm font-medium">
 					<Globe class="size-4 text-primary" />
-					Proxy hostname
-					<span
-						class="rounded-full border border-primary/25 bg-primary/10 px-1.5 py-px text-[10px] font-medium text-primary"
-					>
-						Recommended
-					</span>
+					Hostnames
 				</div>
 				<p class="mt-1 text-xs text-muted-foreground">Players join by hostname</p>
 			</button>
@@ -192,46 +136,30 @@
 		</div>
 
 		{#if useProxy}
-			<div class="grid gap-4 {listeners.length > 0 ? 'sm:grid-cols-[minmax(0,1fr)_20rem]' : ''}">
+			<div class="grid gap-4 {listeners.length > 0 ? 'sm:grid-cols-[minmax(0,1fr)_18rem]' : ''}">
 				<div class="space-y-2">
-					<Label for="proxy_hostname">Hostname</Label>
-					<div class="flex">
-						<Input
-							id="proxy_hostname"
-							placeholder={baseUrl ? 'survival' : 'survival.example.com'}
-							bind:value={hostname}
-							oninput={(e) => {
-								hostnameEdited = e.currentTarget.value.length > 0;
-								hostnameTouched = true;
-							}}
-							onblur={() => (hostnameTouched = true)}
-							{disabled}
-							class="min-w-0 flex-1 {baseUrl ? 'rounded-r-none' : ''} {hostnameMissing ||
-							hostnameError
-								? 'border-destructive'
-								: ''}"
-						/>
-						{#if baseUrl}
-							<button
-								type="button"
-								aria-pressed={useBaseUrl}
-								title={useBaseUrl ? 'Click to detach' : 'Click to append'}
-								onclick={() => (useBaseUrl = !useBaseUrl)}
-								{disabled}
-								class="inline-flex shrink-0 items-center rounded-r-md border border-l-0 border-input px-3 font-mono text-xs transition-colors {useBaseUrl &&
-								!hasDot
-									? 'bg-primary/10 text-foreground'
-									: 'bg-muted/40 text-muted-foreground line-through'}"
-							>
-								.{baseUrl}
-							</button>
+					<div class="flex items-center justify-between gap-2">
+						<Label for="proxy_hostnames">Player addresses</Label>
+						{#if proxied && routeActive !== null}
+							<span class="flex items-center gap-1.5 text-xs text-muted-foreground">
+								<span
+									class="size-2 rounded-full {routeActive ? 'bg-status-ok' : 'bg-status-busy'}"
+								></span>
+								{routeActive ? 'Routed via proxy' : 'Route activates on start'}
+							</span>
 						{/if}
 					</div>
-					{#if hostnameMissing}
-						<p class="text-xs text-destructive">A hostname is required for proxy routing</p>
-					{:else if hostnameError}
-						<p class="text-xs text-destructive">{hostnameError}</p>
-					{/if}
+					<HostnameListInput
+						inputId="proxy_hostnames"
+						bind:hostnames
+						label={hostnameSlug(serverName)}
+						placeholder="survival.example.com"
+						{disabled}
+						error={hostnameError}
+						{addressFor}
+						copyable
+						requireLabel
+					/>
 				</div>
 
 				{#if listeners.length > 1}
@@ -276,7 +204,13 @@
 				{/if}
 			</div>
 		{:else}
-			{@render portField()}
+			<div class="grid gap-4 sm:grid-cols-2">
+				{@render portField()}
+				<div class="space-y-2">
+					<Label>Player address</Label>
+					<AddressSelect addresses={[`${panelHost()}:${port}`]} />
+				</div>
+			</div>
 		{/if}
 	{:else}
 		<div class="grid gap-4 sm:grid-cols-2">
@@ -290,59 +224,4 @@
 			</div>
 		</div>
 	{/if}
-</div>
-
-<div class="border-t px-4 py-4">
-	<span class="stat-label">Player address</span>
-	<div
-		class="mt-2 flex items-center justify-between gap-3 rounded-lg border bg-muted/40 py-2 pr-2 pl-4"
-	>
-		<p class="truncate font-mono text-lg" title={addressPreview}>{addressPreview}</p>
-		<div class="flex shrink-0 items-center gap-2">
-			{#if proxied}
-				{#if routeActive === false}
-					<span
-						class="inline-flex items-center gap-1.5 rounded-full border border-status-busy/25 bg-status-busy/10 px-2 py-0.5 text-xs font-medium text-status-busy"
-					>
-						<Globe class="size-3" />
-						Route activates on start
-					</span>
-				{:else}
-					<span
-						class="inline-flex items-center gap-1.5 rounded-full border border-status-ok/25 bg-status-ok/10 px-2 py-0.5 text-xs font-medium text-status-ok"
-					>
-						<Globe class="size-3" />
-						Routed via proxy
-					</span>
-				{/if}
-			{:else}
-				<span
-					class="inline-flex items-center gap-1.5 rounded-full border border-status-idle/25 bg-status-idle/10 px-2 py-0.5 text-xs font-medium text-status-idle"
-				>
-					<Cable class="size-3" />
-					Direct connection
-				</span>
-			{/if}
-			<CopyButton text={addressPreview} label="Copy address" />
-		</div>
-	</div>
-</div>
-
-<div class="border-t bg-muted/20 px-4 py-3.5">
-	<div class="flex flex-wrap items-center gap-2">
-		{@render pathNode(Users, 'Players', proxied ? addressPreview : 'direct connect', 'active')}
-		<ArrowRight class="size-3.5 shrink-0 text-muted-foreground/60" />
-		{#if proxied}
-			{@render pathNode(
-				Network,
-				selectedListener?.name || 'Proxy listener',
-				selectedListener ? `:${selectedListener.port}` : 'listener',
-				'active'
-			)}
-			<ArrowRight class="size-3.5 shrink-0 text-muted-foreground/60" />
-			{@render pathNode(Container, serverName.trim() || 'Server', 'container :25565', 'muted')}
-		{:else}
-			{@render pathNode(Container, serverName.trim() || 'Server', `container :${port}`, 'active')}
-		{/if}
-	</div>
 </div>

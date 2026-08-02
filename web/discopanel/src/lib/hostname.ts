@@ -1,18 +1,32 @@
-// Composes the full hostname a short name resolves to
-export function composeHostname(host: string, baseUrl: string, useBase: boolean): string {
-	const trimmed = host.trim().toLowerCase();
-	if (!trimmed) return '';
-	if (useBase && baseUrl && !trimmed.includes('.')) return `${trimmed}.${baseUrl}`;
-	return trimmed;
+// Routing pattern hostnames must pass, mirrors the backend
+const hostnamePattern =
+	/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
+// Reports whether a hostname passes the routing pattern
+export function validHostname(hostname: string): boolean {
+	return hostnamePattern.test(hostname.trim().toLowerCase());
 }
 
-// Splits a stored hostname into short name and base flag
-export function splitHostname(full: string, baseUrl: string): { host: string; useBase: boolean } {
-	if (baseUrl && full.toLowerCase().endsWith(`.${baseUrl.toLowerCase()}`)) {
-		return { host: full.slice(0, full.length - baseUrl.length - 1), useBase: true };
+// Shortest shared summary for a hostname set
+export function hostnameSummary(hostnames: string[]): string {
+	if (hostnames.length === 0) return '';
+	if (hostnames.length === 1) return hostnames[0];
+	const split = hostnames.map((h) => h.split('.'));
+	const shared: string[] = [];
+	for (let i = 0; ; i++) {
+		const part = split[0][i];
+		if (!part || !split.every((p) => p.length > i + 1 && p[i] === part)) break;
+		shared.push(part);
 	}
-	// Unmatched hostnames stay untouched so saves never rewrite them
-	return { host: full, useBase: false };
+	if (shared.length > 0) return shared.join('.') + '.*';
+	return `${hostnames.length} hostnames`;
+}
+
+// Instant domain names resolve without any DNS setup
+const instantSuffixes = ['.sslip.io', '.traefik.me'];
+export function needsDnsSetup(hostname: string): boolean {
+	const name = hostname.trim().toLowerCase();
+	return !instantSuffixes.some((suffix) => name.endsWith(suffix));
 }
 
 // Player facing address, default port stays implicit

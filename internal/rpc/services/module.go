@@ -392,10 +392,10 @@ func (s *ModuleService) ListModules(ctx context.Context, req *connect.Request[v1
 		}
 
 		serverName := ""
-		serverProxyHostname := ""
+		var serverProxyHostnames []string
 		if srv := serversByID[m.ServerId]; srv != nil {
 			serverName = srv.Name
-			serverProxyHostname = srv.ProxyHostname
+			serverProxyHostnames = srv.ProxyHostnames
 		}
 		if _, ok := usernames[m.CreatedByUserId]; !ok {
 			usernames[m.CreatedByUserId] = s.resolveCreatedByUsername(ctx, m.CreatedByUserId)
@@ -403,7 +403,7 @@ func (s *ModuleService) ListModules(ctx context.Context, req *connect.Request[v1
 		m.Template = nil
 		m.ServerName = serverName
 		m.TemplateName = templateNames[m.TemplateId]
-		m.ServerProxyHostname = serverProxyHostname
+		m.ServerProxyHostnames = serverProxyHostnames
 		m.CreatedByUsername = usernames[m.CreatedByUserId]
 		protoModules = append(protoModules, m.Redact())
 	}
@@ -438,7 +438,7 @@ func (s *ModuleService) GetModule(ctx context.Context, req *connect.Request[v1.G
 	module.Template = nil
 	if server, err := s.store.GetServer(ctx, module.ServerId); err == nil {
 		module.ServerName = server.Name
-		module.ServerProxyHostname = server.ProxyHostname
+		module.ServerProxyHostnames = server.ProxyHostnames
 	}
 	if template, err := s.store.GetModuleTemplate(ctx, module.TemplateId); err == nil {
 		module.TemplateName = template.Name
@@ -468,20 +468,20 @@ func normalizeModulePorts(ports []*v1.NetworkPort) error {
 		if port == nil {
 			continue
 		}
-		hostname := proxy.NormalizeHostname(port.Hostname)
-		if hostname == "" {
-			port.Hostname = ""
-			continue
+		hostnames, err := proxy.NormalizeHostnames(port.Hostnames)
+		if err != nil {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%w on port %s", err, port.Name))
 		}
-		if !proxy.ValidHostname(hostname) {
-			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid hostname %q on port %s", port.Hostname, port.Name))
+		if len(hostnames) == 0 {
+			port.Hostnames = nil
+			continue
 		}
 		switch port.Protocol {
 		case v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT:
 		default:
 			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("hostnames only apply to http and minecraft ports, not %s", port.Name))
 		}
-		port.Hostname = hostname
+		port.Hostnames = hostnames
 	}
 	return nil
 }
@@ -549,7 +549,7 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 
 	// Registry checkout guards every port until the row persists
 	netOwner := proxy.NetOwner{Kind: proxy.OwnerModule, ID: moduleID}
-	netReqs := s.proxyManager.ModuleNetRequests(&v1.Module{Id: moduleID, Ports: ports}, server.ProxyHostname)
+	netReqs := s.proxyManager.ModuleNetRequests(&v1.Module{Id: moduleID, Ports: ports}, server.ProxyHostnames)
 	if err := s.proxyManager.EnsureListenersFor(ctx, netReqs); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -666,7 +666,7 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 	module.Template = nil
 	module.ServerName = server.Name
 	module.TemplateName = template.Name
-	module.ServerProxyHostname = server.ProxyHostname
+	module.ServerProxyHostnames = server.ProxyHostnames
 	module.CreatedByUsername = s.resolveCreatedByUsername(ctx, module.CreatedByUserId)
 	return connect.NewResponse(&v1.CreateModuleResponse{
 		Module: module.Redact(),
@@ -716,13 +716,13 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 		}
 
 		// Global modules carry no server hostname context
-		hostname := ""
+		var hostnames []string
 		if module.ServerId != "" {
 			server, err := s.store.GetServer(ctx, module.ServerId)
 			if err != nil {
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get server: %w", err))
 			}
-			hostname = server.ProxyHostname
+			hostnames = server.ProxyHostnames
 		}
 
 		// Registry allocates host ports for any entries that need one
@@ -744,7 +744,7 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 		}
 
 		// Registry checkout guards the new ports until persist
-		netReqs := s.proxyManager.ModuleNetRequests(&v1.Module{Id: module.Id, Ports: msg.Ports}, hostname)
+		netReqs := s.proxyManager.ModuleNetRequests(&v1.Module{Id: module.Id, Ports: msg.Ports}, hostnames)
 		if err := s.proxyManager.EnsureListenersFor(ctx, netReqs); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
@@ -836,7 +836,7 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 	module.Template = nil
 	if server, err := s.store.GetServer(ctx, module.ServerId); err == nil {
 		module.ServerName = server.Name
-		module.ServerProxyHostname = server.ProxyHostname
+		module.ServerProxyHostnames = server.ProxyHostnames
 	}
 	module.TemplateName = template.Name
 	module.CreatedByUsername = s.resolveCreatedByUsername(ctx, module.CreatedByUserId)

@@ -307,3 +307,7 @@ html:not(.dark) :is([data-slot='input'], [data-slot='textarea'], [data-slot='sel
 .topology-flow .topo-edge-idle .svelte-flow__edge-path {
 	stroke: color-mix(in oklch, var(--status-idle) 60%, transparent);
 }
+
+.topology-flow .topo-edge-dim .svelte-flow__edge-path {
+	opacity: 0.2;
+}

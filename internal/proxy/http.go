@@ -10,10 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/net/http2"
-
 	"github.com/discohaus/discopanel/pkg/logger"
-	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
 // Serves the http lane of a listener socket by Host header
@@ -24,16 +21,14 @@ type httpLane struct {
 	proxiesMutex sync.Mutex
 	server       *http.Server
 	serverMutex  sync.Mutex
-	acme         *acmeManager
 	logger       *logger.Logger
 }
 
 // Creates the http lane for one socket
-func newHTTPLane(log *logger.Logger, acme *acmeManager) *httpLane {
+func newHTTPLane(log *logger.Logger) *httpLane {
 	return &httpLane{
 		routesMap: make(map[string]*Route),
 		proxies:   make(map[string]*httputil.ReverseProxy),
-		acme:      acme,
 		logger:    log,
 	}
 }
@@ -48,10 +43,11 @@ func (p *httpLane) start(feed *connFeed) {
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
-	// Browsers negotiate h2 over tls, wire the handler in
-	if err := http2.ConfigureServer(p.server, nil); err != nil {
-		p.logger.Error("HTTP2 setup failed: %v", err)
-	}
+	// Agent streams arrive as cleartext http2
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+	p.server.Protocols = protocols
 	go func(server *http.Server) {
 		if err := server.Serve(feed); err != nil && err != http.ErrServerClosed && err != net.ErrClosed {
 			p.logger.Error("HTTP lane error: %v", err)
@@ -76,16 +72,6 @@ func isWebSocketRequest(r *http.Request) bool {
 
 // Implements http.Handler for routing requests
 func (p *httpLane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Reachability probes bounce off before any routing
-	if HandleEcho(w, r) {
-		return
-	}
-
-	// Pending acme validations answer ahead of any redirect
-	if p.acme.HandleHTTPChallenge(w, r) {
-		return
-	}
-
 	// Same normalizer as route keys, trailing dots included
 	hostname := normalizeHostname(r.Host)
 
@@ -103,12 +89,6 @@ func (p *httpLane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Strict routes answer plain requests with a redirect
-	if route.TlsMode == v1.RouteTlsMode_ROUTE_TLS_MODE_STRICT && r.TLS == nil {
-		http.Redirect(w, r, "https://"+r.Host+r.URL.RequestURI(), http.StatusMovedPermanently)
-		return
-	}
-
 	// Handle WebSocket upgrade separately
 	if isWebSocketRequest(r) {
 		p.handleWebSocket(w, r, route)
@@ -116,11 +96,11 @@ func (p *httpLane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	backendAddr := net.JoinHostPort(route.BackendHost, fmt.Sprintf("%d", route.BackendPort))
-	p.proxyFor(backendAddr).ServeHTTP(w, r)
+	p.proxyFor(route, backendAddr).ServeHTTP(w, r)
 }
 
 // Returns the cached reverse proxy for a backend
-func (p *httpLane) proxyFor(backendAddr string) *httputil.ReverseProxy {
+func (p *httpLane) proxyFor(route *Route, backendAddr string) *httputil.ReverseProxy {
 	p.proxiesMutex.Lock()
 	defer p.proxiesMutex.Unlock()
 
@@ -139,6 +119,12 @@ func (p *httpLane) proxyFor(backendAddr string) *httputil.ReverseProxy {
 			p.logger.Error("Proxy error for %s: %v", r.Host, err)
 			http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		},
+	}
+	// Panel backend speaks cleartext http2 for agent streams
+	if route.OwnerKind == OwnerPanel {
+		protocols := new(http.Protocols)
+		protocols.SetUnencryptedHTTP2(true)
+		proxy.Transport = &http.Transport{Protocols: protocols}
 	}
 	p.proxies[backendAddr] = proxy
 	return proxy
@@ -205,20 +191,6 @@ func (p *httpLane) handleWebSocket(w http.ResponseWriter, r *http.Request, route
 
 	p.logger.Debug("WebSocket connection established: %s -> %s", r.RemoteAddr, backendAddr)
 	relay(clientConn, backendConn)
-}
-
-// Https posture of the route matching a server name
-func (p *httpLane) tlsModeFor(name string) v1.RouteTlsMode {
-	name = normalizeHostname(name)
-	p.routesMutex.RLock()
-	defer p.routesMutex.RUnlock()
-	if route, ok := p.routesMap[name]; ok {
-		return route.TlsMode
-	}
-	if route, ok := p.routesMap[""]; ok {
-		return route.TlsMode
-	}
-	return v1.RouteTlsMode_ROUTE_TLS_MODE_UNSPECIFIED
 }
 
 // Replaces the lane's route table

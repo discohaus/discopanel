@@ -14,14 +14,15 @@
 	import { create } from '@bufbuild/protobuf';
 	import { enumLabel } from '$lib/proto-meta';
 	import { isRelayProtocol } from '$lib/components/network/topology-data';
-	import { tlsModeLabel, tlsModeOptions } from '$lib/components/network/network-copy';
+	import HostnameListInput from '$lib/components/network/hostname-list-input.svelte';
+	import { hostnameSlug } from '$lib/hostname';
 
 	interface Props {
 		ports?: NetworkPort[];
 		disabled?: boolean;
 		usedPorts?: Record<number, boolean>;
 		proxyAvailable?: boolean;
-		serverHostname?: string;
+		serverHostnames?: string[];
 		onchange?: (ports: NetworkPort[]) => void;
 	}
 
@@ -30,7 +31,7 @@
 		disabled = false,
 		usedPorts = {},
 		proxyAvailable = false,
-		serverHostname = '',
+		serverHostnames = [],
 		onchange
 	}: Props = $props();
 
@@ -52,7 +53,7 @@
 				if (p.protocol !== port.protocol) return false;
 				// Routed rows may share a port on different hostnames
 				const routed = port.proxyEnabled && p.proxyEnabled && !isRelayProtocol(port.protocol);
-				if (routed) return (p.hostname || '') === (port.hostname || '');
+				if (routed) return (p.hostnames ?? []).join(',') === (port.hostnames ?? []).join(',');
 				return true;
 			});
 			if (duplicate)
@@ -77,7 +78,11 @@
 		onchange?.(ports);
 	}
 
-	function updatePort(index: number, field: keyof NetworkPort, value: string | number | boolean) {
+	function updatePort(
+		index: number,
+		field: keyof NetworkPort,
+		value: string | number | boolean | string[]
+	) {
 		ports[index] = {
 			...ports[index],
 			[field]: value
@@ -208,45 +213,33 @@
 									relay
 								</span>
 							{/if}
-							{#if port.proxyEnabled && !isRelayProtocol(port.protocol)}
-								<Input
-									type="text"
-									placeholder={serverHostname ||
-										(port.protocol === ModuleProtocol.MINECRAFT
-											? 'hostname required'
-											: 'any hostname')}
-									bind:value={port.hostname}
-									{disabled}
-									onchange={() => updatePort(index, 'hostname', port.hostname)}
-									class="h-7 w-56 font-mono text-xs"
-								/>
-								<span class="text-[11px] text-muted-foreground">
-									Empty inherits the server hostname
-								</span>
-							{/if}
-							{#if port.proxyEnabled && port.protocol === ModuleProtocol.HTTP}
-								<Select
-									type="single"
-									value={String(port.tlsMode)}
-									onValueChange={(v) => updatePort(index, 'tlsMode', Number(v))}
-									{disabled}
-								>
-									<SelectTrigger class="h-7 w-36 text-xs" title="HTTPS posture for this hostname">
-										<span>{tlsModeLabel(port.tlsMode)}</span>
-									</SelectTrigger>
-									<SelectContent>
-										{#each tlsModeOptions as option (option.value)}
-											<SelectItem value={String(option.value)}>{option.label}</SelectItem>
-										{/each}
-									</SelectContent>
-								</Select>
-							{/if}
-							{#if port.proxyEnabled && port.protocol === ModuleProtocol.MINECRAFT && !(port.hostname ?? '').trim() && !serverHostname}
-								<span class="text-[11px] text-status-busy">
-									Minecraft routing matches hostnames. Without one this port cannot receive players.
-								</span>
-							{/if}
 						</div>
+						{#if port.proxyEnabled && !isRelayProtocol(port.protocol)}
+							<div class="space-y-1 pl-1">
+								<HostnameListInput
+									bind:hostnames={port.hostnames}
+									label={hostnameSlug(port.name)}
+									placeholder={serverHostnames.length > 0
+										? 'inherits the server hostnames'
+										: port.protocol === ModuleProtocol.MINECRAFT
+											? 'hostname required'
+											: 'map.example.com'}
+									{disabled}
+									requireLabel
+									onchange={(names) => updatePort(index, 'hostnames', names)}
+								/>
+								{#if (port.hostnames ?? []).length === 0 && serverHostnames.length > 0}
+									<span class="text-[11px] text-muted-foreground">
+										Empty inherits the server hostnames
+									</span>
+								{:else if port.protocol === ModuleProtocol.MINECRAFT && (port.hostnames ?? []).length === 0 && serverHostnames.length === 0}
+									<span class="text-[11px] text-status-busy">
+										Minecraft routing matches hostnames. Without one this port cannot receive
+										players.
+									</span>
+								{/if}
+							</div>
+						{/if}
 					{/if}
 
 					{#if portErrors[index]}

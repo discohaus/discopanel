@@ -44,18 +44,32 @@ export function layoutColumns(
 		return Math.max(startY, y - NODE_GAP);
 	};
 
-	// First band stacks per column in declared order
+	// Mean source height pulls nodes toward their feeders
+	const meanSourceY = (id: string): number => {
+		const ys: number[] = [];
+		for (const edge of edges) {
+			if (edge.target !== id) continue;
+			const src = positions.get(edge.source);
+			if (src) ys.push(src.y);
+		}
+		if (ys.length === 0) return Number.MAX_VALUE;
+		return ys.reduce((a, b) => a + b, 0) / ys.length;
+	};
+
+	// First band places left to right so edges never cross
 	const bandHeights = new Map<number, number>();
-	for (const [column, list] of byColumn) {
+	for (const column of [...byColumn.keys()].sort((a, b) => a - b)) {
 		if (column === 4) continue;
+		const list = byColumn.get(column) ?? [];
 		list.sort((a, b) => a.band - b.band || a.order - b.order || a.id.localeCompare(b.id));
-		bandHeights.set(
-			column,
-			stack(
-				list.filter((i) => i.band === 0),
-				0
-			)
-		);
+		const bandZero = list.filter((i) => i.band === 0);
+		if (column >= 2) {
+			const means = new Map(bandZero.map((i) => [i.id, meanSourceY(i.id)]));
+			bandZero.sort(
+				(a, b) => (means.get(a.id) ?? 0) - (means.get(b.id) ?? 0) || a.order - b.order
+			);
+		}
+		bandHeights.set(column, stack(bandZero, 0));
 	}
 
 	// Backends order by grouped barycenter of their sources

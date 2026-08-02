@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
+	import { SvelteMap } from 'svelte/reactivity';
 	import { resolve } from '$app/paths';
 	import { rpcClient, rpcErrorMessage, silentCallOptions } from '$lib/api/rpc-client';
 	import { toast } from 'svelte-sonner';
 	import { Button } from '$lib/components/ui/button';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
-	import { Badge } from '$lib/components/ui/badge';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { EmptyState } from '$lib/components/app';
 	import ConnectivityCard from '$lib/components/connectivity-card.svelte';
@@ -20,16 +20,15 @@
 		RotateCcw,
 		RefreshCw
 	} from '@lucide/svelte';
-	import type { Server, ProxyListener, Module } from '$lib/proto/discopanel/v1/storage_pb';
+	import type { Module, ProxyListener, Server } from '$lib/proto/discopanel/v1/storage_pb';
 	import { ModuleProtocol, ServerStatus } from '$lib/proto/discopanel/v1/storage_pb';
 	import {
-		BaseUrlSource,
 		NetworkOwnerKind,
 		type GetServerRoutingResponse,
 		type ProxyRoute
 	} from '$lib/proto/discopanel/v1/proxy_pb';
-	import { routeStateLabel, routeStateClass, routeStatsSummary } from '$lib/proxy-route';
-	import { composeHostname, splitHostname } from '$lib/hostname';
+	import { routeStateLabel, routeStateText, routeStatsSummary } from '$lib/proxy-route';
+	import { needsDnsSetup } from '$lib/hostname';
 	import { laneLabel } from '$lib/components/network/topology-data';
 
 	let { server, active = true }: { server: Server; active?: boolean } = $props();
@@ -37,18 +36,23 @@
 	let loading = $state(true);
 	let saving = $state(false);
 	let routingInfo = $state<GetServerRoutingResponse | null>(null);
+	let panelNames = $state<string[]>([]);
 	let allRoutes = $state<ProxyRoute[]>([]);
 	let allModules = $state<Module[]>([]);
 	let listeners = $state<ProxyListener[]>([]);
 	let rawUsedPorts = $state<number[]>([]);
 
 	let useProxy = $state(false);
-	let hostname = $state('');
-	let useBaseUrl = $state(true);
+	let hostnames = $state<string[]>([]);
 	let listenerId = $state('');
 	let port = $state(25565);
 	let portError = $state('');
-	let original = $state({ useProxy: false, hostname: '', listenerId: '', port: 25565 });
+	let original = $state({
+		useProxy: false,
+		hostnames: '' as string,
+		listenerId: '',
+		port: 25565
+	});
 
 	let showSettingsLink = $derived($canAccessSettings);
 
@@ -89,22 +93,21 @@
 	async function loadRoutingInfo() {
 		try {
 			loading = true;
-			const [routing, listenerData, portData] = await Promise.all([
+			const [routing, listenerData, portData, statusData] = await Promise.all([
 				rpcClient.proxy.getServerRouting({ serverId: server.id }),
 				rpcClient.proxy.getProxyListeners({}).catch(() => null),
-				rpcClient.server.getNextAvailablePort({}).catch(() => null)
+				rpcClient.server.getNextAvailablePort({}).catch(() => null),
+				rpcClient.proxy.getProxyStatus({}).catch(() => null)
 			]);
 			routingInfo = routing;
+			panelNames = statusData?.hostnames ?? [];
 			listeners =
 				listenerData?.listeners
 					.map((l) => l.listener)
 					.filter((l): l is ProxyListener => l !== undefined && l.enabled) ?? [];
 
-			const full = routing.proxyHostname || '';
-			const split = splitHostname(full, routing.effectiveBaseUrl || '');
-			useProxy = full !== '';
-			hostname = split.host;
-			useBaseUrl = full ? split.useBase : true;
+			hostnames = [...routing.proxyHostnames];
+			useProxy = hostnames.length > 0;
 			listenerId = routing.proxyListenerId || '';
 			if (!listenerId && listeners.length > 0) {
 				listenerId = (listeners.find((l) => l.isDefault) ?? listeners[0]).id;
@@ -114,7 +117,12 @@
 			// Proxied rows carry no usable host port yet
 			port = useProxy ? portData?.port || 25565 : server.port;
 			portError = '';
-			original = { useProxy, hostname: full, listenerId, port: server.port };
+			original = {
+				useProxy,
+				hostnames: hostnameKey(hostnames),
+				listenerId,
+				port: server.port
+			};
 		} catch {
 			toast.error('Failed to load routing information');
 		} finally {
@@ -160,44 +168,47 @@
 		}
 	}
 
-	let composed = $derived(
-		composeHostname(hostname, routingInfo?.effectiveBaseUrl ?? '', useBaseUrl)
-	);
+	// Stable key for change detection over name sets
+	function hostnameKey(names: string[]): string {
+		return [...names].sort().join(',');
+	}
 
 	let selectedListenerPort = $derived(
 		listeners.find((l) => l.id === listenerId)?.port ?? routingInfo?.listenPort ?? 0
 	);
 
-	// Instant domains resolve on their own, custom ones need DNS
-	let needsDns = $derived.by(() => {
-		if (!routingInfo || !composed) return false;
-		// Preset sslip domains carry the address in the name
-		if (composed.endsWith('.sslip.io')) return false;
-		if (routingInfo.baseUrlSource !== BaseUrlSource.AUTO) return true;
-		return !composed.endsWith(routingInfo.effectiveBaseUrl);
-	});
+	// Names under a panel hostname ride its wildcard record
+	let dnsHostnames = $derived(
+		useProxy
+			? hostnames.filter(
+					(name) =>
+						needsDnsSetup(name) &&
+						!panelNames.some((base) => name === base || name.endsWith('.' + base))
+				)
+			: []
+	);
 
 	// Conflicts need the same port, lane, and hostname
 	let hostnameError = $derived.by(() => {
-		if (!useProxy || !composed) return '';
-		const hostnameRegex =
-			/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
-		if (!hostnameRegex.test(composed)) return 'Invalid hostname format';
-		const conflict = allRoutes.find(
-			(route) =>
-				route.protocol === ModuleProtocol.MINECRAFT &&
-				route.listenPort === selectedListenerPort &&
-				route.hostname.toLowerCase() === composed &&
-				!(route.ownerKind === NetworkOwnerKind.SERVER && route.ownerId === server.id)
-		);
-		if (conflict) return `Hostname already routed for minecraft on port ${conflict.listenPort}`;
+		if (!useProxy) return '';
+		for (const name of hostnames) {
+			const conflict = allRoutes.find(
+				(route) =>
+					route.protocol === ModuleProtocol.MINECRAFT &&
+					route.listenPort === selectedListenerPort &&
+					route.hostname.toLowerCase() === name &&
+					!(route.ownerKind === NetworkOwnerKind.SERVER && route.ownerId === server.id)
+			);
+			if (conflict) return `${name} is already routed for minecraft on port ${conflict.listenPort}`;
+		}
 		return '';
 	});
 
 	let modeChanged = $derived(useProxy !== original.useProxy);
 	let hasChanges = $derived(
 		modeChanged ||
-			(useProxy && (composed !== original.hostname || listenerId !== original.listenerId)) ||
+			(useProxy &&
+				(hostnameKey(hostnames) !== original.hostnames || listenerId !== original.listenerId)) ||
 			(!useProxy && port !== original.port)
 	);
 	// Everything except a pure hostname edit rebuilds the container
@@ -211,7 +222,7 @@
 		hasChanges &&
 			!saving &&
 			!hostnameError &&
-			!(useProxy && !hostname.trim()) &&
+			!(useProxy && hostnames.length === 0) &&
 			!(!useProxy && !!portError)
 	);
 
@@ -220,7 +231,7 @@
 		try {
 			await rpcClient.proxy.updateServerRouting({
 				serverId: server.id,
-				proxyHostname: useProxy ? composed : '',
+				proxyHostnames: useProxy ? hostnames : [],
 				proxyListenerId: useProxy ? listenerId : '',
 				port: useProxy ? undefined : port
 			});
@@ -235,9 +246,7 @@
 
 	function discardChanges() {
 		useProxy = original.useProxy;
-		const split = splitHostname(original.hostname, routingInfo?.effectiveBaseUrl ?? '');
-		hostname = split.host;
-		useBaseUrl = original.hostname ? split.useBase : true;
+		hostnames = [...(routingInfo?.proxyHostnames ?? [])];
 		listenerId = original.listenerId;
 		port = original.port;
 		portError = '';
@@ -274,19 +283,42 @@
 		return { label: '', serverId: '', self: false };
 	}
 
-	// Own routes pinned first in the shared route table
-	let sortedRoutes = $derived(
-		[...allRoutes].sort((a, b) => {
-			const selfA = routeOwner(a).self ? 0 : 1;
-			const selfB = routeOwner(b).self ? 0 : 1;
-			return (
-				selfA - selfB ||
-				a.listenPort - b.listenPort ||
-				a.hostname.localeCompare(b.hostname) ||
-				a.protocol - b.protocol
-			);
-		})
-	);
+	// One row per service, hostnames grouped on it
+	interface RouteGroup {
+		key: string;
+		port: number;
+		protocol: ModuleProtocol;
+		hostnames: string[];
+		first: ProxyRoute;
+	}
+
+	// Own services pinned first in the shared route table
+	let routeGroups = $derived.by((): RouteGroup[] => {
+		const map = new SvelteMap<string, RouteGroup>();
+		for (const route of allRoutes) {
+			const key = `${route.listenPort}:${route.protocol}:${route.ownerKind}:${route.ownerId}:${route.portName}`;
+			let group = map.get(key);
+			if (!group) {
+				group = {
+					key,
+					port: route.listenPort,
+					protocol: route.protocol,
+					hostnames: [],
+					first: route
+				};
+				map.set(key, group);
+			}
+			const name = route.hostname.toLowerCase();
+			if (name && !group.hostnames.includes(name)) group.hostnames.push(name);
+		}
+		const groups = [...map.values()];
+		for (const group of groups) group.hostnames.sort();
+		return groups.sort((a, b) => {
+			const selfA = routeOwner(a.first).self ? 0 : 1;
+			const selfB = routeOwner(b.first).self ? 0 : 1;
+			return selfA - selfB || a.port - b.port || a.protocol - b.protocol;
+		});
+	});
 </script>
 
 {#if loading}
@@ -319,7 +351,6 @@
 
 			<ConnectivityCard
 				proxyEnabled={routingInfo.proxyEnabled}
-				baseUrl={routingInfo.effectiveBaseUrl}
 				{listeners}
 				serverName={server.name}
 				routeActive={hasChanges ? null : routeLive}
@@ -327,20 +358,20 @@
 				{usedPorts}
 				{hostnameError}
 				bind:useProxy
-				bind:hostname
-				bind:useBaseUrl
+				bind:hostnames
 				bind:listenerId
 				bind:port
 				bind:portError
 				onAutoAssignPort={refreshAvailablePort}
 			/>
 
-			{#if useProxy && composed && !hostnameError && needsDns}
+			{#if useProxy && !hostnameError && dnsHostnames.length > 0}
 				<div class="border-t px-4 py-3">
 					<Alert>
 						<AlertCircle class="size-4" />
 						<AlertDescription>
-							Point a DNS record for <code class="font-mono">{composed}</code> at this machine
+							Point a DNS record for <code class="font-mono">{dnsHostnames.join(', ')}</code> at this
+							machine
 						</AlertDescription>
 					</Alert>
 				</div>
@@ -415,32 +446,32 @@
 			</div>
 		</section>
 
-		{#if sortedRoutes.length > 0}
+		{#if routeGroups.length > 0}
 			<section class="overflow-hidden rounded-xl border bg-card">
 				<header class="border-b bg-muted/30 px-4 py-3">
 					<h3 class="text-sm font-semibold">Active routes</h3>
 					<p class="mt-0.5 text-xs text-muted-foreground">Everything the proxy currently serves</p>
 				</header>
 				<div class="divide-y">
-					{#each sortedRoutes as route (`${route.listenPort}:${route.protocol}:${route.hostname}:${route.ownerId}:${route.portName}`)}
-						{@const owner = routeOwner(route)}
-						{@const stats = routeStatsSummary(route)}
+					{#each routeGroups as group (group.key)}
+						{@const owner = routeOwner(group.first)}
+						{@const stats = routeStatsSummary(group.first)}
+						{@const names = group.hostnames.join(', ')}
 						<div
 							class="flex items-center justify-between gap-3 px-4 py-2.5 {owner.self
 								? 'bg-primary/[0.03]'
 								: ''}"
 						>
 							<div class="min-w-0">
-								<div class="flex flex-wrap items-center gap-2">
-									<p class="truncate font-mono text-sm">{route.hostname || 'any hostname'}</p>
-									<span
-										class="rounded-full border px-1.5 py-px font-mono text-[10px] text-muted-foreground"
-									>
-										{laneLabel(route.protocol)}
+								<div class="flex items-baseline gap-2">
+									<p class="min-w-0 truncate font-mono text-sm" title={names}>
+										{names || owner.label}
+									</p>
+									<span class="shrink-0 text-xs text-muted-foreground">
+										{laneLabel(group.protocol)} :{group.port}
 									</span>
-									<span class="font-mono text-xs text-muted-foreground">:{route.listenPort}</span>
 								</div>
-								{#if owner.self && route.ownerKind === NetworkOwnerKind.SERVER}
+								{#if owner.self && group.first.ownerKind === NetworkOwnerKind.SERVER}
 									<p class="text-xs font-medium text-primary">This server</p>
 								{:else if owner.serverId}
 									<a
@@ -449,7 +480,7 @@
 									>
 										{owner.label}
 									</a>
-								{:else if owner.label}
+								{:else if owner.label && names}
 									<p
 										class="text-xs {owner.self
 											? 'font-medium text-primary'
@@ -462,9 +493,9 @@
 									<p class="text-xs text-muted-foreground tabular-nums">{stats}</p>
 								{/if}
 							</div>
-							<Badge variant="outline" class="text-xs {routeStateClass(route)}">
-								{routeStateLabel(route)}
-							</Badge>
+							<span class="shrink-0 text-xs {routeStateText(group.first)}">
+								{routeStateLabel(group.first)}
+							</span>
 						</div>
 					{/each}
 				</div>

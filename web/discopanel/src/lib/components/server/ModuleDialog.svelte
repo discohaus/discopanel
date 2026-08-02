@@ -13,7 +13,8 @@
 	import AliasHelper from '$lib/components/ui/AliasHelper.svelte';
 	import DynamicIcon from '$lib/components/ui/DynamicIcon.svelte';
 	import ModuleTemplateMenu from './ModuleTemplateMenu.svelte';
-	import CoverageHint from '$lib/components/network/coverage-hint.svelte';
+	import HostnameListInput from '$lib/components/network/hostname-list-input.svelte';
+	import { hostnameSlug } from '$lib/hostname';
 	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { toast } from 'svelte-sonner';
 	import { cn } from '$lib/utils';
@@ -46,7 +47,6 @@
 	} from '$lib/proto/discopanel/v1/storage_pb';
 	import { create, clone } from '@bufbuild/protobuf';
 	import { enumLabel } from '$lib/proto-meta';
-	import { tlsModeLabel, tlsModeOptions } from '$lib/components/network/network-copy';
 	import { evaluateConfigField, groupedConfigFields } from '$lib/module-config';
 	import type { ConfigFieldIssue } from '$lib/module-config';
 	import { SERVER_EVENT_TYPES, getEventTypeLabel } from '$lib/utils/events';
@@ -146,8 +146,8 @@
 	let promptSubmitting = $state(false);
 
 	let serverId = $derived(mode === 'create' ? server?.id : module?.serverId);
-	let serverHost = $derived(
-		(mode === 'create' ? server?.proxyHostname : module?.serverProxyHostname) ?? ''
+	let serverHosts = $derived(
+		(mode === 'create' ? server?.proxyHostnames : module?.serverProxyHostnames) ?? []
 	);
 	let activeTemplate = $derived(mode === 'create' ? selectedTemplate : editTemplate);
 	let configFields = $derived(activeTemplate?.configFields ?? []);
@@ -274,8 +274,7 @@
 				containerPort: 0,
 				hostPort: 0,
 				protocol: ModuleProtocol.TCP,
-				proxyEnabled: true,
-				hostname: ''
+				proxyEnabled: true
 			})
 		];
 	}
@@ -430,8 +429,8 @@
 			(p) =>
 				p.proxyEnabled &&
 				p.protocol === ModuleProtocol.MINECRAFT &&
-				!p.hostname.trim() &&
-				!serverHost
+				p.hostnames.length === 0 &&
+				serverHosts.length === 0
 		);
 		if (blindMinecraft) {
 			w.push(
@@ -1251,52 +1250,21 @@
 
 												{#if port.proxyEnabled && (port.protocol === ModuleProtocol.HTTP || port.protocol === ModuleProtocol.MINECRAFT)}
 													<div class="space-y-1.5">
-														<Label>Hostname</Label>
-														<Input
-															bind:value={port.hostname}
-															placeholder={serverHost ||
+														<Label>Hostnames</Label>
+														<HostnameListInput
+															bind:hostnames={port.hostnames}
+															label={hostnameSlug(port.name)}
+															disabled={systemLocked}
+															requireLabel
+															placeholder={serverHosts.join(', ') ||
 																(port.protocol === ModuleProtocol.HTTP
-																	? 'any hostname'
+																	? 'map.example.com'
 																	: 'needs a hostname')}
-															class="font-mono"
 														/>
-														<p class="text-xs text-muted-foreground">
-															Leave empty to inherit the server hostname
-														</p>
-														{#if port.protocol === ModuleProtocol.HTTP}
-															<CoverageHint hostname={port.hostname.trim() || serverHost} />
-														{/if}
 													</div>
-													{#if port.protocol === ModuleProtocol.HTTP}
-														<div class="space-y-1.5">
-															<Label>HTTPS posture</Label>
-															<Select
-																type="single"
-																value={String(port.tlsMode)}
-																onValueChange={(v) => {
-																	if (v) port.tlsMode = Number(v);
-																}}
-															>
-																<SelectTrigger class="w-full sm:w-56">
-																	<span>{tlsModeLabel(port.tlsMode)}</span>
-																</SelectTrigger>
-																<SelectContent>
-																	{#each tlsModeOptions as option (option.value)}
-																		<SelectItem value={String(option.value)}>
-																			{option.label}
-																		</SelectItem>
-																	{/each}
-																</SelectContent>
-															</Select>
-															<p class="text-xs text-muted-foreground">
-																HTTPS only sends every visitor to the secure address. HTTP only
-																keeps this port unencrypted.
-															</p>
-														</div>
-													{/if}
 												{/if}
 
-												{#if port.proxyEnabled && port.protocol === ModuleProtocol.MINECRAFT && !port.hostname.trim() && !serverHost}
+												{#if port.proxyEnabled && port.protocol === ModuleProtocol.MINECRAFT && port.hostnames.length === 0 && serverHosts.length === 0}
 													<div
 														class="flex items-start gap-2 rounded-md border border-status-warn/30 bg-status-warn/10 p-3"
 													>

@@ -13,23 +13,22 @@ Without the proxy, every server needs its own port, and players connect with an 
 
 ## Setting it up
 
-You need a domain name (any domain works). In your `config.yaml`:
+Enable the proxy in `config.yaml` (or from the Network page):
 
 ```yaml
 proxy:
   enabled: true
-  base_url: "mc.example.com"   # your domain for Minecraft servers
   listen_port: 25565
 ```
 
-Then two things outside DiscoPanel:
+Hostnames live in the panel, not the config file. Every hostname field in DiscoPanel suggests ready-to-use names when you focus it:
 
-1. **DNS**: add a wildcard record `*.mc.example.com` pointing at your server's public IP. Every subdomain then resolves to you automatically - no new DNS entry per server. (Individual records per server work too.)
-2. **Port forwarding**: forward port `25565` on your router to the machine running DiscoPanel. Just the one port, no matter how many servers you run.
+- **Instant domains** like `192-168-1-5.sslip.io` embed your machine's address and resolve with zero DNS setup. Great for LAN play or trying things out.
+- **Your own domain**: add it as a panel hostname on the Network page, then every server suggests subdomains under it. Point a wildcard DNS record (`*.mc.example.com`) at your public IP and forward the listen port on your router - one record, one port, unlimited servers.
 
 ## Server addresses
 
-Each server gets a default address from its name: a server called "Epic Survival" becomes `epic-survival.mc.example.com`. You can change it in the server's **Routing** tab - type a different name and the rest is filled in for you.
+A server called "Epic Survival" gets suggestions like `epic-survival.mc.example.com` and `epic-survival.203-0-113-5.sslip.io` in its **Routing** tab. Pick any of them, type your own, or add several - a server can answer on as many hostnames as you like.
 
 ## What the proxy gets you
 

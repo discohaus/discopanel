@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
 	import { Globe, MoonStar } from '@lucide/svelte';
-	import type { RouteNodeData } from '../topology-data';
+	import type { ServiceNodeData } from '../topology-data';
 
 	let { data, selected }: NodeProps = $props();
-	let d = $derived(data as RouteNodeData);
+	let d = $derived(data as ServiceNodeData);
 
 	const BORDER: Record<string, string> = {
 		'topo-edge-ok': 'border-l-status-ok',
@@ -23,31 +23,23 @@
 >
 	<div class="flex items-center gap-2">
 		<Globe class="size-3.5 shrink-0 text-muted-foreground" />
-		<p class="min-w-0 flex-1 truncate font-mono text-xs" title={d.hostname || 'any hostname'}>
-			{d.hostname || 'any hostname'}
-		</p>
-		{#if d.stale}
-			<span
-				class="rounded-full border border-status-busy/25 bg-status-busy/10 px-1.5 text-[10px] font-medium text-status-busy"
-			>
-				stale
-			</span>
+		<p class="min-w-0 flex-1 truncate font-mono text-xs" title={d.summary}>{d.summary}</p>
+		{#if d.staleCount > 0}
+			<span class="text-[10px] font-medium text-status-busy">stale</span>
 		{/if}
 		{#if d.wakeable}
 			<MoonStar class="size-3 shrink-0 text-status-sleep" />
 		{/if}
 		{#if d.connections > 0}
-			<span
-				class="rounded-full border border-status-ok/25 bg-status-ok/10 px-1.5 text-[10px] font-medium text-status-ok tabular-nums"
-			>
-				{d.connections}
-			</span>
+			<span class="text-[10px] font-medium text-status-ok tabular-nums">{d.connections}</span>
 		{/if}
 		{#if d.live && d.connections === 0}
 			<span class="size-1.5 shrink-0 rounded-full bg-status-ok"></span>
 		{/if}
 	</div>
-	<p class="mt-1 pl-5.5 font-mono text-[11px] text-muted-foreground">:{d.port}</p>
+	<p class="mt-1 pl-5.5 font-mono text-[11px] text-muted-foreground">
+		:{d.port}{d.nameCount > 1 ? ` · ${d.nameCount} names` : ''}
+	</p>
 </div>
 <Handle type="target" position={Position.Left} />
 <Handle type="source" position={Position.Right} />

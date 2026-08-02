@@ -30,10 +30,10 @@ func SetHostnameSource(fn func() string) {
 	hostnameSource = fn
 }
 
-// Best hostname for the current context
+// Single hostname for env values, any name works alike
 func resolveHostname(ctx *Context) string {
-	if ctx.Server != nil && ctx.Server.ProxyHostname != "" {
-		return ctx.Server.ProxyHostname
+	if ctx.Server != nil && len(ctx.Server.ProxyHostnames) > 0 {
+		return ctx.Server.ProxyHostnames[0]
 	}
 	if hostnameSource != nil {
 		return hostnameSource()
@@ -191,6 +191,18 @@ func generateAliasesFromValue(val reflect.Value, prefix string, category v1.Alia
 			aliases = append(aliases, generateAliasesFromValue(fieldVal, prefix+"."+jsonName, category)...)
 		}
 	case reflect.Slice:
+		// Scalar lists read as leaves, first element speaks
+		if val.Type().Elem().Kind() == reflect.String {
+			aliases = append(aliases, &v1.AliasInfo{
+				Alias:        "{{" + prefix + "}}",
+				Path:         prefix,
+				Description:  generateDescription(prefix),
+				Category:     category,
+				ExampleValue: formatValue(val),
+				FieldType:    val.Type().String(),
+			})
+			break
+		}
 		for i := 0; i < val.Len(); i++ {
 			elem := val.Index(i)
 			for elem.Kind() == reflect.Pointer {
@@ -278,6 +290,12 @@ func formatValue(v reflect.Value) string {
 			return ""
 		}
 		return formatValue(v.Elem())
+	case reflect.Slice:
+		// First element speaks for a scalar list
+		if v.Len() > 0 && v.Type().Elem().Kind() == reflect.String {
+			return v.Index(0).String()
+		}
+		return ""
 	default:
 		return ""
 	}

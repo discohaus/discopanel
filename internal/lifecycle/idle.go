@@ -80,7 +80,7 @@ func (m *Manager) checkIdleServers() {
 		if err != nil {
 			continue
 		}
-		autopause := cfg.EnableAutopause != nil && *cfg.EnableAutopause && server.ProxyHostname != ""
+		autopause := cfg.EnableAutopause != nil && *cfg.EnableAutopause && len(server.ProxyHostnames) > 0
 		autostop := cfg.EnableAutostop != nil && *cfg.EnableAutostop
 		if !autopause && !autostop {
 			m.resetIdle(server.Id)

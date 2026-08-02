@@ -12,24 +12,25 @@
 		server,
 		module,
 		listenPort,
-		baseUrl,
 		extraPorts,
 		onClose
 	}: {
 		server: Server | null;
 		module: Module | null;
 		listenPort: number;
-		baseUrl: string;
 		extraPorts: ExposedPort[];
 		onClose: () => void;
 	} = $props();
 
 	let name = $derived(server?.name ?? module?.name ?? '');
-	let address = $derived.by(() => {
-		if (!server) return '';
-		if (server.proxyHostname) return playerAddress(server.proxyHostname, listenPort);
-		if (!server.port) return '';
-		return `${panelHost(baseUrl)}:${server.port}`;
+	// Every routed name lists, unrouted falls back to the port
+	let addresses = $derived.by(() => {
+		if (!server) return [];
+		if (server.proxyHostnames.length) {
+			return server.proxyHostnames.map((h) => playerAddress(h, listenPort));
+		}
+		if (!server.port) return [];
+		return [`${panelHost()}:${server.port}`];
 	});
 </script>
 
@@ -57,14 +58,18 @@
 				<span class="text-sm text-muted-foreground">Status</span>
 				<StatusBadge status={server.status} />
 			</div>
-			{#if address}
+			{#if addresses.length > 0}
 				<div>
 					<span class="stat-label">Player address</span>
-					<div
-						class="mt-1.5 flex items-center justify-between gap-2 rounded-lg border bg-muted/40 py-1.5 pr-1.5 pl-3"
-					>
-						<p class="truncate font-mono text-sm" title={address}>{address}</p>
-						<CopyButton text={address} label="Copy address" />
+					<div class="mt-1.5 space-y-1.5">
+						{#each addresses as address (address)}
+							<div
+								class="flex items-center justify-between gap-2 rounded-lg border bg-muted/40 py-1.5 pr-1.5 pl-3"
+							>
+								<p class="truncate font-mono text-sm" title={address}>{address}</p>
+								<CopyButton text={address} label="Copy address" />
+							</div>
+						{/each}
 					</div>
 				</div>
 			{/if}

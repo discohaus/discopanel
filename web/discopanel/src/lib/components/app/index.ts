@@ -7,6 +7,7 @@ export { default as TabRail } from './tab-rail.svelte';
 export { default as EmptyState } from './empty-state.svelte';
 export { default as ConfirmDialog } from './confirm-dialog.svelte';
 export { default as CopyButton } from './copy-button.svelte';
+export { default as AddressSelect } from './address-select.svelte';
 export { default as StatTile } from './stat-tile.svelte';
 export { default as SectionCard } from './section-card.svelte';
 export { default as MotdText } from './motd-text.svelte';

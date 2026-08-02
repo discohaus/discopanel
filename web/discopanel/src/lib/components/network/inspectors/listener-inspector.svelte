@@ -1,24 +1,37 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { rpcClient } from '$lib/api/rpc-client';
-	import type { ProxyListenerWithCount } from '$lib/proto/discopanel/v1/proxy_pb';
+	import {
+		NetworkOwnerKind,
+		type GetNetworkTopologyResponse,
+		type ProxyListenerWithCount
+	} from '$lib/proto/discopanel/v1/proxy_pb';
+	import type { Module, Server } from '$lib/proto/discopanel/v1/storage_pb';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import { Button } from '$lib/components/ui/button';
 	import { Switch } from '$lib/components/ui/switch';
 	import { ConfirmDialog } from '$lib/components/app';
 	import { toast } from 'svelte-sonner';
-	import { Loader2, Plus, Save, Trash2, X, Zap } from '@lucide/svelte';
+	import { groupServices, laneLabel } from '../topology-data';
+	import { ArrowUpRight, Loader2, Plus, Save, Trash2, X, Zap } from '@lucide/svelte';
 
 	let {
 		target,
 		listeners,
 		usedPorts,
+		topology,
+		servers,
+		modules,
 		onDone,
 		onClose
 	}: {
 		target: ProxyListenerWithCount | null;
 		listeners: ProxyListenerWithCount[];
 		usedPorts: number[];
+		topology: GetNetworkTopologyResponse | null;
+		servers: Server[];
+		modules: Module[];
 		onDone: () => Promise<void>;
 		onClose: () => void;
 	} = $props();
@@ -58,6 +71,50 @@
 			isDefault = listeners.length === 0;
 		}
 		portError = '';
+	});
+
+	// One service row grouping every hostname it answers on
+	interface ServiceRow {
+		key: string;
+		name: string;
+		serverId: string;
+		lane: string;
+		hostnames: string[];
+		catchAll: boolean;
+		relay: boolean;
+		live: boolean;
+	}
+
+	// Routing table grouped per service instead of per hostname
+	let serviceRows = $derived.by((): ServiceRow[] => {
+		if (!editing || !topology) return [];
+		return groupServices(topology.reservations, topology.routes, editing.port)
+			.map((svc) => {
+				let label = '';
+				let serverId = '';
+				if (svc.ownerKind === NetworkOwnerKind.PANEL) {
+					label = 'DiscoPanel';
+				} else if (svc.ownerKind === NetworkOwnerKind.MODULE) {
+					const module = modules.find((m) => m.id === svc.ownerId);
+					label = module?.name ?? svc.ownerId.slice(0, 8);
+					serverId = module?.serverId ?? '';
+				} else {
+					const server = servers.find((s) => s.id === svc.ownerId);
+					label = server?.name ?? svc.ownerId.slice(0, 8);
+					serverId = server?.id ?? '';
+				}
+				return {
+					key: svc.key,
+					name: label,
+					serverId,
+					lane: laneLabel(svc.protocol),
+					hostnames: [...svc.hostnames, ...svc.staleHostnames],
+					catchAll: svc.catchAll,
+					relay: svc.relay,
+					live: svc.live
+				};
+			})
+			.sort((a, b) => a.name.localeCompare(b.name));
 	});
 
 	function nextFreePort(): number {
@@ -143,9 +200,7 @@
 					{editing ? editing.name : 'New listener'}
 				</h3>
 				{#if editing?.autoCreated}
-					<span
-						class="inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-px text-[10px] text-muted-foreground"
-					>
+					<span class="inline-flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
 						<Zap class="size-2.5" />
 						auto
 					</span>
@@ -168,6 +223,50 @@
 				Opened automatically for routed ports, retires when unused
 			</p>
 		{/if}
+
+		{#if editing && serviceRows.length > 0}
+			<div>
+				<span class="stat-label">Routing table</span>
+				<div class="mt-1.5 divide-y rounded-lg border">
+					{#each serviceRows as row (row.key)}
+						<div class="space-y-1.5 px-3 py-2.5">
+							<div class="flex items-center justify-between gap-2">
+								<div class="flex min-w-0 items-center gap-2">
+									{#if row.serverId}
+										<a
+											href={resolve(`/servers/${row.serverId}`)}
+											class="inline-flex min-w-0 items-center gap-1 text-sm font-medium hover:underline"
+										>
+											<span class="truncate">{row.name}</span>
+											<ArrowUpRight class="size-3 shrink-0 text-muted-foreground" />
+										</a>
+									{:else}
+										<span class="truncate text-sm font-medium">{row.name}</span>
+									{/if}
+									<span class="shrink-0 font-mono text-[11px] text-muted-foreground">
+										{row.lane}
+									</span>
+								</div>
+								<span
+									class="size-2 shrink-0 rounded-full {row.live
+										? 'bg-status-ok'
+										: 'bg-status-idle'}"
+									title={row.live ? 'Serving' : 'Not serving'}
+								></span>
+							</div>
+							{#if row.relay}
+								<p class="text-xs text-muted-foreground">Relays all unmatched traffic</p>
+							{:else if row.hostnames.length > 0}
+								<p class="truncate font-mono text-xs text-muted-foreground" title={row.hostnames.join(', ')}>
+									{row.hostnames.join(', ')}
+								</p>
+							{/if}
+						</div>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
 		<div class="grid gap-4 sm:grid-cols-[minmax(0,1fr)_7rem]">
 			<div class="space-y-2">
 				<Label for="listener-name">Name</Label>

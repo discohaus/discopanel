@@ -271,7 +271,7 @@ func (c *Client) CreateContainer(ctx context.Context, server *v1.Server, serverC
 	env := buildEnvFromConfig(serverConfig)
 
 	// Proxy servers always use default port internally
-	useProxy := server.ProxyHostname != ""
+	useProxy := len(server.ProxyHostnames) > 0
 	containerPort := models.InContainerPort(server)
 
 	c.log.Debug("Creating container for server %s with image %s", server.Id, imageName)

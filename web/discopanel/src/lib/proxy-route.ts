@@ -30,6 +30,18 @@ export function routeStateClass(route: ProxyRoute): string {
 	}
 }
 
+// Text color token for a route's serving state
+export function routeStateText(route: ProxyRoute): string {
+	switch (route.state) {
+		case ProxyRouteState.STARTING:
+			return 'text-status-busy';
+		case ProxyRouteState.OFFLINE:
+			return route.wakeable ? 'text-status-sleep' : 'text-status-idle';
+		default:
+			return route.active ? 'text-status-ok' : 'text-status-idle';
+	}
+}
+
 // Compact live traffic summary for a route row
 export function routeStatsSummary(route: ProxyRoute): string {
 	const parts: string[] = [];

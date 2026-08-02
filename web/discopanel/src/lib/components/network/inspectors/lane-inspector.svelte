@@ -60,7 +60,7 @@
 			<p class="pt-2 text-xs text-muted-foreground">Relays raw traffic without reading hostnames</p>
 		{:else}
 			<div class="flex items-center justify-between gap-3">
-				<span class="text-muted-foreground">Routes</span>
+				<span class="text-muted-foreground">Services</span>
 				<span class="tabular text-xs">{routeCount}</span>
 			</div>
 			<p class="pt-2 text-xs text-muted-foreground">Matches hostnames after protocol detection</p>

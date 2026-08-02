@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/google/uuid"
 	"github.com/discohaus/discopanel/internal/command"
 	storage "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/docker"
@@ -37,6 +36,7 @@ import (
 	"github.com/discohaus/discopanel/pkg/runtimespec"
 	"github.com/discohaus/discopanel/pkg/transfer"
 	utils "github.com/discohaus/discopanel/pkg/utils"
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -99,9 +99,9 @@ func normalizeAdditionalPorts(ports []*v1.NetworkPort, proxyOn bool) ([]*v1.Netw
 		default:
 			return nil, fmt.Errorf("invalid protocol %s", protometa.Name(protocol))
 		}
-		hostname := proxy.NormalizeHostname(p.Hostname)
-		if hostname != "" && !proxy.ValidHostname(hostname) {
-			return nil, fmt.Errorf("invalid hostname %q on port %s", p.Hostname, p.Name)
+		hostnames, err := proxy.NormalizeHostnames(p.Hostnames)
+		if err != nil {
+			return nil, fmt.Errorf("%w on port %s", err, p.Name)
 		}
 		out = append(out, &v1.NetworkPort{
 			ContainerPort: p.ContainerPort,
@@ -109,7 +109,7 @@ func normalizeAdditionalPorts(ports []*v1.NetworkPort, proxyOn bool) ([]*v1.Netw
 			Protocol:      protocol,
 			Name:          p.Name,
 			ProxyEnabled:  p.ProxyEnabled,
-			Hostname:      hostname,
+			Hostnames:     hostnames,
 		})
 	}
 	return out, nil
@@ -306,23 +306,17 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 	}
 
 	// Handle proxy configuration
-	proxyHostname := proxy.NormalizeHostname(msg.ProxyHostname)
+	proxyHostnames, err := proxy.NormalizeHostnames(msg.ProxyHostnames)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	proxyListenerID := msg.ProxyListenerId
 	port := int(msg.Port)
 
-	if proxyHostname != "" {
+	if len(proxyHostnames) > 0 {
 		// Routing needs the proxy on
 		if !s.proxy.Enabled() {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("proxy is disabled"))
-		}
-
-		// If using base URL, append it to the hostname
-		if msg.UseBaseUrl {
-			effectiveBaseURL, _ := s.proxy.EffectiveBaseDomain()
-			// Appends base URL only when hostname lacks a domain
-			if effectiveBaseURL != "" && !strings.Contains(proxyHostname, ".") {
-				proxyHostname = proxy.NormalizeHostname(proxyHostname + "." + effectiveBaseURL)
-			}
 		}
 
 		// Validate listener selection
@@ -386,8 +380,8 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 	proxyOn := s.proxy.Enabled()
 	netOwner := proxy.NetOwner{Kind: proxy.OwnerServer, ID: serverUUID}
 	var netReqs []proxy.NetRequest
-	if proxyHostname != "" {
-		netReqs = proxy.ServerProxiedNetRequests(proxyHostname, port, additionalPorts, proxyOn)
+	if len(proxyHostnames) > 0 {
+		netReqs = proxy.ServerProxiedNetRequests(proxyHostnames, port, additionalPorts, proxyOn)
 	} else {
 		netReqs = proxy.ServerDirectNetRequests(port, additionalPorts, proxyOn)
 	}
@@ -407,26 +401,26 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 	serverDataPath := filepath.Join(s.config.Storage.DataDir, "servers", serverDataDir)
 
 	server := &v1.Server{
-		Id:              serverUUID,
-		Name:            msg.Name,
-		Description:     msg.Description,
-		ModLoader:       modLoader,
-		McVersion:       msg.McVersion,
-		Status:          v1.ServerStatus_SERVER_STATUS_CREATING,
-		Port:            int32(port),
-		ProxyHostname:   proxyHostname,
-		ProxyListenerId: proxyListenerID,
-		MaxPlayers:      msg.MaxPlayers,
-		Memory:          msg.Memory,
-		MemoryMin:       msg.MemoryMin,
-		MemoryMax:       msg.MemoryMax,
-		DataPath:        serverDataPath,
-		JavaVersion:     docker.GetRequiredJavaVersion(msg.McVersion, modLoader),
-		DockerImage:     dockerImage,
-		AutoStart:       msg.AutoStart,
-		Detached:        msg.Detached,
-		AdditionalPorts: additionalPorts,
-		DockerOverrides: msg.DockerOverrides,
+		Id:                serverUUID,
+		Name:              msg.Name,
+		Description:       msg.Description,
+		ModLoader:         modLoader,
+		McVersion:         msg.McVersion,
+		Status:            v1.ServerStatus_SERVER_STATUS_CREATING,
+		Port:              int32(port),
+		ProxyHostnames:    proxyHostnames,
+		ProxyListenerId:   proxyListenerID,
+		MaxPlayers:        msg.MaxPlayers,
+		Memory:            msg.Memory,
+		MemoryMin:         msg.MemoryMin,
+		MemoryMax:         msg.MemoryMax,
+		DataPath:          serverDataPath,
+		JavaVersion:       docker.GetRequiredJavaVersion(msg.McVersion, modLoader),
+		DockerImage:       dockerImage,
+		AutoStart:         msg.AutoStart,
+		Detached:          msg.Detached,
+		AdditionalPorts:   additionalPorts,
+		DockerOverrides:   msg.DockerOverrides,
 	}
 
 	// Set defaults
@@ -445,7 +439,7 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 	}
 
 	// When using proxy, set the ports correctly
-	if server.ProxyHostname != "" && proxyListenerID != "" {
+	if len(server.ProxyHostnames) > 0 && proxyListenerID != "" {
 		server.Port = int32(storage.MinecraftDefaultPort)
 		if err := s.store.HydrateProxyPorts(ctx, server); err != nil {
 			s.log.Error("Failed to hydrate proxy port: %v", err)
@@ -565,7 +559,7 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 	if msg.Port != nil && int(*msg.Port) != int(server.Port) {
 		newPort := int(*msg.Port)
 
-		if server.ProxyHostname != "" {
+		if len(server.ProxyHostnames) > 0 {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("cannot change port for proxy-enabled servers"))
 		}
 
@@ -673,10 +667,10 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 	// Registry checkout guards the merged network state until persist
 	proxyOn := s.proxy.Enabled()
 	var netReqs []proxy.NetRequest
-	if server.ProxyHostname != "" {
-		netReqs = proxy.PortNetRequests(server.AdditionalPorts, server.ProxyHostname, proxyOn)
+	if len(server.ProxyHostnames) > 0 {
+		netReqs = proxy.PortNetRequests(server.AdditionalPorts, server.ProxyHostnames, proxyOn)
 		if listener, lerr := s.store.GetProxyListener(ctx, server.ProxyListenerId); lerr == nil && listener != nil {
-			netReqs = proxy.ServerProxiedNetRequests(server.ProxyHostname, int(listener.Port), server.AdditionalPorts, proxyOn)
+			netReqs = proxy.ServerProxiedNetRequests(server.ProxyHostnames, int(listener.Port), server.AdditionalPorts, proxyOn)
 		}
 	} else {
 		netReqs = proxy.ServerDirectNetRequests(int(server.Port), server.AdditionalPorts, proxyOn)

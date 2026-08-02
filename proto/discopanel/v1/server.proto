@@ -283,9 +283,8 @@ message CreateServerRequest {
   bool start_immediately = 11;
   string modpack_id = 12;
   string modpack_version_id = 13;
-  string proxy_hostname = 14;
+  repeated string proxy_hostnames = 14;
   string proxy_listener_id = 15;
-  bool use_base_url = 16;
   repeated NetworkPort additional_ports = 17;
   DockerOverrides docker_overrides = 18;
   string world_upload_session_id = 21; // Uploaded world zip to import at create

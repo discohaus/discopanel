@@ -94,22 +94,12 @@ module:
 # Proxy configuration - ENABLE THIS FOR MINECRAFT ROUTING
 proxy:
   enabled: true
-  base_url: "" # Custom domain, empty derives an instant sslip.io domain
-  public_ip: "" # Overrides the address detection for instant domains
+  public_ip: "" # Public address for hostname suggestions
   listen_port: 25565 # Primary port to listen on (can also use 443)
   port_range_min: 25565
 
-# Example usage:
-# With proxy enabled and base_url set to "mc.example.com":
-# - Server named "survival" connects via survival.mc.example.com:25565
-# - Server named "creative" connects via creative.mc.example.com:25565
-# - Server named "modded" connects via modded.mc.example.com:25565
-#
-# All servers use the same port (25565) and are routed based on hostname!
-# 
-# DNS Setup Required:
-# Add a wildcard DNS record *.mc.example.com pointing to your server's IP
-# Or add individual A records for each server subdomain
+# Hostnames live in the panel, every hostname field suggests names
+# All servers share the listen port and route by hostname
 
 
 # Minecraft server global configuration defaults

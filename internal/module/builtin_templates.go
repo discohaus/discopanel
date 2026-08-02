@@ -185,7 +185,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 				{Name: "Status", ContainerPort: 8200, HostPort: 0, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, ProxyEnabled: false},
 			},
 			DefaultEnv: map[string]string{
-				"TARGET_HOSTNAME":    "{{server.proxy_hostname}}",
+				"TARGET_HOSTNAME":    "{{server.proxy_hostnames}}",
 				"PROXY_PORT":         "{{server.proxy_port}}",
 				"PROXY_PORT_DEFAULT": "{{config.proxy.listen_port}}",
 				"VIRTUAL_PORT":       "0",
@@ -306,7 +306,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			},
 			DefaultAccessUrls: []string{"https://playit.gg/account/tunnels"},
 			DefaultEnv: map[string]string{
-				"TARGET_HOSTNAME":    "{{server.proxy_hostname}}",
+				"TARGET_HOSTNAME":    "{{server.proxy_hostnames}}",
 				"PROXY_PORT":         "{{server.proxy_port}}",
 				"PROXY_PORT_DEFAULT": "{{config.proxy.listen_port}}",
 			},

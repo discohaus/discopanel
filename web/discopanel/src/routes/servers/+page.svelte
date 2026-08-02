@@ -176,7 +176,7 @@
 	}
 
 	function connectionLabel(server: Server): string {
-		return server.proxyHostname || `:${server.port}`;
+		return server.proxyHostnames.join(', ') || `:${server.port}`;
 	}
 </script>
 

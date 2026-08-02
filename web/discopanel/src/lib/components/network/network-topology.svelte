@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { resolve } from '$app/paths';
-	import { page } from '$app/state';
 	import {
 		SvelteFlow,
 		Background,
@@ -27,12 +26,12 @@
 	import { EmptyState } from '$lib/components/app';
 	import { PaneGroup, Pane, PaneResizer } from 'paneforge';
 	import { Network, RotateCcw } from '@lucide/svelte';
-	import { buildGraph, laneLabel, type ExposedPort, type Selection } from './topology-data';
+	import { buildGraph, groupServices, laneLabel, type ExposedPort, type Selection } from './topology-data';
 	import SourceNode from './nodes/source-node.svelte';
 	import EntryNode from './nodes/entry-node.svelte';
 	import ListenerNode from './nodes/listener-node.svelte';
 	import LaneNode from './nodes/lane-node.svelte';
-	import RouteNode from './nodes/route-node.svelte';
+	import ServiceNode from './nodes/service-node.svelte';
 	import BackendNode from './nodes/backend-node.svelte';
 	import ActionNode from './nodes/action-node.svelte';
 	import ProxyInspector from './inspectors/proxy-inspector.svelte';
@@ -40,7 +39,7 @@
 	import ListenerInspector from './inspectors/listener-inspector.svelte';
 	import LaneInspector from './inspectors/lane-inspector.svelte';
 	import EntryInspector from './inspectors/entry-inspector.svelte';
-	import RouteInspector from './inspectors/route-inspector.svelte';
+	import ServiceInspector from './inspectors/service-inspector.svelte';
 	import BackendInspector from './inspectors/backend-inspector.svelte';
 	import DisableProxyDialog from './disable-proxy-dialog.svelte';
 
@@ -49,7 +48,7 @@
 		entry: EntryNode,
 		listener: ListenerNode,
 		lane: LaneNode,
-		route: RouteNode,
+		service: ServiceNode,
 		backend: BackendNode,
 		action: ActionNode
 	};
@@ -59,45 +58,19 @@
 	let topology = $state<GetNetworkTopologyResponse | null>(null);
 	let listeners = $state<ProxyListenerWithCount[]>([]);
 	let modules = $state<Module[]>([]);
-	let baseUrl = $state('');
-	let strictHttps = $state(false);
+	let configHostnames = $state<string[]>([]);
 	let selection = $state<Selection>({ kind: 'overview' });
 	let disableOpen = $state(false);
 
 	let nodes = $state.raw<Node[]>([]);
 	let edges = $state.raw<Edge[]>([]);
 
-	let dnsProviderName = $state('');
-	let dnsProviderFor = '';
-
 	// Graph rebuilds whenever any input changes
 	$effect(() => {
 		if (!topology) return;
-		const graph = buildGraph(
-			topology,
-			listeners,
-			$serversStore,
-			modules,
-			selection,
-			dnsProviderName
-		);
+		const graph = buildGraph(topology, listeners, $serversStore, modules, selection);
 		nodes = graph.nodes;
 		edges = graph.edges;
-	});
-
-	// Provider detection follows the effective base domain
-	$effect(() => {
-		const domain = topology?.effectiveBaseUrl ?? '';
-		if (!domain || domain.endsWith('.sslip.io') || dnsProviderFor === domain) return;
-		dnsProviderFor = domain;
-		rpcClient.proxy
-			.getDnsSetup({ domain }, silentCallOptions)
-			.then((res) => {
-				dnsProviderName = res.providerFound ? res.providerName : '';
-			})
-			.catch(() => {
-				dnsProviderName = '';
-			});
 	});
 
 	let usedPorts = $derived(topology ? [...new Set(topology.reservations.map((r) => r.port))] : []);
@@ -130,8 +103,7 @@
 			topology = topo;
 			listeners = lst.listeners;
 			modules = mods.modules;
-			baseUrl = status.baseUrl;
-			strictHttps = status.strictHttps;
+			configHostnames = status.hostnames;
 			loadError = false;
 		} catch {
 			loadError = true;
@@ -151,8 +123,7 @@
 			topology = topo;
 			listeners = lst.listeners;
 			modules = mods.modules;
-			baseUrl = status.baseUrl;
-			strictHttps = status.strictHttps;
+			configHostnames = status.hostnames;
 			loadError = false;
 		} catch {
 			// Silent polls swallow transient failures
@@ -177,54 +148,50 @@
 		const id = selection.id;
 		return listeners.find((l) => l.listener?.id === id) ?? null;
 	});
-	let selectedRoute = $derived.by(() => {
-		if (selection.kind !== 'route' || !topology) return null;
-		const sel = selection;
-		return (
-			topology.routes.find(
-				(r) =>
-					r.listenPort === sel.port &&
-					r.protocol === sel.protocol &&
-					r.hostname.toLowerCase() === sel.hostname
-			) ?? null
-		);
-	});
-	let selectedRouteReservation = $derived.by(() => {
-		if (selection.kind !== 'route' || !topology) return null;
-		const sel = selection;
-		return (
-			topology.reservations.find(
+	// Named hostnames the panel serves on its port
+	let panelHostnames = $derived.by(() => {
+		if (!topology) return [];
+		return topology.reservations
+			.filter(
 				(r) =>
 					r.kind === NetworkReservationKind.ROUTED &&
-					r.port === sel.port &&
-					r.protocol === sel.protocol &&
-					r.hostname === sel.hostname
+					r.ownerKind === NetworkOwnerKind.PANEL &&
+					r.hostname !== ''
+			)
+			.map((r) => r.hostname);
+	});
+
+	let selectedService = $derived.by(() => {
+		if (selection.kind !== 'service' || !topology) return null;
+		const sel = selection;
+		return (
+			groupServices(topology.reservations, topology.routes, sel.port).find(
+				(svc) =>
+					svc.protocol === sel.protocol &&
+					svc.ownerKind === sel.ownerKind &&
+					svc.ownerId === sel.ownerId &&
+					!svc.relay
 			) ?? null
 		);
 	});
-	let selectedRouteOwner = $derived.by(() => {
-		if (selection.kind !== 'route' || !topology) return { name: '', serverId: '' };
-		const res = selectedRouteReservation;
-		const ownerKind = selectedRoute?.ownerKind ?? res?.ownerKind;
-		const ownerId = selectedRoute?.ownerId || res?.ownerId || '';
-		if (ownerKind === NetworkOwnerKind.MODULE) {
-			const module = modules.find((m) => m.id === ownerId);
-			return {
-				name: module?.name ?? ownerId.slice(0, 8),
-				serverId: module?.serverId ?? ''
-			};
+	let selectedServiceOwner = $derived.by(() => {
+		if (selection.kind !== 'service') return { name: '', serverId: '' };
+		const sel = selection;
+		if (sel.ownerKind === NetworkOwnerKind.PANEL) {
+			return { name: 'DiscoPanel', serverId: '' };
 		}
-		const server = $serversStore.find((s) => s.id === ownerId);
-		return { name: server?.name ?? ownerId.slice(0, 8), serverId: server?.id ?? '' };
+		if (sel.ownerKind === NetworkOwnerKind.MODULE) {
+			const module = modules.find((m) => m.id === sel.ownerId);
+			return { name: module?.name ?? sel.ownerId.slice(0, 8), serverId: module?.serverId ?? '' };
+		}
+		const server = $serversStore.find((s) => s.id === sel.ownerId);
+		return { name: server?.name ?? sel.ownerId.slice(0, 8), serverId: server?.id ?? '' };
 	});
 	let selectedLane = $derived.by(() => {
 		if (selection.kind !== 'lane' || !topology) return null;
 		const sel = selection;
-		const routes = topology.reservations.filter(
-			(r) =>
-				r.kind === NetworkReservationKind.ROUTED &&
-				r.port === sel.port &&
-				r.protocol === sel.protocol
+		const laneServices = groupServices(topology.reservations, topology.routes, sel.port).filter(
+			(svc) => svc.protocol === sel.protocol && !svc.relay
 		);
 		const relay = topology.reservations.find(
 			(r) =>
@@ -249,7 +216,7 @@
 			port: sel.port,
 			label: laneLabel(sel.protocol),
 			relay: !!relay,
-			routeCount: routes.length,
+			routeCount: laneServices.length,
 			ownerName,
 			serverId
 		};
@@ -424,7 +391,7 @@
 					{#if selection.kind === 'panel'}
 						<PanelInspector
 							port={topology.panelPort}
-							baseUrl={topology.effectiveBaseUrl}
+							hostnames={panelHostnames}
 							onClose={backToOverview}
 						/>
 					{:else if selection.kind === 'listener' && selectedListener}
@@ -432,6 +399,9 @@
 							target={selectedListener}
 							{listeners}
 							{usedPorts}
+							{topology}
+							servers={$serversStore}
+							{modules}
 							onDone={onMutated}
 							onClose={backToOverview}
 						/>
@@ -440,6 +410,9 @@
 							target={null}
 							{listeners}
 							{usedPorts}
+							{topology}
+							servers={$serversStore}
+							{modules}
 							onDone={onMutated}
 							onClose={backToOverview}
 						/>
@@ -463,15 +436,11 @@
 							detail={selectedEntry.detail}
 							onClose={backToOverview}
 						/>
-					{:else if selection.kind === 'route'}
-						<RouteInspector
-							hostname={selection.hostname}
-							port={selection.port}
-							protocol={selection.protocol}
-							route={selectedRoute}
-							stale={!selectedRouteReservation && !!selectedRoute}
-							ownerName={selectedRouteOwner.name}
-							serverId={selectedRouteOwner.serverId}
+					{:else if selection.kind === 'service' && selectedService}
+						<ServiceInspector
+							service={selectedService}
+							ownerName={selectedServiceOwner.name}
+							serverId={selectedServiceOwner.serverId}
 							onClose={backToOverview}
 						/>
 					{:else if (selection.kind === 'server' && selectedServer) || (selection.kind === 'module' && selectedModule)}
@@ -479,7 +448,6 @@
 							server={selectedServer}
 							module={selectedModule}
 							listenPort={selectedServerListenPort}
-							baseUrl={topology.effectiveBaseUrl}
 							extraPorts={selectedExtraPorts}
 							onClose={backToOverview}
 						/>
@@ -487,16 +455,13 @@
 						<ProxyInspector
 							enabled={topology.proxyEnabled}
 							running={topology.proxyRunning}
-							{baseUrl}
-							effectiveBaseUrl={topology.effectiveBaseUrl}
-							baseUrlSource={topology.baseUrlSource}
-							{strictHttps}
+							hostnames={configHostnames}
 							listenerCount={listeners.length}
 							{routeCount}
 							{hasProxiedWorkloads}
-							initialPanel={page.url.searchParams.get('panel') ?? ''}
 							onRequestDisable={() => (disableOpen = true)}
 							onChanged={onMutated}
+							onClose={backToOverview}
 						/>
 					{/if}
 				</div>
@@ -507,8 +472,7 @@
 
 <DisableProxyDialog
 	bind:open={disableOpen}
-	{baseUrl}
-	{strictHttps}
+	hostnames={configHostnames}
 	{modules}
 	{usedPorts}
 	{onConverted}

@@ -6,21 +6,23 @@
 
 	let {
 		port,
-		baseUrl,
+		hostnames,
 		onClose
 	}: {
 		port: number;
-		baseUrl: string;
+		// Named hostnames the panel serves, base first
+		hostnames: string[];
 		onClose: () => void;
 	} = $props();
 
-	let address = $derived.by(() => {
-		const host = panelHost(baseUrl);
-		// Advertise the protocol the browser actually used
+	// Names shown, detected host fills an empty list
+	let names = $derived(hostnames.length > 0 ? hostnames : [panelHost()]);
+
+	function addressFor(host: string): string {
 		const secure = window.location.protocol === 'https:';
 		const proto = secure ? 'https' : 'http';
 		return port === (secure ? 443 : 80) ? `${proto}://${host}` : `${proto}://${host}:${port}`;
-	});
+	}
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
@@ -29,7 +31,7 @@
 			<PanelsTopLeft class="size-4 shrink-0 text-primary" />
 			<div class="min-w-0">
 				<h3 class="truncate text-sm font-semibold">DiscoPanel</h3>
-				<p class="text-xs text-muted-foreground">This web interface</p>
+				<p class="text-xs text-muted-foreground">Web UI on port {port}</p>
 			</div>
 		</div>
 		<Button variant="ghost" size="icon" class="size-8" onclick={onClose} title="Back to overview">
@@ -39,12 +41,25 @@
 
 	<div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
 		<div>
-			<span class="stat-label">Web address</span>
-			<div
-				class="mt-1.5 flex items-center justify-between gap-2 rounded-lg border bg-muted/40 py-1.5 pr-1.5 pl-3"
-			>
-				<p class="truncate font-mono text-sm" title={address}>{address}</p>
-				<CopyButton text={address} label="Copy address" />
+			<span class="stat-label">Answers on</span>
+			<div class="mt-1.5 divide-y rounded-lg border">
+				{#each names as name (name)}
+					{@const address = addressFor(name)}
+					<div class="flex items-center justify-between gap-2 py-1.5 pr-1.5 pl-3">
+						<!-- eslint-disable svelte/no-navigation-without-resolve -- external URL -->
+						<a
+							href={address}
+							target="_blank"
+							rel="noopener noreferrer"
+							class="truncate font-mono text-xs hover:underline"
+							title={address}
+						>
+							{name}
+						</a>
+						<!-- eslint-enable svelte/no-navigation-without-resolve -->
+						<CopyButton text={address} label="Copy address" />
+					</div>
+				{/each}
 			</div>
 		</div>
 
@@ -57,14 +72,7 @@
 				<span class="text-muted-foreground">Serves</span>
 				<span class="text-xs">Web UI and API</span>
 			</div>
-			<div class="flex items-center justify-between gap-3">
-				<span class="text-muted-foreground">Also answers</span>
-				<span class="text-xs">Self checks and certificate validation</span>
-			</div>
 		</div>
 
-		<p class="text-xs text-muted-foreground">
-			This port always stays open. It is how you reach DiscoPanel itself.
-		</p>
 	</div>
 </div>

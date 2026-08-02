@@ -153,7 +153,12 @@
 	});
 
 	function address(server: Server): string {
-		return server.proxyHostname || `${panelHost()}:${server.port}`;
+		return server.proxyHostnames.join(', ') || `${panelHost()}:${server.port}`;
+	}
+
+	// Copy grabs one joinable address, any name works alike
+	function copyAddress(server: Server): string {
+		return server.proxyHostnames[0] || `${panelHost()}:${server.port}`;
 	}
 
 	async function power(server: Server, start: boolean) {
@@ -414,7 +419,7 @@
 										<span class="truncate font-mono text-xs" title={address(server)}>
 											{address(server)}
 										</span>
-										<CopyButton text={address(server)} label="Copy address" class="size-6" />
+										<CopyButton text={copyAddress(server)} label="Copy address" class="size-6" />
 									</div>
 
 									<div class="mt-3 flex items-end justify-between gap-3">

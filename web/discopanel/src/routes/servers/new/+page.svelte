@@ -46,7 +46,7 @@
 	import DockerOverridesEditor from '$lib/components/docker-overrides-editor.svelte';
 	import MemorySlider from '$lib/components/memory-slider.svelte';
 	import { getUniqueDockerImages, getDockerImageDisplayName } from '$lib/utils';
-	import { composeHostname, playerAddress } from '$lib/hostname';
+	import { playerAddress } from '$lib/hostname';
 	import { panelHost } from '$lib/utils/host';
 	import { uploadFile } from '$lib/utils/chunked-upload';
 
@@ -57,7 +57,6 @@
 	let dockerImages = $state<DockerImage[]>([]);
 	let latestVersion = $state('');
 	let proxyEnabled = $state(false);
-	let proxyBaseURL = $state('');
 	let proxyListeners = $state<ProxyListener[]>([]);
 	let usedPorts = $state<Record<number, boolean>>({});
 	let portError = $state('');
@@ -99,9 +98,8 @@
 			autoStart: false,
 			detached: false,
 			startImmediately: false,
-			proxyHostname: '',
+			proxyHostnames: [],
 			proxyListenerId: '',
-			useBaseUrl: true,
 			additionalPorts: [],
 			dockerOverrides: undefined,
 			modpackId: '',
@@ -142,7 +140,6 @@
 
 			if (proxyStatus.status === 'fulfilled') {
 				proxyEnabled = proxyStatus.value.enabled;
-				proxyBaseURL = proxyStatus.value.effectiveBaseUrl || '';
 			} else {
 				console.error('Failed to load proxy status:', proxyStatus.reason);
 			}
@@ -335,16 +332,14 @@
 	// Address preview mirrored in the summary rail
 	let addressPreview = $derived.by(() => {
 		if (proxyEnabled && useProxyMode) {
-			const full =
-				composeHostname(formData.proxyHostname, proxyBaseURL, formData.useBaseUrl) ||
-				'your-hostname';
-			return playerAddress(full, selectedListener?.port);
+			const names = formData.proxyHostnames.length ? formData.proxyHostnames : ['your-hostname'];
+			return names.map((name) => playerAddress(name, selectedListener?.port)).join(', ');
 		}
-		return `${panelHost(proxyBaseURL)}:${formData.port}`;
+		return `${panelHost()}:${formData.port}`;
 	});
 
 	let hostnameMissing = $derived(
-		proxyEnabled && useProxyMode && formData.proxyHostname.trim().length === 0
+		proxyEnabled && useProxyMode && formData.proxyHostnames.length === 0
 	);
 
 	let canSubmit = $derived(
@@ -369,7 +364,7 @@
 		}
 
 		if (hostnameMissing) {
-			toast.error('Please enter a hostname for the proxy route');
+			toast.error('Please add a hostname for the proxy route');
 			return;
 		}
 
@@ -393,10 +388,10 @@
 				modpackId: selectedModpack?.id || '',
 				modpackVersionId: versionToSend || '',
 				worldUploadSessionId: worldSessionId,
-				// Port zero routes through the proxy hostname
+				// Port zero routes through the proxy hostnames
 				port: useProxyMode ? 0 : formData.port,
-				// Direct mode keeps any typed hostname out of the request
-				proxyHostname: useProxyMode ? formData.proxyHostname : ''
+				// Direct mode keeps any typed hostnames out of the request
+				proxyHostnames: useProxyMode ? formData.proxyHostnames : []
 			};
 
 			const response = await rpcClient.server.createServer(createRequest);
@@ -785,15 +780,12 @@
 				{@render sectionHeader('Connectivity', 'How players will reach the server')}
 				<ConnectivityCard
 					{proxyEnabled}
-					baseUrl={proxyBaseURL}
 					listeners={proxyListeners}
 					serverName={formData.name}
-					deriveHostname={true}
 					disabled={loading}
 					{usedPorts}
 					bind:useProxy={useProxyMode}
-					bind:hostname={formData.proxyHostname}
-					bind:useBaseUrl={formData.useBaseUrl}
+					bind:hostnames={formData.proxyHostnames}
 					bind:listenerId={formData.proxyListenerId}
 					bind:port={formData.port}
 					bind:portError
@@ -955,11 +947,7 @@
 							disabled={loading}
 							{usedPorts}
 							proxyAvailable={proxyEnabled && useProxyMode}
-							serverHostname={composeHostname(
-								formData.proxyHostname,
-								proxyBaseURL,
-								formData.useBaseUrl
-							)}
+							serverHostnames={formData.proxyHostnames}
 							onchange={(ports) => (formData.additionalPorts = ports)}
 						/>
 
@@ -1043,7 +1031,7 @@
 						</p>
 					{:else if hostnameMissing}
 						<p class="rounded-md bg-muted/50 px-2.5 py-1.5 text-[11px] text-muted-foreground">
-							Enter a hostname so players can join through the proxy
+							Add a hostname so players can join through the proxy
 						</p>
 					{/if}
 

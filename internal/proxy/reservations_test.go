@@ -144,10 +144,10 @@ func TestPortNetRequests(t *testing.T) {
 		{Name: "raw", ContainerPort: 9000, HostPort: 9000, Protocol: tcp},
 		{Name: "unset", ContainerPort: 9001, HostPort: 0, Protocol: tcp},
 		{Name: "handshake", ContainerPort: 25565, HostPort: 25599, Protocol: mc, ProxyEnabled: true},
-		{Name: "named", ContainerPort: 8200, HostPort: 8200, Protocol: httpProto, ProxyEnabled: true, Hostname: "Map.Example.Com"},
+		{Name: "named", ContainerPort: 8200, HostPort: 8200, Protocol: httpProto, ProxyEnabled: true, Hostnames: []string{"Map.Example.Com"}},
 	}
 
-	reqs := PortNetRequests(ports, "", true)
+	reqs := PortNetRequests(ports, nil, true)
 	if len(reqs) != 4 {
 		t.Fatalf("want 4 requests, got %d: %+v", len(reqs), reqs)
 	}
@@ -167,13 +167,13 @@ func TestPortNetRequests(t *testing.T) {
 		t.Fatalf("hostname override must apply: %+v", reqs[3])
 	}
 
-	reqs = PortNetRequests(ports, "play.example.com", true)
+	reqs = PortNetRequests(ports, []string{"play.example.com"}, true)
 	if len(reqs) != 5 {
 		t.Fatalf("want 5 requests with fallback hostname, got %d", len(reqs))
 	}
 
 	// Disabled proxy downgrades every port to a bind
-	for _, req := range PortNetRequests(ports, "play.example.com", false) {
+	for _, req := range PortNetRequests(ports, []string{"play.example.com"}, false) {
 		if req.Routed || req.Relay {
 			t.Fatalf("proxy off must not produce proxy requests: %+v", req)
 		}

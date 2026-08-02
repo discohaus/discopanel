@@ -731,8 +731,8 @@ func (s *SupportService) addSystemInfoToBundle(ctx context.Context, tarWriter *t
 		proxyConfig, _, err := s.store.GetProxyConfig(ctx)
 		if err == nil {
 			proxyConfigInfo = &v1.ProxyConfigInfo{
-				Enabled: proxyConfig.Enabled,
-				BaseUrl: proxyConfig.BaseUrl,
+				Enabled:   proxyConfig.Enabled,
+				Hostnames: proxyConfig.Hostnames,
 			}
 			if listenersErr == nil {
 				for _, listener := range listeners {

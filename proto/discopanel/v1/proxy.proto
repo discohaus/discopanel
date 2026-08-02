@@ -4,7 +4,6 @@ package discopanel.v1;
 
 import "discopanel/options/v1/options.proto";
 import "discopanel/v1/storage.proto";
-import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
@@ -91,157 +90,11 @@ service ProxyService {
       action: ACTION_TYPE_READ
     };
   }
-  // Cached access snapshot every surface renders from
-  rpc GetAccessStatus(GetAccessStatusRequest) returns (GetAccessStatusResponse) {
+  // Suggest hostnames for any hostname input
+  rpc GetHostnameSuggestions(GetHostnameSuggestionsRequest) returns (GetHostnameSuggestionsResponse) {
     option (discopanel.options.v1.perm) = {
       resource: RESOURCE_TYPE_PROXY
       action: ACTION_TYPE_READ
-    };
-  }
-  // Rerun every probe and refresh the snapshot
-  rpc CheckAccess(CheckAccessRequest) returns (GetAccessStatusResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_READ
-    };
-  }
-  // Plan certificate issuance for hostnames
-  rpc GetSecurePlan(GetSecurePlanRequest) returns (GetSecurePlanResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_READ
-    };
-  }
-  // Deduped active hostnames with certificate coverage
-  rpc GetHostnameCoverage(GetHostnameCoverageRequest) returns (GetHostnameCoverageResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_READ
-    };
-  }
-  // List tls certificates without key material
-  rpc GetProxyCertificates(GetProxyCertificatesRequest) returns (GetProxyCertificatesResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_READ
-    };
-  }
-  // Upload a pem certificate and key
-  rpc UploadProxyCertificate(UploadProxyCertificateRequest) returns (UploadProxyCertificateResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_CREATE
-    };
-  }
-  // Order certificates from a public acme authority
-  rpc OrderProxyCertificate(OrderProxyCertificateRequest) returns (OrderProxyCertificateResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_CREATE
-    };
-  }
-  // Renew an acme certificate right now
-  rpc RenewProxyCertificate(RenewProxyCertificateRequest) returns (RenewProxyCertificateResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_UPDATE
-      object_id_field: "id"
-    };
-  }
-  // Rename or replace a certificate's pem material
-  rpc UpdateProxyCertificate(UpdateProxyCertificateRequest) returns (UpdateProxyCertificateResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_UPDATE
-      object_id_field: "id"
-    };
-  }
-  // Set which hostnames a certificate serves
-  rpc AssignProxyCertificate(AssignProxyCertificateRequest) returns (AssignProxyCertificateResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_UPDATE
-      object_id_field: "id"
-    };
-  }
-  // Remove a certificate
-  rpc DeleteProxyCertificate(DeleteProxyCertificateRequest) returns (DeleteProxyCertificateResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_DELETE
-      object_id_field: "id"
-    };
-  }
-  // Registry of dns providers and their fields
-  rpc GetDnsProviders(GetDnsProvidersRequest) returns (GetDnsProvidersResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_READ
-    };
-  }
-  // List dns credentials without secret material
-  rpc GetDnsCredentials(GetDnsCredentialsRequest) returns (GetDnsCredentialsResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_READ
-    };
-  }
-  // Store api credentials for a dns provider
-  rpc CreateDnsCredential(CreateDnsCredentialRequest) returns (CreateDnsCredentialResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_CREATE
-    };
-  }
-  // Rename or replace credential secret material
-  rpc UpdateDnsCredential(UpdateDnsCredentialRequest) returns (UpdateDnsCredentialResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_UPDATE
-      object_id_field: "id"
-    };
-  }
-  // Remove a dns credential no certificate uses
-  rpc DeleteDnsCredential(DeleteDnsCredentialRequest) returns (DeleteDnsCredentialResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_DELETE
-      object_id_field: "id"
-    };
-  }
-  // Live txt round trip proving a credential works
-  rpc CheckDnsCredential(CheckDnsCredentialRequest) returns (CheckDnsCredentialResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_READ
-    };
-  }
-  // Detects the dns provider and plans records for a domain
-  rpc GetDnsSetup(GetDnsSetupRequest) returns (GetDnsSetupResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_READ
-    };
-  }
-  // Last port mapping outcome and keepalive state
-  rpc GetPortMappings(GetPortMappingsRequest) returns (GetPortMappingsResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_READ
-    };
-  }
-  // Ask the router to open the panel's public ports
-  rpc AttemptPortMappings(AttemptPortMappingsRequest) returns (GetPortMappingsResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_UPDATE
-    };
-  }
-  // Toggle the lease renewal loop
-  rpc SetPortMappingKeepalive(SetPortMappingKeepaliveRequest) returns (GetPortMappingsResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_UPDATE
     };
   }
 }
@@ -258,14 +111,12 @@ enum ProxyRouteState {
   PROXY_ROUTE_STATE_OFFLINE = 3 [(discopanel.options.v1.value) = {label: "Offline"}];
 }
 
-// Where the effective base domain comes from
-enum BaseUrlSource {
-  option (discopanel.options.v1.enum_type) = {label: "Base Domain Source"};
-  BASE_URL_SOURCE_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
-  // Admin supplied custom domain
-  BASE_URL_SOURCE_CUSTOM = 1 [(discopanel.options.v1.value) = {label: "Custom"}];
-  // Derived instant sslip.io domain
-  BASE_URL_SOURCE_AUTO = 2 [(discopanel.options.v1.value) = {label: "Instant"}];
+// Network a suggested hostname resolves on
+enum HostnameScope {
+  option (discopanel.options.v1.enum_type) = {label: "Reachability"};
+  HOSTNAME_SCOPE_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  HOSTNAME_SCOPE_LAN = 1 [(discopanel.options.v1.value) = {label: "LAN"}];
+  HOSTNAME_SCOPE_PUBLIC = 2 [(discopanel.options.v1.value) = {label: "Public"}];
 }
 
 // How a reservation occupies its port
@@ -312,8 +163,6 @@ message GetNetworkTopologyRequest {}
 message GetNetworkTopologyResponse {
   bool proxy_enabled = 1;
   bool proxy_running = 2;
-  string effective_base_url = 3;
-  BaseUrlSource base_url_source = 4;
   int32 panel_port = 5;
   repeated NetworkReservation reservations = 6;
   repeated ProxyRoute routes = 7;
@@ -365,29 +214,24 @@ message GetProxyStatusRequest {}
 // Proxy system state
 message GetProxyStatusResponse {
   bool enabled = 1;
-  string base_url = 2;
+  // Hostnames the panel answers on
+  repeated string hostnames = 2;
   repeated int32 listen_ports = 3;
   repeated ProxyListener listeners = 4;
   int32 listen_port = 5; // Primary port
   bool running = 6;
   int32 active_routes = 7;
-  // Base domain actually in effect
-  string effective_base_url = 8;
-  BaseUrlSource base_url_source = 9;
-  // Domain choices failing echo validation hard block
-  bool strict_https = 10;
 }
 
 // Proxy settings to update
 message UpdateProxyConfigRequest {
   bool enabled = 1;
-  string base_url = 2;
+  // Hostnames the panel answers on
+  repeated string hostnames = 2;
   // Converts proxied servers to direct ports on disable
   bool convert_to_direct = 3;
   // Port picks for the convert, missing servers auto assign
   repeated ProxiedServerImpact assignments = 4;
-  // Domain choices failing echo validation hard block
-  bool strict_https = 5;
 }
 
 // Empty impact request
@@ -396,7 +240,8 @@ message GetProxyDisableImpactRequest {}
 // One proxied server and its proposed direct port
 message ProxiedServerImpact {
   string server_id = 1;
-  string hostname = 2;
+  // Hostnames the server loses on convert
+  repeated string hostnames = 2;
   // Rcon shadows at plus ten
   int32 proposed_port = 3;
 }
@@ -493,527 +338,42 @@ message ServerRoute {
 // Server proxy configuration
 message GetServerRoutingResponse {
   bool proxy_enabled = 1;
-  string proxy_hostname = 2;
-  string suggested_hostname = 3;
-  string base_url = 4;
+  // Hostnames this server serves on its listener
+  repeated string proxy_hostnames = 2;
   int32 listen_port = 5;
   optional ServerRoute current_route = 6;
   string proxy_listener_id = 7;
-  // Base domain actually in effect
-  string effective_base_url = 8;
-  BaseUrlSource base_url_source = 9;
 }
 
-// Hostname and listener to assign
+// Hostnames and listener to assign
 message UpdateServerRoutingRequest {
   string server_id = 1;
-  string proxy_hostname = 2;
+  // Hostnames to serve, full state, empty disables routing
+  repeated string proxy_hostnames = 2;
   string proxy_listener_id = 3;
-  // Direct mode host port, ignored when hostname set
+  // Direct mode host port, ignored when hostnames set
   optional int32 port = 4;
 }
 
 // Routing update result
 message UpdateServerRoutingResponse {
-  string hostname = 1;
+  repeated string hostnames = 1;
   string proxy_listener_id = 2;
 }
 
-// Which network an address candidate lives on
-enum AddressSource {
-  option (discopanel.options.v1.enum_type) = {label: "Address Source"};
-  ADDRESS_SOURCE_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
-  // Router address seen from the internet
-  ADDRESS_SOURCE_PUBLIC = 1 [(discopanel.options.v1.value) = {label: "Public"}];
-  // Host address on the local network
-  ADDRESS_SOURCE_LAN = 2 [(discopanel.options.v1.value) = {label: "LAN"}];
+// Suggestion context, label prefixes every base name
+message GetHostnameSuggestionsRequest {
+  // Subdomain label, empty suggests bare base names
+  string label = 1;
 }
 
-// One address the panel can be reached on
-message AddressCandidate {
-  string ip = 1;
-  // Instant sslip.io domain for the address
-  string domain = 2;
-  AddressSource source = 3;
-  // A probe has run for this address
-  bool checked = 4;
-  // Any probed port answered through this address
-  bool reachable = 5;
-  // Echo proved the roundtrip landed on this panel
-  bool confirmed = 6;
-}
-
-// Empty snapshot request
-message GetAccessStatusRequest {}
-
-// Empty refresh request, every probe runs fresh
-message CheckAccessRequest {}
-
-// Why a probe result needs a footnote
-enum ProbeNote {
-  option (discopanel.options.v1.enum_type) = {label: "Probe Note"};
-  PROBE_NOTE_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "None"}];
-  // Transport cannot carry an echo roundtrip
-  PROBE_NOTE_UNPROBEABLE = 1 [(discopanel.options.v1.value) = {label: "Unprobeable"}];
-  // Nothing binds the port locally right now
-  PROBE_NOTE_UNBOUND = 2 [(discopanel.options.v1.value) = {label: "Unbound"}];
-  // A different service answered the roundtrip
-  PROBE_NOTE_INTERCEPTED = 3 [(discopanel.options.v1.value) = {label: "Intercepted"}];
-}
-
-// Probe result for one bound host port
-message PortReachability {
-  int32 port = 1;
-  NetworkTransport transport = 2;
-  // False when the transport cannot be probed
-  bool checked = 3;
-  bool reachable = 4;
-  // True when the echo proved it reached this panel
-  bool confirmed = 5;
-  // Label of what binds the port
-  string detail = 6;
-  ProbeNote note = 7;
-}
-
-// Why automatic picked its domain
-enum AutoDomainReason {
-  option (discopanel.options.v1.enum_type) = {label: "Automatic Domain Reason"};
-  AUTO_DOMAIN_REASON_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
-  // Configured public address override in use
-  AUTO_DOMAIN_REASON_OVERRIDE = 1 [(discopanel.options.v1.value) = {label: "Configured"}];
-  // Wan echo proved the public address lands here
-  AUTO_DOMAIN_REASON_WAN_CONFIRMED = 2 [(discopanel.options.v1.value) = {label: "WAN confirmed"}];
-  // No usable address detected yet
-  AUTO_DOMAIN_REASON_NO_ADDRESS = 3 [(discopanel.options.v1.value) = {label: "No address"}];
-  // Lan fallback, no wan address detected
-  AUTO_DOMAIN_REASON_LAN_NO_WAN = 4 [(discopanel.options.v1.value) = {label: "LAN, no WAN"}];
-  // Lan fallback, wan failed its echo probe
-  AUTO_DOMAIN_REASON_LAN_WAN_UNREACHABLE = 5 [(discopanel.options.v1.value) = {label: "LAN, WAN unreachable"}];
-  // Lan fallback, wan echo has not run yet
-  AUTO_DOMAIN_REASON_LAN_WAN_UNVERIFIED = 6 [(discopanel.options.v1.value) = {label: "LAN, WAN unverified"}];
-}
-
-// Where traffic to the effective domain actually lands
-enum DomainVerdict {
-  option (discopanel.options.v1.enum_type) = {label: "Domain Verdict"};
-  DOMAIN_VERDICT_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
-  // Resolves to this panel and echoes back
-  DOMAIN_VERDICT_DIRECT = 1 [(discopanel.options.v1.value) = {label: "Direct"}];
-  // An edge proxy fronts the domain and still lands here
-  DOMAIN_VERDICT_EDGE = 2 [(discopanel.options.v1.value) = {label: "Edge fronted"}];
-  // No dns records point anywhere yet
-  DOMAIN_VERDICT_UNRESOLVED = 3 [(discopanel.options.v1.value) = {label: "Unresolved"}];
-  // Points here but no port answers from outside
-  DOMAIN_VERDICT_NO_ANSWER = 4 [(discopanel.options.v1.value) = {label: "No answer"}];
-  // Points at an address that never lands back here
-  DOMAIN_VERDICT_ELSEWHERE = 5 [(discopanel.options.v1.value) = {label: "Elsewhere"}];
-  // Resolves to this machine on the local network
-  DOMAIN_VERDICT_LOCAL = 6 [(discopanel.options.v1.value) = {label: "Local network"}];
-}
-
-// One snapshot every access surface renders from
-message GetAccessStatusResponse {
-  // When the probes behind this snapshot ran
-  google.protobuf.Timestamp checked_at = 1;
-  // Address the port probes dialed
-  string probed_ip = 2;
-  repeated AddressCandidate candidates = 3;
-  // Domain automatic currently resolves to
-  string auto_domain = 4;
-  AutoDomainReason auto_reason = 5;
-  // Port verdicts through the probed address
-  repeated PortReachability ports = 6;
-  // Base domain actually in effect
-  string effective_domain = 7;
-  BaseUrlSource domain_source = 8;
-  // Provider detection and records for a custom domain
-  GetDnsSetupResponse domain_setup = 9;
-  // Traffic to the domain lands on this panel
-  bool domain_echo = 10;
-  DomainVerdict domain_verdict = 11;
-  // Active hostnames with certificate coverage
-  repeated HostnameCoverage hostnames = 12;
-  // Names of certificates whose last renewal failed
-  repeated string renewal_failures = 13;
-  bool strict_https = 14;
-  // A proven dns credential is stored
-  bool dns_credential_ready = 15;
-  // Address the domain resolves to for edge and elsewhere verdicts
-  string domain_target_ip = 16;
-  // Automatic issuance attempts that failed
-  repeated AutoIssueFailure auto_issue_failures = 17;
-}
-
-// One failed background certificate order
-message AutoIssueFailure {
-  // Domains the order covered
-  string domains = 1;
-  string error = 2;
-  google.protobuf.Timestamp at = 3;
-}
-
-// Http validation through the listener lanes
-message AcmeHttpMethod {}
-
-// Dns validation through a stored provider credential
-message AcmeDnsMethod {
-  string credential_id = 1;
-}
-
-// Hostnames to plan for, empty plans every uncovered one
-message GetSecurePlanRequest {
-  repeated string hostnames = 1;
-  // Validation override, unset plans the simplest path
-  oneof method {
-    AcmeHttpMethod http = 2;
-    AcmeDnsMethod dns = 3;
-  }
-}
-
-// What one plan group proposes or waits on
-enum SecurePlanKind {
-  option (discopanel.options.v1.enum_type) = {label: "Plan Group Kind"};
-  SECURE_PLAN_KIND_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
-  // One wildcard order through a proven credential
-  SECURE_PLAN_KIND_WILDCARD = 1 [(discopanel.options.v1.value) = {label: "Wildcard"}];
-  // One order per name over the validation ports
-  SECURE_PLAN_KIND_HTTP = 2 [(discopanel.options.v1.value) = {label: "HTTP orders"}];
-  // One order per name through a proven credential
-  SECURE_PLAN_KIND_DNS = 3 [(discopanel.options.v1.value) = {label: "DNS orders"}];
-  // Wildcard possible once a credential is connected
-  SECURE_PLAN_KIND_WILDCARD_WANTED = 4 [(discopanel.options.v1.value) = {label: "Wildcard wanted"}];
-  // Public names with no working validation path
-  SECURE_PLAN_KIND_BLOCKED = 5 [(discopanel.options.v1.value) = {label: "Blocked"}];
-}
-
-// One acme order the plan proposes
-message SecurePlanGroup {
-  // Names the certificate will carry
-  repeated string domains = 1;
-  // Active hostnames the certificate will cover
-  repeated string hostnames = 2;
-  SecurePlanKind kind = 3;
-  // Validation method a ready group will order with
-  oneof method {
-    AcmeHttpMethod http = 4;
-    AcmeDnsMethod dns = 5;
-  }
-  // Display name of the credential a dns order uses
-  string dns_credential_name = 6;
-  // Base domain a wildcard rides on
-  string base_domain = 7;
-  // Probe failure detail for blocked groups
-  string probe_error = 8;
-  // Every domain rides sslip so only http can validate
-  bool all_sslip = 9;
-}
-
-// Issuance plan over the requested hostnames
-message GetSecurePlanResponse {
-  repeated SecurePlanGroup groups = 1;
-  // Names staying on plain http, nothing can validate them
-  repeated string plain_http = 2;
-  // Names an edge proxy already serves certificates for
-  repeated string edge_secured = 3;
-}
-
-// Empty coverage request
-message GetHostnameCoverageRequest {}
-
-// How https is actually served for one hostname
-enum HostnameSecurity {
-  option (discopanel.options.v1.enum_type) = {label: "Hostname Security"};
-  HOSTNAME_SECURITY_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
-  // A stored certificate terminates on this panel
-  HOSTNAME_SECURITY_PANEL = 1 [(discopanel.options.v1.value) = {label: "Panel"}];
-  // An edge proxy already serves a valid certificate
-  HOSTNAME_SECURITY_EDGE = 2 [(discopanel.options.v1.value) = {label: "Edge"}];
-  // Serves plain http
-  HOSTNAME_SECURITY_PLAIN = 3 [(discopanel.options.v1.value) = {label: "Plain HTTP"}];
-}
-
-// Certificate coverage for one active hostname
-message HostnameCoverage {
+// One suggested hostname with its reachability
+message HostnameSuggestion {
   string hostname = 1;
-  // Workloads declaring the hostname
-  repeated string declared_by = 2;
-  // Covering certificate id, empty when uncovered
-  string certificate_id = 3;
-  string certificate_name = 4;
-  // Covered through a wildcard name
-  bool via_wildcard = 5;
-  // Covered through a manual assignment
-  bool via_assignment = 6;
-  // No public authority can reach it, serves plain http
-  bool unsecurable = 7;
-  // Panel from the serving ledger, edge observed on 443
-  HostnameSecurity security = 8;
-  // Issuer of the observed edge certificate
-  string edge_issuer = 9;
+  HostnameScope scope = 2;
 }
 
-// Deduped active hostnames with coverage
-message GetHostnameCoverageResponse {
-  repeated HostnameCoverage hostnames = 1;
-}
-
-// Empty certificates request
-message GetProxyCertificatesRequest {}
-
-// All certificates with key material stripped
-message GetProxyCertificatesResponse {
-  repeated ProxyCertificate certificates = 1;
-}
-
-// One uploaded certificate or key file
-message CertUploadFile {
-  // Original file name for error attribution
-  string filename = 1;
-  // Pem or der bytes holding certificates or a key
-  bytes data = 2;
-}
-
-// Certificate material to normalize and store
-message UploadProxyCertificateRequest {
-  // Optional, the leaf's first name fills an empty one
-  string name = 1;
-  // Files together must hold one key and its certificates
-  repeated CertUploadFile files = 2;
-}
-
-// Stored certificate without key material
-message UploadProxyCertificateResponse {
-  ProxyCertificate certificate = 1;
-}
-
-// Public domains to order from an acme authority
-message OrderProxyCertificateRequest {
-  string name = 1;
-  // One certificate per domain, public names only
-  repeated string domains = 2;
-  // Account contact for authority notices, optional
-  string email = 3;
-  // Directory url, empty uses lets encrypt
-  string directory = 4;
-  // Validation method, unset uses http
-  oneof method {
-    AcmeHttpMethod http = 7;
-    AcmeDnsMethod dns = 8;
-  }
-}
-
-// Ordered certificates without key material
-message OrderProxyCertificateResponse {
-  repeated ProxyCertificate certificates = 1;
-}
-
-// Acme certificate to renew now
-message RenewProxyCertificateRequest {
-  string id = 1;
-}
-
-// Renewed certificate without key material
-message RenewProxyCertificateResponse {
-  ProxyCertificate certificate = 1;
-}
-
-// Rename or replace pem material, empty pem keeps current
-message UpdateProxyCertificateRequest {
-  string id = 1;
-  string name = 2;
-  string cert_chain_pem = 3;
-  string private_key_pem = 4;
-}
-
-// Updated certificate without key material
-message UpdateProxyCertificateResponse {
-  ProxyCertificate certificate = 1;
-}
-
-// Hostnames a certificate should serve
-message AssignProxyCertificateRequest {
-  string id = 1;
-  // Full assignment list, replaces the current one
-  repeated string hostnames = 2;
-}
-
-// Certificate with fresh assignments
-message AssignProxyCertificateResponse {
-  ProxyCertificate certificate = 1;
-}
-
-// Certificate to delete
-message DeleteProxyCertificateRequest {
-  string id = 1;
-}
-
-// Empty deletion response
-message DeleteProxyCertificateResponse {}
-
-// One input field a dns provider needs
-message DnsProviderField {
-  // Field key matching a credential column
-  string key = 1;
-  string label = 2;
-  // Value seals at rest and redacts in reads
-  bool secret = 3;
-  string placeholder = 4;
-  bool required = 5;
-}
-
-// One selectable dns provider kind
-message DnsProviderKind {
-  // Registry slug stored on credential rows
-  string slug = 1;
-  string label = 2;
-  repeated DnsProviderField fields = 3;
-}
-
-// Empty provider registry request
-message GetDnsProvidersRequest {}
-
-// Provider kinds the panel can drive
-message GetDnsProvidersResponse {
-  repeated DnsProviderKind providers = 1;
-}
-
-// Empty credentials request
-message GetDnsCredentialsRequest {}
-
-// Credentials with secret material stripped
-message GetDnsCredentialsResponse {
-  repeated DnsProviderCredential credentials = 1;
-}
-
-// Credential material to seal and store
-message CreateDnsCredentialRequest {
-  string name = 1;
-  // Registry slug like cloudflare or rfc2136
-  string provider = 2;
-  string api_token = 3;
-  string nameserver = 4;
-  string tsig_key_name = 5;
-  string tsig_secret = 6;
-  string tsig_algorithm = 7;
-}
-
-// Stored credential without secret material
-message CreateDnsCredentialResponse {
-  DnsProviderCredential credential = 1;
-}
-
-// Rename or replace fields, empty secrets keep current
-message UpdateDnsCredentialRequest {
-  string id = 1;
-  string name = 2;
-  string api_token = 3;
-  string nameserver = 4;
-  string tsig_key_name = 5;
-  string tsig_secret = 6;
-  string tsig_algorithm = 7;
-}
-
-// Updated credential without secret material
-message UpdateDnsCredentialResponse {
-  DnsProviderCredential credential = 1;
-}
-
-// Credential to delete
-message DeleteDnsCredentialRequest {
-  string id = 1;
-}
-
-// Empty deletion response
-message DeleteDnsCredentialResponse {}
-
-// Credential and domain to prove together
-message CheckDnsCredentialRequest {
-  string id = 1;
-  // Domain whose zone the txt round trip runs in
-  string domain = 2;
-}
-
-// Live round trip verdict for a credential
-message CheckDnsCredentialResponse {
-  bool ok = 1;
-  // Zone the provider actually wrote into
-  string zone = 2;
-  // Failure detail when the round trip broke
-  string error = 3;
-}
-
-// One dns record the user should create
-message DnsRecordPlan {
-  // Record type like a or ns or cname
-  string type = 1;
-  // Fully qualified record name
-  string name = 2;
-  string value = 3;
-  // Why the record exists in one short line
-  string purpose = 4;
-}
-
-// Domain to plan dns records for
-message GetDnsSetupRequest {
-  string domain = 1;
-}
-
-// One planned record with its live resolution state
-message DnsSetupRecord {
-  DnsRecordPlan record = 1;
-  // Name currently resolves to something
-  bool exists = 2;
-  // Resolution already matches the plan
-  bool matches = 3;
-  // Address the name resolves to right now
-  string current = 4;
-}
-
-// Provider detection and record plans for a domain
-message GetDnsSetupResponse {
-  // Zone the provider was discovered on
-  string zone = 1;
-  // Display name of the detected provider
-  string provider_name = 2;
-  // Provider control panel url when advertised
-  string provider_url = 3;
-  bool provider_found = 4;
-  repeated DnsSetupRecord records = 7;
-  // Wan address the records should target
-  string wan_ip = 8;
-}
-
-// Outcome of one router mapping attempt
-message PortMappingResult {
-  int32 port = 1;
-  NetworkTransport transport = 2;
-  bool ok = 3;
-  // Router protocol that took the mapping
-  string method = 4;
-  // Zero means the router granted a permanent mapping
-  int32 lease_seconds = 5;
-  string error = 6;
-  // What binds the port on this panel
-  string detail = 7;
-}
-
-// Empty mapping state request
-message GetPortMappingsRequest {}
-
-// Mapping outcomes with keepalive state
-message GetPortMappingsResponse {
-  repeated PortMappingResult results = 1;
-  // Lan address of the discovered router
-  string gateway = 2;
-  // Lease renewal loop keeps mappings alive
-  bool keepalive = 3;
-  google.protobuf.Timestamp attempted_at = 4;
-}
-
-// Empty attempt request, maps every public port
-message AttemptPortMappingsRequest {}
-
-// Keepalive toggle to apply
-message SetPortMappingKeepaliveRequest {
-  bool enabled = 1;
+// Computed hostname suggestions
+message GetHostnameSuggestionsResponse {
+  repeated HostnameSuggestion suggestions = 1;
 }

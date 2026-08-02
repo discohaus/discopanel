@@ -112,7 +112,7 @@ func (m *Manager) seedDoctorModule() {
 		if m.proxyManager != nil && len(ports) > 0 {
 			owner := proxy.NetOwner{Kind: proxy.OwnerModule, ID: "builtin-doctor-instance"}
 			probe := &v1.Module{Id: owner.ID, Ports: ports}
-			if err := m.proxyManager.ValidateNetwork(ctx, owner, m.proxyManager.ModuleNetRequests(probe, "")); err != nil {
+			if err := m.proxyManager.ValidateNetwork(ctx, owner, m.proxyManager.ModuleNetRequests(probe, nil)); err != nil {
 				free, ferr := m.AllocateModulePortExcluding(ctx, ports[0].Protocol, nil)
 				if ferr != nil {
 					m.logger.Error("Doctor seed: no free port for doctor: %v", ferr)

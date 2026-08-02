@@ -121,18 +121,16 @@ func main() {
 	} else {
 		if isNew {
 			proxyConfig.Enabled = cfg.Proxy.Enabled
-			proxyConfig.BaseUrl = cfg.Proxy.BaseUrl
 			err = store.SaveProxyConfig(ctx, proxyConfig)
 			if err != nil {
 				log.Error("Failed to set proxy configs from startup configuration values: %v", err)
 			}
 		} else {
 			cfg.Proxy.Enabled = proxyConfig.Enabled
-			cfg.Proxy.BaseUrl = proxyConfig.BaseUrl
 		}
 
-		log.Info("Loaded proxy configuration from database: enabled=%v, base_url=%v",
-			cfg.Proxy.Enabled, cfg.Proxy.BaseUrl)
+		log.Info("Loaded proxy configuration from database: enabled=%v, hostnames=%v",
+			cfg.Proxy.Enabled, proxyConfig.Hostnames)
 	}
 
 	// Initialize proxy manager
@@ -331,7 +329,7 @@ func main() {
 						log.Error("Failed to update server status: %v", err)
 					}
 					// Updates proxy route on status change when proxied
-					if server.ProxyHostname != "" {
+					if len(server.ProxyHostnames) > 0 {
 						if err := proxyManager.UpdateServerRoute(server); err != nil {
 							log.Error("Failed to update proxy route for %s: %v", server.Name, err)
 						}

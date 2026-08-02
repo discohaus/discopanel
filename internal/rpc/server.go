@@ -197,18 +197,7 @@ func (s *Server) setupHandler() {
 	s.setupFrontend(mux)
 
 	// Serves h2c HTTP/2 cleartext
-	handler := h2c.NewHandler(mux, &http2.Server{})
-
-	// Probe echoes and acme validations land here too
-	s.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if proxy.HandleEcho(w, r) {
-			return
-		}
-		if s.proxyManager.HandleACMEChallenge(w, r) {
-			return
-		}
-		handler.ServeHTTP(w, r)
-	})
+	s.handler = h2c.NewHandler(mux, &http2.Server{})
 }
 
 // Registers all Connect RPC service handlers

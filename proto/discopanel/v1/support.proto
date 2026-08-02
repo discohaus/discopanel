@@ -135,7 +135,8 @@ message ProxyListenerInfo {
 // Proxy configuration info for bundle
 message ProxyConfigInfo {
   bool enabled = 1;
-  string base_url = 2;
+  // Hostnames the panel answers on
+  repeated string hostnames = 2;
   repeated ProxyListenerInfo listeners = 3;
 }
 

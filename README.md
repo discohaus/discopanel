@@ -208,8 +208,7 @@ storage:
 
 proxy:
   enabled: true
-  base_url: "minecraft.example.com"
-  listen_ports: [25565]
+  listen_port: 25565
 ```
 
 >> NOTE: There are a metric ton worth of configurable settings for your DiscoPanel and the servers it hosts, they can all be setup here ahead of time

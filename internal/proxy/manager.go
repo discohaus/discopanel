@@ -4,17 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/google/uuid"
-	"github.com/mholt/acmez/v3"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
 	db "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/docker"
@@ -35,15 +28,16 @@ type Manager struct {
 	config      *config.ProxyConfig
 	appCfg      *config.Config
 	logger      *logger.Logger
-	certs       *certStore
 	mu          sync.Mutex
 	gate        ServerGate
 
 	// Runtime toggle state owned by the manager
 	enabled bool
-	baseURL string
 
-	// Cached outbound address for instant domains
+	// Hostnames the panel answers on
+	panelNames []string
+
+	// Cached outbound address for suggestions
 	detectedIP string
 	detectedAt time.Time
 
@@ -51,36 +45,13 @@ type Manager struct {
 	publicIP    string
 	publicAt    time.Time
 	publicTried time.Time
-	refreshOnce sync.Once
-	renewOnce   sync.Once
-
-	// Wan echo verdict for the automatic preset
-	wanIP        string
-	wanChecked   bool
-	wanReachable bool
-	wanConfirmed bool
 
 	// Granted checkouts awaiting their callers' persists
 	pendingClaims map[uint64]pendingClaim
 	claimSeq      uint64
 
-	// Domain connect discovery cache under its own lock
-	dcMu    sync.Mutex
-	dcCache map[string]dcCacheEntry
-
-	// Access snapshot cache under its own lock
-	accessMu   sync.Mutex
-	accessSnap *v1.GetAccessStatusResponse
-
 	// Loopback port the panel http server answers on
 	panelBackend int
-
-	// Auto issuance attempts keyed by ordered domains
-	autoMu     sync.Mutex
-	autoTried  map[string]time.Time
-	autoErrors map[string]*v1.AutoIssueFailure
-
-	portmapFields
 }
 
 // Registers the wake gate, must be called before Start
@@ -107,10 +78,8 @@ func NewManager(store *db.Store, dockerClient *docker.Client, cfg *config.Config
 		appCfg:        cfg,
 		logger:        logger,
 		enabled:       cfg.Proxy.Enabled,
-		baseURL:       cfg.Proxy.BaseUrl,
 		pendingClaims: make(map[uint64]pendingClaim),
 	}
-	m.certs = newCertStore(store, cfg.Storage.DataDir, logger)
 	return m
 }
 
@@ -134,7 +103,7 @@ func (m *Manager) panelWebPort() int {
 }
 
 // Catch all http route landing on the panel backend
-func (m *Manager) panelRouteLocked(ctx context.Context) (Route, bool) {
+func (m *Manager) panelRouteLocked() (Route, bool) {
 	if m.panelBackend == 0 {
 		return Route{}, false
 	}
@@ -145,10 +114,6 @@ func (m *Manager) panelRouteLocked(ctx context.Context) (Route, bool) {
 		BackendHost: "127.0.0.1",
 		BackendPort: m.panelBackend,
 		Protocol:    v1.ModuleProtocol_MODULE_PROTOCOL_HTTP,
-	}
-	// Strict panel answers plain requests with a redirect
-	if cfg, _, err := m.store.GetProxyConfig(ctx); err == nil && cfg != nil && cfg.StrictHttps {
-		route.TlsMode = v1.RouteTlsMode_ROUTE_TLS_MODE_STRICT
 	}
 	return route, true
 }
@@ -193,7 +158,6 @@ func (m *Manager) ensurePanelSocketLocked() error {
 		ListenAddr: net.JoinHostPort(m.appCfg.Server.Host, strconv.Itoa(port)),
 		Logger:     m.logger,
 		Gate:       m.gate,
-		Certs:      m.certs,
 	})
 	if err := sock.Start(); err != nil {
 		return fmt.Errorf("panel socket failed on port %d: %w", port, err)
@@ -203,13 +167,6 @@ func (m *Manager) ensurePanelSocketLocked() error {
 	return nil
 }
 
-// Wan address override else the detected public ip
-func (m *Manager) WanTargetIP() string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.wanTargetLocked()
-}
-
 // Reports the runtime proxy toggle
 func (m *Manager) Enabled() bool {
 	m.mu.Lock()
@@ -217,22 +174,13 @@ func (m *Manager) Enabled() bool {
 	return m.enabled
 }
 
-// Reports the configured custom base domain
-func (m *Manager) BaseURL() string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.baseURL
-}
-
 // Applies a config change and reconciles running sockets
-func (m *Manager) ApplyConfig(ctx context.Context, enabled bool, baseURL string) error {
+func (m *Manager) ApplyConfig(ctx context.Context, enabled bool, hostnames []string) error {
 	m.mu.Lock()
 	m.enabled = enabled
-	m.baseURL = baseURL
+	m.panelNames = hostnames
 	err := m.syncListenersLocked(ctx)
 	m.mu.Unlock()
-	// Domain or toggle changed so the snapshot lies now
-	m.InvalidateAccessSnapshot()
 	return err
 }
 
@@ -251,24 +199,21 @@ func (m *Manager) containerIP(ctx context.Context, containerID string) (string, 
 
 // Initializes and starts the proxy if enabled
 func (m *Manager) Start() error {
-	// Address cache warms even while the proxy is off
-	m.startAddressRefresh()
+	// Public address cache warms even while the proxy is off
+	m.mu.Lock()
+	m.publicTried = time.Now()
+	m.mu.Unlock()
+	go m.refreshPublicIP()
 
-	// Panel tls needs certificates even while the proxy is off
-	if err := m.certs.load(context.Background()); err != nil {
-		m.logger.Error("Failed to load tls certificates: %v", err)
+	// Panel hostnames live on the config row
+	var names []string
+	if cfg, _, err := m.store.GetProxyConfig(context.Background()); err == nil && cfg != nil {
+		names = cfg.Hostnames
 	}
-
-	// Router lease renewals run when opted in
-	if err := m.SyncPortmapKeepalive(context.Background()); err != nil {
-		m.logger.Error("Failed to start port mapping keepalive: %v", err)
-	}
-
-	// Acme rows renew even while the proxy is off
-	m.startCertRenewals()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.panelNames = names
 
 	if err := m.syncListenersLocked(context.Background()); err != nil {
 		return err
@@ -280,11 +225,8 @@ func (m *Manager) Start() error {
 // Reconciles sockets and routes against database state
 func (m *Manager) SyncListeners(ctx context.Context) error {
 	m.mu.Lock()
-	err := m.syncListenersLocked(ctx)
-	m.mu.Unlock()
-	// Routing changed so the cached snapshot lies now
-	m.InvalidateAccessSnapshot()
-	return err
+	defer m.mu.Unlock()
+	return m.syncListenersLocked(ctx)
 }
 
 // Full reconcile pass, caller must hold the lock
@@ -347,7 +289,6 @@ func (m *Manager) syncListenersLocked(ctx context.Context) error {
 				ListenAddr: fmt.Sprintf(":%d", port),
 				Logger:     m.logger,
 				Gate:       m.gate,
-				Certs:      m.certs,
 			})
 			if err := sock.Start(); err != nil {
 				m.logger.Error("Failed to start listener %s on port %d: %v", listener.Name, port, err)
@@ -359,7 +300,7 @@ func (m *Manager) syncListenersLocked(ctx context.Context) error {
 	}
 
 	tcpRoutes, udpRoutes := m.desiredRoutesLocked(ctx, byID)
-	if route, ok := m.panelRouteLocked(ctx); ok {
+	if route, ok := m.panelRouteLocked(); ok {
 		tcpRoutes[m.panelWebPort()] = append(tcpRoutes[m.panelWebPort()], route)
 	}
 
@@ -414,7 +355,7 @@ func (m *Manager) syncDisabledLocked(ctx context.Context) error {
 	}
 	if sock := m.tcpSockets[panelPort]; sock != nil {
 		var routes []Route
-		if route, ok := m.panelRouteLocked(ctx); ok {
+		if route, ok := m.panelRouteLocked(); ok {
 			routes = append(routes, route)
 		}
 		sock.SetRoutes(routes)
@@ -439,14 +380,19 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 
 	for _, server := range servers {
 		// Game routes register even for stopped wakeable servers
-		if server.ProxyHostname != "" {
+		if len(server.ProxyHostnames) > 0 {
 			if listener := listenersByID[server.ProxyListenerId]; listener != nil {
-				route, want, err := m.desiredRoute(ctx, server, server.ProxyHostname)
+				route, want, err := m.desiredRoute(ctx, server)
 				if err != nil {
 					m.logger.Error("Failed to build route for server %s: %v", server.Name, err)
 				} else if want {
+					// Every hostname relays to the same backend
 					port := int(listener.Port)
-					tcpRoutes[port] = append(tcpRoutes[port], route)
+					for _, name := range server.ProxyHostnames {
+						variant := route
+						variant.Hostname = name
+						tcpRoutes[port] = append(tcpRoutes[port], variant)
+					}
 				}
 			}
 		}
@@ -465,7 +411,7 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 			m.logger.Debug("No container IP for server %s: %v", server.Name, err)
 			continue
 		}
-		appendPortRoutes(tcpRoutes, udpRoutes, server.AdditionalPorts, server.ProxyHostname,
+		appendPortRoutes(tcpRoutes, udpRoutes, server.AdditionalPorts, server.ProxyHostnames,
 			OwnerServer, server.Id, ip, func(p *v1.NetworkPort) int { return int(p.ContainerPort) })
 	}
 
@@ -486,12 +432,12 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 			m.logger.Debug("No container IP for module %s: %v", mod.Name, err)
 			continue
 		}
-		hostname := ""
+		var hostnames []string
 		if srv := serversByID[mod.ServerId]; srv != nil {
-			hostname = srv.ProxyHostname
+			hostnames = srv.ProxyHostnames
 		}
 		module := mod
-		appendPortRoutes(tcpRoutes, udpRoutes, mod.Ports, hostname,
+		appendPortRoutes(tcpRoutes, udpRoutes, mod.Ports, hostnames,
 			OwnerModule, mod.Id, ip, func(p *v1.NetworkPort) int { return m.moduleContainerPort(module, p) })
 	}
 
@@ -499,7 +445,7 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 }
 
 // Adds one port list's routes onto the desired tables
-func appendPortRoutes(tcpRoutes map[int][]Route, udpRoutes map[int]Route, ports []*v1.NetworkPort, fallbackHostname, ownerKind, ownerID, backendHost string, containerPort func(*v1.NetworkPort) int) {
+func appendPortRoutes(tcpRoutes map[int][]Route, udpRoutes map[int]Route, ports []*v1.NetworkPort, fallbackHostnames []string, ownerKind, ownerID, backendHost string, containerPort func(*v1.NetworkPort) int) {
 	for _, port := range ports {
 		if port == nil || !port.ProxyEnabled || port.HostPort <= 0 {
 			continue
@@ -516,21 +462,15 @@ func appendPortRoutes(tcpRoutes map[int][]Route, udpRoutes map[int]Route, ports 
 			BackendHost: backendHost,
 			BackendPort: backendPort,
 			Protocol:    port.Protocol,
-			TlsMode:     port.TlsMode,
 		}
 		hostPort := int(port.HostPort)
 		switch port.Protocol {
 		case v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT:
-			hostname := NormalizeHostname(port.Hostname)
-			if hostname == "" {
-				hostname = fallbackHostname
+			for _, hostname := range routedHostnames(port, fallbackHostnames) {
+				variant := route
+				variant.Hostname = hostname
+				tcpRoutes[hostPort] = append(tcpRoutes[hostPort], variant)
 			}
-			// Handshake routing cannot match without a hostname
-			if hostname == "" && port.Protocol == v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT {
-				continue
-			}
-			route.Hostname = hostname
-			tcpRoutes[hostPort] = append(tcpRoutes[hostPort], route)
 		case v1.ModuleProtocol_MODULE_PROTOCOL_UDP:
 			udpRoutes[hostPort] = route
 		default:
@@ -607,7 +547,7 @@ func (m *Manager) ensureListenerInvariantsLocked(ctx context.Context) error {
 			return fmt.Errorf("failed to create default listener: %w", err)
 		}
 		m.logger.Info("Created default proxy listener on port %d", port)
-		listeners = []*v1.ProxyListener{listener}
+		listeners = append(listeners, listener)
 	}
 
 	servers, err := m.store.ListServers(ctx)
@@ -640,7 +580,8 @@ func (m *Manager) ensureListenerInvariantsLocked(ctx context.Context) error {
 		have[int(l.Port)] = true
 	}
 	for port := range demand {
-		if have[port] {
+		// Panel socket serves its own port, never a row here
+		if have[port] || port == m.panelWebPort() {
 			continue
 		}
 		listener, err := m.createListenerRowLocked(ctx, port)
@@ -723,7 +664,7 @@ func (m *Manager) UpdateServerRoute(server *v1.Server) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if !m.enabled || server.ProxyHostname == "" || server.ProxyListenerId == "" {
+	if !m.enabled || len(server.ProxyHostnames) == 0 || server.ProxyListenerId == "" {
 		return nil
 	}
 
@@ -741,22 +682,28 @@ func (m *Manager) UpdateServerRoute(server *v1.Server) error {
 		return fmt.Errorf("no listener socket for port %d", listener.Port)
 	}
 
-	route, want, err := m.desiredRoute(ctx, server, server.ProxyHostname)
+	route, want, err := m.desiredRoute(ctx, server)
 	if err != nil {
 		return err
 	}
 	if !want {
-		sock.RemoveRoute(v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT, server.ProxyHostname)
+		for _, name := range server.ProxyHostnames {
+			sock.RemoveRoute(v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT, name)
+		}
 		return nil
 	}
-	sock.UpsertServerRoute(route)
+	for _, name := range server.ProxyHostnames {
+		variant := route
+		variant.Hostname = name
+		sock.UpsertServerRoute(variant)
+	}
 	return nil
 }
 
 // Reconciles every route a server owns after status changes
 func (m *Manager) SyncServerRoutes(ctx context.Context, server *v1.Server) error {
 	var firstErr error
-	if server.ProxyHostname != "" {
+	if len(server.ProxyHostnames) > 0 {
 		firstErr = m.UpdateServerRoute(server)
 	}
 	// Extra proxied ports only reconcile in a full pass
@@ -768,8 +715,8 @@ func (m *Manager) SyncServerRoutes(ctx context.Context, server *v1.Server) error
 	return firstErr
 }
 
-// Derives the route a server should serve right now
-func (m *Manager) desiredRoute(ctx context.Context, server *v1.Server, hostname string) (route Route, want bool, err error) {
+// Hostname free route template, callers stamp each name on
+func (m *Manager) desiredRoute(ctx context.Context, server *v1.Server) (route Route, want bool, err error) {
 	cfg, cfgErr := m.store.GetServerProperties(ctx, server.Id)
 	if cfgErr != nil {
 		cfg = nil
@@ -779,7 +726,6 @@ func (m *Manager) desiredRoute(ctx context.Context, server *v1.Server, hostname 
 		ServerID:      server.Id,
 		OwnerKind:     OwnerServer,
 		OwnerID:       server.Id,
-		Hostname:      hostname,
 		Protocol:      v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT,
 		BackendPort:   docker.DefaultMinecraftPort,
 		ProxyProtocol: propEnabled(cfg, func(c *v1.ServerProperties) *bool { return c.EnableProxyProtocol }),
@@ -980,159 +926,6 @@ func countersReset(last, cur *v1.ProxyRoute) bool {
 		cur.BytesToClient < last.BytesToClient
 }
 
-// Reloads certificate rows into the serving cache
-func (m *Manager) ReloadCertificates(ctx context.Context) error {
-	err := m.certs.reload(ctx)
-	// Coverage changed so the cached snapshot lies now
-	m.InvalidateAccessSnapshot()
-	return err
-}
-
-// Seals private key pem for persistence
-func (m *Manager) SealPrivateKey(pemText string) (string, error) {
-	return m.certs.seal(pemText)
-}
-
-
-// Orders certificates from a public acme authority
-func (m *Manager) OrderACMECertificates(ctx context.Context, domains []string, email, directory string, solver v1.AcmeSolver, credentialID string) ([]ACMEMaterial, error) {
-	dns, err := m.acmeDNSSolver(ctx, solver, credentialID)
-	if err != nil {
-		return nil, err
-	}
-	return m.certs.acme.Order(ctx, domains, email, directory, dns)
-}
-
-// Builds the dns solver a solver choice needs
-func (m *Manager) acmeDNSSolver(ctx context.Context, solver v1.AcmeSolver, credentialID string) (acmez.Solver, error) {
-	switch solver {
-	case v1.AcmeSolver_ACME_SOLVER_DNS_CREDENTIAL:
-		if credentialID == "" {
-			return nil, fmt.Errorf("the dns provider solver needs a credential")
-		}
-		cred, err := m.store.GetDnsProviderCredential(ctx, credentialID)
-		if err != nil {
-			return nil, fmt.Errorf("dns credential is gone, pick another solver: %w", err)
-		}
-		return m.DnsSolverForCredential(cred)
-	}
-	return nil, nil
-}
-
-// Answers pending acme validations on the panel port
-func (m *Manager) HandleACMEChallenge(w http.ResponseWriter, r *http.Request) bool {
-	return m.certs.acme.HandleHTTPChallenge(w, r)
-}
-
-// Renews an acme row and stores the fresh material
-func (m *Manager) RenewACMECertificate(ctx context.Context, row *v1.ProxyCertificate) error {
-	if row.Source != v1.CertificateSource_CERTIFICATE_SOURCE_ACME || len(row.Domains) == 0 {
-		return fmt.Errorf("certificate %s did not come from an acme authority", row.Name)
-	}
-
-	material, err := func() (ACMEMaterial, error) {
-		dns, serr := m.acmeDNSSolver(ctx, row.AcmeSolver, row.DnsCredentialId)
-		if serr != nil {
-			return ACMEMaterial{}, serr
-		}
-		return m.certs.acme.Renew(ctx, row.Domains[0], row.AcmeEmail, row.AcmeDirectory, dns)
-	}()
-	if err != nil {
-		row.RenewalError = renewalErrorText(err)
-		if uerr := m.store.UpdateProxyCertificate(ctx, row); uerr != nil {
-			m.logger.Error("Failed to record renewal error for %s: %v", row.Name, uerr)
-		}
-		return err
-	}
-
-	parsed, err := ParseCertificateMaterial(material.ChainPEM, material.KeyPEM)
-	if err != nil {
-		return fmt.Errorf("renewed certificate failed to parse: %w", err)
-	}
-	sealed, err := m.certs.seal(material.KeyPEM)
-	if err != nil {
-		return err
-	}
-
-	row.CertChainPem = material.ChainPEM
-	row.PrivateKeyPem = sealed
-	row.Issuer = parsed.Issuer
-	row.NotBefore = timestamppb.New(parsed.NotBefore)
-	row.NotAfter = timestamppb.New(parsed.NotAfter)
-	row.RenewalError = ""
-	if err := m.store.UpdateProxyCertificate(ctx, row); err != nil {
-		return fmt.Errorf("failed to store renewed certificate: %w", err)
-	}
-	return m.certs.reload(ctx)
-}
-
-// Sweep cadence keeps pace with short lived certificates
-const renewalSweepInterval = time.Hour
-
-// First sweep waits for listener sockets to come up
-const renewalSweepDelay = 2 * time.Minute
-
-// Renews expiring acme rows for the process lifetime
-func (m *Manager) startCertRenewals() {
-	m.renewOnce.Do(func() {
-		go func() {
-			time.Sleep(renewalSweepDelay)
-			m.renewDueCertificates(context.Background())
-			m.autoSecure(context.Background())
-			ticker := time.NewTicker(renewalSweepInterval)
-			defer ticker.Stop()
-			for range ticker.C {
-				m.renewDueCertificates(context.Background())
-				m.autoSecure(context.Background())
-			}
-		}()
-	})
-}
-
-// One pass renewing acme rows close to expiry
-func (m *Manager) renewDueCertificates(ctx context.Context) {
-	rows, err := m.store.ListProxyCertificates(ctx)
-	if err != nil {
-		m.logger.Error("Failed to list certificates for renewal: %v", err)
-		return
-	}
-	for _, row := range rows {
-		if row.Source != v1.CertificateSource_CERTIFICATE_SOURCE_ACME {
-			continue
-		}
-		if !renewalDue(row) {
-			continue
-		}
-		if err := m.RenewACMECertificate(ctx, row); err != nil {
-			m.logger.Error("Failed to renew certificate %s: %v", row.Name, err)
-			continue
-		}
-		m.logger.Info("Renewed certificate %s", row.Name)
-	}
-}
-
-// Reports whether an acme row entered its renewal window
-func renewalDue(row *v1.ProxyCertificate) bool {
-	if row.NotAfter == nil {
-		return true
-	}
-	notBefore := time.Time{}
-	if row.NotBefore != nil {
-		notBefore = row.NotBefore.AsTime()
-	}
-	notAfter := row.NotAfter.AsTime()
-	return time.Until(notAfter) <= renewalThreshold(notBefore, notAfter)
-}
-
-// Keeps stored renewal errors reasonably short
-func renewalErrorText(err error) string {
-	text := err.Error()
-	if len(text) > 500 {
-		text = text[:500]
-	}
-	return text
-}
-
 // Adds monotonic counters onto a base, gauges pass through
 func addCounters(base, cur *v1.ProxyRoute) *v1.ProxyRoute {
 	if base == nil {
@@ -1151,129 +944,4 @@ func addCounters(base, cur *v1.ProxyRoute) *v1.ProxyRoute {
 		BytesToClient:       base.BytesToClient + cur.BytesToClient,
 		LastProtocolVersion: cur.LastProtocolVersion,
 	}
-}
-
-// Backoff between failed auto issuance attempts
-const autoSecureBackoff = 6 * time.Hour
-
-// Issues ready plan groups without anyone clicking
-func (m *Manager) autoSecure(ctx context.Context) {
-	if !m.Enabled() {
-		return
-	}
-	plan, err := m.SecurePlan(ctx, nil)
-	if err != nil {
-		m.logger.Error("Auto secure planning failed: %v", err)
-		return
-	}
-	issued := 0
-	for _, group := range plan.Groups {
-		if !GroupReady(group) {
-			continue
-		}
-		// Shared sslip rate limits make background orders hopeless
-		if allSslip(group.Domains) {
-			continue
-		}
-		solver, credID := GroupSolver(group)
-		key := strings.Join(group.Domains, ",")
-		m.autoMu.Lock()
-		if m.autoTried == nil {
-			m.autoTried = make(map[string]time.Time)
-		}
-		last, tried := m.autoTried[key]
-		if tried && time.Since(last) < autoSecureBackoff {
-			m.autoMu.Unlock()
-			continue
-		}
-		m.autoTried[key] = time.Now()
-		m.autoMu.Unlock()
-
-		materials, orderErr := m.OrderACMECertificates(ctx, group.Domains, "", "", solver, credID)
-		for i := range materials {
-			name := materials[i].Domain
-			if _, serr := m.StoreACMEMaterial(ctx, name, "", "", false, solver, credID, &materials[i]); serr != nil {
-				m.logger.Error("Failed to store auto issued certificate for %s: %v", name, serr)
-				continue
-			}
-			issued++
-			m.logger.Info("Issued certificate for %s automatically", name)
-		}
-		m.recordAutoResult(key, orderErr)
-		if orderErr != nil {
-			m.logger.Error("Auto issuance failed for %s: %v", key, orderErr)
-		}
-	}
-	if issued > 0 {
-		if err := m.ReloadCertificates(ctx); err != nil {
-			m.logger.Error("Failed to reload certificates: %v", err)
-		}
-	}
-}
-
-// Tracks the last background order outcome per group
-func (m *Manager) recordAutoResult(key string, orderErr error) {
-	m.autoMu.Lock()
-	defer m.autoMu.Unlock()
-	if orderErr == nil {
-		delete(m.autoErrors, key)
-		return
-	}
-	if m.autoErrors == nil {
-		m.autoErrors = make(map[string]*v1.AutoIssueFailure)
-	}
-	m.autoErrors[key] = &v1.AutoIssueFailure{
-		Domains: key,
-		Error:   orderErr.Error(),
-		At:      timestamppb.Now(),
-	}
-}
-
-// Snapshot copy of failed background orders
-func (m *Manager) autoIssueFailures() []*v1.AutoIssueFailure {
-	m.autoMu.Lock()
-	defer m.autoMu.Unlock()
-	var out []*v1.AutoIssueFailure
-	for _, failure := range m.autoErrors {
-		out = append(out, proto.Clone(failure).(*v1.AutoIssueFailure))
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Domains < out[j].Domains })
-	return out
-}
-
-// Persists one issued acme certificate as a row
-func (m *Manager) StoreACMEMaterial(ctx context.Context, name, email, directory string, suffix bool, solver v1.AcmeSolver, credentialID string, material *ACMEMaterial) (*v1.ProxyCertificate, error) {
-	parsed, err := ParseCertificateMaterial(material.ChainPEM, material.KeyPEM)
-	if err != nil {
-		return nil, err
-	}
-	sealed, err := m.certs.seal(material.KeyPEM)
-	if err != nil {
-		return nil, err
-	}
-	rowName := name
-	if suffix {
-		rowName = fmt.Sprintf("%s %s", name, material.Domain)
-	}
-	row := &v1.ProxyCertificate{
-		Id:            uuid.New().String(),
-		Name:          rowName,
-		Domains:       parsed.Domains,
-		Source:        v1.CertificateSource_CERTIFICATE_SOURCE_ACME,
-		CertChainPem:  material.ChainPEM,
-		PrivateKeyPem: sealed,
-		Issuer:        parsed.Issuer,
-		NotBefore:     timestamppb.New(parsed.NotBefore),
-		NotAfter:      timestamppb.New(parsed.NotAfter),
-		AcmeEmail:     email,
-		AcmeDirectory: directory,
-		AcmeSolver:    solver,
-	}
-	if solver == v1.AcmeSolver_ACME_SOLVER_DNS_CREDENTIAL {
-		row.DnsCredentialId = credentialID
-	}
-	if err := m.store.CreateProxyCertificate(ctx, row); err != nil {
-		return nil, err
-	}
-	return row, nil
 }

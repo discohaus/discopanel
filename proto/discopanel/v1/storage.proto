@@ -653,48 +653,12 @@ enum ModuleProtocol {
   MODULE_PROTOCOL_HTTP = 4 [(discopanel.options.v1.value) = {label: "HTTP"}];
 }
 
-// Https posture for one routed hostname and port
-enum RouteTlsMode {
-  option (discopanel.options.v1.enum_type) = {label: "TLS Mode"};
-  // Unset serves plain and https alike
-  ROUTE_TLS_MODE_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "HTTP and HTTPS"}];
-  // Serves plain and terminates tls when a certificate matches
-  ROUTE_TLS_MODE_BOTH = 1 [(discopanel.options.v1.value) = {label: "HTTP and HTTPS"}];
-  // Plain requests answer with a redirect to https
-  ROUTE_TLS_MODE_STRICT = 2 [(discopanel.options.v1.value) = {label: "HTTPS only"}];
-  // Never terminates tls for this hostname
-  ROUTE_TLS_MODE_PLAIN = 3 [(discopanel.options.v1.value) = {label: "HTTP only"}];
-}
-
 // Wire transport a port rides on
 enum NetworkTransport {
   option (discopanel.options.v1.enum_type) = {label: "Transport"};
   NETWORK_TRANSPORT_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
   NETWORK_TRANSPORT_TCP = 1 [(discopanel.options.v1.value) = {label: "TCP"}];
   NETWORK_TRANSPORT_UDP = 2 [(discopanel.options.v1.value) = {label: "UDP"}];
-}
-
-// Where a proxy certificate came from
-enum CertificateSource {
-  option (discopanel.options.v1.enum_type) = {label: "Certificate Source"};
-  CERTIFICATE_SOURCE_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
-  // Admin supplied pem upload
-  CERTIFICATE_SOURCE_UPLOADED = 1 [(discopanel.options.v1.value) = {label: "Uploaded"}];
-  // Issued by an acme certificate authority
-  CERTIFICATE_SOURCE_ACME = 2 [(discopanel.options.v1.value) = {label: "ACME"}];
-  reserved 3;
-}
-
-// Challenge solver used for acme orders
-enum AcmeSolver {
-  option (discopanel.options.v1.enum_type) = {label: "ACME Solver"};
-  // Unset rows solve over http like before
-  ACME_SOLVER_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "HTTP"}];
-  // Http-01 and tls-alpn-01 through listener lanes
-  ACME_SOLVER_HTTP = 1 [(discopanel.options.v1.value) = {label: "HTTP"}];
-  // Dns-01 through stored provider api credentials
-  ACME_SOLVER_DNS_CREDENTIAL = 2 [(discopanel.options.v1.value) = {label: "DNS Provider"}];
-  reserved 3;
 }
 
 // How a failed config field check is treated
@@ -780,10 +744,8 @@ message NetworkPort {
   ModuleProtocol protocol = 4;
   // Routes through the proxy instead of a host bind
   bool proxy_enabled = 5;
-  // Overrides the owning server hostname for routed ports
-  string hostname = 6;
-  // Https posture for routed http ports
-  RouteTlsMode tls_mode = 7;
+  // Override the owning server hostnames for routed ports
+  repeated string hostnames = 6;
 }
 
 // Volume mount configuration for container
@@ -1001,8 +963,9 @@ message Server {
   string mc_version = 5 [(protogorm.v1.db) = {tag: "not null"}];
   ServerStatus status = 6 [(protogorm.v1.db) = {tag: "not null"}];
   int32 port = 7;
-  string proxy_hostname = 8 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_proxy_hostname_listener,where:proxy_hostname != ''"}];
-  string proxy_listener_id = 9 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_proxy_hostname_listener,where:proxy_listener_id != ''"}];
+  // Hostnames this server serves on its listener
+  repeated string proxy_hostnames = 8;
+  string proxy_listener_id = 9;
   // Listener host port, computed at read time
   int32 proxy_port = 10 [(protogorm.v1.db) = {skip: true}];
   int32 max_players = 11 [(protogorm.v1.db) = {tag: "default:20"}];
@@ -1088,68 +1051,6 @@ message ProxyListener {
   google.protobuf.Timestamp updated_at = 8 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
   // Created on demand for a routed port, not by hand
   bool auto_created = 9 [(protogorm.v1.db) = {tag: "not null;default:false"}];
-}
-
-// One tls certificate served by the proxy and panel
-message ProxyCertificate {
-  option (protogorm.v1.model) = {
-    table: "proxy_certificates"
-    order_by: "name ASC"
-  };
-  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
-  string name = 2 [(protogorm.v1.db) = {tag: "not null"}];
-  // Hostnames the certificate covers, wildcards allowed
-  repeated string domains = 3;
-  CertificateSource source = 4;
-  string cert_chain_pem = 5;
-  // Sealed with the panel key before persisting
-  string private_key_pem = 6 [(protogorm.v1.db) = {redact: true}];
-  string issuer = 7;
-  google.protobuf.Timestamp not_before = 8;
-  google.protobuf.Timestamp not_after = 9;
-  google.protobuf.Timestamp created_at = 10 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
-  google.protobuf.Timestamp updated_at = 11 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
-  // Account contact used at acme issuance
-  string acme_email = 12;
-  // Acme directory url used at issuance
-  string acme_directory = 13;
-  // Last renewal failure, empty after success
-  string renewal_error = 14;
-  // Hostnames served besides the certificate names
-  repeated string assigned_hostnames = 15;
-  // Solver that satisfied the acme challenges
-  AcmeSolver acme_solver = 16;
-  // Credential used when the solver was dns provider
-  string dns_credential_id = 17;
-}
-
-// Api credentials for one dns provider account
-message DnsProviderCredential {
-  option (protogorm.v1.model) = {
-    table: "dns_provider_credentials"
-    order_by: "name ASC"
-  };
-  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
-  string name = 2 [(protogorm.v1.db) = {tag: "not null"}];
-  // Registry slug like cloudflare or rfc2136
-  string provider = 3 [(protogorm.v1.db) = {tag: "not null"}];
-  // Sealed api token for token based providers
-  string api_token = 4 [(protogorm.v1.db) = {redact: true}];
-  // Nameserver host and port for rfc2136 updates
-  string nameserver = 5;
-  // Tsig key name for rfc2136 updates
-  string tsig_key_name = 6;
-  // Sealed tsig secret for rfc2136 updates
-  string tsig_secret = 7 [(protogorm.v1.db) = {redact: true}];
-  // Tsig algorithm name for rfc2136 updates
-  string tsig_algorithm = 8;
-  // Domain the last live check ran against
-  string checked_domain = 9;
-  // Last live check failure, empty after success
-  string check_error = 10;
-  google.protobuf.Timestamp checked_at = 11;
-  google.protobuf.Timestamp created_at = 12 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
-  google.protobuf.Timestamp updated_at = 13 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
 }
 
 // A set of permissions and metadata
@@ -1740,8 +1641,8 @@ message Module {
   string server_name = 21 [(protogorm.v1.db) = {skip: true}];
   // Name of the source template (for display).
   string template_name = 22 [(protogorm.v1.db) = {skip: true}];
-  // Parent server's proxy hostname (for building access URLs).
-  string server_proxy_hostname = 23 [(protogorm.v1.db) = {skip: true}];
+  // Parent server's proxy hostnames (for building access URLs).
+  repeated string server_proxy_hostnames = 23 [(protogorm.v1.db) = {skip: true}];
   // Port configurations.
   repeated NetworkPort ports = 24;
   // Module dependencies.
@@ -1937,13 +1838,9 @@ message ProxyConfig {
   };
   string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
   bool enabled = 2 [(protogorm.v1.db) = {tag: "not null;default:false"}];
-  string base_url = 3;
+  // Hostnames the panel answers on
+  repeated string hostnames = 3;
   google.protobuf.Timestamp updated_at = 4 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
-  // Panel answers plain requests with a redirect to https
-  bool strict_https = 5 [(protogorm.v1.db) = {tag: "not null;default:false"}];
-  reserved 6, 7;
-  // Router mapping leases renew on a loop
-  bool portmap_keepalive = 8 [(protogorm.v1.db) = {tag: "not null;default:false"}];
 }
 
 // All tunable server properties for one server

@@ -182,12 +182,12 @@ func TestValidateConfigFields(t *testing.T) {
 func TestValidateConfigFieldsResolvesAliases(t *testing.T) {
 	f := field("HOST", func(f *v1.ModuleConfigField) { f.Required = true })
 	ctx := alias.NewContext()
-	ctx.Server = &v1.Server{ProxyHostname: "mc.example.com"}
-	env := map[string]string{"HOST": "{{server.proxy_hostname}}"}
+	ctx.Server = &v1.Server{ProxyHostnames: []string{"mc.example.com"}}
+	env := map[string]string{"HOST": "{{server.proxy_hostnames}}"}
 	if got := ValidateConfigFields([]*v1.ModuleConfigField{f}, env, ctx); len(got) != 0 {
 		t.Fatalf("resolved alias should pass, got %v", got)
 	}
-	ctx.Server = &v1.Server{ProxyHostname: ""}
+	ctx.Server = &v1.Server{}
 	if got := ValidateConfigFields([]*v1.ModuleConfigField{f}, env, ctx); len(got) != 1 {
 		t.Fatalf("empty alias resolution should fail required, got %v", got)
 	}

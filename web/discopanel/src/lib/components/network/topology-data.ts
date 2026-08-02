@@ -15,6 +15,7 @@ import {
 	type Module,
 	type Server
 } from '$lib/proto/discopanel/v1/storage_pb';
+import { hostnameSummary } from '$lib/hostname';
 import { layoutColumns, type LayoutEdge, type LayoutItem } from './topology-layout';
 
 // What the inspector panel is focused on
@@ -25,7 +26,13 @@ export type Selection =
 	| { kind: 'listener-create' }
 	| { kind: 'entry'; port: number; transport: string }
 	| { kind: 'lane'; port: number; protocol: ModuleProtocol }
-	| { kind: 'route'; port: number; protocol: ModuleProtocol; hostname: string }
+	| {
+			kind: 'service';
+			port: number;
+			protocol: ModuleProtocol;
+			ownerKind: NetworkOwnerKind;
+			ownerId: string;
+	  }
 	| { kind: 'server'; id: string }
 	| { kind: 'module'; id: string };
 
@@ -71,15 +78,17 @@ export interface LaneNodeData extends Record<string, unknown> {
 	selection: Selection;
 }
 
-export interface RouteNodeData extends Record<string, unknown> {
-	hostname: string;
+export interface ServiceNodeData extends Record<string, unknown> {
+	// Compact shared summary of every name
+	summary: string;
+	nameCount: number;
+	staleCount: number;
 	port: number;
 	protocol: ModuleProtocol;
 	stateClass: string;
 	connections: number;
 	wakeable: boolean;
 	live: boolean;
-	stale: boolean;
 	dimmed: boolean;
 	selection: Selection;
 }
@@ -111,7 +120,7 @@ const HEIGHTS = {
 	entry: 58,
 	listener: 66,
 	lane: 46,
-	route: 58,
+	service: 58,
 	backend: 66,
 	action: 40
 };
@@ -158,12 +167,112 @@ function edgeClass(route: ProxyRoute | undefined, running: boolean): string {
 	}
 }
 
-function routeId(port: number, protocol: ModuleProtocol, hostname: string): string {
-	return `route:${port}:${protocol}:${hostname}`;
-}
-
 function liveKey(port: number, protocol: ModuleProtocol, hostname: string): string {
 	return `${port}:${protocol}:${hostname.toLowerCase()}`;
+}
+
+// One service and every hostname it answers on one lane
+export interface LaneService {
+	key: string;
+	port: number;
+	protocol: ModuleProtocol;
+	ownerKind: NetworkOwnerKind;
+	ownerId: string;
+	relay: boolean;
+	hostnames: string[];
+	catchAll: boolean;
+	// Live names lacking a reservation
+	staleHostnames: string[];
+	live: boolean;
+	// Counters are service level, never sum across names
+	connections: number;
+	wakeable: boolean;
+	routes: ProxyRoute[];
+}
+
+// Groups reservations and live routes per service and lane
+export function groupServices(
+	reservations: NetworkReservation[],
+	routes: ProxyRoute[],
+	port?: number
+): LaneService[] {
+	const map = new Map<string, LaneService>();
+	const get = (
+		p: number,
+		protocol: ModuleProtocol,
+		ownerKind: NetworkOwnerKind,
+		ownerId: string,
+		relay: boolean
+	): LaneService => {
+		const key = `${p}:${protocol}:${ownerKind}:${ownerId}:${relay}`;
+		let svc = map.get(key);
+		if (!svc) {
+			svc = {
+				key,
+				port: p,
+				protocol,
+				ownerKind,
+				ownerId,
+				relay,
+				hostnames: [],
+				catchAll: false,
+				staleHostnames: [],
+				live: false,
+				connections: 0,
+				wakeable: false,
+				routes: []
+			};
+			map.set(key, svc);
+		}
+		return svc;
+	};
+
+	for (const res of reservations) {
+		if (port !== undefined && res.port !== port) continue;
+		if (res.kind === NetworkReservationKind.ROUTED) {
+			const svc = get(res.port, res.protocol, res.ownerKind, res.ownerId, false);
+			if (!res.hostname) {
+				svc.catchAll = true;
+			} else if (!svc.hostnames.includes(res.hostname)) {
+				svc.hostnames.push(res.hostname);
+			}
+		} else if (res.kind === NetworkReservationKind.RELAY) {
+			get(res.port, res.protocol, res.ownerKind, res.ownerId, true);
+		}
+	}
+
+	for (const route of routes) {
+		if (port !== undefined && route.listenPort !== port) continue;
+		const relay = isRelayProtocol(route.protocol);
+		const svc = get(route.listenPort, route.protocol, route.ownerKind, route.ownerId, relay);
+		svc.live = true;
+		svc.routes.push(route);
+		svc.connections = Math.max(svc.connections, Number(route.activeConnections));
+		if (route.wakeable) svc.wakeable = true;
+		const name = route.hostname.toLowerCase();
+		if (relay || !name) continue;
+		if (!svc.hostnames.includes(name) && !svc.staleHostnames.includes(name)) {
+			svc.staleHostnames.push(name);
+		}
+	}
+
+	for (const svc of map.values()) {
+		svc.hostnames.sort();
+		svc.staleHostnames.sort();
+	}
+	return [...map.values()];
+}
+
+// Service tone prefers the healthiest live route
+function serviceClass(svc: LaneService, running: boolean): string {
+	if (!running) return 'topo-edge-idle';
+	let cls = 'topo-edge-idle';
+	for (const route of svc.routes) {
+		const c = edgeClass(route, running);
+		if (c === 'topo-edge-ok') return c;
+		if (c !== 'topo-edge-idle') cls = c;
+	}
+	return cls;
 }
 
 // Builds the flow graph from topology plus catalog data
@@ -172,8 +281,7 @@ export function buildGraph(
 	listeners: ProxyListenerWithCount[],
 	servers: Server[],
 	modules: Module[],
-	selection: Selection,
-	dnsProvider = ''
+	selection: Selection
 ): TopologyGraph {
 	const nodes: Node[] = [];
 	const edges: Edge[] = [];
@@ -226,23 +334,15 @@ export function buildGraph(
 		liveRoutes.set(liveKey(route.listenPort, route.protocol, route.hostname), route);
 	}
 
+	// Hostname groups per service drive the route column
+	const services = groupServices(topology.reservations, topology.routes);
+
 	// Players source node totals online players
 	const players = servers.reduce((sum, s) => sum + (s.playersOnline || 0), 0);
 	addNode('players', 'source', 0, HEIGHTS.source, 0, {
 		players,
 		selection: { kind: 'overview' }
 	} satisfies SourceNodeData);
-
-	// Detected provider resolving the base domain
-	if (dnsProvider) {
-		addNode('dns-provider', 'entry', 0, HEIGHTS.entry, 0, {
-			title: dnsProvider,
-			port: 0,
-			sub: 'dns provider',
-			active: true,
-			selection: { kind: 'overview' }
-		} satisfies EntryNodeData);
-	}
 
 	addNode(
 		'panel',
@@ -334,7 +434,6 @@ export function buildGraph(
 	interface Lane {
 		port: number;
 		protocol: ModuleProtocol;
-		routes: NetworkReservation[];
 		relayOwner?: NetworkReservation;
 		liveStates: ProxyRoute[];
 	}
@@ -343,12 +442,12 @@ export function buildGraph(
 		const key = `${port}:${protocol}`;
 		let lane = lanes.get(key);
 		if (!lane) {
-			lane = { port, protocol, routes: [], liveStates: [] };
+			lane = { port, protocol, liveStates: [] };
 			lanes.set(key, lane);
 		}
 		return lane;
 	};
-	for (const res of routedRes) laneFor(res.port, res.protocol).routes.push(res);
+	for (const res of routedRes) laneFor(res.port, res.protocol);
 	for (const res of relayRes) laneFor(res.port, res.protocol).relayOwner = res;
 	for (const route of topology.routes) {
 		laneFor(route.listenPort, route.protocol).liveStates.push(route);
@@ -479,74 +578,44 @@ export function buildGraph(
 			continue;
 		}
 
-		// Panel named claim collapses into its catch all node
-		const panelCatchAll = lane.routes.some(
-			(r) => r.ownerKind === NetworkOwnerKind.PANEL && !r.hostname
-		);
-		const laneRoutes = panelCatchAll
-			? lane.routes.filter((r) => !(r.ownerKind === NetworkOwnerKind.PANEL && r.hostname))
-			: lane.routes;
+		// One node per service, names collapse to a summary
+		const laneServices = services
+			.filter((svc) => svc.port === lane.port && svc.protocol === lane.protocol && !svc.relay)
+			.sort((a, b) => (a.hostnames[0] ?? '~').localeCompare(b.hostnames[0] ?? '~'));
+		for (const svc of laneServices) {
+			const routeCls = dimmed ? 'topo-edge-idle' : serviceClass(svc, running);
+			const animated = svc.connections > 0;
+			const backend = targetBackend(svc.ownerKind, svc.ownerId, 0);
+			const allNames = [...svc.hostnames, ...svc.staleHostnames];
 
-		// Hostname routes sorted with the catch all last
-		const sorted = [...laneRoutes].sort((a, b) =>
-			(a.hostname || '~').localeCompare(b.hostname || '~')
-		);
-		const reservedKeys = new Set<string>();
-		for (const res of sorted) {
-			reservedKeys.add(liveKey(lane.port, lane.protocol, res.hostname));
-			const live = liveRoutes.get(liveKey(lane.port, lane.protocol, res.hostname));
-			const routeCls = dimmed ? 'topo-edge-idle' : edgeClass(live, running);
-			const id = routeId(lane.port, lane.protocol, res.hostname);
-			addNode(id, 'route', 3, HEIGHTS.route, 0, {
-				hostname: res.hostname,
+			// Catch all services forward straight to their backend
+			if (allNames.length === 0) {
+				addEdge(laneNodeId, backend, routeCls, animated);
+				continue;
+			}
+
+			const id = `service:${svc.key}`;
+			addNode(id, 'service', 3, HEIGHTS.service, 0, {
+				summary: hostnameSummary(allNames),
+				nameCount: allNames.length,
+				staleCount: svc.staleHostnames.length,
 				port: lane.port,
 				protocol: lane.protocol,
 				stateClass: routeCls,
-				connections: Number(live?.activeConnections ?? 0n),
-				wakeable: live?.wakeable ?? false,
-				live: !!live,
-				stale: false,
+				connections: svc.connections,
+				wakeable: svc.wakeable,
+				live: svc.live,
 				dimmed,
 				selection: {
-					kind: 'route',
+					kind: 'service',
 					port: lane.port,
 					protocol: lane.protocol,
-					hostname: res.hostname
+					ownerKind: svc.ownerKind,
+					ownerId: svc.ownerId
 				}
-			} satisfies RouteNodeData);
-			const animated = Number(live?.activeConnections ?? 0n) > 0;
+			} satisfies ServiceNodeData);
 			addEdge(laneNodeId, id, routeCls, animated);
-			const backend = targetBackend(res.ownerKind, res.ownerId, 0);
 			addEdge(id, backend, routeCls, animated);
-		}
-
-		// Live routes without reservations render as stale
-		for (const live of lane.liveStates) {
-			const key = liveKey(lane.port, lane.protocol, live.hostname);
-			if (reservedKeys.has(key)) continue;
-			const hostname = live.hostname.toLowerCase();
-			const id = routeId(lane.port, lane.protocol, hostname);
-			const routeCls = dimmed ? 'topo-edge-idle' : edgeClass(live, running);
-			addNode(id, 'route', 3, HEIGHTS.route, 0, {
-				hostname,
-				port: lane.port,
-				protocol: lane.protocol,
-				stateClass: routeCls,
-				connections: Number(live.activeConnections),
-				wakeable: live.wakeable,
-				live: true,
-				stale: true,
-				dimmed,
-				selection: { kind: 'route', port: lane.port, protocol: lane.protocol, hostname }
-			} satisfies RouteNodeData);
-			addEdge(laneNodeId, id, routeCls, false);
-			if (
-				live.ownerKind === NetworkOwnerKind.SERVER ||
-				live.ownerKind === NetworkOwnerKind.MODULE
-			) {
-				const backend = targetBackend(live.ownerKind, live.ownerId, 0);
-				addEdge(id, backend, routeCls, false);
-			}
 		}
 	}
 
@@ -660,6 +729,46 @@ export function buildGraph(
 				} satisfies BackendNodeData,
 				{ group: parent ? `server:${parent.id}` : nodeId, indent: !!parent }
 			);
+		}
+	}
+
+	// Selection lights its traffic paths, everything else dims
+	if (selection.kind !== 'overview') {
+		const seeds = nodes.filter((n) => n.selected).map((n) => n.id);
+		if (seeds.length > 0) {
+			const bySource = new Map<string, Edge[]>();
+			const byTarget = new Map<string, Edge[]>();
+			for (const edge of edges) {
+				bySource.set(edge.source, [...(bySource.get(edge.source) ?? []), edge]);
+				byTarget.set(edge.target, [...(byTarget.get(edge.target) ?? []), edge]);
+			}
+			const onPath = new Set<string>();
+			const walk = (starts: string[], down: boolean) => {
+				const pending = [...starts];
+				const seen = new Set(pending);
+				while (pending.length > 0) {
+					const id = pending.pop()!;
+					for (const edge of (down ? bySource.get(id) : byTarget.get(id)) ?? []) {
+						onPath.add(edge.id);
+						const next = down ? edge.target : edge.source;
+						if (!seen.has(next)) {
+							seen.add(next);
+							pending.push(next);
+						}
+					}
+				}
+			};
+			walk(seeds, true);
+			walk(seeds, false);
+			for (const edge of edges) {
+				if (onPath.has(edge.id)) {
+					// Animation direction mirrors traffic flow
+					edge.animated = true;
+				} else {
+					edge.animated = false;
+					edge.class = `${edge.class} topo-edge-dim`;
+				}
+			}
 		}
 	}
 

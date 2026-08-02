@@ -809,7 +809,7 @@ func (c *Collector) collectSLPData() {
 		// SLP ping w/ server version for protocol
 		slpCtx, slpCancel := context.WithTimeout(ctx, c.collectorConfig.SLPTimeout)
 		port := int(server.Port)
-		if server.ProxyHostname != "" || port == 0 {
+		if len(server.ProxyHostnames) > 0 || port == 0 {
 			port = docker.DefaultMinecraftPort // Proxy listens on default port (inside container)
 		}
 		result, err := slpClient.Ping(slpCtx, containerIP, port)

@@ -1,13 +1,16 @@
 <script lang="ts">
 	import type { Server } from '$lib/proto/discopanel/v1/storage_pb';
 	import { isUp, TONE_BG, type StatusTone } from '$lib/server-status';
-	import { CopyButton, MotdText } from '$lib/components/app';
+	import { AddressSelect, MotdText } from '$lib/components/app';
 	import { Users, Radio } from '@lucide/svelte';
 	import { panelHost } from '$lib/utils/host';
 
 	let { server }: { server: Server } = $props();
 
-	let address = $derived(server.proxyHostname || `${panelHost()}:${server.port}`);
+	// Every routed name joins, unrouted falls back to the port
+	let addresses = $derived(
+		server.proxyHostnames.length ? server.proxyHostnames : [`${panelHost()}:${server.port}`]
+	);
 	let up = $derived(isUp(server.status));
 	let maxPlayers = $derived(server.maxPlayersSlp || server.maxPlayers);
 	let fillPercent = $derived(maxPlayers > 0 ? (server.playersOnline / maxPlayers) * 100 : 0);
@@ -33,10 +36,7 @@
 	</div>
 
 	<div class="space-y-3 px-5 py-4">
-		<div class="flex items-center justify-between gap-2 rounded-lg border bg-muted/40 px-3 py-2.5">
-			<span class="min-w-0 truncate font-mono text-sm font-medium" title={address}>{address}</span>
-			<CopyButton text={address} label="Copy address" />
-		</div>
+		<AddressSelect {addresses} />
 
 		{#if server.motd}
 			<div

@@ -25,7 +25,7 @@ const MinecraftDefaultPort = 25565
 
 // Port the server listens on inside its container
 func InContainerPort(s *v1.Server) int {
-	if s.ProxyHostname != "" {
+	if len(s.ProxyHostnames) > 0 {
 		return MinecraftDefaultPort
 	}
 	return int(s.Port)
@@ -55,7 +55,7 @@ func (s *Store) HydrateProxyPorts(ctx context.Context, servers ...*v1.Server) er
 		if server == nil {
 			continue
 		}
-		if server.ProxyHostname != "" {
+		if len(server.ProxyHostnames) > 0 {
 			server.ProxyPort = byID[server.ProxyListenerId]
 		} else {
 			server.ProxyPort = 0
@@ -497,7 +497,6 @@ func (s *Store) GetProxyConfig(ctx context.Context) (*v1.ProxyConfig, bool, erro
 			return &v1.ProxyConfig{
 				Id:      "default",
 				Enabled: s.cfg.Proxy.Enabled,
-				BaseUrl: s.cfg.Proxy.BaseUrl,
 			}, true, nil
 		}
 		return nil, false, err

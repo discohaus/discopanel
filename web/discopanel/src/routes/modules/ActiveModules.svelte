@@ -3,7 +3,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Switch } from '$lib/components/ui/switch';
 	import { Skeleton } from '$lib/components/ui/skeleton';
-	import { EmptyState, ConfirmDialog } from '$lib/components/app';
+	import { EmptyState, ConfirmDialog, AddressSelect } from '$lib/components/app';
 	import { rpcClient, rpcErrorMessage, silentCallOptions } from '$lib/api/rpc-client';
 	import { toast } from 'svelte-sonner';
 	import type { Module } from '$lib/proto/discopanel/v1/storage_pb';
@@ -150,6 +150,17 @@
 	function resolve(input: string, moduleId: string): string {
 		const vals = aliasValues[moduleId] ?? {};
 		return input.replace(/\{\{[^}]+\}\}/g, (match) => vals[match] ?? match);
+	}
+
+	const HOST_ALIASES = ['{{host.hostname}}', '{{server.proxy_hostnames}}'];
+
+	// Host templates expand into one url per hostname
+	function resolveUrls(input: string, moduleId: string, hostnames: string[]): string[] {
+		const hostAlias = HOST_ALIASES.find((alias) => input.includes(alias));
+		if (hostAlias && hostnames.length > 0) {
+			return hostnames.map((name) => resolve(input.replaceAll(hostAlias, name), moduleId));
+		}
+		return [resolve(input, moduleId)];
 	}
 
 	async function handleStartModule(module: Module) {
@@ -391,24 +402,17 @@
 					{#if module.accessUrls?.length}
 						<div class="mt-3 space-y-1">
 							{#each module.accessUrls as url, i (i)}
-								{@const resolved = resolve(url, module.id)}
-								<div class="flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1.5">
-									<ExternalLink class="size-3 shrink-0 text-muted-foreground" />
-									{#if resolved.includes('{{')}
-										<span class="truncate font-mono text-xs text-muted-foreground">{resolved}</span>
-									{:else}
-										<!-- eslint-disable svelte/no-navigation-without-resolve -- external URL -->
-										<a
-											href={resolved}
-											target="_blank"
-											rel="noopener noreferrer"
-											class="truncate font-mono text-xs text-primary hover:underline"
-										>
-											{resolved}
-										</a>
-										<!-- eslint-enable svelte/no-navigation-without-resolve -->
-									{/if}
-								</div>
+								{@const resolved = resolveUrls(url, module.id, module.serverProxyHostnames ?? [])}
+								{#if resolved[0].includes('{{')}
+									<div class="flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1.5">
+										<ExternalLink class="size-3 shrink-0 text-muted-foreground" />
+										<span class="truncate font-mono text-xs text-muted-foreground">
+											{resolved[0]}
+										</span>
+									</div>
+								{:else}
+									<AddressSelect addresses={resolved} label="URL" link />
+								{/if}
 							{/each}
 						</div>
 					{/if}

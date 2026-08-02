@@ -66,7 +66,7 @@
 	let dockerImages = $state<GetDockerImagesResponse | null>(null);
 
 	let stopped = $derived(server.status === ServerStatus.STOPPED);
-	let proxied = $derived(server.proxyHostname !== '');
+	let proxied = $derived((server.proxyHostnames ?? []).length > 0);
 	let displayFavicon = $derived(uploadedFavicon || server.favicon);
 	let usedPorts = $state<Record<number, boolean>>({});
 
@@ -553,7 +553,7 @@
 							{usedPorts}
 							disabled={saving}
 							proxyAvailable={proxied}
-							serverHostname={server.proxyHostname}
+							serverHostnames={server.proxyHostnames}
 							onchange={(ports) => (formData.additionalPorts = ports)}
 						/>
 					</div>

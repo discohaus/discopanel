@@ -2,13 +2,14 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
 	"connectrpc.com/connect"
-	"github.com/google/uuid"
 	storage "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/docker"
 	"github.com/discohaus/discopanel/internal/metrics"
@@ -18,7 +19,8 @@ import (
 	"github.com/discohaus/discopanel/pkg/logger"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
-	"google.golang.org/protobuf/types/known/timestamppb"
+	"github.com/google/uuid"
+	"google.golang.org/protobuf/proto"
 )
 
 // Compile-time check that ProxyService implements the interface
@@ -68,9 +70,10 @@ func (s *ProxyService) buildProxyRoutes() []*v1.ProxyRoute {
 	protoRoutes := make([]*v1.ProxyRoute, 0, len(entries))
 	for _, entry := range entries {
 		route := entry.Route
-		pr := stats[route.ServerID]
-		if pr == nil {
-			pr = &v1.ProxyRoute{}
+		pr := &v1.ProxyRoute{}
+		// Rows copy shared counters before mutation
+		if counters := stats[route.ServerID]; counters != nil {
+			pr, _ = proto.Clone(counters).(*v1.ProxyRoute)
 		}
 		pr.ServerId = ""
 		if route.OwnerKind == proxy.OwnerServer {
@@ -102,8 +105,8 @@ func (s *ProxyService) GetProxyStatus(ctx context.Context, req *connect.Request[
 	if err != nil {
 		s.log.Error("Failed to load proxy configuration: %v", err)
 		proxyConfig = &v1.ProxyConfig{
-			Enabled: s.proxyManager.Enabled(),
-			BaseUrl: s.proxyManager.BaseURL(),
+			Enabled:   s.proxyManager.Enabled(),
+			Hostnames: s.proxyManager.PanelHostnames(),
 		}
 	}
 
@@ -139,51 +142,36 @@ func (s *ProxyService) GetProxyStatus(ctx context.Context, req *connect.Request[
 		activeRoutes = int32(len(s.proxyManager.RouteEntries()))
 	}
 
-	effectiveBaseURL, baseURLSource := s.proxyManager.EffectiveBaseDomain()
-
 	return connect.NewResponse(&v1.GetProxyStatusResponse{
-		Enabled:          proxyConfig.Enabled,
-		BaseUrl:          proxyConfig.BaseUrl,
-		ListenPorts:      listenPorts,
-		Listeners:        listeners,
-		ListenPort:       primaryPort,
-		Running:          running,
-		ActiveRoutes:     activeRoutes,
-		EffectiveBaseUrl: effectiveBaseURL,
-		BaseUrlSource:    baseURLSource,
-		StrictHttps:      proxyConfig.StrictHttps,
+		Enabled:      proxyConfig.Enabled,
+		Hostnames:    proxyConfig.Hostnames,
+		ListenPorts:  listenPorts,
+		Listeners:    listeners,
+		ListenPort:   primaryPort,
+		Running:      running,
+		ActiveRoutes: activeRoutes,
+	}), nil
+}
+
+// Computes hostname suggestions for any hostname input
+func (s *ProxyService) GetHostnameSuggestions(ctx context.Context, req *connect.Request[v1.GetHostnameSuggestionsRequest]) (*connect.Response[v1.GetHostnameSuggestionsResponse], error) {
+	return connect.NewResponse(&v1.GetHostnameSuggestionsResponse{
+		Suggestions: s.proxyManager.HostnameSuggestions(req.Msg.Label),
 	}), nil
 }
 
 // Updates proxy configuration
 func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Request[v1.UpdateProxyConfigRequest]) (*connect.Response[v1.GetProxyStatusResponse], error) {
 	msg := req.Msg
-	baseURL := proxy.NormalizeHostname(msg.BaseUrl)
-
-	// Instant sslip names follow the network, never persist
-	if strings.HasSuffix(baseURL, ".sslip.io") {
-		baseURL = ""
+	hostnames, err := proxy.NormalizeHostnames(msg.Hostnames)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	// Strict https without a panel cert locks the ui out
-	if msg.StrictHttps {
-		target := baseURL
-		if target == "" {
-			target, _ = s.proxyManager.AutoDomain()
-		}
-		if target == "" {
-			return nil, connect.NewError(connect.CodeFailedPrecondition,
-				fmt.Errorf("no panel domain detected yet, HTTPS only cannot turn on"))
-		}
-		covered := false
-		if rows, err := s.store.ListProxyCertificates(ctx); err == nil {
-			if row, _, _ := proxy.MatchCertificateRow(rows, target); row != nil {
-				covered = true
-			}
-		}
-		if !covered {
-			return nil, connect.NewError(connect.CodeFailedPrecondition,
-				fmt.Errorf("no certificate covers %s, issue or upload one before requiring HTTPS", target))
+	// Registry rejects names another service already routes
+	if s.proxyManager != nil {
+		if err := s.proxyManager.ValidatePanelHostnames(ctx, hostnames); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 	}
 
@@ -203,15 +191,9 @@ func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Reque
 
 	// Save to database
 	proxyConfig := &v1.ProxyConfig{
-		Id:          "default",
-		Enabled:     msg.Enabled,
-		BaseUrl:     baseURL,
-		StrictHttps: msg.StrictHttps,
-	}
-
-	// Mapping settings ride along untouched
-	if prevErr == nil && prevConfig != nil {
-		proxyConfig.PortmapKeepalive = prevConfig.PortmapKeepalive
+		Id:        "default",
+		Enabled:   msg.Enabled,
+		Hostnames: hostnames,
 	}
 
 	if err := s.store.SaveProxyConfig(ctx, proxyConfig); err != nil {
@@ -219,7 +201,7 @@ func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save proxy configuration"))
 	}
 
-	s.log.Info("Proxy configuration saved to database: enabled=%v, base_url=%v", msg.Enabled, baseURL)
+	s.log.Info("Proxy configuration saved to database: enabled=%v, hostnames=%v", msg.Enabled, hostnames)
 
 	// Old row comes back if apply or validation fails
 	restorePrev := func() {
@@ -229,13 +211,13 @@ func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Reque
 		if rerr := s.store.SaveProxyConfig(ctx, prevConfig); rerr != nil {
 			s.log.Error("Failed to restore previous proxy configuration: %v", rerr)
 		} else {
-			s.proxyManager.ApplyConfig(ctx, prevConfig.Enabled, prevConfig.BaseUrl)
+			s.proxyManager.ApplyConfig(ctx, prevConfig.Enabled, prevConfig.Hostnames)
 		}
 	}
 
 	// Manager owns runtime state and reconciles sockets
 	if s.proxyManager != nil {
-		if err := s.proxyManager.ApplyConfig(ctx, msg.Enabled, baseURL); err != nil {
+		if err := s.proxyManager.ApplyConfig(ctx, msg.Enabled, hostnames); err != nil {
 			s.log.Error("Failed to apply proxy configuration: %v", err)
 			restorePrev()
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to apply proxy configuration: %w", err))
@@ -260,58 +242,6 @@ func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Reque
 
 	// Return updated status, callers read it like GetProxyStatus
 	return s.GetProxyStatus(ctx, connect.NewRequest(&v1.GetProxyStatusRequest{}))
-}
-
-// Cached access snapshot every surface renders from
-func (s *ProxyService) GetAccessStatus(ctx context.Context, req *connect.Request[v1.GetAccessStatusRequest]) (*connect.Response[v1.GetAccessStatusResponse], error) {
-	if s.proxyManager == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("proxy manager not available"))
-	}
-	snap, err := s.proxyManager.AccessStatus(ctx, false)
-	if err != nil {
-		s.log.Error("Failed to build access snapshot: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to build access snapshot"))
-	}
-	return connect.NewResponse(snap), nil
-}
-
-// Reruns every probe and refreshes the snapshot
-func (s *ProxyService) CheckAccess(ctx context.Context, req *connect.Request[v1.CheckAccessRequest]) (*connect.Response[v1.GetAccessStatusResponse], error) {
-	if s.proxyManager == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("proxy manager not available"))
-	}
-	snap, err := s.proxyManager.AccessStatus(ctx, true)
-	if err != nil {
-		s.log.Error("Failed to refresh access snapshot: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to refresh access snapshot"))
-	}
-	return connect.NewResponse(snap), nil
-}
-
-// Plans certificate issuance for hostnames
-func (s *ProxyService) GetSecurePlan(ctx context.Context, req *connect.Request[v1.GetSecurePlanRequest]) (*connect.Response[v1.GetSecurePlanResponse], error) {
-	if s.proxyManager == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("proxy manager not available"))
-	}
-	plan, err := s.proxyManager.SecurePlan(ctx, req.Msg)
-	if err != nil {
-		s.log.Error("Failed to build secure plan: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to build secure plan"))
-	}
-	return connect.NewResponse(plan), nil
-}
-
-// Deduped active hostnames with certificate coverage
-func (s *ProxyService) GetHostnameCoverage(ctx context.Context, req *connect.Request[v1.GetHostnameCoverageRequest]) (*connect.Response[v1.GetHostnameCoverageResponse], error) {
-	if s.proxyManager == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("proxy manager not available"))
-	}
-	hostnames, err := s.proxyManager.HostnameCoverage(ctx)
-	if err != nil {
-		s.log.Error("Failed to build hostname coverage: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to build hostname coverage"))
-	}
-	return connect.NewResponse(&v1.GetHostnameCoverageResponse{Hostnames: hostnames}), nil
 }
 
 // Preview what disabling the proxy converts
@@ -386,7 +316,7 @@ func (s *ProxyService) computeDisableImpact(ctx context.Context, overrides map[s
 		return nil, err
 	}
 	for _, server := range servers {
-		if server.ProxyHostname == "" {
+		if len(server.ProxyHostnames) == 0 {
 			continue
 		}
 		port := int(overrides[server.Id])
@@ -410,7 +340,7 @@ func (s *ProxyService) computeDisableImpact(ctx context.Context, overrides map[s
 		exclude[port+docker.RCONPortOffset] = true
 		impact.Servers = append(impact.Servers, &v1.ProxiedServerImpact{
 			ServerId:     server.Id,
-			Hostname:     server.ProxyHostname,
+			Hostnames:    server.ProxyHostnames,
 			ProposedPort: int32(port),
 		})
 	}
@@ -533,7 +463,7 @@ func (s *ProxyService) convertForDisable(ctx context.Context, msg *v1.UpdateProx
 			return nil, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("server %s not found", sv.ServerId))
 		}
 		s.flipServerPorts(ctx, server, serverPortPlan[server.Id])
-		if err := s.applyServerRouting(ctx, server, "", "", sv.ProposedPort, true); err != nil {
+		if err := s.applyServerRouting(ctx, server, nil, "", sv.ProposedPort, true); err != nil {
 			return nil, nil, err
 		}
 		converted[server.Id] = true
@@ -898,16 +828,6 @@ func (s *ProxyService) GetServerRouting(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
 	}
 
-	// Get suggested hostname if not set
-	effectiveBaseURL, baseURLSource := s.proxyManager.EffectiveBaseDomain()
-	suggestedHostname := ""
-	if server.ProxyHostname == "" && effectiveBaseURL != "" {
-		candidate := proxy.NormalizeHostname(strings.ReplaceAll(server.Name, " ", "-") + "." + effectiveBaseURL)
-		if proxy.ValidHostname(candidate) {
-			suggestedHostname = candidate
-		}
-	}
-
 	// Check if proxy is enabled and get current route
 	var currentRoute *v1.ServerRoute
 	if s.proxyManager != nil {
@@ -945,15 +865,11 @@ func (s *ProxyService) GetServerRouting(ctx context.Context, req *connect.Reques
 	}
 
 	return connect.NewResponse(&v1.GetServerRoutingResponse{
-		ProxyEnabled:      s.proxyManager.Enabled(),
-		ProxyHostname:     server.ProxyHostname,
-		ProxyListenerId:   server.ProxyListenerId,
-		SuggestedHostname: suggestedHostname,
-		BaseUrl:           s.proxyManager.BaseURL(),
-		ListenPort:        listenPort,
-		CurrentRoute:      currentRoute,
-		EffectiveBaseUrl:  effectiveBaseURL,
-		BaseUrlSource:     baseURLSource,
+		ProxyEnabled:    s.proxyManager.Enabled(),
+		ProxyHostnames:  server.ProxyHostnames,
+		ProxyListenerId: server.ProxyListenerId,
+		ListenPort:      listenPort,
+		CurrentRoute:    currentRoute,
 	}), nil
 }
 
@@ -978,16 +894,12 @@ func (s *ProxyService) GetNetworkTopology(ctx context.Context, req *connect.Requ
 		panelPort = p
 	}
 
-	effectiveBaseURL, baseURLSource := s.proxyManager.EffectiveBaseDomain()
-
 	return connect.NewResponse(&v1.GetNetworkTopologyResponse{
-		ProxyEnabled:     s.proxyManager.Enabled(),
-		ProxyRunning:     s.proxyManager.IsRunning(),
-		EffectiveBaseUrl: effectiveBaseURL,
-		BaseUrlSource:    baseURLSource,
-		PanelPort:        int32(panelPort),
-		Reservations:     protoReservations,
-		Routes:           s.buildProxyRoutes(),
+		ProxyEnabled: s.proxyManager.Enabled(),
+		ProxyRunning: s.proxyManager.IsRunning(),
+		PanelPort:    int32(panelPort),
+		Reservations: protoReservations,
+		Routes:       s.buildProxyRoutes(),
 	}), nil
 }
 
@@ -1002,17 +914,19 @@ func (s *ProxyService) UpdateServerRouting(ctx context.Context, req *connect.Req
 
 	oldProxyListenerID := server.ProxyListenerId
 
-	// Normalize hostname, registry checkout validates it later
-	hostname := proxy.NormalizeHostname(msg.ProxyHostname)
+	hostnames, err := proxy.NormalizeHostnames(msg.ProxyHostnames)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 
 	// Routing needs the proxy on
-	if hostname != "" && !s.proxyManager.Enabled() {
+	if len(hostnames) > 0 && !s.proxyManager.Enabled() {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("proxy is disabled"))
 	}
 
 	// Determine new listener ID
 	listenerID := msg.ProxyListenerId
-	if listenerID == "" && hostname != "" {
+	if listenerID == "" && len(hostnames) > 0 {
 		// Uses existing or default listener when enabling without one
 		if oldProxyListenerID != "" {
 			listenerID = oldProxyListenerID
@@ -1037,13 +951,13 @@ func (s *ProxyService) UpdateServerRouting(ctx context.Context, req *connect.Req
 				}
 			}
 		}
-		if listenerID == "" && hostname != "" {
+		if listenerID == "" && len(hostnames) > 0 {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no proxy listener available"))
 		}
 	}
 
 	// Clear listener if disabling proxy
-	if hostname == "" {
+	if len(hostnames) == 0 {
 		listenerID = ""
 	}
 
@@ -1051,287 +965,34 @@ func (s *ProxyService) UpdateServerRouting(ctx context.Context, req *connect.Req
 	if msg.Port != nil {
 		requestedPort = *msg.Port
 	}
-	if err := s.applyServerRouting(ctx, server, hostname, listenerID, requestedPort, false); err != nil {
+	if err := s.applyServerRouting(ctx, server, hostnames, listenerID, requestedPort, false); err != nil {
 		return nil, err
 	}
 
 	return connect.NewResponse(&v1.UpdateServerRoutingResponse{
-		Hostname:        hostname,
+		Hostnames:       hostnames,
 		ProxyListenerId: listenerID,
 	}), nil
 }
 
-// Lists certificates without key material
-func (s *ProxyService) GetProxyCertificates(ctx context.Context, req *connect.Request[v1.GetProxyCertificatesRequest]) (*connect.Response[v1.GetProxyCertificatesResponse], error) {
-	rows, err := s.store.ListProxyCertificates(ctx)
-	if err != nil {
-		s.log.Error("Failed to list certificates: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list certificates"))
-	}
-	out := make([]*v1.ProxyCertificate, len(rows))
-	for i, row := range rows {
-		out[i] = row.Redact()
-	}
-	return connect.NewResponse(&v1.GetProxyCertificatesResponse{Certificates: out}), nil
-}
-
-// Normalizes uploaded material and stores it for serving
-func (s *ProxyService) UploadProxyCertificate(ctx context.Context, req *connect.Request[v1.UploadProxyCertificateRequest]) (*connect.Response[v1.UploadProxyCertificateResponse], error) {
-	msg := req.Msg
-	chainPEM, keyPEM, err := proxy.NormalizeCertUpload(msg.Files)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-
-	material, err := proxy.ParseCertificateMaterial(chainPEM, keyPEM)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	sealed, err := s.proxyManager.SealPrivateKey(keyPEM)
-	if err != nil {
-		s.log.Error("Failed to seal private key: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to seal private key"))
-	}
-
-	// Leaf's first name stands in for an omitted name
-	name := strings.TrimSpace(msg.Name)
-	if name == "" {
-		name = material.Domains[0]
-	}
-
-	row := &v1.ProxyCertificate{
-		Id:            uuid.New().String(),
-		Name:          name,
-		Domains:       material.Domains,
-		Source:        v1.CertificateSource_CERTIFICATE_SOURCE_UPLOADED,
-		CertChainPem:  chainPEM,
-		PrivateKeyPem: sealed,
-		Issuer:        material.Issuer,
-		NotBefore:     timestamppb.New(material.NotBefore),
-		NotAfter:      timestamppb.New(material.NotAfter),
-	}
-	if err := s.store.CreateProxyCertificate(ctx, row); err != nil {
-		s.log.Error("Failed to store certificate: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to store certificate"))
-	}
-	if err := s.proxyManager.ReloadCertificates(ctx); err != nil {
-		s.log.Error("Failed to reload certificates: %v", err)
-	}
-	return connect.NewResponse(&v1.UploadProxyCertificateResponse{Certificate: row.Redact()}), nil
-}
-
-// Orders certificates from a public acme authority
-func (s *ProxyService) OrderProxyCertificate(ctx context.Context, req *connect.Request[v1.OrderProxyCertificateRequest]) (*connect.Response[v1.OrderProxyCertificateResponse], error) {
-	msg := req.Msg
-	name := strings.TrimSpace(msg.Name)
-	if name == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("certificate name is required"))
-	}
-
-	solver := v1.AcmeSolver_ACME_SOLVER_HTTP
-	credentialID := ""
-	if dns := msg.GetDns(); dns != nil {
-		solver = v1.AcmeSolver_ACME_SOLVER_DNS_CREDENTIAL
-		credentialID = dns.CredentialId
-	}
-	dnsSolver := solver != v1.AcmeSolver_ACME_SOLVER_HTTP
-
-	var domains []string
-	seen := make(map[string]bool)
-	for _, domain := range msg.Domains {
-		domain = proxy.NormalizeHostname(domain)
-		if domain == "" || seen[domain] {
-			continue
-		}
-		if err := proxy.ValidACMEDomain(domain, dnsSolver); err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
-		}
-		seen[domain] = true
-		domains = append(domains, domain)
-	}
-	if len(domains) == 0 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("at least one domain is required"))
-	}
-
-	// Challenge path proven before any order burns budget
-	switch solver {
-	case v1.AcmeSolver_ACME_SOLVER_HTTP:
-		for _, domain := range domains {
-			_, _, ok, err := s.proxyManager.ProbeChallengePath(ctx, domain)
-			if err != nil {
-				return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%s cannot be probed, %v", domain, err))
-			}
-			if !ok {
-				return nil, connect.NewError(connect.CodeFailedPrecondition,
-					fmt.Errorf("%s does not echo back on port 80 or 443, fix forwarding and probe again", domain))
-			}
-		}
-	case v1.AcmeSolver_ACME_SOLVER_DNS_CREDENTIAL:
-		cred, err := s.store.GetDnsProviderCredential(ctx, credentialID)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("dns credential not found"))
-		}
-		for _, domain := range domains {
-			if _, err := s.proxyManager.CheckDnsCredential(ctx, cred, domain); err != nil {
-				return nil, connect.NewError(connect.CodeFailedPrecondition,
-					fmt.Errorf("%s failed the credential check, %v", domain, err))
-			}
-		}
-	}
-
-	email := strings.TrimSpace(msg.Email)
-	directory := strings.TrimSpace(msg.Directory)
-	issued, orderErr := s.proxyManager.OrderACMECertificates(ctx, domains, email, directory, solver, credentialID)
-
-	// Issued certificates persist even when a later one failed
-	var stored []*v1.ProxyCertificate
-	for _, material := range issued {
-		row, err := s.proxyManager.StoreACMEMaterial(ctx, name, email, directory, len(domains) > 1, solver, credentialID, &material)
-		if err != nil {
-			s.log.Error("Failed to store acme certificate for %s: %v", material.Domain, err)
-			continue
-		}
-		stored = append(stored, row.Redact())
-	}
-	if len(stored) > 0 {
-		if err := s.proxyManager.ReloadCertificates(ctx); err != nil {
-			s.log.Error("Failed to reload certificates: %v", err)
-		}
-	}
-	if orderErr != nil {
-		if len(stored) > 0 {
-			return nil, connect.NewError(connect.CodeFailedPrecondition,
-				fmt.Errorf("stored %d of %d certificates, then %v", len(stored), len(domains), orderErr))
-		}
-		return nil, connect.NewError(connect.CodeFailedPrecondition, orderErr)
-	}
-	return connect.NewResponse(&v1.OrderProxyCertificateResponse{Certificates: stored}), nil
-}
-
-// Renews an acme certificate immediately
-func (s *ProxyService) RenewProxyCertificate(ctx context.Context, req *connect.Request[v1.RenewProxyCertificateRequest]) (*connect.Response[v1.RenewProxyCertificateResponse], error) {
-	row, err := s.store.GetProxyCertificate(ctx, req.Msg.Id)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("certificate not found"))
-	}
-	if row.Source != v1.CertificateSource_CERTIFICATE_SOURCE_ACME {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("only acme certificates renew"))
-	}
-	if err := s.proxyManager.RenewACMECertificate(ctx, row); err != nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
-	}
-	return connect.NewResponse(&v1.RenewProxyCertificateResponse{Certificate: row.Redact()}), nil
-}
-
-// Renames or replaces a certificate's pem material
-func (s *ProxyService) UpdateProxyCertificate(ctx context.Context, req *connect.Request[v1.UpdateProxyCertificateRequest]) (*connect.Response[v1.UpdateProxyCertificateResponse], error) {
-	msg := req.Msg
-	row, err := s.store.GetProxyCertificate(ctx, msg.Id)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("certificate not found"))
-	}
-
-	if name := strings.TrimSpace(msg.Name); name != "" {
-		row.Name = name
-	}
-
-	if msg.CertChainPem != "" || msg.PrivateKeyPem != "" {
-		if msg.CertChainPem == "" || msg.PrivateKeyPem == "" {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("certificate and key must be replaced together"))
-		}
-		material, err := proxy.ParseCertificateMaterial(msg.CertChainPem, msg.PrivateKeyPem)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
-		}
-		sealed, err := s.proxyManager.SealPrivateKey(msg.PrivateKeyPem)
-		if err != nil {
-			s.log.Error("Failed to seal private key: %v", err)
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to seal private key"))
-		}
-		row.CertChainPem = msg.CertChainPem
-		row.PrivateKeyPem = sealed
-		row.Domains = material.Domains
-		row.Issuer = material.Issuer
-		row.NotBefore = timestamppb.New(material.NotBefore)
-		row.NotAfter = timestamppb.New(material.NotAfter)
-		row.Source = v1.CertificateSource_CERTIFICATE_SOURCE_UPLOADED
-	}
-
-	if err := s.store.UpdateProxyCertificate(ctx, row); err != nil {
-		s.log.Error("Failed to update certificate: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update certificate"))
-	}
-	if err := s.proxyManager.ReloadCertificates(ctx); err != nil {
-		s.log.Error("Failed to reload certificates: %v", err)
-	}
-	return connect.NewResponse(&v1.UpdateProxyCertificateResponse{Certificate: row.Redact()}), nil
-}
-
-// Sets the hostnames a certificate serves by assignment
-func (s *ProxyService) AssignProxyCertificate(ctx context.Context, req *connect.Request[v1.AssignProxyCertificateRequest]) (*connect.Response[v1.AssignProxyCertificateResponse], error) {
-	row, err := s.store.GetProxyCertificate(ctx, req.Msg.Id)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("certificate not found"))
-	}
-
-	var hostnames []string
-	seen := make(map[string]bool)
-	for _, hostname := range req.Msg.Hostnames {
-		hostname = proxy.NormalizeHostname(hostname)
-		if hostname == "" || seen[hostname] {
-			continue
-		}
-		if !proxy.ValidCertDomain(hostname) {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s is not a valid hostname", hostname))
-		}
-		seen[hostname] = true
-		hostnames = append(hostnames, hostname)
-	}
-
-	row.AssignedHostnames = hostnames
-	if err := s.store.UpdateProxyCertificate(ctx, row); err != nil {
-		s.log.Error("Failed to update certificate assignments: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update certificate"))
-	}
-	if err := s.proxyManager.ReloadCertificates(ctx); err != nil {
-		s.log.Error("Failed to reload certificates: %v", err)
-	}
-	return connect.NewResponse(&v1.AssignProxyCertificateResponse{Certificate: row.Redact()}), nil
-}
-
-// Deletes a certificate
-func (s *ProxyService) DeleteProxyCertificate(ctx context.Context, req *connect.Request[v1.DeleteProxyCertificateRequest]) (*connect.Response[v1.DeleteProxyCertificateResponse], error) {
-	if _, err := s.store.GetProxyCertificate(ctx, req.Msg.Id); err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("certificate not found"))
-	}
-	if err := s.store.DeleteProxyCertificate(ctx, req.Msg.Id); err != nil {
-		s.log.Error("Failed to delete certificate: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete certificate"))
-	}
-	if err := s.proxyManager.ReloadCertificates(ctx); err != nil {
-		s.log.Error("Failed to reload certificates: %v", err)
-	}
-	return connect.NewResponse(&v1.DeleteProxyCertificateResponse{}), nil
-}
-
 // Applies a routing shape to one server end to end
-func (s *ProxyService) applyServerRouting(ctx context.Context, server *v1.Server, hostname, listenerID string, requestedPort int32, planned bool) error {
-	oldProxyHostname := server.ProxyHostname
+func (s *ProxyService) applyServerRouting(ctx context.Context, server *v1.Server, hostnames []string, listenerID string, requestedPort int32, planned bool) error {
+	oldProxyHostnames := server.ProxyHostnames
 	oldProxyListenerID := server.ProxyListenerId
 
 	// Detect what changed
-	hostnameChanged := oldProxyHostname != hostname
+	hostnamesChanged := !slices.Equal(oldProxyHostnames, hostnames)
 	listenerChanged := oldProxyListenerID != listenerID
-	proxyModeChanged := (oldProxyHostname == "") != (hostname == "")
+	proxyModeChanged := (len(oldProxyHostnames) == 0) != (len(hostnames) == 0)
 
 	// Direct mode binds the requested host port
 	oldPort := server.Port
 	newPort := oldPort
-	if hostname == "" && requestedPort > 0 {
+	if len(hostnames) == 0 && requestedPort > 0 {
 		newPort = requestedPort
 	}
 	// Conversions without a pick get a registry port
-	if hostname == "" && oldProxyHostname != "" && requestedPort <= 0 {
+	if len(hostnames) == 0 && len(oldProxyHostnames) > 0 && requestedPort <= 0 {
 		free, ferr := s.proxyManager.FindFreePort(ctx, proxy.FreePortOpts{
 			Protocol:   v1.ModuleProtocol_MODULE_PROTOCOL_TCP,
 			Start:      s.config.Proxy.PortRangeMin,
@@ -1343,7 +1004,7 @@ func (s *ProxyService) applyServerRouting(ctx context.Context, server *v1.Server
 		}
 		newPort = int32(free)
 	}
-	if hostname != "" {
+	if len(hostnames) > 0 {
 		// Proxied containers always listen on the default inside
 		newPort = storage.MinecraftDefaultPort
 	}
@@ -1354,12 +1015,12 @@ func (s *ProxyService) applyServerRouting(ctx context.Context, server *v1.Server
 	if !planned {
 		proxyOn := s.proxyManager.Enabled()
 		var netReqs []proxy.NetRequest
-		if hostname != "" {
+		if len(hostnames) > 0 {
 			listener, lerr := s.store.GetProxyListener(ctx, listenerID)
 			if lerr != nil || listener == nil {
 				return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("proxy listener not found"))
 			}
-			netReqs = proxy.ServerProxiedNetRequests(hostname, int(listener.Port), server.AdditionalPorts, proxyOn)
+			netReqs = proxy.ServerProxiedNetRequests(hostnames, int(listener.Port), server.AdditionalPorts, proxyOn)
 		} else {
 			netReqs = proxy.ServerDirectNetRequests(int(newPort), server.AdditionalPorts, proxyOn)
 		}
@@ -1380,14 +1041,16 @@ func (s *ProxyService) applyServerRouting(ctx context.Context, server *v1.Server
 
 	// Planned conversions rebind after the sockets release
 	needsRecreation := !planned &&
-		(proxyModeChanged || (listenerChanged && hostname != "" && oldProxyHostname != "") || (portChanged && hostname == ""))
+		(proxyModeChanged || (listenerChanged && len(hostnames) > 0 && len(oldProxyHostnames) > 0) || (portChanged && len(hostnames) == 0))
 
 	// Update server fields
-	server.ProxyHostname = hostname
+	server.ProxyHostnames = hostnames
 	server.ProxyListenerId = listenerID
 	server.Port = newPort
+	// Map updates bypass serializers, store json text
+	hostnamesJSON, _ := json.Marshal(hostnames)
 	fields := map[string]any{
-		"proxy_hostname":    hostname,
+		"proxy_hostnames":   string(hostnamesJSON),
 		"proxy_listener_id": listenerID,
 		"port":              newPort,
 	}
@@ -1422,16 +1085,16 @@ func (s *ProxyService) applyServerRouting(ctx context.Context, server *v1.Server
 		fields["container_id"] = server.ContainerId
 		fields["status"] = server.Status
 
-		s.log.Info("Container recreated for server %s (proxy: %q -> %q, listener: %s -> %s)",
-			server.Name, oldProxyHostname, hostname, oldProxyListenerID, listenerID)
+		s.log.Info("Container recreated for server %s (proxy: %v -> %v, listener: %s -> %s)",
+			server.Name, oldProxyHostnames, hostnames, oldProxyListenerID, listenerID)
 	}
 
-	if hostnameChanged || listenerChanged {
+	if hostnamesChanged || listenerChanged {
 		msgText := "routing disabled"
-		if hostname != "" {
-			msgText = "routed hostname " + hostname
+		if len(hostnames) > 0 {
+			msgText = "routed hostnames " + strings.Join(hostnames, ", ")
 		}
-		s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_ROUTING_UPDATE, metrics.Attrs{"hostname": hostname, "listener": listenerID}, "%s", msgText)
+		s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_ROUTING_UPDATE, metrics.Attrs{"hostnames": strings.Join(hostnames, ","), "listener": listenerID}, "%s", msgText)
 	}
 
 	// Save only the columns this request owns
@@ -1448,247 +1111,4 @@ func (s *ProxyService) applyServerRouting(ctx context.Context, server *v1.Server
 	}
 
 	return nil
-}
-
-// Registry of dns providers and their fields
-func (s *ProxyService) GetDnsProviders(ctx context.Context, req *connect.Request[v1.GetDnsProvidersRequest]) (*connect.Response[v1.GetDnsProvidersResponse], error) {
-	return connect.NewResponse(&v1.GetDnsProvidersResponse{Providers: proxy.DnsProviderKinds()}), nil
-}
-
-// Lists dns credentials without secret material
-func (s *ProxyService) GetDnsCredentials(ctx context.Context, req *connect.Request[v1.GetDnsCredentialsRequest]) (*connect.Response[v1.GetDnsCredentialsResponse], error) {
-	rows, err := s.store.ListDnsProviderCredentials(ctx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list dns credentials"))
-	}
-	redacted := make([]*v1.DnsProviderCredential, len(rows))
-	for i, row := range rows {
-		redacted[i] = row.Redact()
-	}
-	return connect.NewResponse(&v1.GetDnsCredentialsResponse{Credentials: redacted}), nil
-}
-
-// Seals and stores credentials for a dns provider
-func (s *ProxyService) CreateDnsCredential(ctx context.Context, req *connect.Request[v1.CreateDnsCredentialRequest]) (*connect.Response[v1.CreateDnsCredentialResponse], error) {
-	msg := req.Msg
-	name := strings.TrimSpace(msg.Name)
-	if name == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("credential name is required"))
-	}
-	row := &v1.DnsProviderCredential{
-		Id:            uuid.New().String(),
-		Name:          name,
-		Provider:      strings.TrimSpace(msg.Provider),
-		ApiToken:      strings.TrimSpace(msg.ApiToken),
-		Nameserver:    strings.TrimSpace(msg.Nameserver),
-		TsigKeyName:   strings.TrimSpace(msg.TsigKeyName),
-		TsigSecret:    strings.TrimSpace(msg.TsigSecret),
-		TsigAlgorithm: strings.TrimSpace(msg.TsigAlgorithm),
-	}
-	if err := proxy.ValidateDnsCredential(row); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	if err := s.sealDnsSecrets(row); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if err := s.store.CreateDnsProviderCredential(ctx, row); err != nil {
-		s.log.Error("Failed to create dns credential: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create dns credential"))
-	}
-	return connect.NewResponse(&v1.CreateDnsCredentialResponse{Credential: row.Redact()}), nil
-}
-
-// Seals secret columns before a credential persists
-func (s *ProxyService) sealDnsSecrets(row *v1.DnsProviderCredential) error {
-	for _, field := range []*string{&row.ApiToken, &row.TsigSecret} {
-		if *field == "" {
-			continue
-		}
-		sealed, err := s.proxyManager.SealPrivateKey(*field)
-		if err != nil {
-			return fmt.Errorf("failed to seal credential secret: %w", err)
-		}
-		*field = sealed
-	}
-	return nil
-}
-
-// Renames or replaces credential fields
-func (s *ProxyService) UpdateDnsCredential(ctx context.Context, req *connect.Request[v1.UpdateDnsCredentialRequest]) (*connect.Response[v1.UpdateDnsCredentialResponse], error) {
-	msg := req.Msg
-	row, err := s.store.GetDnsProviderCredential(ctx, msg.Id)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("dns credential not found"))
-	}
-
-	if name := strings.TrimSpace(msg.Name); name != "" {
-		row.Name = name
-	}
-	changed := false
-	apply := func(target *string, value string, secret bool) error {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return nil
-		}
-		if secret {
-			sealed, err := s.proxyManager.SealPrivateKey(value)
-			if err != nil {
-				return err
-			}
-			value = sealed
-		}
-		if *target != value {
-			*target = value
-			changed = true
-		}
-		return nil
-	}
-	for _, item := range []struct {
-		target *string
-		value  string
-		secret bool
-	}{
-		{&row.ApiToken, msg.ApiToken, true},
-		{&row.TsigSecret, msg.TsigSecret, true},
-		{&row.Nameserver, msg.Nameserver, false},
-		{&row.TsigKeyName, msg.TsigKeyName, false},
-		{&row.TsigAlgorithm, msg.TsigAlgorithm, false},
-	} {
-		if err := apply(item.target, item.value, item.secret); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
-		}
-	}
-
-	// Fresh material invalidates the old proof
-	if changed {
-		row.CheckedDomain = ""
-		row.CheckError = ""
-		row.CheckedAt = nil
-	}
-	if err := s.store.UpdateDnsProviderCredential(ctx, row); err != nil {
-		s.log.Error("Failed to update dns credential: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update dns credential"))
-	}
-	return connect.NewResponse(&v1.UpdateDnsCredentialResponse{Credential: row.Redact()}), nil
-}
-
-// Deletes a credential no certificate depends on
-func (s *ProxyService) DeleteDnsCredential(ctx context.Context, req *connect.Request[v1.DeleteDnsCredentialRequest]) (*connect.Response[v1.DeleteDnsCredentialResponse], error) {
-	certs, err := s.store.ListProxyCertificates(ctx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list certificates"))
-	}
-	for _, cert := range certs {
-		if cert.DnsCredentialId == req.Msg.Id {
-			return nil, connect.NewError(connect.CodeFailedPrecondition,
-				fmt.Errorf("certificate %s renews through this credential, delete it first", cert.Name))
-		}
-	}
-	if err := s.store.DeleteDnsProviderCredential(ctx, req.Msg.Id); err != nil {
-		s.log.Error("Failed to delete dns credential: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete dns credential"))
-	}
-	s.proxyManager.InvalidateAccessSnapshot()
-	return connect.NewResponse(&v1.DeleteDnsCredentialResponse{}), nil
-}
-
-// Proves a credential writes the zone behind a domain
-func (s *ProxyService) CheckDnsCredential(ctx context.Context, req *connect.Request[v1.CheckDnsCredentialRequest]) (*connect.Response[v1.CheckDnsCredentialResponse], error) {
-	domain := proxy.NormalizeHostname(req.Msg.Domain)
-	if domain == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("a domain is required to pick the zone"))
-	}
-	row, err := s.store.GetDnsProviderCredential(ctx, req.Msg.Id)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("dns credential not found"))
-	}
-
-	zone, checkErr := s.proxyManager.CheckDnsCredential(ctx, row, domain)
-	row.CheckedDomain = domain
-	row.CheckedAt = timestamppb.Now()
-	row.CheckError = ""
-	if checkErr != nil {
-		row.CheckError = checkErr.Error()
-	}
-	if err := s.store.UpdateDnsProviderCredential(ctx, row); err != nil {
-		s.log.Error("Failed to record dns credential check: %v", err)
-	}
-	// Proof state feeds the snapshot and secure plans
-	s.proxyManager.InvalidateAccessSnapshot()
-
-	resp := &v1.CheckDnsCredentialResponse{
-		Ok:   checkErr == nil,
-		Zone: strings.TrimSuffix(zone, "."),
-	}
-	if checkErr != nil {
-		resp.Error = checkErr.Error()
-	}
-	return connect.NewResponse(resp), nil
-}
-
-// Detects the dns provider and plans records for a domain
-func (s *ProxyService) GetDnsSetup(ctx context.Context, req *connect.Request[v1.GetDnsSetupRequest]) (*connect.Response[v1.GetDnsSetupResponse], error) {
-	domain := strings.TrimPrefix(proxy.NormalizeHostname(req.Msg.Domain), "*.")
-	if domain == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("domain is required"))
-	}
-	if !proxy.ValidHostname(domain) {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s is not a valid hostname", domain))
-	}
-	return connect.NewResponse(s.proxyManager.DnsSetup(ctx, domain)), nil
-}
-
-// Builds the mapping rpc payload from manager state
-func (s *ProxyService) portMappingsResponse(ctx context.Context, state proxy.PortMapState) *v1.GetPortMappingsResponse {
-	resp := &v1.GetPortMappingsResponse{Gateway: state.Gateway}
-	if cfg, _, err := s.store.GetProxyConfig(ctx); err == nil {
-		resp.Keepalive = cfg.PortmapKeepalive
-	}
-	if !state.AttemptedAt.IsZero() {
-		resp.AttemptedAt = timestamppb.New(state.AttemptedAt)
-	}
-	for _, result := range state.Results {
-		resp.Results = append(resp.Results, &v1.PortMappingResult{
-			Port:         int32(result.Port),
-			Transport:    result.Transport,
-			Ok:           result.OK,
-			Method:       result.Method,
-			LeaseSeconds: int32(result.LeaseSeconds),
-			Error:        result.Err,
-			Detail:       result.Detail,
-		})
-	}
-	return resp
-}
-
-// Last port mapping outcome and keepalive state
-func (s *ProxyService) GetPortMappings(ctx context.Context, req *connect.Request[v1.GetPortMappingsRequest]) (*connect.Response[v1.GetPortMappingsResponse], error) {
-	return connect.NewResponse(s.portMappingsResponse(ctx, s.proxyManager.PortMappingState())), nil
-}
-
-// Asks the router to open the panel's public ports
-func (s *ProxyService) AttemptPortMappings(ctx context.Context, req *connect.Request[v1.AttemptPortMappingsRequest]) (*connect.Response[v1.GetPortMappingsResponse], error) {
-	keepalive := false
-	if cfg, _, err := s.store.GetProxyConfig(ctx); err == nil {
-		keepalive = cfg.PortmapKeepalive
-	}
-	state := s.proxyManager.AttemptPortMappings(ctx, keepalive)
-	return connect.NewResponse(s.portMappingsResponse(ctx, state)), nil
-}
-
-// Toggles the lease renewal loop
-func (s *ProxyService) SetPortMappingKeepalive(ctx context.Context, req *connect.Request[v1.SetPortMappingKeepaliveRequest]) (*connect.Response[v1.GetPortMappingsResponse], error) {
-	cfgRow, _, err := s.store.GetProxyConfig(ctx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load proxy configuration"))
-	}
-	cfgRow.Id = "default"
-	cfgRow.PortmapKeepalive = req.Msg.Enabled
-	if err := s.store.SaveProxyConfig(ctx, cfgRow); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save proxy configuration"))
-	}
-	if err := s.proxyManager.SyncPortmapKeepalive(ctx); err != nil {
-		s.log.Error("Failed to reconcile port mapping keepalive: %v", err)
-	}
-	return connect.NewResponse(s.portMappingsResponse(ctx, s.proxyManager.PortMappingState())), nil
 }
