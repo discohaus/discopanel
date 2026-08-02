@@ -1,14 +1,17 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import { Button } from '$lib/components/ui/button';
 	import { Select, SelectContent, SelectItem, SelectTrigger } from '$lib/components/ui/select';
 	import { AddressSelect } from '$lib/components/app';
 	import { panelHost } from '$lib/utils/host';
+	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { Cable, Globe, Network, RefreshCw } from '@lucide/svelte';
 	import type { ProxyListener } from '$lib/proto/discopanel/v1/storage_pb';
+	import type { GetHostnameSuggestionsResponse } from '$lib/proto/discopanel/v1/proxy_pb';
 	import HostnameListInput from '$lib/components/network/hostname-list-input.svelte';
-	import { hostnameSlug, playerAddress } from '$lib/hostname';
+	import { directAddresses, hostnameSlug, playerAddress } from '$lib/hostname';
 
 	let {
 		proxyEnabled = false,
@@ -47,6 +50,29 @@
 	function addressFor(name: string): string {
 		return playerAddress(name, selectedListener?.port);
 	}
+
+	// Detected host addresses feed the direct port list
+	let suggestions = $state<GetHostnameSuggestionsResponse | null>(null);
+	onMount(async () => {
+		try {
+			suggestions = await rpcClient.proxy.getHostnameSuggestions({ label: '' }, silentCallOptions);
+		} catch {
+			// Detection failures keep the browser host fallback
+		}
+	});
+
+	// Direct ports answer on ips and instant domains alike
+	let directAddrs = $derived.by(() => {
+		const list = suggestions
+			? directAddresses(
+					port,
+					suggestions.lanIp,
+					suggestions.publicIp,
+					suggestions.suggestions.map((s) => s.hostname)
+				)
+			: [];
+		return list.length > 0 ? list : [playerAddress(panelHost(), port)];
+	});
 
 	function validatePort(p: number) {
 		if (p < 1 || p > 65535) {
@@ -208,7 +234,7 @@
 				{@render portField()}
 				<div class="space-y-2">
 					<Label>Player address</Label>
-					<AddressSelect addresses={[`${panelHost()}:${port}`]} />
+					<AddressSelect addresses={directAddrs} />
 				</div>
 			</div>
 		{/if}

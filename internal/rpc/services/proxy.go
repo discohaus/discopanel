@@ -155,8 +155,11 @@ func (s *ProxyService) GetProxyStatus(ctx context.Context, req *connect.Request[
 
 // Computes hostname suggestions for any hostname input
 func (s *ProxyService) GetHostnameSuggestions(ctx context.Context, req *connect.Request[v1.GetHostnameSuggestionsRequest]) (*connect.Response[v1.GetHostnameSuggestionsResponse], error) {
+	lanIP, publicIP, _ := s.proxyManager.NetworkAddresses()
 	return connect.NewResponse(&v1.GetHostnameSuggestionsResponse{
 		Suggestions: s.proxyManager.HostnameSuggestions(req.Msg.Label),
+		LanIp:       lanIP,
+		PublicIp:    publicIP,
 	}), nil
 }
 
@@ -894,12 +897,17 @@ func (s *ProxyService) GetNetworkTopology(ctx context.Context, req *connect.Requ
 		panelPort = p
 	}
 
+	lanIP, publicIP, gatewayIP := s.proxyManager.NetworkAddresses()
+
 	return connect.NewResponse(&v1.GetNetworkTopologyResponse{
 		ProxyEnabled: s.proxyManager.Enabled(),
 		ProxyRunning: s.proxyManager.IsRunning(),
 		PanelPort:    int32(panelPort),
 		Reservations: protoReservations,
 		Routes:       s.buildProxyRoutes(),
+		PublicIp:     publicIP,
+		LanIp:        lanIP,
+		GatewayIp:    gatewayIP,
 	}), nil
 }
 

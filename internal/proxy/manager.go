@@ -46,6 +46,10 @@ type Manager struct {
 	publicAt    time.Time
 	publicTried time.Time
 
+	// Cached default gateway address
+	gatewayIP string
+	gatewayAt time.Time
+
 	// Granted checkouts awaiting their callers' persists
 	pendingClaims map[uint64]pendingClaim
 	claimSeq      uint64

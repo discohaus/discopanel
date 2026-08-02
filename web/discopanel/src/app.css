@@ -263,24 +263,6 @@ html:not(.dark) :is([data-slot='input'], [data-slot='textarea'], [data-slot='sel
 	--xy-background-color: transparent;
 	--xy-edge-stroke-default: color-mix(in oklch, var(--muted-foreground) 45%, transparent);
 	--xy-edge-stroke-width-default: 1.5;
-	--xy-minimap-background-color-default: var(--card);
-	--xy-minimap-mask-background-color-default: color-mix(
-		in oklch,
-		var(--background) 65%,
-		transparent
-	);
-	--xy-minimap-node-background-color-default: color-mix(
-		in oklch,
-		var(--muted-foreground) 40%,
-		transparent
-	);
-	--xy-minimap-node-stroke-color-default: transparent;
-	--xy-controls-button-background-color-default: var(--card);
-	--xy-controls-button-background-color-hover-default: var(--accent);
-	--xy-controls-button-color-default: var(--foreground);
-	--xy-controls-button-color-hover-default: var(--foreground);
-	--xy-controls-button-border-color-default: var(--border);
-	--xy-attribution-background-color-default: transparent;
 }
 
 .topology-flow .svelte-flow__handle {

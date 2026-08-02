@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -85,6 +86,29 @@ func hostnameScope(name string) v1.HostnameScope {
 		return v1.HostnameScope_HOSTNAME_SCOPE_PUBLIC
 	}
 	return v1.HostnameScope_HOSTNAME_SCOPE_PUBLIC
+}
+
+// Reads the default gateway from the kernel route table
+func detectGatewayIPv4() (string, bool) {
+	data, err := os.ReadFile("/proc/net/route")
+	if err != nil {
+		return "", false
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[1] != "00000000" {
+			continue
+		}
+		raw, err := strconv.ParseUint(fields[2], 16, 32)
+		if err != nil || raw == 0 {
+			continue
+		}
+		// Route table stores addresses little endian
+		ip := net.IPv4(byte(raw), byte(raw>>8), byte(raw>>16), byte(raw>>24))
+		return ip.String(), true
+	}
+	return "", false
 }
 
 // Finds the address other machines reach this host on
@@ -193,6 +217,21 @@ func (m *Manager) lanIPLocked() (string, bool) {
 		m.detectedAt = time.Now()
 	}
 	return m.detectedIP, true
+}
+
+// Snapshot of detected lan public and gateway addresses
+func (m *Manager) NetworkAddresses() (string, string, string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lan, _ := m.lanIPLocked()
+	public := m.publicIPLocked()
+	if m.gatewayIP == "" || time.Since(m.gatewayAt) > ipCacheTTL {
+		if ip, ok := detectGatewayIPv4(); ok {
+			m.gatewayIP = ip
+			m.gatewayAt = time.Now()
+		}
+	}
+	return lan, public, m.gatewayIP
 }
 
 // Panel hostnames snapshot for reservation claims

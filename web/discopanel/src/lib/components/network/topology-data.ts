@@ -12,27 +12,31 @@ import {
 	ModuleProtocol,
 	ModuleStatus,
 	NetworkTransport,
+	ServerStatus,
 	type Module,
 	type Server
 } from '$lib/proto/discopanel/v1/storage_pb';
 import { hostnameSummary } from '$lib/hostname';
-import { layoutColumns, type LayoutEdge, type LayoutItem } from './topology-layout';
+import {
+	contentBounds,
+	layoutColumns,
+	zoneRect,
+	type LayoutEdge,
+	type LayoutItem,
+	type ZoneItem
+} from './topology-layout';
 
 // What the inspector panel is focused on
 export type Selection =
 	| { kind: 'overview' }
+	| { kind: 'internet' }
+	| { kind: 'router' }
 	| { kind: 'panel' }
 	| { kind: 'listener'; id: string }
 	| { kind: 'listener-create' }
 	| { kind: 'entry'; port: number; transport: string }
 	| { kind: 'lane'; port: number; protocol: ModuleProtocol }
-	| {
-			kind: 'service';
-			port: number;
-			protocol: ModuleProtocol;
-			ownerKind: NetworkOwnerKind;
-			ownerId: string;
-	  }
+	| { kind: 'service'; port: number; ownerKind: NetworkOwnerKind; ownerId: string }
 	| { kind: 'server'; id: string }
 	| { kind: 'module'; id: string };
 
@@ -42,20 +46,48 @@ export interface ExposedPort {
 	transport: string;
 }
 
-export interface SourceNodeData extends Record<string, unknown> {
-	players: number;
+// Focus ring flag since xyflow selected nodes drag together
+export interface ActiveFlag {
+	active?: boolean;
+}
+
+export interface InternetNodeData extends Record<string, unknown>, ActiveFlag {
+	publicIp: string;
 	selection: Selection;
 }
 
-export interface EntryNodeData extends Record<string, unknown> {
+export interface RouterNodeData extends Record<string, unknown>, ActiveFlag {
+	gatewayIp: string;
+	selection: Selection;
+}
+
+export interface ZoneNodeData extends Record<string, unknown> {
+	label: string;
+	sub: string;
+	width: number;
+	height: number;
+	selection: Selection;
+}
+
+export interface EntryNodeData extends Record<string, unknown>, ActiveFlag {
 	title: string;
 	port: number;
 	sub: string;
-	active: boolean;
+	bound: boolean;
+	live: boolean;
 	selection: Selection;
 }
 
-export interface ListenerNodeData extends Record<string, unknown> {
+// One protocol chip rendered inside a listener card
+export interface LaneChip {
+	protocol: ModuleProtocol;
+	label: string;
+	stateClass: string;
+	relay: boolean;
+	selection: Selection;
+}
+
+export interface ListenerNodeData extends Record<string, unknown>, ActiveFlag {
 	name: string;
 	port: number;
 	isDefault: boolean;
@@ -64,27 +96,21 @@ export interface ListenerNodeData extends Record<string, unknown> {
 	// Panel listener, permanent and undeletable
 	panel: boolean;
 	state: 'active' | 'idle' | 'disabled';
-	routeCount: number;
+	lanes: LaneChip[];
+	// Chip protocol currently focused in the inspector
+	activeLane: ModuleProtocol | null;
+	onSelect: (sel: Selection) => void;
 	selection: Selection;
 }
 
-export interface LaneNodeData extends Record<string, unknown> {
-	port: number;
-	protocol: ModuleProtocol;
-	label: string;
-	relay: boolean;
-	stateClass: string;
-	dimmed: boolean;
-	selection: Selection;
-}
-
-export interface ServiceNodeData extends Record<string, unknown> {
-	// Compact shared summary of every name
+export interface ServiceNodeData extends Record<string, unknown>, ActiveFlag {
+	// Shortest name fronts the card, rest counted
 	summary: string;
+	// Full set for the hover tooltip
+	names: string;
 	nameCount: number;
 	staleCount: number;
 	port: number;
-	protocol: ModuleProtocol;
 	stateClass: string;
 	connections: number;
 	wakeable: boolean;
@@ -93,12 +119,12 @@ export interface ServiceNodeData extends Record<string, unknown> {
 	selection: Selection;
 }
 
-export interface ActionNodeData extends Record<string, unknown> {
+export interface ActionNodeData extends Record<string, unknown>, ActiveFlag {
 	label: string;
 	selection: Selection;
 }
 
-export interface BackendNodeData extends Record<string, unknown> {
+export interface BackendNodeData extends Record<string, unknown>, ActiveFlag {
 	kind: 'server' | 'module' | 'panel';
 	name: string;
 	favicon: string;
@@ -116,13 +142,22 @@ export interface TopologyGraph {
 }
 
 const HEIGHTS = {
-	source: 58,
+	internet: 58,
+	router: 58,
 	entry: 58,
-	listener: 66,
-	lane: 46,
+	listener: 64,
+	listenerLanes: 92,
 	service: 58,
 	backend: 66,
 	action: 40
+};
+
+// Zone bands keyed to the columns they wrap
+const ZONE_COLUMNS: Record<string, number[]> = {
+	'zone:internet': [0],
+	'zone:router': [1],
+	'zone:machine': [2, 3],
+	'zone:containers': [4]
 };
 
 // Lane display order within one listener port
@@ -171,11 +206,11 @@ function liveKey(port: number, protocol: ModuleProtocol, hostname: string): stri
 	return `${port}:${protocol}:${hostname.toLowerCase()}`;
 }
 
-// One service and every hostname it answers on one lane
+// One service and every name it answers on one port
 export interface LaneService {
 	key: string;
 	port: number;
-	protocol: ModuleProtocol;
+	protocols: ModuleProtocol[];
 	ownerKind: NetworkOwnerKind;
 	ownerId: string;
 	relay: boolean;
@@ -190,7 +225,7 @@ export interface LaneService {
 	routes: ProxyRoute[];
 }
 
-// Groups reservations and live routes per service and lane
+// Groups reservations and live routes per service and port
 export function groupServices(
 	reservations: NetworkReservation[],
 	routes: ProxyRoute[],
@@ -204,13 +239,13 @@ export function groupServices(
 		ownerId: string,
 		relay: boolean
 	): LaneService => {
-		const key = `${p}:${protocol}:${ownerKind}:${ownerId}:${relay}`;
+		const key = `${p}:${ownerKind}:${ownerId}:${relay}`;
 		let svc = map.get(key);
 		if (!svc) {
 			svc = {
 				key,
 				port: p,
-				protocol,
+				protocols: [],
 				ownerKind,
 				ownerId,
 				relay,
@@ -224,6 +259,7 @@ export function groupServices(
 			};
 			map.set(key, svc);
 		}
+		if (!svc.protocols.includes(protocol)) svc.protocols.push(protocol);
 		return svc;
 	};
 
@@ -259,6 +295,7 @@ export function groupServices(
 	for (const svc of map.values()) {
 		svc.hostnames.sort();
 		svc.staleHostnames.sort();
+		svc.protocols.sort((a, b) => LANE_ORDER.indexOf(a) - LANE_ORDER.indexOf(b));
 	}
 	return [...map.values()];
 }
@@ -281,7 +318,9 @@ export function buildGraph(
 	listeners: ProxyListenerWithCount[],
 	servers: Server[],
 	modules: Module[],
-	selection: Selection
+	selection: Selection,
+	moved: Record<string, { x: number; y: number }>,
+	onSelect: (sel: Selection) => void
 ): TopologyGraph {
 	const nodes: Node[] = [];
 	const edges: Edge[] = [];
@@ -297,6 +336,7 @@ export function buildGraph(
 
 	let order = 0;
 	const nodeIds = new Set<string>();
+	const activeIds: string[] = [];
 	const addNode = (
 		id: string,
 		type: string,
@@ -308,13 +348,15 @@ export function buildGraph(
 	) => {
 		if (nodeIds.has(id)) return;
 		nodeIds.add(id);
+		const active = isSelected(data.selection as Selection);
+		if (active) activeIds.push(id);
 		nodes.push({
 			id,
 			type,
 			position: { x: 0, y: 0 },
-			data,
-			selected: isSelected(data.selection as Selection),
-			draggable: false,
+			// Column and height ride along for live zone refits
+			data: { ...data, active, col: column, h: height },
+			draggable: type !== 'action',
 			connectable: false,
 			selectable: false
 		});
@@ -334,15 +376,22 @@ export function buildGraph(
 		liveRoutes.set(liveKey(route.listenPort, route.protocol, route.hostname), route);
 	}
 
-	// Hostname groups per service drive the route column
+	// Merged hostname groups per service drive the route column
 	const services = groupServices(topology.reservations, topology.routes);
 
-	// Players source node totals online players
-	const players = servers.reduce((sum, s) => sum + (s.playersOnline || 0), 0);
-	addNode('players', 'source', 0, HEIGHTS.source, 0, {
-		players,
-		selection: { kind: 'overview' }
-	} satisfies SourceNodeData);
+	const anyActive = topology.proxyEnabled && running;
+	const trunkCls = anyActive ? 'topo-edge-ok' : 'topo-edge-idle';
+
+	// Outside world flows in through the router
+	addNode('internet', 'internet', 0, HEIGHTS.internet, 0, {
+		publicIp: topology.publicIp,
+		selection: { kind: 'internet' }
+	} satisfies InternetNodeData);
+	addNode('router', 'router', 1, HEIGHTS.router, 0, {
+		gatewayIp: topology.gatewayIp,
+		selection: { kind: 'router' }
+	} satisfies RouterNodeData);
+	addEdge('internet', 'router', trunkCls, false);
 
 	addNode(
 		'panel',
@@ -472,10 +521,18 @@ export function buildGraph(
 	const laneList = [...lanes.values()].sort(
 		(a, b) => a.port - b.port || LANE_ORDER.indexOf(a.protocol) - LANE_ORDER.indexOf(b.protocol)
 	);
-	const laneCountByPort = new Map<number, number>();
-	for (const lane of laneList) {
-		laneCountByPort.set(lane.port, (laneCountByPort.get(lane.port) ?? 0) + 1);
-	}
+
+	// Lane class prefers the healthiest live route
+	const laneClass = (lane: Lane): string => {
+		if (!running) return 'topo-edge-idle';
+		let cls = 'topo-edge-idle';
+		for (const live of lane.liveStates) {
+			const c = edgeClass(live, running);
+			if (c === 'topo-edge-ok') return c;
+			if (c !== 'topo-edge-idle') cls = c;
+		}
+		return cls;
+	};
 
 	for (const entry of listenerEntries) {
 		listenerNodeByPort.set(entry.port, entry.id);
@@ -483,29 +540,44 @@ export function buildGraph(
 		const portLive = topology.routes.some((r) => r.listenPort === entry.port);
 		const state = !entry.enabled ? 'disabled' : running && portLive ? 'active' : 'idle';
 		const rowId = entry.id.startsWith('listener:port:') ? '' : entry.id.slice('listener:'.length);
-		addNode(entry.id, 'listener', 1, HEIGHTS.listener, 0, {
-			name: entry.name,
-			port: entry.port,
-			isDefault: entry.isDefault,
-			enabled: entry.enabled,
-			autoCreated: entry.autoCreated,
-			panel: entry.panel,
-			state,
-			routeCount: laneCountByPort.get(entry.port) ?? 0,
-			selection: entry.panel
-				? { kind: 'panel' }
-				: rowId
-					? { kind: 'listener', id: rowId }
-					: { kind: 'overview' }
-		} satisfies ListenerNodeData);
+		const chips: LaneChip[] = laneList
+			.filter((lane) => lane.port === entry.port)
+			.map((lane) => ({
+				protocol: lane.protocol,
+				label: laneLabel(lane.protocol),
+				stateClass: entry.enabled ? laneClass(lane) : 'topo-edge-idle',
+				relay: isRelayProtocol(lane.protocol),
+				selection: { kind: 'lane', port: lane.port, protocol: lane.protocol }
+			}));
+		addNode(
+			entry.id,
+			'listener',
+			2,
+			chips.length > 0 ? HEIGHTS.listenerLanes : HEIGHTS.listener,
+			0,
+			{
+				name: entry.name,
+				port: entry.port,
+				isDefault: entry.isDefault,
+				enabled: entry.enabled,
+				autoCreated: entry.autoCreated,
+				panel: entry.panel,
+				state,
+				lanes: chips,
+				activeLane:
+					selection.kind === 'lane' && selection.port === entry.port ? selection.protocol : null,
+				onSelect,
+				selection: rowId ? { kind: 'listener', id: rowId } : { kind: 'overview' }
+			} satisfies ListenerNodeData
+		);
 		const cls =
 			entry.enabled && topology.proxyEnabled && running ? 'topo-edge-ok' : 'topo-edge-idle';
-		addEdge('players', entry.id, cls, false);
+		addEdge('router', entry.id, cls, false);
 	}
 
 	// Add listener affordance closes the listener column
 	if (topology.proxyEnabled) {
-		addNode('add-listener', 'action', 1, HEIGHTS.action, 0, {
+		addNode('add-listener', 'action', 2, HEIGHTS.action, 0, {
 			label: 'Add listener',
 			selection: { kind: 'listener-create' }
 		} satisfies ActionNodeData);
@@ -526,97 +598,73 @@ export function buildGraph(
 		return nodeId;
 	};
 
-	// Lane class prefers the healthiest live route
-	const laneClass = (lane: Lane): string => {
-		if (!running) return 'topo-edge-idle';
-		let cls = 'topo-edge-idle';
-		for (const live of lane.liveStates) {
-			const c = edgeClass(live, running);
-			if (c === 'topo-edge-ok') return c;
-			if (c !== 'topo-edge-idle') cls = c;
-		}
-		return cls;
-	};
-
+	// Relay lanes forward straight from listener to backend
 	for (const lane of laneList) {
+		if (!isRelayProtocol(lane.protocol)) continue;
 		const listenerNode = listenerNodeByPort.get(lane.port);
 		if (!listenerNode) continue;
 		const dimmed = listenerEnabledByPort.get(lane.port) === false;
-		const laneNodeId = `lane:${lane.port}:${lane.protocol}`;
 		const cls = dimmed ? 'topo-edge-idle' : laneClass(lane);
-		addNode(laneNodeId, 'lane', 2, HEIGHTS.lane, 0, {
-			port: lane.port,
-			protocol: lane.protocol,
-			label: laneLabel(lane.protocol),
-			relay: isRelayProtocol(lane.protocol),
-			stateClass: cls,
-			dimmed,
-			selection: { kind: 'lane', port: lane.port, protocol: lane.protocol }
-		} satisfies LaneNodeData);
-		addEdge(listenerNode, laneNodeId, cls, false);
-
-		if (isRelayProtocol(lane.protocol)) {
-			// Relay lanes forward straight to one backend
-			const owner = lane.relayOwner;
-			if (owner) {
-				const backend = targetBackend(owner.ownerKind, owner.ownerId, 0);
-				const live = liveRoutes.get(liveKey(lane.port, lane.protocol, ''));
-				const animated = Number(live?.activeConnections ?? 0n) > 0;
-				addEdge(laneNodeId, backend, cls, animated);
-			} else {
-				for (const live of lane.liveStates) {
-					if (
-						live.ownerKind !== NetworkOwnerKind.SERVER &&
-						live.ownerKind !== NetworkOwnerKind.MODULE
-					) {
-						continue;
-					}
-					const backend = targetBackend(live.ownerKind, live.ownerId, 0);
-					addEdge(laneNodeId, backend, cls, Number(live.activeConnections) > 0);
+		const owner = lane.relayOwner;
+		if (owner) {
+			const backend = targetBackend(owner.ownerKind, owner.ownerId, 0);
+			const live = liveRoutes.get(liveKey(lane.port, lane.protocol, ''));
+			const animated = Number(live?.activeConnections ?? 0n) > 0;
+			addEdge(listenerNode, backend, cls, animated);
+		} else {
+			for (const live of lane.liveStates) {
+				if (
+					live.ownerKind !== NetworkOwnerKind.SERVER &&
+					live.ownerKind !== NetworkOwnerKind.MODULE
+				) {
+					continue;
 				}
+				const backend = targetBackend(live.ownerKind, live.ownerId, 0);
+				addEdge(listenerNode, backend, cls, Number(live.activeConnections) > 0);
 			}
+		}
+	}
+
+	// One node per service, names collapse to a summary
+	const routedServices = services
+		.filter((svc) => !svc.relay)
+		.sort((a, b) => a.port - b.port || (a.hostnames[0] ?? '~').localeCompare(b.hostnames[0] ?? '~'));
+	for (const svc of routedServices) {
+		const listenerNode = listenerNodeByPort.get(svc.port);
+		if (!listenerNode) continue;
+		const dimmed = listenerEnabledByPort.get(svc.port) === false;
+		const routeCls = dimmed ? 'topo-edge-idle' : serviceClass(svc, running);
+		const animated = svc.connections > 0;
+		const backend = targetBackend(svc.ownerKind, svc.ownerId, 0);
+		const allNames = [...svc.hostnames, ...svc.staleHostnames];
+
+		// Catch all services forward straight to their backend
+		if (allNames.length === 0) {
+			addEdge(listenerNode, backend, routeCls, animated);
 			continue;
 		}
 
-		// One node per service, names collapse to a summary
-		const laneServices = services
-			.filter((svc) => svc.port === lane.port && svc.protocol === lane.protocol && !svc.relay)
-			.sort((a, b) => (a.hostnames[0] ?? '~').localeCompare(b.hostnames[0] ?? '~'));
-		for (const svc of laneServices) {
-			const routeCls = dimmed ? 'topo-edge-idle' : serviceClass(svc, running);
-			const animated = svc.connections > 0;
-			const backend = targetBackend(svc.ownerKind, svc.ownerId, 0);
-			const allNames = [...svc.hostnames, ...svc.staleHostnames];
-
-			// Catch all services forward straight to their backend
-			if (allNames.length === 0) {
-				addEdge(laneNodeId, backend, routeCls, animated);
-				continue;
+		const id = `service:${svc.key}`;
+		addNode(id, 'service', 3, HEIGHTS.service, 0, {
+			summary: hostnameSummary(allNames),
+			names: allNames.join(', '),
+			nameCount: allNames.length,
+			staleCount: svc.staleHostnames.length,
+			port: svc.port,
+			stateClass: routeCls,
+			connections: svc.connections,
+			wakeable: svc.wakeable,
+			live: svc.live,
+			dimmed,
+			selection: {
+				kind: 'service',
+				port: svc.port,
+				ownerKind: svc.ownerKind,
+				ownerId: svc.ownerId
 			}
-
-			const id = `service:${svc.key}`;
-			addNode(id, 'service', 3, HEIGHTS.service, 0, {
-				summary: hostnameSummary(allNames),
-				nameCount: allNames.length,
-				staleCount: svc.staleHostnames.length,
-				port: lane.port,
-				protocol: lane.protocol,
-				stateClass: routeCls,
-				connections: svc.connections,
-				wakeable: svc.wakeable,
-				live: svc.live,
-				dimmed,
-				selection: {
-					kind: 'service',
-					port: lane.port,
-					protocol: lane.protocol,
-					ownerKind: svc.ownerKind,
-					ownerId: svc.ownerId
-				}
-			} satisfies ServiceNodeData);
-			addEdge(laneNodeId, id, routeCls, animated);
-			addEdge(id, backend, routeCls, animated);
-		}
+		} satisfies ServiceNodeData);
+		addEdge(listenerNode, id, routeCls, animated);
+		addEdge(id, backend, routeCls, animated);
 	}
 
 	// Direct binds sit in their own band below
@@ -659,16 +707,30 @@ export function buildGraph(
 			res.ownerKind === NetworkOwnerKind.SERVER
 				? serversById.get(res.ownerId)
 				: modulesById.get(res.ownerId);
-		addNode(id, 'entry', 1, HEIGHTS.entry, 1, {
+		// Path tone follows the owner container state
+		let live = false;
+		let cls = 'topo-edge-idle';
+		if (res.ownerKind === NetworkOwnerKind.SERVER) {
+			const server = serversById.get(res.ownerId);
+			live = server?.status === ServerStatus.RUNNING;
+			if (server?.status === ServerStatus.STARTING) cls = 'topo-edge-busy';
+		} else {
+			const module = modulesById.get(res.ownerId);
+			live = module?.status === ModuleStatus.RUNNING;
+			if (module?.status === ModuleStatus.STARTING) cls = 'topo-edge-busy';
+		}
+		if (live) cls = 'topo-edge-ok';
+		addNode(id, 'entry', 2, HEIGHTS.entry, 1, {
 			title: `:${res.port}`,
 			port: res.port,
-			sub: `direct ${transport}`,
-			active: !!owner,
+			sub: `direct port · ${transport}`,
+			bound: !!owner,
+			live,
 			selection: { kind: 'entry', port: res.port, transport }
 		} satisfies EntryNodeData);
-		addEdge('players', id, 'topo-edge-idle', false);
+		addEdge('router', id, cls, false);
 		const backend = targetBackend(res.ownerKind, res.ownerId, 1);
-		addEdge(id, backend, 'topo-edge-idle', false);
+		addEdge(id, backend, cls, false);
 	}
 
 	// Server owned modules pull their parent onto the map
@@ -734,7 +796,12 @@ export function buildGraph(
 
 	// Selection lights its traffic paths, everything else dims
 	if (selection.kind !== 'overview') {
-		const seeds = nodes.filter((n) => n.selected).map((n) => n.id);
+		let seeds = activeIds;
+		// Lane chips light their whole listener subtree
+		if (selection.kind === 'lane') {
+			const listenerNode = listenerNodeByPort.get(selection.port);
+			seeds = listenerNode ? [listenerNode] : [];
+		}
 		if (seeds.length > 0) {
 			const bySource = new Map<string, Edge[]>();
 			const byTarget = new Map<string, Edge[]>();
@@ -772,11 +839,77 @@ export function buildGraph(
 		}
 	}
 
+	// Dragged nodes keep their saved spots after rebuilds
 	const positions = layoutColumns(items, layoutEdges);
+	for (const [id, pos] of Object.entries(moved)) {
+		if (nodeIds.has(id)) positions.set(id, { x: pos.x, y: pos.y });
+	}
 	for (const node of nodes) {
 		const pos = positions.get(node.id);
 		if (pos) node.position = pos;
 	}
 
-	return { nodes, edges };
+	// Zone bands wrap each stage of the traffic path
+	const bounds = contentBounds(items, positions);
+	const zoneSpecs = [
+		{ id: 'zone:internet', label: 'Internet', sub: 'public network' },
+		{ id: 'zone:router', label: 'Router', sub: 'network edge' },
+		{ id: 'zone:machine', label: 'This machine', sub: topology.lanIp || 'local network' },
+		{ id: 'zone:containers', label: 'Containers', sub: 'docker network' }
+	];
+	const zoneNodes: Node[] = [];
+	for (const spec of zoneSpecs) {
+		const rect = zoneRect(ZONE_COLUMNS[spec.id], items, positions, bounds.top, bounds.bottom);
+		if (!rect) continue;
+		zoneNodes.push({
+			id: spec.id,
+			type: 'zone',
+			position: { x: rect.x, y: rect.y },
+			zIndex: -1,
+			data: {
+				label: spec.label,
+				sub: spec.sub,
+				width: rect.width,
+				height: rect.height,
+				selection: { kind: 'overview' }
+			} satisfies ZoneNodeData,
+			draggable: false,
+			connectable: false,
+			selectable: false
+		});
+	}
+
+	return { nodes: [...zoneNodes, ...nodes], edges };
+}
+
+// Refits zone bands to wherever nodes sit right now
+export function updateZoneNodes(all: Node[], dragging: Node[]): Node[] {
+	const positions = new Map<string, { x: number; y: number }>();
+	const zoneItems: ZoneItem[] = [];
+	for (const node of all) {
+		if (node.type === 'zone') continue;
+		positions.set(node.id, node.position);
+		zoneItems.push({
+			id: node.id,
+			column: Number(node.data.col ?? 0),
+			height: Number(node.data.h ?? 0)
+		});
+	}
+	// Drag events carry fresher positions than the bound list
+	for (const node of dragging) {
+		if (positions.has(node.id)) positions.set(node.id, node.position);
+	}
+	const bounds = contentBounds(zoneItems, positions);
+	return all.map((node) => {
+		if (node.type !== 'zone') return node;
+		const columns = ZONE_COLUMNS[node.id];
+		if (!columns) return node;
+		const rect = zoneRect(columns, zoneItems, positions, bounds.top, bounds.bottom);
+		if (!rect) return node;
+		return {
+			...node,
+			position: { x: rect.x, y: rect.y },
+			data: { ...node.data, width: rect.width, height: rect.height }
+		};
+	});
 }

@@ -166,6 +166,12 @@ message GetNetworkTopologyResponse {
   int32 panel_port = 5;
   repeated NetworkReservation reservations = 6;
   repeated ProxyRoute routes = 7;
+  // Router wan address seen from the internet
+  string public_ip = 8;
+  // Host address on the local network
+  string lan_ip = 9;
+  // Default gateway the host routes through
+  string gateway_ip = 10;
 }
 
 // Active proxy connection
@@ -376,4 +382,8 @@ message HostnameSuggestion {
 // Computed hostname suggestions
 message GetHostnameSuggestionsResponse {
   repeated HostnameSuggestion suggestions = 1;
+  // Host address on the local network
+  string lan_ip = 2;
+  // Router wan address seen from the internet
+  string public_ip = 3;
 }

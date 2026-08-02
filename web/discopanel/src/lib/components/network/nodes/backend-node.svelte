@@ -4,14 +4,14 @@
 	import { ServerAvatar, StatusDot } from '$lib/components/app';
 	import type { BackendNodeData } from '../topology-data';
 
-	let { data, selected }: NodeProps = $props();
+	let { data }: NodeProps = $props();
 	let d = $derived(data as BackendNodeData);
 </script>
 
 <div
 	class="rounded-lg border bg-card px-3 py-2.5 transition-colors {d.nested
 		? 'w-52 border-dashed'
-		: 'w-60'} {selected ? 'border-primary ring-1 ring-primary/40' : 'border-border'}"
+		: 'w-60'} {d.active ? 'border-primary ring-1 ring-primary/40' : 'border-border'}"
 >
 	<div class="flex items-center gap-2.5">
 		{#if d.kind === 'server'}

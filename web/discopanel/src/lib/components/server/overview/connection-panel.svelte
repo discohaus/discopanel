@@ -1,16 +1,40 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import type { Server } from '$lib/proto/discopanel/v1/storage_pb';
+	import type { GetHostnameSuggestionsResponse } from '$lib/proto/discopanel/v1/proxy_pb';
 	import { isUp, TONE_BG, type StatusTone } from '$lib/server-status';
 	import { AddressSelect, MotdText } from '$lib/components/app';
 	import { Users, Radio } from '@lucide/svelte';
 	import { panelHost } from '$lib/utils/host';
+	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
+	import { directAddresses, playerAddress } from '$lib/hostname';
 
 	let { server }: { server: Server } = $props();
 
-	// Every routed name joins, unrouted falls back to the port
-	let addresses = $derived(
-		server.proxyHostnames.length ? server.proxyHostnames : [`${panelHost()}:${server.port}`]
-	);
+	// Detected host addresses feed unrouted servers
+	let suggestions = $state<GetHostnameSuggestionsResponse | null>(null);
+	onMount(async () => {
+		try {
+			suggestions = await rpcClient.proxy.getHostnameSuggestions({ label: '' }, silentCallOptions);
+		} catch {
+			// Detection failures keep the browser host fallback
+		}
+	});
+
+	// Every routed name joins, unrouted lists direct addresses
+	let addresses = $derived.by(() => {
+		if (server.proxyHostnames.length > 0) return server.proxyHostnames;
+		if (suggestions) {
+			const list = directAddresses(
+				server.port,
+				suggestions.lanIp,
+				suggestions.publicIp,
+				suggestions.suggestions.map((s) => s.hostname)
+			);
+			if (list.length > 0) return list;
+		}
+		return [playerAddress(panelHost(), server.port)];
+	});
 	let up = $derived(isUp(server.status));
 	let maxPlayers = $derived(server.maxPlayersSlp || server.maxPlayers);
 	let fillPercent = $derived(maxPlayers > 0 ? (server.playersOnline / maxPlayers) * 100 : 0);

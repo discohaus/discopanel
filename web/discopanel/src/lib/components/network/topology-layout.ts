@@ -1,9 +1,13 @@
 // Deterministic banded column layout keeps poll rebuilds stable
 
-export interface LayoutItem {
+// Minimal shape zone math needs from any node
+export interface ZoneItem {
 	id: string;
 	column: number;
 	height: number;
+}
+
+export interface LayoutItem extends ZoneItem {
 	order: number;
 	band: number;
 	group?: string;
@@ -15,10 +19,14 @@ export interface LayoutEdge {
 	target: string;
 }
 
-const COLUMN_X = [0, 268, 540, 762, 1080];
+// Columns are internet router listeners services backends
+export const COLUMN_X = [20, 332, 644, 956, 1300];
+export const COLUMN_W = [224, 224, 224, 256, 240];
 const NODE_GAP = 18;
 const BAND_GAP = 64;
 const INDENT_X = 28;
+const ZONE_PAD = 20;
+const ZONE_HEADER = 44;
 
 // Positions nodes into columns split by band
 export function layoutColumns(
@@ -63,7 +71,7 @@ export function layoutColumns(
 		const list = byColumn.get(column) ?? [];
 		list.sort((a, b) => a.band - b.band || a.order - b.order || a.id.localeCompare(b.id));
 		const bandZero = list.filter((i) => i.band === 0);
-		if (column >= 2) {
+		if (column >= 3) {
 			const means = new Map(bandZero.map((i) => [i.id, meanSourceY(i.id)]));
 			bandZero.sort(
 				(a, b) => (means.get(a.id) ?? 0) - (means.get(b.id) ?? 0) || a.order - b.order
@@ -160,4 +168,60 @@ export function layoutColumns(
 	}
 
 	return positions;
+}
+
+export interface ZoneRect {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+}
+
+// Bounds one zone band around its member columns
+export function zoneRect(
+	columns: number[],
+	items: ZoneItem[],
+	positions: Map<string, { x: number; y: number }>,
+	top: number,
+	bottom: number
+): ZoneRect | null {
+	let minX = Number.MAX_VALUE;
+	let maxX = -Number.MAX_VALUE;
+	let found = false;
+	for (const item of items) {
+		if (!columns.includes(item.column)) continue;
+		const pos = positions.get(item.id);
+		if (!pos) continue;
+		found = true;
+		minX = Math.min(minX, pos.x);
+		maxX = Math.max(maxX, pos.x + (COLUMN_W[item.column] ?? 224));
+	}
+	if (!found) {
+		// Empty zones still draw at their column slot
+		const col = columns[0];
+		minX = COLUMN_X[col] ?? 0;
+		maxX = minX + (COLUMN_W[col] ?? 224);
+	}
+	return {
+		x: minX - ZONE_PAD,
+		y: top - ZONE_HEADER,
+		width: maxX - minX + ZONE_PAD * 2,
+		height: bottom - top + ZONE_HEADER + ZONE_PAD
+	};
+}
+
+// Shared vertical extent across every zone band
+export function contentBounds(
+	items: ZoneItem[],
+	positions: Map<string, { x: number; y: number }>
+): { top: number; bottom: number } {
+	let top = 0;
+	let bottom = 0;
+	for (const item of items) {
+		const pos = positions.get(item.id);
+		if (!pos) continue;
+		top = Math.min(top, pos.y);
+		bottom = Math.max(bottom, pos.y + item.height);
+	}
+	return { top, bottom };
 }

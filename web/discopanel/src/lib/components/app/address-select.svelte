@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { portal } from '$lib/portal';
+	import { addressScope } from '$lib/hostname';
 	import CopyButton from './copy-button.svelte';
 
 	let {
@@ -53,6 +54,17 @@
 	});
 </script>
 
+{#snippet scopeBadge(address: string)}
+	{@const scope = addressScope(address)}
+	{#if scope}
+		<span
+			class="shrink-0 rounded border px-1 py-px text-[10px] tracking-wide text-muted-foreground uppercase"
+		>
+			{scope}
+		</span>
+	{/if}
+{/snippet}
+
 {#snippet addressText(address: string, cls: string)}
 	{#if link}
 		<!-- eslint-disable svelte/no-navigation-without-resolve -- external URL -->
@@ -76,6 +88,7 @@
 	class="flex items-center justify-between gap-2 rounded-lg border bg-muted/40 py-1.5 pr-1.5 pl-3"
 >
 	{@render addressText(first, 'text-sm')}
+	{@render scopeBadge(first)}
 	{#if addresses.length > 1}
 		<button
 			type="button"
@@ -98,6 +111,7 @@
 		{#each addresses as address (address)}
 			<div class="flex items-center justify-between gap-2 py-1.5 pr-1.5 pl-3">
 				{@render addressText(address, 'text-xs')}
+				{@render scopeBadge(address)}
 				<CopyButton text={address} label="Copy {label}" />
 			</div>
 		{/each}

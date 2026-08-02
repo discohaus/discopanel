@@ -22,17 +22,24 @@
 		onClose: () => void;
 	} = $props();
 
-	// Address shaped by the lane protocol
-	function addressFor(name: string): string {
-		if (service.protocol === ModuleProtocol.HTTP) {
-			return service.port === 80 ? `http://${name}` : `http://${name}:${service.port}`;
+	let isHttp = $derived(service.protocols.includes(ModuleProtocol.HTTP));
+	let isMinecraft = $derived(service.protocols.includes(ModuleProtocol.MINECRAFT));
+
+	// Addresses shaped by every lane the service rides
+	let addresses = $derived.by(() => {
+		const out: string[] = [];
+		for (const name of service.hostnames) {
+			if (isMinecraft) out.push(playerAddress(name, service.port));
+			if (isHttp) {
+				out.push(service.port === 80 ? `http://${name}` : `http://${name}:${service.port}`);
+			}
+			if (!isMinecraft && !isHttp) out.push(name);
 		}
-		if (service.protocol === ModuleProtocol.MINECRAFT) return playerAddress(name, service.port);
-		return name;
-	}
+		return out;
+	});
 
 	let addressLabel = $derived(
-		service.protocol === ModuleProtocol.HTTP ? 'Web address' : 'Player address'
+		isMinecraft ? 'Player address' : isHttp ? 'Web address' : 'Address'
 	);
 	// Per name state matches, one route speaks for the service
 	let route = $derived(service.routes[0] ?? null);
@@ -44,7 +51,9 @@
 	<div class="flex items-center justify-between gap-2 border-b bg-muted/30 px-4 py-3">
 		<div class="min-w-0">
 			<h3 class="truncate text-sm font-semibold">{ownerName}</h3>
-			<p class="text-xs text-muted-foreground">{laneLabel(service.protocol)} on port {service.port}</p>
+			<p class="text-xs text-muted-foreground">
+				{service.protocols.map(laneLabel).join(' + ')} on port {service.port}
+			</p>
 		</div>
 		<Button variant="ghost" size="icon" class="size-8" onclick={onClose} title="Back to overview">
 			<X class="size-4" />
@@ -56,7 +65,7 @@
 			<div>
 				<span class="stat-label">{addressLabel}</span>
 				<div class="mt-1.5">
-					<AddressSelect addresses={service.hostnames.map(addressFor)} />
+					<AddressSelect {addresses} />
 				</div>
 			</div>
 		{/if}

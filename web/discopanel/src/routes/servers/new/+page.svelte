@@ -46,7 +46,8 @@
 	import DockerOverridesEditor from '$lib/components/docker-overrides-editor.svelte';
 	import MemorySlider from '$lib/components/memory-slider.svelte';
 	import { getUniqueDockerImages, getDockerImageDisplayName } from '$lib/utils';
-	import { playerAddress } from '$lib/hostname';
+	import { directAddresses, playerAddress } from '$lib/hostname';
+	import type { GetHostnameSuggestionsResponse } from '$lib/proto/discopanel/v1/proxy_pb';
 	import { panelHost } from '$lib/utils/host';
 	import { uploadFile } from '$lib/utils/chunked-upload';
 
@@ -57,6 +58,7 @@
 	let dockerImages = $state<DockerImage[]>([]);
 	let latestVersion = $state('');
 	let proxyEnabled = $state(false);
+	let suggestions = $state<GetHostnameSuggestionsResponse | null>(null);
 	let proxyListeners = $state<ProxyListener[]>([]);
 	let usedPorts = $state<Record<number, boolean>>({});
 	let portError = $state('');
@@ -110,16 +112,26 @@
 	onMount(async () => {
 		try {
 			// Settle independently so one permission rejection cannot fail all
-			const [versionsData, loadersData, imagesData, proxyStatus, portData, listeners, hostMemory] =
-				await Promise.allSettled([
-					rpcClient.minecraft.getMinecraftVersions({}),
-					loadModLoaders(),
-					rpcClient.minecraft.getDockerImages({}),
-					rpcClient.proxy.getProxyStatus({}),
-					rpcClient.server.getNextAvailablePort({}),
-					rpcClient.proxy.getProxyListeners({}),
-					rpcClient.server.getHostMemory({})
-				]);
+			const [
+				versionsData,
+				loadersData,
+				imagesData,
+				proxyStatus,
+				portData,
+				listeners,
+				hostMemory,
+				sugg
+			] = await Promise.allSettled([
+				rpcClient.minecraft.getMinecraftVersions({}),
+				loadModLoaders(),
+				rpcClient.minecraft.getDockerImages({}),
+				rpcClient.proxy.getProxyStatus({}),
+				rpcClient.server.getNextAvailablePort({}),
+				rpcClient.proxy.getProxyListeners({}),
+				rpcClient.server.getHostMemory({}),
+				rpcClient.proxy.getHostnameSuggestions({ label: '' })
+			]);
+			if (sugg.status === 'fulfilled') suggestions = sugg.value;
 
 			if (versionsData.status === 'fulfilled') {
 				minecraftVersions = versionsData.value.versions.map((v) => v.id);
@@ -334,6 +346,15 @@
 		if (proxyEnabled && useProxyMode) {
 			const names = formData.proxyHostnames.length ? formData.proxyHostnames : ['your-hostname'];
 			return names.map((name) => playerAddress(name, selectedListener?.port)).join(', ');
+		}
+		if (suggestions) {
+			const list = directAddresses(
+				formData.port,
+				suggestions.lanIp,
+				suggestions.publicIp,
+				suggestions.suggestions.map((s) => s.hostname)
+			);
+			if (list.length > 0) return list[0];
 		}
 		return `${panelHost()}:${formData.port}`;
 	});

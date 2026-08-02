@@ -9,11 +9,12 @@
 		StatusBadge,
 		ServerAvatar,
 		EmptyState,
-		CopyButton
+		AddressSelect
 	} from '$lib/components/app';
 	import MetricsSparkline from '$lib/components/metrics-sparkline.svelte';
-	import { rpcClient } from '$lib/api/rpc-client';
+	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { panelHost } from '$lib/utils/host';
+	import { directAddresses, playerAddress } from '$lib/hostname';
 	import { serversStore, sortServersByActivity, claimFullStats } from '$lib/stores/servers';
 	import { currentUser, canAccessSettings } from '$lib/stores/auth';
 	import {
@@ -50,6 +51,7 @@
 		Moon
 	} from '@lucide/svelte';
 	import { type Server, ServerStatus } from '$lib/proto/discopanel/v1/storage_pb';
+	import type { GetHostnameSuggestionsResponse } from '$lib/proto/discopanel/v1/proxy_pb';
 
 	let servers = $derived($serversStore);
 	let user = $derived($currentUser);
@@ -58,6 +60,7 @@
 	let actioningId = $state('');
 	let now = $state(new Date());
 	let hostTotalMb = $state(0);
+	let suggestions = $state<GetHostnameSuggestionsResponse | null>(null);
 
 	onMount(() => {
 		const release = claimFullStats();
@@ -68,6 +71,10 @@
 		rpcClient.server
 			.getHostMemory({})
 			.then((r) => (hostTotalMb = Number(r.totalMb)))
+			.catch(() => {});
+		rpcClient.proxy
+			.getHostnameSuggestions({ label: '' }, silentCallOptions)
+			.then((r) => (suggestions = r))
 			.catch(() => {});
 		const clock = setInterval(() => (now = new Date()), 30000);
 		return () => {
@@ -152,13 +159,19 @@
 		return `${stats.running} of ${stats.total} ${stats.total === 1 ? 'server' : 'servers'} running · ${players} online`;
 	});
 
-	function address(server: Server): string {
-		return server.proxyHostnames.join(', ') || `${panelHost()}:${server.port}`;
-	}
-
-	// Copy grabs one joinable address, any name works alike
-	function copyAddress(server: Server): string {
-		return server.proxyHostnames[0] || `${panelHost()}:${server.port}`;
+	// Routed names else every detected direct address
+	function addresses(server: Server): string[] {
+		if (server.proxyHostnames.length > 0) return server.proxyHostnames;
+		if (suggestions) {
+			const list = directAddresses(
+				server.port,
+				suggestions.lanIp,
+				suggestions.publicIp,
+				suggestions.suggestions.map((s) => s.hostname)
+			);
+			if (list.length > 0) return list;
+		}
+		return [playerAddress(panelHost(), server.port)];
 	}
 
 	async function power(server: Server, start: boolean) {
@@ -413,13 +426,8 @@
 										</div>
 									</div>
 
-									<div
-										class="relative z-10 mt-3 flex items-center justify-between gap-2 rounded-lg border bg-muted/40 py-1 pr-1 pl-2.5"
-									>
-										<span class="truncate font-mono text-xs" title={address(server)}>
-											{address(server)}
-										</span>
-										<CopyButton text={copyAddress(server)} label="Copy address" class="size-6" />
+									<div class="relative z-10 mt-3">
+										<AddressSelect addresses={addresses(server)} />
 									</div>
 
 									<div class="mt-3 flex items-end justify-between gap-3">

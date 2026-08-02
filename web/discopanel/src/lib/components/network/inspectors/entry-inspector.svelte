@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { Button } from '$lib/components/ui/button';
+	import { AddressSelect } from '$lib/components/app';
 	import { ArrowUpRight, X } from '@lucide/svelte';
 
 	let {
@@ -10,6 +11,7 @@
 		ownerLabel,
 		serverId,
 		detail,
+		addresses = [],
 		onClose
 	}: {
 		port: number;
@@ -18,8 +20,11 @@
 		ownerLabel: string;
 		serverId: string;
 		detail: string;
+		addresses?: string[];
 		onClose: () => void;
 	} = $props();
+
+	let addressLabel = $derived(ownerLabel === 'Server' ? 'Player address' : 'Address');
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
@@ -34,6 +39,14 @@
 	</div>
 
 	<div class="min-h-0 flex-1 space-y-2 overflow-y-auto p-4 text-sm">
+		{#if addresses.length > 0}
+			<div class="pb-2">
+				<span class="stat-label">{addressLabel}</span>
+				<div class="mt-1.5">
+					<AddressSelect {addresses} />
+				</div>
+			</div>
+		{/if}
 		<div class="flex items-center justify-between gap-3">
 			<span class="text-muted-foreground">Port</span>
 			<span class="font-mono text-xs">:{port}/{transport}</span>

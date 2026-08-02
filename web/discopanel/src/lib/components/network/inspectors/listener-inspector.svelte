@@ -38,6 +38,8 @@
 
 	let editing = $derived(target?.listener ?? null);
 	let workloadCount = $derived(target?.workloadCount ?? 0);
+	// Panel listener follows the server config, form stays hidden
+	let isPanel = $derived(editing?.id === 'panel');
 
 	let name = $state('');
 	let description = $state('');
@@ -107,7 +109,7 @@
 					key: svc.key,
 					name: label,
 					serverId,
-					lane: laneLabel(svc.protocol),
+					lane: svc.protocols.map(laneLabel).join(' + '),
 					hostnames: [...svc.hostnames, ...svc.staleHostnames],
 					catchAll: svc.catchAll,
 					relay: svc.relay,
@@ -199,7 +201,9 @@
 				<h3 class="truncate text-sm font-semibold">
 					{editing ? editing.name : 'New listener'}
 				</h3>
-				{#if editing?.autoCreated}
+				{#if isPanel}
+					<span class="shrink-0 text-[11px] text-muted-foreground">panel</span>
+				{:else if editing?.autoCreated}
 					<span class="inline-flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
 						<Zap class="size-2.5" />
 						auto
@@ -218,7 +222,11 @@
 	</div>
 
 	<div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
-		{#if editing?.autoCreated}
+		{#if isPanel}
+			<p class="text-xs text-muted-foreground">
+				Carries the DiscoPanel web UI, always on and undeletable
+			</p>
+		{:else if editing?.autoCreated}
 			<p class="text-xs text-muted-foreground">
 				Opened automatically for routed ports, retires when unused
 			</p>
@@ -267,6 +275,7 @@
 			</div>
 		{/if}
 
+		{#if !isPanel}
 		<div class="grid gap-4 sm:grid-cols-[minmax(0,1fr)_7rem]">
 			<div class="space-y-2">
 				<Label for="listener-name">Name</Label>
@@ -341,20 +350,23 @@
 				{/if}
 			</div>
 		{/if}
+		{/if}
 	</div>
 
-	<div class="flex items-center justify-end gap-2 border-t bg-muted/20 px-4 py-3">
-		<Button size="sm" onclick={submit} disabled={saving || !name.trim() || !!portError}>
-			{#if saving}
-				<Loader2 class="size-4 animate-spin" />
-			{:else if editing}
-				<Save class="size-4" />
-			{:else}
-				<Plus class="size-4" />
-			{/if}
-			{editing ? 'Save changes' : 'Add listener'}
-		</Button>
-	</div>
+	{#if !isPanel}
+		<div class="flex items-center justify-end gap-2 border-t bg-muted/20 px-4 py-3">
+			<Button size="sm" onclick={submit} disabled={saving || !name.trim() || !!portError}>
+				{#if saving}
+					<Loader2 class="size-4 animate-spin" />
+				{:else if editing}
+					<Save class="size-4" />
+				{:else}
+					<Plus class="size-4" />
+				{/if}
+				{editing ? 'Save changes' : 'Add listener'}
+			</Button>
+		</div>
+	{/if}
 </div>
 
 <ConfirmDialog

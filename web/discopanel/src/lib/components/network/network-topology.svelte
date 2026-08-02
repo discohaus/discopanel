@@ -4,8 +4,7 @@
 	import {
 		SvelteFlow,
 		Background,
-		Controls,
-		MiniMap,
+		Panel,
 		type Node,
 		type Edge,
 		type NodeTypes
@@ -17,25 +16,37 @@
 	import {
 		NetworkOwnerKind,
 		NetworkReservationKind,
+		type GetHostnameSuggestionsResponse,
 		type GetNetworkTopologyResponse,
 		type ProxyListenerWithCount
 	} from '$lib/proto/discopanel/v1/proxy_pb';
+	import { directAddresses } from '$lib/hostname';
 	import { NetworkTransport, type Module } from '$lib/proto/discopanel/v1/storage_pb';
 	import { Button } from '$lib/components/ui/button';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { EmptyState } from '$lib/components/app';
 	import { PaneGroup, Pane, PaneResizer } from 'paneforge';
-	import { Network, RotateCcw } from '@lucide/svelte';
-	import { buildGraph, groupServices, laneLabel, type ExposedPort, type Selection } from './topology-data';
-	import SourceNode from './nodes/source-node.svelte';
+	import { LayoutGrid, Network, RotateCcw } from '@lucide/svelte';
+	import {
+		buildGraph,
+		groupServices,
+		laneLabel,
+		updateZoneNodes,
+		type ExposedPort,
+		type Selection
+	} from './topology-data';
+	import ZoneNode from './nodes/zone-node.svelte';
+	import InternetNode from './nodes/internet-node.svelte';
+	import RouterNode from './nodes/router-node.svelte';
 	import EntryNode from './nodes/entry-node.svelte';
 	import ListenerNode from './nodes/listener-node.svelte';
-	import LaneNode from './nodes/lane-node.svelte';
 	import ServiceNode from './nodes/service-node.svelte';
 	import BackendNode from './nodes/backend-node.svelte';
 	import ActionNode from './nodes/action-node.svelte';
 	import ProxyInspector from './inspectors/proxy-inspector.svelte';
 	import PanelInspector from './inspectors/panel-inspector.svelte';
+	import InternetInspector from './inspectors/internet-inspector.svelte';
+	import RouterInspector from './inspectors/router-inspector.svelte';
 	import ListenerInspector from './inspectors/listener-inspector.svelte';
 	import LaneInspector from './inspectors/lane-inspector.svelte';
 	import EntryInspector from './inspectors/entry-inspector.svelte';
@@ -44,14 +55,18 @@
 	import DisableProxyDialog from './disable-proxy-dialog.svelte';
 
 	const nodeTypes: NodeTypes = {
-		source: SourceNode,
+		zone: ZoneNode,
+		internet: InternetNode,
+		router: RouterNode,
 		entry: EntryNode,
 		listener: ListenerNode,
-		lane: LaneNode,
 		service: ServiceNode,
 		backend: BackendNode,
 		action: ActionNode
 	};
+
+	// Saved drag positions survive reloads per browser
+	const POS_KEY = 'discopanel:topology-positions';
 
 	let loading = $state(true);
 	let loadError = $state(false);
@@ -59,8 +74,10 @@
 	let listeners = $state<ProxyListenerWithCount[]>([]);
 	let modules = $state<Module[]>([]);
 	let configHostnames = $state<string[]>([]);
+	let suggestions = $state<GetHostnameSuggestionsResponse | null>(null);
 	let selection = $state<Selection>({ kind: 'overview' });
 	let disableOpen = $state(false);
+	let moved = $state<Record<string, { x: number; y: number }>>({});
 
 	let nodes = $state.raw<Node[]>([]);
 	let edges = $state.raw<Edge[]>([]);
@@ -68,10 +85,39 @@
 	// Graph rebuilds whenever any input changes
 	$effect(() => {
 		if (!topology) return;
-		const graph = buildGraph(topology, listeners, $serversStore, modules, selection);
+		const graph = buildGraph(topology, listeners, $serversStore, modules, selection, moved, (sel) => {
+			selection = sel;
+		});
 		nodes = graph.nodes;
 		edges = graph.edges;
 	});
+
+	// Zones refit live so dragging never desyncs them
+	function onDrag({ targetNode, nodes: dragging }: { targetNode: Node | null; nodes: Node[] }) {
+		if (!targetNode || targetNode.type === 'zone') return;
+		nodes = updateZoneNodes(nodes, dragging);
+	}
+
+	// Remembers where the user parked a node
+	function onDragStop({ targetNode }: { targetNode: Node | null }) {
+		if (!targetNode || targetNode.type === 'zone') return;
+		moved = { ...moved, [targetNode.id]: { ...targetNode.position } };
+		try {
+			localStorage.setItem(POS_KEY, JSON.stringify(moved));
+		} catch {
+			// Storage failures never break the map
+		}
+	}
+
+	// Drops saved spots and returns to automatic layout
+	function reflow() {
+		moved = {};
+		try {
+			localStorage.removeItem(POS_KEY);
+		} catch {
+			// Storage failures never break the map
+		}
+	}
 
 	let usedPorts = $derived(topology ? [...new Set(topology.reservations.map((r) => r.port))] : []);
 	let hasProxiedWorkloads = $derived(
@@ -83,6 +129,11 @@
 	let routeCount = $derived(topology?.routes.length ?? 0);
 
 	onMount(() => {
+		try {
+			moved = JSON.parse(localStorage.getItem(POS_KEY) ?? '{}');
+		} catch {
+			moved = {};
+		}
 		loadAll();
 		const interval = setInterval(pollSilently, 10_000);
 		const unregister = registerRefresh(loadAll);
@@ -94,16 +145,18 @@
 
 	async function loadAll() {
 		try {
-			const [topo, lst, mods, status] = await Promise.all([
+			const [topo, lst, mods, status, sugg] = await Promise.all([
 				rpcClient.proxy.getNetworkTopology({}),
 				rpcClient.proxy.getProxyListeners({}),
 				rpcClient.module.listModules({}),
-				rpcClient.proxy.getProxyStatus({})
+				rpcClient.proxy.getProxyStatus({}),
+				rpcClient.proxy.getHostnameSuggestions({ label: '' })
 			]);
 			topology = topo;
 			listeners = lst.listeners;
 			modules = mods.modules;
 			configHostnames = status.hostnames;
+			suggestions = sugg;
 			loadError = false;
 		} catch {
 			loadError = true;
@@ -114,16 +167,18 @@
 
 	async function pollSilently() {
 		try {
-			const [topo, lst, mods, status] = await Promise.all([
+			const [topo, lst, mods, status, sugg] = await Promise.all([
 				rpcClient.proxy.getNetworkTopology({}, silentCallOptions),
 				rpcClient.proxy.getProxyListeners({}, silentCallOptions),
 				rpcClient.module.listModules({}, silentCallOptions),
-				rpcClient.proxy.getProxyStatus({}, silentCallOptions)
+				rpcClient.proxy.getProxyStatus({}, silentCallOptions),
+				rpcClient.proxy.getHostnameSuggestions({ label: '' }, silentCallOptions)
 			]);
 			topology = topo;
 			listeners = lst.listeners;
 			modules = mods.modules;
 			configHostnames = status.hostnames;
+			suggestions = sugg;
 			loadError = false;
 		} catch {
 			// Silent polls swallow transient failures
@@ -161,16 +216,31 @@
 			.map((r) => r.hostname);
 	});
 
+	// Hosts reaching the panel ui, configured else detected
+	let panelHosts = $derived.by(() => {
+		if (panelHostnames.length > 0) return panelHostnames;
+		if (!suggestions) return [];
+		const out: string[] = [];
+		const seen = new Set<string>();
+		const hosts = [
+			suggestions.lanIp,
+			suggestions.publicIp,
+			...suggestions.suggestions.map((s) => s.hostname)
+		];
+		for (const host of hosts) {
+			if (!host || seen.has(host)) continue;
+			seen.add(host);
+			out.push(host);
+		}
+		return out;
+	});
+
 	let selectedService = $derived.by(() => {
 		if (selection.kind !== 'service' || !topology) return null;
 		const sel = selection;
 		return (
 			groupServices(topology.reservations, topology.routes, sel.port).find(
-				(svc) =>
-					svc.protocol === sel.protocol &&
-					svc.ownerKind === sel.ownerKind &&
-					svc.ownerId === sel.ownerId &&
-					!svc.relay
+				(svc) => svc.ownerKind === sel.ownerKind && svc.ownerId === sel.ownerId && !svc.relay
 			) ?? null
 		);
 	});
@@ -191,7 +261,7 @@
 		if (selection.kind !== 'lane' || !topology) return null;
 		const sel = selection;
 		const laneServices = groupServices(topology.reservations, topology.routes, sel.port).filter(
-			(svc) => svc.protocol === sel.protocol && !svc.relay
+			(svc) => svc.protocols.includes(sel.protocol) && !svc.relay
 		);
 		const relay = topology.reservations.find(
 			(r) =>
@@ -262,6 +332,17 @@
 			detail: res.detail
 		};
 	});
+	// Joinable addresses for the focused direct port
+	let entryAddresses = $derived.by(() => {
+		if (selection.kind !== 'entry' || !suggestions) return [];
+		return directAddresses(
+			selection.port,
+			suggestions.lanIp,
+			suggestions.publicIp,
+			suggestions.suggestions.map((s) => s.hostname)
+		);
+	});
+
 	let selectedServer = $derived.by(() => {
 		if (selection.kind !== 'server') return null;
 		const id = selection.id;
@@ -357,20 +438,31 @@
 				{#if hasAnything || listeners.length > 0}
 					<div class="topology-flow h-full">
 						<SvelteFlow
-							{nodes}
-							{edges}
+							bind:nodes
+							bind:edges
 							{nodeTypes}
 							fitView
-							minZoom={0.4}
+							minZoom={0.3}
 							maxZoom={1.5}
-							nodesDraggable={false}
 							nodesConnectable={false}
 							onnodeclick={({ node }) => selectNode(node)}
+							onnodedrag={onDrag}
+							onnodedragstop={onDragStop}
 							onpaneclick={backToOverview}
+							proOptions={{ hideAttribution: true }}
 						>
 							<Background gap={24} />
-							<Controls showLock={false} />
-							<MiniMap class="max-lg:hidden" />
+							<Panel position="bottom-left">
+								<Button
+									size="sm"
+									variant="outline"
+									onclick={reflow}
+									disabled={Object.keys(moved).length === 0}
+								>
+									<LayoutGrid class="size-4" />
+									Reflow
+								</Button>
+							</Panel>
 						</SvelteFlow>
 					</div>
 				{:else}
@@ -389,11 +481,11 @@
 			<Pane defaultSize={30} minSize={22} class="max-lg:!flex-auto">
 				<div class="h-full min-h-0 border-l bg-card max-lg:border-t max-lg:border-l-0">
 					{#if selection.kind === 'panel'}
-						<PanelInspector
-							port={topology.panelPort}
-							hostnames={panelHostnames}
-							onClose={backToOverview}
-						/>
+						<PanelInspector port={topology.panelPort} hosts={panelHosts} onClose={backToOverview} />
+					{:else if selection.kind === 'internet'}
+						<InternetInspector publicIp={topology.publicIp} onClose={backToOverview} />
+					{:else if selection.kind === 'router'}
+						<RouterInspector gatewayIp={topology.gatewayIp} onClose={backToOverview} />
 					{:else if selection.kind === 'listener' && selectedListener}
 						<ListenerInspector
 							target={selectedListener}
@@ -434,6 +526,7 @@
 							ownerLabel={selectedEntry.ownerLabel}
 							serverId={selectedEntry.serverId}
 							detail={selectedEntry.detail}
+							addresses={entryAddresses}
 							onClose={backToOverview}
 						/>
 					{:else if selection.kind === 'service' && selectedService}
