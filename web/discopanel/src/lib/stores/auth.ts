@@ -150,6 +150,9 @@ function createAuthStore() {
 					isLoading: false
 				}));
 
+				// Swaps any open socket onto the fresh token
+				wsClient.reauthenticate();
+
 				// Fetch permissions after login
 				await this.validateSession();
 

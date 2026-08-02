@@ -27,9 +27,9 @@ func (s *ServerService) backupDirFor(server *v1.Server) string {
 
 // ListBackups returns the server's archived snapshots newest first
 func (s *ServerService) ListBackups(ctx context.Context, req *connect.Request[v1.ListBackupsRequest]) (*connect.Response[v1.ListBackupsResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 	dir := s.backupDirFor(server)
 	if dir == "" {
@@ -128,9 +128,9 @@ func findLevelDatRoot(staging string) (string, error) {
 
 // RestoreBackup rewinds world files from a snapshot, stopped servers only
 func (s *ServerService) RestoreBackup(ctx context.Context, req *connect.Request[v1.RestoreBackupRequest]) (*connect.Response[v1.RestoreBackupResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 	dir := s.backupDirFor(server)
 	if dir == "" {

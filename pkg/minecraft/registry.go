@@ -152,21 +152,8 @@ func IsValidModFile(filename string, loader v1.ModLoader) bool {
 	return strings.EqualFold(filepath.Ext(filename), ".jar")
 }
 
-// Fuzzy weights for mod loader matches
-const (
-	modLoaderMatchThreshold     = 0.5
-	modpackLoaderMatchThreshold = 0.6
-)
-
-func MatchModLoader(input string) (v1.ModLoader, bool) {
-	row, score, ok := utils.BestFunc(input, registry, func(r LoaderInfo) string {
-		return protometa.Name(r.Loader())
-	})
-	if !ok || score < modLoaderMatchThreshold {
-		return v1.ModLoader_MOD_LOADER_UNSPECIFIED, false
-	}
-	return row.Loader(), true
-}
+// Fuzzy weight for modpack loader matches
+const modpackLoaderMatchThreshold = 0.6
 
 // Inspects candidate strings for modloader identification
 func DetectModpackLoader(candidates ...string) (v1.ModLoader, bool) {

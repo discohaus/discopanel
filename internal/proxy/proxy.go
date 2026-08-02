@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/discohaus/discopanel/pkg/logger"
@@ -38,6 +39,11 @@ type Route struct {
 	Motd string
 	// Fills the synthesized status player cap
 	MaxPlayers int
+}
+
+// Dial address for the route's backend
+func (r *Route) BackendAddr() string {
+	return net.JoinHostPort(r.BackendHost, strconv.Itoa(r.BackendPort))
 }
 
 // Carries status ping data for a paused server

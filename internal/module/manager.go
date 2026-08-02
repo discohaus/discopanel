@@ -596,7 +596,7 @@ func (m *Manager) waitForHealthy(ctx context.Context, moduleID string, timeoutSe
 			return fmt.Errorf("health check timed out after %d seconds", timeoutSeconds)
 		case <-ticker.C:
 			// Get container IP
-			containerIP, err := m.docker.GetModuleContainerIP(ctx, module.ContainerId)
+			containerIP, err := m.docker.ContainerIP(ctx, module.ContainerId)
 			if err != nil {
 				failCount++
 				if failCount >= int(retries) {
@@ -614,6 +614,9 @@ func (m *Manager) waitForHealthy(ctx context.Context, moduleID string, timeoutSe
 
 			failCount++
 			m.logger.Debug("Health check failed for %s (attempt %d/%d)", module.Name, failCount, retries)
+			if failCount >= int(retries) {
+				return fmt.Errorf("health check failed after %d attempts", retries)
+			}
 		}
 	}
 }
@@ -679,9 +682,14 @@ func (m *Manager) StopModule(ctx context.Context, moduleID string) error {
 		return fmt.Errorf("failed to update module status: %w", err)
 	}
 
-	// Stop the container
+	// Stop the container, still running must not read stopped
 	if _, err := m.docker.StopContainer(ctx, module.ContainerId, 30); err != nil {
 		m.logger.Error("Failed to stop module container: %v", err)
+		module.Status = v1.ModuleStatus_MODULE_STATUS_ERROR
+		if uerr := m.store.UpdateModule(ctx, module); uerr != nil {
+			m.logger.Error("Failed to update module status: %v", uerr)
+		}
+		return fmt.Errorf("failed to stop module container: %w", err)
 	}
 
 	// Update status

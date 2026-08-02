@@ -66,6 +66,7 @@ type Client struct {
 	hub  *Hub
 	conn *websocket.Conn
 	send chan []byte
+	done chan struct{}
 
 	// Authentication
 	user          *v1.User
@@ -126,10 +127,7 @@ func (h *Hub) Run() {
 
 		case client := <-h.unregister:
 			h.clientsMu.Lock()
-			if _, ok := h.clients[client]; ok {
-				delete(h.clients, client)
-				close(client.send)
-			}
+			delete(h.clients, client)
 			h.clientsMu.Unlock()
 			h.log.Debug("WebSocket client disconnected")
 
@@ -202,6 +200,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		hub:           h,
 		conn:          conn,
 		send:          make(chan []byte, 256),
+		done:          make(chan struct{}),
 		subscriptions: make(map[string]chan *v1.LogEntry),
 		metricsSubs:   make(map[string]bool),
 	}
@@ -251,13 +250,13 @@ func (c *Client) writePump() {
 
 	for {
 		select {
-		case message, ok := <-c.send:
+		case <-c.done:
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if !ok {
-				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
+			c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+			return
 
+		case message := <-c.send:
+			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.conn.WriteMessage(websocket.BinaryMessage, message); err != nil {
 				return
 			}
@@ -488,6 +487,7 @@ func (c *Client) cleanup() {
 	c.subscriptionsMu.Lock()
 	defer c.subscriptionsMu.Unlock()
 
+	close(c.done)
 	for serverId, ch := range c.subscriptions {
 		c.hub.logStreamer.Unsubscribe(serverId, ch)
 	}
@@ -495,9 +495,10 @@ func (c *Client) cleanup() {
 	c.metricsSubs = make(map[string]bool)
 }
 
-// Queues pre-marshaled bytes, drops when client lags
+// Queues pre-marshaled bytes, drops when client lags or left
 func (c *Client) sendRaw(data []byte) {
 	select {
+	case <-c.done:
 	case c.send <- data:
 	default:
 		// Channel full, skip

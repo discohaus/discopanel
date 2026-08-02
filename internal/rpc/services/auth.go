@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -29,6 +30,9 @@ type AuthService struct {
 	enforcer    *rbac.Enforcer
 	oidcHandler *auth.OIDCHandler
 	log         *logger.Logger
+
+	// Serializes registration so first admin and invites race free
+	registerMu sync.Mutex
 }
 
 func NewAuthService(store *storage.Store, authManager *auth.Manager, enforcer *rbac.Enforcer, oidcHandler *auth.OIDCHandler, log *logger.Logger) *AuthService {
@@ -108,6 +112,9 @@ func (s *AuthService) Logout(ctx context.Context, req *connect.Request[v1.Logout
 func (s *AuthService) Register(ctx context.Context, req *connect.Request[v1.RegisterRequest]) (*connect.Response[v1.RegisterResponse], error) {
 	msg := req.Msg
 
+	s.registerMu.Lock()
+	defer s.registerMu.Unlock()
+
 	userCount, _ := s.store.CountUsers(ctx)
 	isFirstUser := userCount == 0
 
@@ -142,8 +149,25 @@ func (s *AuthService) Register(ctx context.Context, req *connect.Request[v1.Regi
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("username and password are required"))
 	}
 
+	// Use claims atomically so max_uses cannot oversubscribe
+	if invite != nil {
+		claimed, cerr := s.store.ClaimInviteUse(ctx, invite.Id)
+		if cerr != nil {
+			s.log.Error("Failed to claim invite use: %v", cerr)
+			return nil, connect.NewError(connect.CodeInternal, errors.New("registration failed"))
+		}
+		if !claimed {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("invite has reached maximum uses"))
+		}
+	}
+
 	user, err := s.authManager.CreateLocalUser(ctx, msg.Username, msg.Email, msg.Password)
 	if err != nil {
+		if invite != nil {
+			if rerr := s.store.ReleaseInviteUse(ctx, invite.Id); rerr != nil {
+				s.log.Error("Failed to release invite use: %v", rerr)
+			}
+		}
 		s.log.Error("Registration failed: %v", err)
 		return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("registration failed"))
 	}
@@ -160,11 +184,6 @@ func (s *AuthService) Register(ctx context.Context, req *connect.Request[v1.Regi
 		for _, role := range defaultRoles {
 			_ = s.store.AssignRole(ctx, user.Id, role.Name, v1.RoleSource_ROLE_SOURCE_LOCAL)
 		}
-	}
-
-	// Increment invite use count after successful registration
-	if invite != nil {
-		_ = s.store.IncrementInviteUseCount(ctx, invite.Id)
 	}
 
 	user.Roles, _ = s.store.GetUserRoleNames(ctx, user.Id)

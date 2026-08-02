@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
@@ -38,7 +39,7 @@ func (p *Provisioner) installForge(ctx context.Context, server *v1.Server, cfg *
 		return nil, fmt.Errorf("Forge installer failed: %w", err)
 	}
 
-	spec, err := detectForgeLaunch(server.DataPath, "minecraftforge/forge")
+	spec, err := detectForgeLaunch(server.DataPath, "minecraftforge/forge", resolvedVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -166,10 +167,10 @@ func (p *Provisioner) installNeoForge(ctx context.Context, server *v1.Server, cf
 		return nil, fmt.Errorf("NeoForge installer failed: %w", err)
 	}
 
-	spec, err := detectForgeLaunch(server.DataPath, "neoforged/neoforge")
+	spec, err := detectForgeLaunch(server.DataPath, "neoforged/neoforge", neoVersion)
 	if err != nil {
 		// Legacy artifact installs under neoforged/forge
-		spec, err = detectForgeLaunch(server.DataPath, "neoforged/forge")
+		spec, err = detectForgeLaunch(server.DataPath, "neoforged/forge", neoVersion)
 		if err != nil {
 			return nil, err
 		}
@@ -281,10 +282,10 @@ func scriptVar(s, key string) string {
 }
 
 // Locates the launch entry produced by a Forge installer
-func detectForgeLaunch(dataPath, vendorPath string) (*v1.LaunchSpec, error) {
+func detectForgeLaunch(dataPath, vendorPath, version string) (*v1.LaunchSpec, error) {
 	pattern := filepath.Join(dataPath, "libraries", "net", filepath.FromSlash(vendorPath), "*", "unix_args.txt")
 	if matches, err := filepath.Glob(pattern); err == nil && len(matches) > 0 {
-		rel, err := filepath.Rel(dataPath, matches[len(matches)-1])
+		rel, err := filepath.Rel(dataPath, pickForgeArgs(matches, version))
 		if err == nil {
 			return &v1.LaunchSpec{
 				Kind:     v1.LaunchKind_LAUNCH_KIND_ARGS_FILE,
@@ -309,4 +310,30 @@ func detectForgeLaunch(dataPath, vendorPath string) (*v1.LaunchSpec, error) {
 	}
 
 	return nil, fmt.Errorf("installer completed but no launchable server was found (expected libraries/net/%s/*/unix_args.txt or a forge server jar)", vendorPath)
+}
+
+// Prefers the requested version, else the newest install
+func pickForgeArgs(matches []string, version string) string {
+	if version != "" {
+		for _, m := range matches {
+			dir := filepath.Base(filepath.Dir(m))
+			if dir == version || strings.HasSuffix(dir, "-"+version) {
+				return m
+			}
+		}
+	}
+	// Old versions linger in libraries, lexical order lies
+	best := matches[0]
+	var bestTime time.Time
+	for _, m := range matches {
+		info, err := os.Stat(m)
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(bestTime) {
+			bestTime = info.ModTime()
+			best = m
+		}
+	}
+	return best
 }

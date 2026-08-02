@@ -499,9 +499,9 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 	}
 
 	// Verify server exists
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	// Verify template exists
@@ -978,7 +978,7 @@ func (s *ModuleService) GetModuleLogs(ctx context.Context, req *connect.Request[
 	}
 
 	tail := msg.Tail
-	if tail == 0 {
+	if tail <= 0 {
 		tail = 100
 	}
 
@@ -1130,7 +1130,7 @@ func (s *ModuleService) moduleHTTPBase(ctx context.Context, module *v1.Module) (
 	if port == 0 {
 		return "", errors.New("module has no health port")
 	}
-	ip, err := s.docker.GetModuleContainerIP(ctx, module.ContainerId)
+	ip, err := s.docker.ContainerIP(ctx, module.ContainerId)
 	if err != nil {
 		return "", err
 	}

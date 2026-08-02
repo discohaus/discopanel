@@ -122,7 +122,8 @@ func (s *RoleService) UpdateRole(ctx context.Context, req *connect.Request[v1.Up
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("cannot modify system role"))
 	}
 
-	if msg.Name != nil {
+	oldName := role.Name
+	if msg.Name != nil && *msg.Name != "" {
 		role.Name = *msg.Name
 	}
 	if msg.Description != nil {
@@ -132,7 +133,17 @@ func (s *RoleService) UpdateRole(ctx context.Context, req *connect.Request[v1.Up
 		role.IsDefault = *msg.IsDefault
 	}
 
-	if err := s.store.UpdateRole(ctx, role); err != nil {
+	if role.Name != oldName {
+		// Rename must follow through to assignments and policies
+		if err := s.store.RenameRole(ctx, role, oldName); err != nil {
+			s.log.Error("Failed to rename role: %v", err)
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to rename role"))
+		}
+		if err := s.enforcer.RenameRole(oldName, role.Name); err != nil {
+			s.log.Error("Failed to move permissions for renamed role %s: %v", role.Name, err)
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to move role permissions"))
+		}
+	} else if err := s.store.UpdateRole(ctx, role); err != nil {
 		s.log.Error("Failed to update role: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update role"))
 	}

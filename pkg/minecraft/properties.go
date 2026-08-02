@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -53,8 +54,9 @@ func SavePropertiesFile(serverDataPath string, properties PropertiesFile) error 
 		file.Close()
 	}
 
-	// Create new file
-	file, err := os.Create(propertiesPath)
+	// Temp file plus rename keeps a crash from eating the file
+	tmpPath := propertiesPath + ".tmp"
+	file, err := os.Create(tmpPath)
 	if err != nil {
 		return fmt.Errorf("failed to create server.properties: %w", err)
 	}
@@ -88,12 +90,29 @@ func SavePropertiesFile(serverDataPath string, properties PropertiesFile) error 
 		}
 	}
 
-	// Add any new properties that weren't in the original file
-	for key, value := range properties {
+	// New keys append in stable sorted order
+	newKeys := make([]string, 0, len(properties))
+	for key := range properties {
 		if !updatedKeys[key] {
-			fmt.Fprintf(writer, "%s=%s\n", key, value)
+			newKeys = append(newKeys, key)
 		}
 	}
+	sort.Strings(newKeys)
+	for _, key := range newKeys {
+		fmt.Fprintf(writer, "%s=%s\n", key, properties[key])
+	}
 
-	return writer.Flush()
+	if err := writer.Flush(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := file.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, propertiesPath)
 }

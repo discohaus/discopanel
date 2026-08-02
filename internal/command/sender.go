@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
 	storage "github.com/discohaus/discopanel/internal/db"
@@ -150,32 +149,19 @@ func (s *Sender) SendCommand(ctx context.Context, serverID string, command strin
 		return "", fmt.Errorf("rcon is disabled for this server")
 	}
 
+	// Decoded global row backs any unset per server values
 	rconPort := 25575
-	if v, ok := s.config.Minecraft.GlobalConfig["rconPort"]; ok && v != nil {
-		switch t := v.(type) {
-		case int:
-			rconPort = t
-		case int64:
-			rconPort = int(t)
-		case float64:
-			rconPort = int(t)
-		case string:
-			if p, err := strconv.Atoi(t); err == nil {
-				rconPort = p
-			}
+	var rconPassword string
+	if global, _, gerr := s.store.GetGlobalSettings(ctx); gerr == nil && global != nil {
+		if global.RconPort != nil {
+			rconPort = int(*global.RconPort)
+		}
+		if global.RconPassword != nil {
+			rconPassword = *global.RconPassword
 		}
 	}
 	if serverCfg.RconPort != nil {
 		rconPort = int(*serverCfg.RconPort)
-	}
-
-	var rconPassword string
-	if v, ok := s.config.Minecraft.GlobalConfig["rconPassword"]; ok && v != nil {
-		if p, ok := v.(string); ok {
-			rconPassword = p
-		} else {
-			rconPassword = fmt.Sprint(v)
-		}
 	}
 	if serverCfg.RconPassword != nil {
 		rconPassword = *serverCfg.RconPassword

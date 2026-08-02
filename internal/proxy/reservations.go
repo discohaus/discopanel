@@ -172,10 +172,10 @@ func NormalizeHostnames(names []string) ([]string, error) {
 	return out, nil
 }
 
-// Checks panel names against the registry before persist
-func (m *Manager) ValidatePanelHostnames(ctx context.Context, hostnames []string) error {
+// Builds routed panel requests for hostname claims
+func (m *Manager) panelHostnameRequests(hostnames []string) []NetRequest {
 	port := m.panelWebPort()
-	if port <= 0 || len(hostnames) == 0 {
+	if port <= 0 {
 		return nil
 	}
 	var reqs []NetRequest
@@ -188,7 +188,25 @@ func (m *Manager) ValidatePanelHostnames(ctx context.Context, hostnames []string
 			Detail:   "web interface",
 		})
 	}
+	return reqs
+}
+
+// Checks panel names against the registry before persist
+func (m *Manager) ValidatePanelHostnames(ctx context.Context, hostnames []string) error {
+	reqs := m.panelHostnameRequests(hostnames)
+	if len(reqs) == 0 {
+		return nil
+	}
 	return m.ValidateNetwork(ctx, NetOwner{Kind: OwnerPanel, ID: OwnerPanel}, reqs)
+}
+
+// Claims panel names until the caller persists them
+func (m *Manager) CheckoutPanelHostnames(ctx context.Context, hostnames []string) (*NetClaim, error) {
+	reqs := m.panelHostnameRequests(hostnames)
+	if len(reqs) == 0 {
+		return nil, nil
+	}
+	return m.CheckoutNetwork(ctx, NetOwner{Kind: OwnerPanel, ID: OwnerPanel}, reqs)
 }
 
 // Hostnames a routed port serves, minecraft needs at least one

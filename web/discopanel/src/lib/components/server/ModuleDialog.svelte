@@ -9,12 +9,20 @@
 	import { Select, SelectContent, SelectItem, SelectTrigger } from '$lib/components/ui/select';
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { Textarea } from '$lib/components/ui/textarea';
-	import { ConfirmDialog, CopyButton, EmptyState } from '$lib/components/app';
+	import {
+		ConfirmDialog,
+		CopyButton,
+		EmptyState,
+		EventHookRowsEditor,
+		InitCommandFields,
+		KeyValueRowsEditor,
+		NetworkPortRowsEditor,
+		SectionedDialogLayout,
+		VolumeMountRowsEditor
+	} from '$lib/components/app';
 	import AliasHelper from '$lib/components/ui/AliasHelper.svelte';
 	import DynamicIcon from '$lib/components/ui/DynamicIcon.svelte';
 	import ModuleTemplateMenu from './ModuleTemplateMenu.svelte';
-	import HostnameListInput from '$lib/components/network/hostname-list-input.svelte';
-	import { hostnameSlug } from '$lib/hostname';
 	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { toast } from 'svelte-sonner';
 	import { cn } from '$lib/utils';
@@ -36,20 +44,16 @@
 		ModuleConfigFieldType,
 		ModuleConfigSeverity,
 		ModuleEventAction,
-		ModuleEventActionSchema,
 		TriggeredEventType,
 		ModuleProtocol,
-		ModuleProtocolSchema,
 		NetworkPortSchema,
 		ModuleDependencySchema,
 		ModuleEventHookSchema,
 		VolumeMountSchema
 	} from '$lib/proto/discopanel/v1/storage_pb';
 	import { create, clone } from '@bufbuild/protobuf';
-	import { enumLabel } from '$lib/proto-meta';
 	import { evaluateConfigField, groupedConfigFields } from '$lib/module-config';
 	import type { ConfigFieldIssue } from '$lib/module-config';
-	import { SERVER_EVENT_TYPES, getEventTypeLabel } from '$lib/utils/events';
 	import {
 		AlertTriangle,
 		ArrowLeft,
@@ -257,14 +261,8 @@
 	function addEnvVar() {
 		envVars = [...envVars, { key: '', value: '' }];
 	}
-	function removeEnvVar(i: number) {
-		envVars = envVars.filter((_, idx) => idx !== i);
-	}
 	function addVolume() {
 		volumes = [...volumes, create(VolumeMountSchema, {})];
-	}
-	function removeVolume(i: number) {
-		volumes = volumes.filter((_, idx) => idx !== i);
 	}
 	function addPort() {
 		ports = [
@@ -277,9 +275,6 @@
 				proxyEnabled: true
 			})
 		];
-	}
-	function removePort(i: number) {
-		ports = ports.filter((_, idx) => idx !== i);
 	}
 	function addDependency() {
 		dependencies = [
@@ -302,30 +297,8 @@
 			})
 		];
 	}
-	function removeEventHook(i: number) {
-		eventHooks = eventHooks.filter((_, idx) => idx !== i);
-	}
 	function addMetadataEntry() {
 		metadata = [...metadata, { key: '', value: '' }];
-	}
-	function removeMetadataEntry(i: number) {
-		metadata = metadata.filter((_, idx) => idx !== i);
-	}
-
-	// Display order for event action choices
-	const EVENT_ACTION_OPTIONS: ModuleEventAction[] = [
-		ModuleEventAction.START,
-		ModuleEventAction.STOP,
-		ModuleEventAction.RESTART,
-		ModuleEventAction.EXEC,
-		ModuleEventAction.RCON
-	];
-
-	function getEventActionLabel(a: ModuleEventAction): string {
-		return (
-			enumLabel(ModuleEventActionSchema, a) ||
-			enumLabel(ModuleEventActionSchema, ModuleEventAction.UNSPECIFIED)
-		);
 	}
 
 	async function loadServerModules() {
@@ -650,7 +623,8 @@
 					id: module.id,
 					memory,
 					cpuLimit,
-					ports: portsPayload
+					ports: portsPayload,
+					clearPorts: portsPayload.length === 0
 				});
 				toast.success(`Module "${module.name}" updated`);
 			} else if (module) {
@@ -719,8 +693,14 @@
 				</div>
 			</div>
 		{:else}
-			<div class="flex h-full min-h-0">
-				<aside class="flex w-64 shrink-0 flex-col border-r bg-card/40">
+			<SectionedDialogLayout
+				bind:activeSection
+				{navItems}
+				title={sectionHeaders[activeSection].title}
+				description={sectionHeaders[activeSection].desc}
+				onclose={() => (open = false)}
+			>
+				{#snippet sidebarHeader()}
 					<div class="border-b p-4">
 						{#if mode === 'create'}
 							<button
@@ -760,33 +740,19 @@
 							</div>
 						</div>
 					</div>
+				{/snippet}
 
-					<nav class="flex-1 space-y-1 overflow-y-auto p-3">
-						{#each navItems as item (item.id)}
-							{@const Icon = item.icon}
-							<button
-								type="button"
-								onclick={() => (activeSection = item.id)}
-								class={cn(
-									'flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm transition-colors',
-									activeSection === item.id
-										? 'bg-accent font-medium text-foreground'
-										: 'text-muted-foreground hover:bg-accent/40 hover:text-foreground'
-								)}
-							>
-								<Icon class="size-4" />
-								{item.label}
-								{#if item.id === 'configuration' && configDenyCount > 0}
-									<span
-										class="ml-auto rounded-full bg-destructive/15 px-1.5 py-0.5 text-[10px] font-semibold text-destructive"
-									>
-										{configDenyCount}
-									</span>
-								{/if}
-							</button>
-						{/each}
-					</nav>
+				{#snippet navExtra(id)}
+					{#if id === 'configuration' && configDenyCount > 0}
+						<span
+							class="ml-auto rounded-full bg-destructive/15 px-1.5 py-0.5 text-[10px] font-semibold text-destructive"
+						>
+							{configDenyCount}
+						</span>
+					{/if}
+				{/snippet}
 
+				{#snippet sidebarFooter()}
 					<div class="space-y-3 border-t p-4">
 						{#if module?.id}
 							<div>
@@ -809,24 +775,9 @@
 							<AliasHelper serverId={serverId || ''} moduleId={module?.id} showLabel />
 						</div>
 					</div>
-				</aside>
+				{/snippet}
 
-				<div class="flex min-w-0 flex-1 flex-col">
-					<div class="flex items-start justify-between gap-4 border-b px-6 py-4">
-						<div>
-							<h2 class="text-lg font-semibold tracking-tight">
-								{sectionHeaders[activeSection].title}
-							</h2>
-							<p class="mt-0.5 text-sm text-muted-foreground">
-								{sectionHeaders[activeSection].desc}
-							</p>
-						</div>
-						<Button variant="ghost" size="icon" class="size-8" onclick={() => (open = false)}>
-							<X class="size-4" />
-							<span class="sr-only">Close</span>
-						</Button>
-					</div>
-
+				{#snippet banner()}
 					{#if pendingPrompt}
 						<div class="border-b border-amber-500/30 bg-amber-500/10 px-6 py-4">
 							<div class="flex items-start gap-3">
@@ -891,920 +842,565 @@
 							</p>
 						</div>
 					{/if}
+				{/snippet}
 
-					<div class="flex-1 overflow-y-auto p-6">
-						{#if activeSection === 'general'}
-							<div class="space-y-6">
+				{#if activeSection === 'general'}
+					<div class="space-y-6">
+						<div class="space-y-2">
+							<Label for="module-name">Module name</Label>
+							<Input
+								id="module-name"
+								bind:value={name}
+								placeholder="Enter module name"
+								disabled={systemLocked}
+							/>
+							<p class="text-xs text-muted-foreground">
+								A unique identifier for this module instance
+							</p>
+						</div>
+
+						<div class="space-y-3">
+							<h3 class="text-sm font-semibold">Resource limits</h3>
+							<div class="grid gap-4 sm:grid-cols-2">
 								<div class="space-y-2">
-									<Label for="module-name">Module name</Label>
+									<Label for="module-memory">Memory (MB)</Label>
 									<Input
-										id="module-name"
-										bind:value={name}
-										placeholder="Enter module name"
+										id="module-memory"
+										type="number"
+										bind:value={memory}
+										min={64}
+										max={32768}
+									/>
+									<p class="text-xs text-muted-foreground">Minimum: 64 MB</p>
+								</div>
+								<div class="space-y-2">
+									<Label for="module-cpu">CPU limit (cores)</Label>
+									<Input
+										id="module-cpu"
+										type="number"
+										bind:value={cpuLimit}
+										min={0.1}
+										max={16}
+										step={0.1}
+									/>
+									<p class="text-xs text-muted-foreground">Fraction of CPU cores</p>
+								</div>
+							</div>
+						</div>
+
+						<div class="space-y-3">
+							<h3 class="text-sm font-semibold">Container user</h3>
+							<div class="grid gap-4 sm:grid-cols-2">
+								<div class="space-y-2">
+									<Label for="module-uid">UID</Label>
+									<Input
+										id="module-uid"
+										bind:value={uid}
+										placeholder={'{{host.uid}}'}
+										class="font-mono"
 										disabled={systemLocked}
 									/>
+									<p class="text-xs text-muted-foreground">User ID or alias</p>
+								</div>
+								<div class="space-y-2">
+									<Label for="module-gid">GID</Label>
+									<Input
+										id="module-gid"
+										bind:value={gid}
+										placeholder={'{{host.gid}}'}
+										class="font-mono"
+										disabled={systemLocked}
+									/>
+									<p class="text-xs text-muted-foreground">Group ID or alias</p>
+								</div>
+							</div>
+						</div>
+
+						{#if systemLocked}
+							<div class="space-y-3">
+								<h3 class="text-sm font-semibold">Lifecycle behavior</h3>
+								<div class="flex items-start gap-2 rounded-lg border bg-card p-3">
+									<ShieldCheck class="mt-0.5 size-4 shrink-0 text-muted-foreground" />
 									<p class="text-xs text-muted-foreground">
-										A unique identifier for this module instance
+										This module runs for the whole panel. Use the Enabled switch on the Modules page
+										to turn it on or off, and that choice survives panel restarts.
 									</p>
 								</div>
-
-								<div class="space-y-3">
-									<h3 class="text-sm font-semibold">Resource limits</h3>
-									<div class="grid gap-4 sm:grid-cols-2">
-										<div class="space-y-2">
-											<Label for="module-memory">Memory (MB)</Label>
-											<Input
-												id="module-memory"
-												type="number"
-												bind:value={memory}
-												min={64}
-												max={32768}
-											/>
-											<p class="text-xs text-muted-foreground">Minimum: 64 MB</p>
-										</div>
-										<div class="space-y-2">
-											<Label for="module-cpu">CPU limit (cores)</Label>
-											<Input
-												id="module-cpu"
-												type="number"
-												bind:value={cpuLimit}
-												min={0.1}
-												max={16}
-												step={0.1}
-											/>
-											<p class="text-xs text-muted-foreground">Fraction of CPU cores</p>
-										</div>
-									</div>
-								</div>
-
-								<div class="space-y-3">
-									<h3 class="text-sm font-semibold">Container user</h3>
-									<div class="grid gap-4 sm:grid-cols-2">
-										<div class="space-y-2">
-											<Label for="module-uid">UID</Label>
-											<Input
-												id="module-uid"
-												bind:value={uid}
-												placeholder={'{{host.uid}}'}
-												class="font-mono"
-												disabled={systemLocked}
-											/>
-											<p class="text-xs text-muted-foreground">User ID or alias</p>
-										</div>
-										<div class="space-y-2">
-											<Label for="module-gid">GID</Label>
-											<Input
-												id="module-gid"
-												bind:value={gid}
-												placeholder={'{{host.gid}}'}
-												class="font-mono"
-												disabled={systemLocked}
-											/>
-											<p class="text-xs text-muted-foreground">Group ID or alias</p>
-										</div>
-									</div>
-								</div>
-
-								{#if systemLocked}
-									<div class="space-y-3">
-										<h3 class="text-sm font-semibold">Lifecycle behavior</h3>
-										<div class="flex items-start gap-2 rounded-lg border bg-card p-3">
-											<ShieldCheck class="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-											<p class="text-xs text-muted-foreground">
-												This module runs for the whole panel. Use the Enabled switch on the Modules
-												page to turn it on or off, and that choice survives panel restarts.
-											</p>
-										</div>
-									</div>
-								{:else}
-									<div class="space-y-3">
-										<h3 class="text-sm font-semibold">Lifecycle behavior</h3>
-										<div class="divide-y rounded-lg border bg-card">
-											<label class="flex cursor-pointer items-center justify-between gap-4 p-3">
-												<div>
-													<span class="text-sm font-medium">Auto-start</span>
-													<p class="text-xs text-muted-foreground">
-														Automatically start this module when the server starts
-													</p>
-												</div>
-												<Switch bind:checked={autoStart} />
-											</label>
-											<label class="flex cursor-pointer items-center justify-between gap-4 p-3">
-												<div>
-													<span class="text-sm font-medium">Follow server lifecycle</span>
-													<p class="text-xs text-muted-foreground">
-														Stop this module when the server stops
-													</p>
-												</div>
-												<Switch bind:checked={followServerLifecycle} />
-											</label>
-											<label class="flex cursor-pointer items-center justify-between gap-4 p-3">
-												<div>
-													<span class="text-sm font-medium">Detached mode</span>
-													<p class="text-xs text-muted-foreground">
-														Run independently of the server lifecycle
-													</p>
-												</div>
-												<Switch bind:checked={detached} />
-											</label>
-										</div>
-									</div>
-								{/if}
-
-								{#if mode === 'create'}
-									<label
-										class="flex cursor-pointer items-center justify-between gap-4 rounded-lg border border-primary/30 bg-primary/5 p-3"
-									>
-										<div>
-											<span class="flex items-center gap-1.5 text-sm font-medium">
-												<Play class="size-3.5" />
-												Start immediately
-											</span>
-											<p class="text-xs text-muted-foreground">
-												Launch the module as soon as it's created
-											</p>
-										</div>
-										<Switch bind:checked={startImmediately} />
-									</label>
-								{/if}
-
-								{#if module?.dataPath}
-									<div class="space-y-2">
-										<h3 class="text-sm font-semibold">Data path</h3>
-										<div class="flex items-center gap-2 rounded-lg border bg-card p-3">
-											<HardDrive class="size-4 shrink-0 text-muted-foreground" />
-											<code class="min-w-0 flex-1 truncate font-mono text-xs">
-												{module.dataPath}
-											</code>
-											<CopyButton text={module.dataPath} label="Copy data path" class="shrink-0" />
-										</div>
-									</div>
-								{/if}
 							</div>
-						{:else if activeSection === 'configuration'}
-							<div class="space-y-6">
-								{#each groupedConfigFields(configFields) as [group, fields] (group)}
-									<div class="space-y-4">
-										{#if group}
-											<h3 class="text-sm font-semibold">{group}</h3>
-										{/if}
-										{#each fields as field (field.env)}
-											{@const issue = configIssues[field.env]}
-											{@const issueBorder =
-												issue?.severity === ModuleConfigSeverity.DENY
-													? 'border-destructive'
-													: issue
-														? 'border-status-warn'
-														: ''}
-											<div class="space-y-1.5">
-												{#if field.type === ModuleConfigFieldType.BOOL}
-													<label
-														class="flex cursor-pointer items-center justify-between gap-4 rounded-lg border bg-card p-3"
-													>
-														<div>
-															<span class="text-sm font-medium">{field.label || field.env}</span>
-															{#if field.description}
-																<p class="text-xs text-muted-foreground">{field.description}</p>
-															{/if}
-														</div>
-														<Switch
-															checked={configValues[field.env] === 'true'}
-															onCheckedChange={(v) =>
-																(configValues[field.env] = v ? 'true' : 'false')}
-														/>
-													</label>
-												{:else}
-													<Label for={`cfg-${field.env}`}>
-														{field.label || field.env}
-														{#if field.required}
-															<span class="text-destructive">*</span>
-														{/if}
-													</Label>
-													{#if field.type === ModuleConfigFieldType.SELECT}
-														<Select
-															type="single"
-															value={configValues[field.env]}
-															onValueChange={(v) => {
-																if (v) configValues[field.env] = v;
-															}}
-														>
-															<SelectTrigger class={cn('w-full', issueBorder)}>
-																<span class="truncate">
-																	{selectOptionLabel(field, configValues[field.env])}
-																</span>
-															</SelectTrigger>
-															<SelectContent>
-																{#each field.options as opt (opt.value)}
-																	<SelectItem value={opt.value}>{opt.label || opt.value}</SelectItem
-																	>
-																{/each}
-															</SelectContent>
-														</Select>
-													{:else if field.type === ModuleConfigFieldType.MULTILINE}
-														<Textarea
-															id={`cfg-${field.env}`}
-															bind:value={configValues[field.env]}
-															placeholder={field.placeholder}
-															class={cn('font-mono', issueBorder)}
-														/>
-													{:else}
-														<Input
-															id={`cfg-${field.env}`}
-															type={field.type === ModuleConfigFieldType.PASSWORD
-																? 'password'
-																: field.type === ModuleConfigFieldType.INT
-																	? 'number'
-																	: 'text'}
-															bind:value={configValues[field.env]}
-															placeholder={field.placeholder}
-															class={cn('font-mono', issueBorder)}
-														/>
+						{:else}
+							<div class="space-y-3">
+								<h3 class="text-sm font-semibold">Lifecycle behavior</h3>
+								<div class="divide-y rounded-lg border bg-card">
+									<label class="flex cursor-pointer items-center justify-between gap-4 p-3">
+										<div>
+											<span class="text-sm font-medium">Auto-start</span>
+											<p class="text-xs text-muted-foreground">
+												Automatically start this module when the server starts
+											</p>
+										</div>
+										<Switch bind:checked={autoStart} />
+									</label>
+									<label class="flex cursor-pointer items-center justify-between gap-4 p-3">
+										<div>
+											<span class="text-sm font-medium">Follow server lifecycle</span>
+											<p class="text-xs text-muted-foreground">
+												Stop this module when the server stops
+											</p>
+										</div>
+										<Switch bind:checked={followServerLifecycle} />
+									</label>
+									<label class="flex cursor-pointer items-center justify-between gap-4 p-3">
+										<div>
+											<span class="text-sm font-medium">Detached mode</span>
+											<p class="text-xs text-muted-foreground">
+												Run independently of the server lifecycle
+											</p>
+										</div>
+										<Switch bind:checked={detached} />
+									</label>
+								</div>
+							</div>
+						{/if}
+
+						{#if mode === 'create'}
+							<label
+								class="flex cursor-pointer items-center justify-between gap-4 rounded-lg border border-primary/30 bg-primary/5 p-3"
+							>
+								<div>
+									<span class="flex items-center gap-1.5 text-sm font-medium">
+										<Play class="size-3.5" />
+										Start immediately
+									</span>
+									<p class="text-xs text-muted-foreground">
+										Launch the module as soon as it's created
+									</p>
+								</div>
+								<Switch bind:checked={startImmediately} />
+							</label>
+						{/if}
+
+						{#if module?.dataPath}
+							<div class="space-y-2">
+								<h3 class="text-sm font-semibold">Data path</h3>
+								<div class="flex items-center gap-2 rounded-lg border bg-card p-3">
+									<HardDrive class="size-4 shrink-0 text-muted-foreground" />
+									<code class="min-w-0 flex-1 truncate font-mono text-xs">
+										{module.dataPath}
+									</code>
+									<CopyButton text={module.dataPath} label="Copy data path" class="shrink-0" />
+								</div>
+							</div>
+						{/if}
+					</div>
+				{:else if activeSection === 'configuration'}
+					<div class="space-y-6">
+						{#each groupedConfigFields(configFields) as [group, fields] (group)}
+							<div class="space-y-4">
+								{#if group}
+									<h3 class="text-sm font-semibold">{group}</h3>
+								{/if}
+								{#each fields as field (field.env)}
+									{@const issue = configIssues[field.env]}
+									{@const issueBorder =
+										issue?.severity === ModuleConfigSeverity.DENY
+											? 'border-destructive'
+											: issue
+												? 'border-status-warn'
+												: ''}
+									<div class="space-y-1.5">
+										{#if field.type === ModuleConfigFieldType.BOOL}
+											<label
+												class="flex cursor-pointer items-center justify-between gap-4 rounded-lg border bg-card p-3"
+											>
+												<div>
+													<span class="text-sm font-medium">{field.label || field.env}</span>
+													{#if field.description}
+														<p class="text-xs text-muted-foreground">{field.description}</p>
 													{/if}
+												</div>
+												<Switch
+													checked={configValues[field.env] === 'true'}
+													onCheckedChange={(v) => (configValues[field.env] = v ? 'true' : 'false')}
+												/>
+											</label>
+										{:else}
+											<Label for={`cfg-${field.env}`}>
+												{field.label || field.env}
+												{#if field.required}
+													<span class="text-destructive">*</span>
 												{/if}
-												{#if issue}
-													<p
-														class={cn(
-															'text-xs',
-															issue.severity === ModuleConfigSeverity.DENY
-																? 'text-destructive'
-																: 'text-status-warn'
-														)}
-													>
-														{issue.message}
-													</p>
-												{:else if field.description && field.type !== ModuleConfigFieldType.BOOL}
-													<p class="text-xs text-muted-foreground">{field.description}</p>
-												{/if}
-											</div>
-										{/each}
+											</Label>
+											{#if field.type === ModuleConfigFieldType.SELECT}
+												<Select
+													type="single"
+													value={configValues[field.env]}
+													onValueChange={(v) => {
+														if (v) configValues[field.env] = v;
+													}}
+												>
+													<SelectTrigger class={cn('w-full', issueBorder)}>
+														<span class="truncate">
+															{selectOptionLabel(field, configValues[field.env])}
+														</span>
+													</SelectTrigger>
+													<SelectContent>
+														{#each field.options as opt (opt.value)}
+															<SelectItem value={opt.value}>{opt.label || opt.value}</SelectItem>
+														{/each}
+													</SelectContent>
+												</Select>
+											{:else if field.type === ModuleConfigFieldType.MULTILINE}
+												<Textarea
+													id={`cfg-${field.env}`}
+													bind:value={configValues[field.env]}
+													placeholder={field.placeholder}
+													class={cn('font-mono', issueBorder)}
+												/>
+											{:else}
+												<Input
+													id={`cfg-${field.env}`}
+													type={field.type === ModuleConfigFieldType.PASSWORD
+														? 'password'
+														: field.type === ModuleConfigFieldType.INT
+															? 'number'
+															: 'text'}
+													bind:value={configValues[field.env]}
+													placeholder={field.placeholder}
+													class={cn('font-mono', issueBorder)}
+												/>
+											{/if}
+										{/if}
+										{#if issue}
+											<p
+												class={cn(
+													'text-xs',
+													issue.severity === ModuleConfigSeverity.DENY
+														? 'text-destructive'
+														: 'text-status-warn'
+												)}
+											>
+												{issue.message}
+											</p>
+										{:else if field.description && field.type !== ModuleConfigFieldType.BOOL}
+											<p class="text-xs text-muted-foreground">{field.description}</p>
+										{/if}
 									</div>
 								{/each}
 							</div>
-						{:else if activeSection === 'ports'}
-							<div class="space-y-4">
-								<div class="flex items-center justify-between gap-2">
-									<p class="text-sm text-muted-foreground">
-										{ports.length} port{ports.length === 1 ? '' : 's'} configured
-									</p>
+						{/each}
+					</div>
+				{:else if activeSection === 'ports'}
+					<div class="space-y-4">
+						<div class="flex items-center justify-between gap-2">
+							<p class="text-sm text-muted-foreground">
+								{ports.length} port{ports.length === 1 ? '' : 's'} configured
+							</p>
+							{#if !systemLocked}
+								<Button size="sm" onclick={addPort}>
+									<Plus class="size-4" />
+									Add port
+								</Button>
+							{/if}
+						</div>
+
+						{#if ports.length > 0}
+							<NetworkPortRowsEditor bind:ports locked={systemLocked} {serverHosts} />
+						{:else}
+							<div class="rounded-lg border border-dashed">
+								<EmptyState
+									icon={Network}
+									title="No ports configured"
+									description="Add ports to expose container services"
+								>
 									{#if !systemLocked}
-										<Button size="sm" onclick={addPort}>
+										<Button variant="outline" size="sm" onclick={addPort}>
 											<Plus class="size-4" />
 											Add port
 										</Button>
 									{/if}
-								</div>
-
-								{#if ports.length > 0}
-									<div class="space-y-3">
-										{#each ports as port, i (i)}
-											<div class="space-y-3 rounded-lg border bg-card p-4">
-												<div class="flex items-center justify-between">
-													<span class="stat-label">Port {i + 1}</span>
-													{#if !systemLocked}
-														<Button
-															variant="ghost"
-															size="icon"
-															class="size-8 text-muted-foreground hover:text-destructive"
-															onclick={() => removePort(i)}
-														>
-															<Trash2 class="size-4" />
-															<span class="sr-only">Remove port</span>
-														</Button>
-													{/if}
-												</div>
-
-												<div class="grid gap-3 sm:grid-cols-4">
-													<div class="space-y-1.5">
-														<Label>Name</Label>
-														<Input
-															bind:value={port.name}
-															placeholder="http"
-															disabled={systemLocked}
-														/>
-													</div>
-													<div class="space-y-1.5">
-														<Label>Host port</Label>
-														<Input
-															type="number"
-															bind:value={port.hostPort}
-															placeholder="0 = auto"
-														/>
-													</div>
-													<div class="space-y-1.5">
-														<Label>Container port</Label>
-														<Input
-															type="number"
-															bind:value={port.containerPort}
-															placeholder="8080"
-															disabled={systemLocked}
-														/>
-													</div>
-													<div class="space-y-1.5">
-														<Label>Protocol</Label>
-														<Select
-															type="single"
-															value={String(port.protocol)}
-															disabled={systemLocked}
-															onValueChange={(v) => {
-																if (v) port.protocol = Number(v);
-															}}
-														>
-															<SelectTrigger class="w-full">
-																<span class="uppercase">
-																	{enumLabel(
-																		ModuleProtocolSchema,
-																		port.protocol || ModuleProtocol.TCP
-																	)}
-																</span>
-															</SelectTrigger>
-															<SelectContent>
-																{#each [ModuleProtocol.TCP, ModuleProtocol.UDP, ModuleProtocol.MINECRAFT, ModuleProtocol.HTTP] as proto (proto)}
-																	<SelectItem value={String(proto)}>
-																		{enumLabel(ModuleProtocolSchema, proto)}
-																	</SelectItem>
-																{/each}
-															</SelectContent>
-														</Select>
-													</div>
-												</div>
-
-												<div class="flex flex-wrap items-center gap-3">
-													<label class="flex w-fit cursor-pointer items-center gap-2">
-														<Checkbox bind:checked={port.proxyEnabled} />
-														<span class="text-sm">Enable proxy for this port</span>
-													</label>
-													{#if port.proxyEnabled && (port.protocol === ModuleProtocol.TCP || port.protocol === ModuleProtocol.UDP)}
-														<span
-															class="rounded-full border px-1.5 py-px text-[10px] text-muted-foreground"
-														>
-															relay
-														</span>
-													{/if}
-												</div>
-
-												{#if port.proxyEnabled && (port.protocol === ModuleProtocol.TCP || port.protocol === ModuleProtocol.UDP)}
-													<p class="text-xs text-muted-foreground">
-														Forwards raw traffic through the listener port
-													</p>
-												{/if}
-
-												{#if port.proxyEnabled && (port.protocol === ModuleProtocol.HTTP || port.protocol === ModuleProtocol.MINECRAFT)}
-													<div class="space-y-1.5">
-														<Label>Hostnames</Label>
-														<HostnameListInput
-															bind:hostnames={port.hostnames}
-															label={hostnameSlug(port.name)}
-															disabled={systemLocked}
-															requireLabel
-															placeholder={serverHosts.join(', ') ||
-																(port.protocol === ModuleProtocol.HTTP
-																	? 'map.example.com'
-																	: 'needs a hostname')}
-														/>
-													</div>
-												{/if}
-
-												{#if port.proxyEnabled && port.protocol === ModuleProtocol.MINECRAFT && port.hostnames.length === 0 && serverHosts.length === 0}
-													<div
-														class="flex items-start gap-2 rounded-md border border-status-warn/30 bg-status-warn/10 p-3"
-													>
-														<Info class="mt-0.5 size-4 shrink-0 text-status-warn" />
-														<div class="flex-1 space-y-2 text-xs">
-															<p class="text-status-warn">
-																Minecraft routing matches hostnames. Without one this port cannot
-																receive players.
-															</p>
-															<Button
-																variant="outline"
-																size="sm"
-																class="h-7 text-xs"
-																onclick={() => (port.proxyEnabled = false)}
-															>
-																Fix: switch to direct binding
-															</Button>
-														</div>
-													</div>
-												{/if}
-											</div>
-										{/each}
-									</div>
-								{:else}
-									<div class="rounded-lg border border-dashed">
-										<EmptyState
-											icon={Network}
-											title="No ports configured"
-											description="Add ports to expose container services"
-										>
-											{#if !systemLocked}
-												<Button variant="outline" size="sm" onclick={addPort}>
-													<Plus class="size-4" />
-													Add port
-												</Button>
-											{/if}
-										</EmptyState>
-									</div>
-								{/if}
+								</EmptyState>
 							</div>
-						{:else if activeSection === 'environment'}
-							<div class="space-y-4">
-								<div class="flex items-center justify-between gap-2">
-									<p class="text-sm text-muted-foreground">
-										{envVars.length} variable{envVars.length === 1 ? '' : 's'} defined
-									</p>
+						{/if}
+					</div>
+				{:else if activeSection === 'environment'}
+					<div class="space-y-4">
+						<div class="flex items-center justify-between gap-2">
+							<p class="text-sm text-muted-foreground">
+								{envVars.length} variable{envVars.length === 1 ? '' : 's'} defined
+							</p>
+							{#if !systemLocked}
+								<Button size="sm" onclick={addEnvVar}>
+									<Plus class="size-4" />
+									Add variable
+								</Button>
+							{/if}
+						</div>
+
+						{#if envVars.length > 0}
+							<KeyValueRowsEditor
+								bind:rows={envVars}
+								keyPlaceholder="VARIABLE_NAME"
+								valuePlaceholder="value"
+								entryLabel="variable"
+								disabled={systemLocked}
+							/>
+						{:else}
+							<div class="rounded-lg border border-dashed">
+								<EmptyState
+									icon={Variable}
+									title="No environment variables"
+									description="Add variables to configure the container"
+								>
 									{#if !systemLocked}
-										<Button size="sm" onclick={addEnvVar}>
+										<Button variant="outline" size="sm" onclick={addEnvVar}>
 											<Plus class="size-4" />
 											Add variable
 										</Button>
 									{/if}
-								</div>
-
-								{#if envVars.length > 0}
-									<div class="space-y-2">
-										{#each envVars as env, i (i)}
-											<div class="flex items-center gap-2 rounded-lg border bg-card p-3">
-												<Input
-													bind:value={env.key}
-													placeholder="VARIABLE_NAME"
-													class="w-56 font-mono"
-													disabled={systemLocked}
-												/>
-												<span class="text-muted-foreground">=</span>
-												<Input
-													bind:value={env.value}
-													placeholder="value"
-													class="flex-1 font-mono"
-													disabled={systemLocked}
-												/>
-												{#if !systemLocked}
-													<Button
-														variant="ghost"
-														size="icon"
-														class="size-8 shrink-0 text-muted-foreground hover:text-destructive"
-														onclick={() => removeEnvVar(i)}
-													>
-														<Trash2 class="size-4" />
-														<span class="sr-only">Remove variable</span>
-													</Button>
-												{/if}
-											</div>
-										{/each}
-									</div>
-								{:else}
-									<div class="rounded-lg border border-dashed">
-										<EmptyState
-											icon={Variable}
-											title="No environment variables"
-											description="Add variables to configure the container"
-										>
-											{#if !systemLocked}
-												<Button variant="outline" size="sm" onclick={addEnvVar}>
-													<Plus class="size-4" />
-													Add variable
-												</Button>
-											{/if}
-										</EmptyState>
-									</div>
-								{/if}
+								</EmptyState>
 							</div>
-						{:else if activeSection === 'volumes'}
-							<div class="space-y-4">
-								<div class="flex items-center justify-between gap-2">
-									<p class="text-sm text-muted-foreground">
-										{volumes.length} volume{volumes.length === 1 ? '' : 's'} mounted
-									</p>
+						{/if}
+					</div>
+				{:else if activeSection === 'volumes'}
+					<div class="space-y-4">
+						<div class="flex items-center justify-between gap-2">
+							<p class="text-sm text-muted-foreground">
+								{volumes.length} volume{volumes.length === 1 ? '' : 's'} mounted
+							</p>
+							{#if !systemLocked}
+								<Button size="sm" onclick={addVolume}>
+									<Plus class="size-4" />
+									Add volume
+								</Button>
+							{/if}
+						</div>
+
+						{#if volumes.length > 0}
+							<VolumeMountRowsEditor bind:volumes disabled={systemLocked} />
+						{:else}
+							<div class="rounded-lg border border-dashed">
+								<EmptyState
+									icon={HardDrive}
+									title="No volumes mounted"
+									description="Mount host directories to persist data"
+								>
 									{#if !systemLocked}
-										<Button size="sm" onclick={addVolume}>
+										<Button variant="outline" size="sm" onclick={addVolume}>
 											<Plus class="size-4" />
 											Add volume
 										</Button>
 									{/if}
-								</div>
-
-								{#if volumes.length > 0}
-									<div class="space-y-3">
-										{#each volumes as vol, i (i)}
-											<div class="space-y-3 rounded-lg border bg-card p-4">
-												<div class="flex items-center justify-between">
-													<span class="stat-label">Volume {i + 1}</span>
-													{#if !systemLocked}
-														<Button
-															variant="ghost"
-															size="icon"
-															class="size-8 text-muted-foreground hover:text-destructive"
-															onclick={() => removeVolume(i)}
-														>
-															<Trash2 class="size-4" />
-															<span class="sr-only">Remove volume</span>
-														</Button>
-													{/if}
-												</div>
-
-												<div class="grid gap-3 sm:grid-cols-2">
-													<div class="space-y-1.5">
-														<Label>Host path</Label>
-														<Input
-															bind:value={vol.source}
-															placeholder="/host/path"
-															class="font-mono"
-															disabled={systemLocked}
-														/>
-													</div>
-													<div class="space-y-1.5">
-														<Label>Container path</Label>
-														<Input
-															bind:value={vol.target}
-															placeholder="/container/path"
-															class="font-mono"
-															disabled={systemLocked}
-														/>
-													</div>
-												</div>
-
-												<div class="flex flex-wrap items-center gap-x-6 gap-y-2">
-													<label class="flex cursor-pointer items-center gap-2">
-														<Checkbox
-															checked={vol.readOnly}
-															disabled={systemLocked}
-															onCheckedChange={(checked) => {
-																vol.readOnly = !!checked;
-																if (vol.readOnly) {
-																	vol.createDir = false;
-																}
-															}}
-														/>
-														<span class="text-sm">Read-only mount</span>
-													</label>
-													<label class="flex cursor-pointer items-center gap-2">
-														<Checkbox
-															checked={vol.createDir}
-															disabled={systemLocked}
-															onCheckedChange={(checked) => {
-																vol.createDir = !!checked;
-																if (vol.createDir) {
-																	vol.readOnly = false;
-																}
-															}}
-														/>
-														<span class="text-sm">Pre-create directory</span>
-													</label>
-												</div>
-											</div>
-										{/each}
-									</div>
-								{:else}
-									<div class="rounded-lg border border-dashed">
-										<EmptyState
-											icon={HardDrive}
-											title="No volumes mounted"
-											description="Mount host directories to persist data"
-										>
-											{#if !systemLocked}
-												<Button variant="outline" size="sm" onclick={addVolume}>
-													<Plus class="size-4" />
-													Add volume
-												</Button>
-											{/if}
-										</EmptyState>
-									</div>
-								{/if}
+								</EmptyState>
 							</div>
-						{:else if activeSection === 'advanced'}
-							<fieldset class="min-w-0 space-y-8" disabled={systemLocked}>
-								<section class="space-y-3">
-									<div class="flex items-start justify-between gap-2">
-										<div>
-											<h3 class="text-sm font-semibold">Dependencies</h3>
-											<p class="mt-0.5 text-xs text-muted-foreground">
-												Modules that must be running before this one starts
-											</p>
-										</div>
-										<Button
-											variant="outline"
-											size="sm"
-											onclick={addDependency}
-											disabled={serverModules.length === 0}
-										>
-											<Plus class="size-4" />
-											Add
-										</Button>
-									</div>
+						{/if}
+					</div>
+				{:else if activeSection === 'advanced'}
+					<fieldset class="min-w-0 space-y-8" disabled={systemLocked}>
+						<section class="space-y-3">
+							<div class="flex items-start justify-between gap-2">
+								<div>
+									<h3 class="text-sm font-semibold">Dependencies</h3>
+									<p class="mt-0.5 text-xs text-muted-foreground">
+										Modules that must be running before this one starts
+									</p>
+								</div>
+								<Button
+									variant="outline"
+									size="sm"
+									onclick={addDependency}
+									disabled={serverModules.length === 0}
+								>
+									<Plus class="size-4" />
+									Add
+								</Button>
+							</div>
 
-									{#if dependencies.length > 0}
-										<div class="space-y-2">
-											{#each dependencies as dep, i (i)}
-												<div
-													class="flex flex-wrap items-center gap-3 rounded-lg border bg-card p-3"
-												>
-													<Select
-														type="single"
-														value={dep.moduleId}
-														onValueChange={(v) => {
-															if (v) dep.moduleId = v;
-														}}
-													>
-														<SelectTrigger class="w-56">
-															<span class="truncate">
-																{serverModules.find((m) => m.id === dep.moduleId)?.name ||
-																	'Select module...'}
-															</span>
-														</SelectTrigger>
-														<SelectContent>
-															{#each serverModules as mod (mod.id)}
-																<SelectItem value={mod.id}>{mod.name}</SelectItem>
-															{/each}
-														</SelectContent>
-													</Select>
+							{#if dependencies.length > 0}
+								<div class="space-y-2">
+									{#each dependencies as dep, i (i)}
+										<div class="flex flex-wrap items-center gap-3 rounded-lg border bg-card p-3">
+											<Select
+												type="single"
+												value={dep.moduleId}
+												onValueChange={(v) => {
+													if (v) dep.moduleId = v;
+												}}
+											>
+												<SelectTrigger class="w-56">
+													<span class="truncate">
+														{serverModules.find((m) => m.id === dep.moduleId)?.name ||
+															'Select module...'}
+													</span>
+												</SelectTrigger>
+												<SelectContent>
+													{#each serverModules as mod (mod.id)}
+														<SelectItem value={mod.id}>{mod.name}</SelectItem>
+													{/each}
+												</SelectContent>
+											</Select>
 
-													<label class="flex cursor-pointer items-center gap-2">
-														<Checkbox bind:checked={dep.waitForHealthy} />
-														<span class="text-sm">Wait for healthy</span>
-													</label>
-
-													<div class="flex items-center gap-2">
-														<Label class="text-sm whitespace-nowrap">Timeout (s)</Label>
-														<Input type="number" bind:value={dep.timeoutSeconds} class="w-24" />
-													</div>
-
-													<Button
-														variant="ghost"
-														size="icon"
-														class="ml-auto size-8 text-muted-foreground hover:text-destructive"
-														onclick={() => removeDependency(i)}
-													>
-														<Trash2 class="size-4" />
-														<span class="sr-only">Remove dependency</span>
-													</Button>
-												</div>
-											{/each}
-										</div>
-									{:else}
-										<div
-											class="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground"
-										>
-											{serverModules.length === 0
-												? 'No other modules available on this server'
-												: 'No dependencies configured'}
-										</div>
-									{/if}
-								</section>
-
-								<section class="space-y-3">
-									<div>
-										<h3 class="flex items-center gap-1.5 text-sm font-semibold">
-											<Heart class="size-4" />
-											Health check
-										</h3>
-										<p class="mt-0.5 text-xs text-muted-foreground">
-											Configure how the module's health is monitored
-										</p>
-									</div>
-
-									<div class="grid gap-4 rounded-lg border bg-card p-4 sm:grid-cols-3">
-										<div class="space-y-1.5">
-											<Label>Interval (seconds)</Label>
-											<Input type="number" bind:value={healthCheckInterval} min={5} />
-											<p class="text-xs text-muted-foreground">Time between checks</p>
-										</div>
-										<div class="space-y-1.5">
-											<Label>Timeout (seconds)</Label>
-											<Input type="number" bind:value={healthCheckTimeout} min={1} />
-											<p class="text-xs text-muted-foreground">Max wait for response</p>
-										</div>
-										<div class="space-y-1.5">
-											<Label>Retries</Label>
-											<Input type="number" bind:value={healthCheckRetries} min={1} />
-											<p class="text-xs text-muted-foreground">Failures before unhealthy</p>
-										</div>
-									</div>
-								</section>
-
-								<section class="space-y-3">
-									<div>
-										<h3 class="text-sm font-semibold">Init command</h3>
-										<p class="mt-0.5 text-xs text-muted-foreground">
-											Execute a command inside the container after it starts
-										</p>
-									</div>
-
-									<div class="space-y-3 rounded-lg border bg-card p-4">
-										<div class="space-y-1.5">
-											<Label>Command</Label>
-											<Input
-												bind:value={initCommand}
-												placeholder="sh -c 'sed -i ...'"
-												class="font-mono"
-											/>
-											<p class="text-xs text-muted-foreground">
-												Shell command to exec inside the container after start
-											</p>
-										</div>
-										<div class="grid gap-4 sm:grid-cols-2">
-											<div class="space-y-1.5">
-												<Label>Delay (seconds)</Label>
-												<Input type="number" bind:value={initCommandDelay} min={0} />
-												<p class="text-xs text-muted-foreground">
-													Seconds to wait after start before running
-												</p>
-											</div>
-											<label class="flex cursor-pointer items-center gap-2 sm:pt-6">
-												<Checkbox bind:checked={restartAfterInit} />
-												<div>
-													<span class="text-sm font-medium">Restart after init</span>
-													<p class="text-xs text-muted-foreground">
-														Restart the container after the command runs
-													</p>
-												</div>
+											<label class="flex cursor-pointer items-center gap-2">
+												<Checkbox bind:checked={dep.waitForHealthy} />
+												<span class="text-sm">Wait for healthy</span>
 											</label>
+
+											<div class="flex items-center gap-2">
+												<Label class="text-sm whitespace-nowrap">Timeout (s)</Label>
+												<Input type="number" bind:value={dep.timeoutSeconds} class="w-24" />
+											</div>
+
+											<Button
+												variant="ghost"
+												size="icon"
+												class="ml-auto size-8 text-muted-foreground hover:text-destructive"
+												onclick={() => removeDependency(i)}
+											>
+												<Trash2 class="size-4" />
+												<span class="sr-only">Remove dependency</span>
+											</Button>
 										</div>
-									</div>
-								</section>
-
-								<section class="space-y-3">
-									<div class="flex items-start justify-between gap-2">
-										<div>
-											<h3 class="text-sm font-semibold">Event hooks</h3>
-											<p class="mt-0.5 text-xs text-muted-foreground">
-												Actions to run when specific events occur
-											</p>
-										</div>
-										<Button variant="outline" size="sm" onclick={addEventHook}>
-											<Plus class="size-4" />
-											Add hook
-										</Button>
-									</div>
-
-									{#if eventHooks.length > 0}
-										<div class="space-y-3">
-											{#each eventHooks as hook, i (i)}
-												<div class="space-y-3 rounded-lg border bg-card p-4">
-													<div class="flex items-center justify-between">
-														<span class="stat-label">Hook {i + 1}</span>
-														<Button
-															variant="ghost"
-															size="icon"
-															class="size-8 text-muted-foreground hover:text-destructive"
-															onclick={() => removeEventHook(i)}
-														>
-															<Trash2 class="size-4" />
-															<span class="sr-only">Remove hook</span>
-														</Button>
-													</div>
-
-													<div class="grid gap-3 sm:grid-cols-3">
-														<div class="space-y-1.5">
-															<Label>Event</Label>
-															<Select
-																type="single"
-																value={String(hook.event)}
-																onValueChange={(v) => {
-																	if (v) hook.event = Number(v);
-																}}
-															>
-																<SelectTrigger class="w-full">
-																	<span class="truncate">{getEventTypeLabel(hook.event)}</span>
-																</SelectTrigger>
-																<SelectContent>
-																	{#each SERVER_EVENT_TYPES as { type, label } (type)}
-																		<SelectItem value={String(type)}>{label}</SelectItem>
-																	{/each}
-																</SelectContent>
-															</Select>
-														</div>
-														<div class="space-y-1.5">
-															<Label>Action</Label>
-															<Select
-																type="single"
-																value={String(hook.action)}
-																onValueChange={(v) => {
-																	if (v) hook.action = Number(v);
-																}}
-															>
-																<SelectTrigger class="w-full">
-																	<span class="truncate">{getEventActionLabel(hook.action)}</span>
-																</SelectTrigger>
-																<SelectContent>
-																	{#each EVENT_ACTION_OPTIONS as a (a)}
-																		<SelectItem value={String(a)}>
-																			{getEventActionLabel(a)}
-																		</SelectItem>
-																	{/each}
-																</SelectContent>
-															</Select>
-														</div>
-														<div class="space-y-1.5">
-															<Label>Delay (seconds)</Label>
-															<Input type="number" bind:value={hook.delaySeconds} min={0} />
-														</div>
-													</div>
-
-													{#if hook.action === ModuleEventAction.EXEC || hook.action === ModuleEventAction.RCON}
-														<div class="space-y-1.5">
-															<Label>Command</Label>
-															<Input
-																bind:value={hook.command}
-																placeholder="Command to execute"
-																class="font-mono"
-															/>
-														</div>
-													{/if}
-
-													<div class="space-y-1.5">
-														<Label>Condition (optional)</Label>
-														<Input
-															bind:value={hook.condition}
-															placeholder="Conditional expression"
-															class="font-mono"
-														/>
-													</div>
-												</div>
-											{/each}
-										</div>
-									{:else}
-										<div
-											class="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground"
-										>
-											No event hooks configured
-										</div>
-									{/if}
-								</section>
-
-								<section class="space-y-3">
-									<div class="flex items-start justify-between gap-2">
-										<div>
-											<h3 class="flex items-center gap-1.5 text-sm font-semibold">
-												<Info class="size-4" />
-												Metadata
-											</h3>
-											<p class="mt-0.5 text-xs text-muted-foreground">
-												Custom key-value pairs for module configuration
-											</p>
-										</div>
-										<Button variant="outline" size="sm" onclick={addMetadataEntry}>
-											<Plus class="size-4" />
-											Add entry
-										</Button>
-									</div>
-
-									{#if metadata.length > 0}
-										<div class="space-y-2">
-											{#each metadata as entry, i (i)}
-												<div class="flex items-center gap-2 rounded-lg border bg-card p-3">
-													<Input bind:value={entry.key} placeholder="key" class="w-48 font-mono" />
-													<span class="text-muted-foreground">:</span>
-													<Input
-														bind:value={entry.value}
-														placeholder="value"
-														class="flex-1 font-mono"
-													/>
-													<Button
-														variant="ghost"
-														size="icon"
-														class="size-8 shrink-0 text-muted-foreground hover:text-destructive"
-														onclick={() => removeMetadataEntry(i)}
-													>
-														<Trash2 class="size-4" />
-														<span class="sr-only">Remove entry</span>
-													</Button>
-												</div>
-											{/each}
-										</div>
-									{:else}
-										<div
-											class="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground"
-										>
-											No metadata entries
-										</div>
-									{/if}
-								</section>
-							</fieldset>
-						{/if}
-					</div>
-
-					<div class="flex items-center justify-end gap-2 border-t px-6 py-4">
-						{#if mode === 'create'}
-							<Button variant="outline" onclick={backToTemplates}>Back</Button>
-						{:else}
-							<Button variant="outline" onclick={() => (open = false)}>Cancel</Button>
-						{/if}
-						<Button
-							onclick={handleSubmit}
-							disabled={submitting || !name.trim() || configDenyCount > 0}
-						>
-							{#if submitting}
-								<Loader2 class="size-4 animate-spin" />
-								{mode === 'create' ? 'Creating...' : 'Saving...'}
-							{:else if mode === 'create'}
-								<Check class="size-4" />
-								Create module
+									{/each}
+								</div>
 							{:else}
-								<Save class="size-4" />
-								Save changes
+								<div
+									class="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground"
+								>
+									{serverModules.length === 0
+										? 'No other modules available on this server'
+										: 'No dependencies configured'}
+								</div>
 							{/if}
-						</Button>
-					</div>
-				</div>
-			</div>
+						</section>
+
+						<section class="space-y-3">
+							<div>
+								<h3 class="flex items-center gap-1.5 text-sm font-semibold">
+									<Heart class="size-4" />
+									Health check
+								</h3>
+								<p class="mt-0.5 text-xs text-muted-foreground">
+									Configure how the module's health is monitored
+								</p>
+							</div>
+
+							<div class="grid gap-4 rounded-lg border bg-card p-4 sm:grid-cols-3">
+								<div class="space-y-1.5">
+									<Label>Interval (seconds)</Label>
+									<Input type="number" bind:value={healthCheckInterval} min={5} />
+									<p class="text-xs text-muted-foreground">Time between checks</p>
+								</div>
+								<div class="space-y-1.5">
+									<Label>Timeout (seconds)</Label>
+									<Input type="number" bind:value={healthCheckTimeout} min={1} />
+									<p class="text-xs text-muted-foreground">Max wait for response</p>
+								</div>
+								<div class="space-y-1.5">
+									<Label>Retries</Label>
+									<Input type="number" bind:value={healthCheckRetries} min={1} />
+									<p class="text-xs text-muted-foreground">Failures before unhealthy</p>
+								</div>
+							</div>
+						</section>
+
+						<section class="space-y-3">
+							<div>
+								<h3 class="text-sm font-semibold">Init command</h3>
+								<p class="mt-0.5 text-xs text-muted-foreground">
+									Execute a command inside the container after it starts
+								</p>
+							</div>
+
+							<InitCommandFields
+								bind:command={initCommand}
+								bind:delay={initCommandDelay}
+								bind:restartAfterInit
+							/>
+						</section>
+
+						<section class="space-y-3">
+							<div class="flex items-start justify-between gap-2">
+								<div>
+									<h3 class="text-sm font-semibold">Event hooks</h3>
+									<p class="mt-0.5 text-xs text-muted-foreground">
+										Actions to run when specific events occur
+									</p>
+								</div>
+								<Button variant="outline" size="sm" onclick={addEventHook}>
+									<Plus class="size-4" />
+									Add hook
+								</Button>
+							</div>
+
+							{#if eventHooks.length > 0}
+								<EventHookRowsEditor bind:hooks={eventHooks} />
+							{:else}
+								<div
+									class="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground"
+								>
+									No event hooks configured
+								</div>
+							{/if}
+						</section>
+
+						<section class="space-y-3">
+							<div class="flex items-start justify-between gap-2">
+								<div>
+									<h3 class="flex items-center gap-1.5 text-sm font-semibold">
+										<Info class="size-4" />
+										Metadata
+									</h3>
+									<p class="mt-0.5 text-xs text-muted-foreground">
+										Custom key-value pairs for module configuration
+									</p>
+								</div>
+								<Button variant="outline" size="sm" onclick={addMetadataEntry}>
+									<Plus class="size-4" />
+									Add entry
+								</Button>
+							</div>
+
+							{#if metadata.length > 0}
+								<KeyValueRowsEditor
+									bind:rows={metadata}
+									separator=":"
+									keyClass="w-48"
+									keyPlaceholder="key"
+									entryLabel="entry"
+								/>
+							{:else}
+								<div
+									class="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground"
+								>
+									No metadata entries
+								</div>
+							{/if}
+						</section>
+					</fieldset>
+				{/if}
+
+				{#snippet footer()}
+					{#if mode === 'create'}
+						<Button variant="outline" onclick={backToTemplates}>Back</Button>
+					{:else}
+						<Button variant="outline" onclick={() => (open = false)}>Cancel</Button>
+					{/if}
+					<Button
+						onclick={handleSubmit}
+						disabled={submitting || !name.trim() || configDenyCount > 0}
+					>
+						{#if submitting}
+							<Loader2 class="size-4 animate-spin" />
+							{mode === 'create' ? 'Creating...' : 'Saving...'}
+						{:else if mode === 'create'}
+							<Check class="size-4" />
+							Create module
+						{:else}
+							<Save class="size-4" />
+							Save changes
+						{/if}
+					</Button>
+				{/snippet}
+			</SectionedDialogLayout>
 		{/if}
 	</DialogContent>
 </Dialog>

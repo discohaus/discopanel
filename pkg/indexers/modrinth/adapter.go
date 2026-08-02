@@ -140,10 +140,10 @@ func (m *ModrinthIndexer) GetModpack(ctx context.Context, modpackID string) (*v1
 		categories = append(categories, project.AdditionalCategories...)
 	}
 
-	// Get latest version ID
+	// Project versions list is chronological, oldest first
 	latestVersionID := ""
 	if len(project.Versions) > 0 {
-		latestVersionID = project.Versions[0] // Modrinth returns versions in latest-first order
+		latestVersionID = project.Versions[len(project.Versions)-1]
 	}
 
 	return &v1.IndexedModpack{

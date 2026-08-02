@@ -50,9 +50,9 @@ func (s *PropertiesService) GetServerProperties(ctx context.Context, req *connec
 	msg := req.Msg
 
 	// Get server to ensure it exists
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	// Ensure config is synced with server
@@ -85,9 +85,9 @@ func (s *PropertiesService) UpdateServerProperties(ctx context.Context, req *con
 	msg := req.Msg
 
 	// Get server info
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	// Get existing config

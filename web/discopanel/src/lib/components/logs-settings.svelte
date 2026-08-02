@@ -4,8 +4,9 @@
 	import { ScrollText, Download, Loader2, AlertCircle, ArrowDown } from '@lucide/svelte';
 	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
 	import { toast } from 'svelte-sonner';
-	import { rpcClient } from '$lib/api/rpc-client';
+	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { registerRefresh } from '$lib/stores/refresh';
+	import { formatBytes } from '$lib/utils';
 
 	let loading = $state(true);
 	let refreshing = $state(false);
@@ -22,9 +23,12 @@
 
 		refreshing = true;
 		try {
-			const response = await rpcClient.support.getApplicationLogs({
-				tail: 500 // Fetches last 500 lines
-			});
+			const response = await rpcClient.support.getApplicationLogs(
+				{
+					tail: 500 // Fetches last 500 lines
+				},
+				silentCallOptions
+			);
 			logs = response.content;
 			filename = response.filename;
 			fileSize = Number(response.size);
@@ -79,13 +83,6 @@
 		toast.success('Logs downloaded');
 	}
 
-	function formatFileSize(bytes: number): string {
-		if (bytes === 0) return '0 B';
-		const k = 1024;
-		const sizes = ['B', 'KB', 'MB', 'GB'];
-		const i = Math.floor(Math.log(bytes) / Math.log(k));
-		return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-	}
 
 	onMount(() => {
 		loadLogs();
@@ -123,7 +120,7 @@
 				</span>
 				{#if fileSize > 0}
 					<span class="tabular shrink-0 font-mono text-[11px] text-terminal-foreground/40">
-						{formatFileSize(fileSize)}
+						{formatBytes(fileSize)}
 					</span>
 				{/if}
 			</div>

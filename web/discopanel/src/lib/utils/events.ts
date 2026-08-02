@@ -1,4 +1,9 @@
-import { TriggeredEventType, TriggeredEventTypeSchema } from '$lib/proto/discopanel/v1/storage_pb';
+import {
+	ModuleEventAction,
+	ModuleEventActionSchema,
+	TriggeredEventType,
+	TriggeredEventTypeSchema
+} from '$lib/proto/discopanel/v1/storage_pb';
 import { enumDesc, enumLabel } from '$lib/proto-meta';
 
 export interface EventTypeMeta {
@@ -32,5 +37,22 @@ export function getEventTypeLabel(type: TriggeredEventType): string {
 	return (
 		enumLabel(TriggeredEventTypeSchema, type) ||
 		enumLabel(TriggeredEventTypeSchema, TriggeredEventType.UNSPECIFIED)
+	);
+}
+
+// Display order for event action choices
+export const EVENT_ACTION_OPTIONS: ModuleEventAction[] = [
+	ModuleEventAction.START,
+	ModuleEventAction.STOP,
+	ModuleEventAction.RESTART,
+	ModuleEventAction.EXEC,
+	ModuleEventAction.RCON
+];
+
+// Resolves display label for an event action
+export function getEventActionLabel(action: ModuleEventAction): string {
+	return (
+		enumLabel(ModuleEventActionSchema, action) ||
+		enumLabel(ModuleEventActionSchema, ModuleEventAction.UNSPECIFIED)
 	);
 }

@@ -297,6 +297,11 @@ func validateConfig(cfg *Config) error {
 		return fmt.Errorf("module port range min must be less than max")
 	}
 
+	// Zero interval would panic every ticker consumer
+	if cfg.Docker.SyncInterval < 1 {
+		cfg.Docker.SyncInterval = 5
+	}
+
 	// Validate custom Docker labels do not use reserved namespace 'discopanel.'
 	for k := range cfg.Docker.Labels {
 		if strings.HasPrefix(k, "discopanel.") {

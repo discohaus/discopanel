@@ -1,8 +1,7 @@
 // Reads enum display metadata straight from proto descriptors
 import { getOption, hasOption } from '@bufbuild/protobuf';
 import type { DescEnum } from '@bufbuild/protobuf';
-import type { GenEnum } from '@bufbuild/protobuf/codegenv2';
-import { enum_type, value as valueOption } from '$lib/proto/discopanel/options/v1/options_pb';
+import { value as valueOption } from '$lib/proto/discopanel/options/v1/options_pb';
 
 interface ValueMeta {
 	name: string;
@@ -50,15 +49,3 @@ export function enumDesc(desc: DescEnum, value: number): string {
 	return metaFor(desc).get(value)?.desc ?? '';
 }
 
-// Display name for the enum type itself
-export function enumTypeLabel(desc: DescEnum): string {
-	return hasOption(desc, enum_type) ? getOption(desc, enum_type).label : '';
-}
-
-// Enum value matching a canonical name
-export function enumFromName<T extends number>(desc: GenEnum<T>, name: string): T | undefined {
-	for (const [num, meta] of metaFor(desc)) {
-		if (meta.name === name) return num as T;
-	}
-	return undefined;
-}

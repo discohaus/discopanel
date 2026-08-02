@@ -78,7 +78,7 @@ func (s *ListenerSocket) StatsSnapshots() map[string]*v1.ProxyRoute {
 }
 
 // Lowercases hostname, strips port, FML markers, and trailing dot
-func normalizeHostname(hostname string) string {
+func normalizeWireHostname(hostname string) string {
 	if idx := strings.IndexByte(hostname, 0); idx != -1 {
 		hostname = hostname[:idx]
 	}
@@ -92,7 +92,7 @@ func (s *ListenerSocket) UpsertServerRoute(route Route) {
 	if route.State == v1.ProxyRouteState_PROXY_ROUTE_STATE_UNSPECIFIED {
 		route.State = v1.ProxyRouteState_PROXY_ROUTE_STATE_ONLINE
 	}
-	route.Hostname = normalizeHostname(route.Hostname)
+	route.Hostname = normalizeWireHostname(route.Hostname)
 
 	s.routesMu.Lock()
 	old, exists := s.mcRoutes[route.Hostname]
@@ -110,7 +110,7 @@ func (s *ListenerSocket) UpsertServerRoute(route Route) {
 
 // Removes an mc route and its counters
 func (s *ListenerSocket) removeMCRoute(hostname string) {
-	hostname = normalizeHostname(hostname)
+	hostname = normalizeWireHostname(hostname)
 
 	s.routesMu.Lock()
 	route, exists := s.mcRoutes[hostname]
@@ -135,18 +135,27 @@ func (s *ListenerSocket) lookupMCRoute(hostname string) (Route, bool) {
 	if route, exists := s.mcRoutes[hostname]; exists {
 		return *route, true
 	}
-	// Raw ip and typo joins land on an only route
-	if len(s.mcRoutes) == 1 {
-		for _, route := range s.mcRoutes {
-			return *route, true
+	return s.soleMCRouteLocked()
+}
+
+// Raw ip and typo joins land on an only service, lock held
+func (s *ListenerSocket) soleMCRouteLocked() (Route, bool) {
+	var sole *Route
+	for _, route := range s.mcRoutes {
+		if sole != nil && route.ServerID != sole.ServerID {
+			return Route{}, false
 		}
+		sole = route
 	}
-	return Route{}, false
+	if sole == nil {
+		return Route{}, false
+	}
+	return *sole, true
 }
 
 // Finds backend for a parsed handshake, wakes sleepers, relays
 func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, handshake *mcproto.HandshakePacket) {
-	hostname := normalizeHostname(handshake.ServerAddress)
+	hostname := normalizeWireHostname(handshake.ServerAddress)
 	route, ok := s.lookupMCRoute(hostname)
 	if !ok {
 		s.logger.Debug("No active route for hostname %q from %s", hostname, clientConn.RemoteAddr())
@@ -241,7 +250,7 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 		return
 	}
 
-	backendAddr := net.JoinHostPort(route.BackendHost, fmt.Sprintf("%d", route.BackendPort))
+	backendAddr := route.BackendAddr()
 	backendConn, err := dialBackendWithRetry(s.ctx, backendAddr, 10*time.Second)
 	if err != nil {
 		s.logger.Error("Failed to connect to backend %s for %s: %v", backendAddr, hostname, err)
@@ -404,15 +413,10 @@ func (s *ListenerSocket) legacyStatus(raw []byte) (string, string, int) {
 // Resolves the route a legacy ping is asking about
 func (s *ListenerSocket) legacyPingRoute(raw []byte) (Route, bool) {
 	if hostname, ok := mcproto.LegacyPingHostname(raw); ok {
-		return s.lookupMCRoute(normalizeHostname(hostname))
+		return s.lookupMCRoute(normalizeWireHostname(hostname))
 	}
 
 	s.routesMu.RLock()
 	defer s.routesMu.RUnlock()
-	if len(s.mcRoutes) == 1 {
-		for _, route := range s.mcRoutes {
-			return *route, true
-		}
-	}
-	return Route{}, false
+	return s.soleMCRouteLocked()
 }

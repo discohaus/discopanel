@@ -163,8 +163,3 @@ func (s *UploadService) CancelUpload(ctx context.Context, req *connect.Request[v
 
 	return connect.NewResponse(&v1.CancelUploadResponse{}), nil
 }
-
-// GetManager returns the upload manager (for use by other services)
-func (s *UploadService) GetManager() *transfer.UploadManager {
-	return s.manager
-}

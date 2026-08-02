@@ -197,7 +197,9 @@ func (e *Enforcer) SetPermissionsForRole(role string, perms []*v1.Permission) er
 	}
 
 	// Remove existing permissions
-	e.enforcer.RemoveFilteredPolicy(0, role)
+	if _, err := e.enforcer.RemoveFilteredPolicy(0, role); err != nil {
+		return err
+	}
 
 	// Add new permissions
 	for _, p := range perms {
@@ -211,6 +213,29 @@ func (e *Enforcer) SetPermissionsForRole(role string, perms []*v1.Permission) er
 		}
 	}
 
+	return e.enforcer.SavePolicy()
+}
+
+// Moves a role's policies onto a new name
+func (e *Enforcer) RenameRole(oldName, newName string) error {
+	if strings.EqualFold(oldName, "admin") || strings.EqualFold(newName, "admin") {
+		return fmt.Errorf("cannot modify admin role permissions")
+	}
+	policies, err := e.enforcer.GetFilteredPolicy(0, oldName)
+	if err != nil {
+		return err
+	}
+	if _, err := e.enforcer.RemoveFilteredPolicy(0, oldName); err != nil {
+		return err
+	}
+	for _, p := range policies {
+		if len(p) < 4 {
+			continue
+		}
+		if _, err := e.enforcer.AddPolicy(newName, p[1], p[2], p[3]); err != nil {
+			return err
+		}
+	}
 	return e.enforcer.SavePolicy()
 }
 

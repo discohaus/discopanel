@@ -13,9 +13,6 @@ import (
 func (c *Collector) SetAgentConnected(serverID string, connected bool) {
 	c.updateMetrics(serverID, func(m *ServerMetrics) {
 		m.AgentConnected = connected
-		if connected {
-			m.LastAgentSessionAt = time.Now()
-		}
 		if !connected {
 			m.AgentJvmActive = false
 			m.AgentReady = false
@@ -54,9 +51,6 @@ func (c *Collector) ApplyAgentReady(ctx context.Context, serverID string, startu
 	c.recordHealth(server.ContainerId, info.StartedAt, true)
 }
 
-// Crash exits older than this stop counting toward loops
-const crashExitRetention = 30 * time.Minute
-
 // Seeds the exit dedup floor from the durable ack stamp
 func (c *Collector) SeedExitFloor(serverID string, floor time.Time) {
 	c.updateMetrics(serverID, func(m *ServerMetrics) {
@@ -84,40 +78,10 @@ func (c *Collector) ApplyAgentExit(serverID string, exit *agentv1.Exited) bool {
 		m.LastExitBootFailed = exit.GetBootFailed()
 		m.LastExitWasReady = exit.GetWasReady()
 		m.LastExitedAt = exitedAt
-		if exit.GetCrashed() {
-			m.CrashExits = pruneCrashExits(append(m.CrashExits, exitedAt))
-		}
+		m.LastExitExcerpt = exit.GetCrashReportExcerpt()
+		m.LastExitFatal = exit.GetFatalError()
 	})
 	return fresh
-}
-
-// Drops crash times outside the retention window
-func pruneCrashExits(times []time.Time) []time.Time {
-	cutoff := time.Now().Add(-crashExitRetention)
-	kept := times[:0]
-	for _, t := range times {
-		if t.After(cutoff) {
-			kept = append(kept, t)
-		}
-	}
-	return kept
-}
-
-// Records a clean exit nobody requested for loop breaking
-func (c *Collector) RecordUnexpectedExit(serverID string, exitedAt time.Time) {
-	if exitedAt.IsZero() {
-		exitedAt = time.Now()
-	}
-	c.updateMetrics(serverID, func(m *ServerMetrics) {
-		m.UnexpectedExits = pruneCrashExits(append(m.UnexpectedExits, exitedAt))
-	})
-}
-
-// Marks that the panel stopped a crash-looping server
-func (c *Collector) MarkCrashLoopStopped(serverID string) {
-	c.updateMetrics(serverID, func(m *ServerMetrics) {
-		m.CrashLoopStoppedAt = time.Now()
-	})
 }
 
 // Stores javaagent tick timing, authoritative TPS and MSPT

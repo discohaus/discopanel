@@ -11,7 +11,7 @@ export function loadModLoaders(): Promise<ModLoaderInfo[]> {
 	return cache;
 }
 
-export const modLoaderInfos = readable<ModLoaderInfo[]>([], (set) => {
+const modLoaderInfos = readable<ModLoaderInfo[]>([], (set) => {
 	loadModLoaders()
 		.then(set)
 		.catch(() => {});

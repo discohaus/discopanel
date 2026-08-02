@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -79,7 +80,16 @@ func NewUploadStreamHandler(uploadManager *transfer.UploadManager, authManager *
 		bytesWritten, completed, err := uploadManager.WriteStream(sessionID, r.Body, offset)
 		if err != nil {
 			log.Error("Stream upload error for session %s: %v", sessionID, err)
-			writeChunkResponse(w, http.StatusInternalServerError, &v1.UploadChunkResponse{
+			status := http.StatusInternalServerError
+			switch {
+			case errors.Is(err, transfer.ErrSessionNotFound), errors.Is(err, transfer.ErrSessionExpired):
+				status = http.StatusNotFound
+			case errors.Is(err, transfer.ErrSessionCompleted):
+				status = http.StatusConflict
+			case errors.Is(err, transfer.ErrInvalidOffset), errors.Is(err, transfer.ErrFileTooLarge):
+				status = http.StatusBadRequest
+			}
+			writeChunkResponse(w, status, &v1.UploadChunkResponse{
 				SessionId:     sessionID,
 				BytesReceived: offset + bytesWritten,
 			})

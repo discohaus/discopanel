@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/robfig/cron/v3"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"gorm.io/gorm"
 
 	"github.com/discohaus/discopanel/internal/command"
 	storage "github.com/discohaus/discopanel/internal/db"
@@ -120,14 +122,17 @@ func (s *Scheduler) Stop() error {
 	close(s.stopChan)
 	s.mu.Unlock()
 
-	// Wait for scheduler loop to finish
-	s.wg.Wait()
-
-	// Cancel all running executions
+	// Cancel running executions first so the wait cannot hang
 	s.executionMu.Lock()
 	for _, cancel := range s.runningExecutions {
 		cancel()
 	}
+	s.executionMu.Unlock()
+
+	// Wait for the loop and task goroutines to finish
+	s.wg.Wait()
+
+	s.executionMu.Lock()
 	s.runningExecutions = make(map[string]context.CancelFunc)
 	s.executionMu.Unlock()
 
@@ -177,13 +182,27 @@ func (s *Scheduler) runLoop() {
 	ticker := time.NewTicker(s.checkInterval)
 	defer ticker.Stop()
 
+	// Execution rows would otherwise grow forever
+	pruneTicker := time.NewTicker(24 * time.Hour)
+	defer pruneTicker.Stop()
+	pruneExecutions := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := s.store.PruneTaskExecutions(ctx, time.Now().AddDate(0, 0, -30)); err != nil {
+			s.log.Error("Failed to prune task executions: %v", err)
+		}
+	}
+
 	// Run initial check
 	s.checkAndRunDueTasks()
+	pruneExecutions()
 
 	for {
 		select {
 		case <-ticker.C:
 			s.checkAndRunDueTasks()
+		case <-pruneTicker.C:
+			pruneExecutions()
 		case <-s.stopChan:
 			return
 		}
@@ -277,12 +296,20 @@ func (s *Scheduler) executeTask(task *v1.ScheduledTask, trigger v1.TaskTrigger, 
 	defer s.endTask(task.Id)
 
 	// Advance schedule before running so re-listing never doubles
-	s.updateNextRun(task)
+	if trigger == v1.TaskTrigger_TASK_TRIGGER_SCHEDULED {
+		s.updateNextRun(task)
+	}
 
 	// Check if server exists
 	server, err := s.store.GetServer(ctx, task.ServerId)
 	if err != nil {
 		s.log.Error("Task %s: server not found: %v", task.Name, err)
+		// Orphan tasks disable instead of erroring forever
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if derr := s.store.UpdateScheduledTaskFields(ctx, task.Id, map[string]any{"status": v1.TaskStatus_TASK_STATUS_DISABLED}); derr != nil {
+				s.log.Error("Task %s: failed to disable orphan task: %v", task.Name, derr)
+			}
+		}
 		return nil, err
 	}
 	s.store.HydrateProxyPorts(ctx, server)
@@ -520,6 +547,10 @@ func (s *Scheduler) executeScriptTask(ctx context.Context, server *v1.Server, ta
 		return "", fmt.Errorf("no script/executable specified")
 	}
 
+	if server.ContainerId == "" {
+		return "", fmt.Errorf("server has no container")
+	}
+
 	execCmd := []string{config.ScriptPath}
 	stdout, stderr, err := s.docker.Exec(ctx, server.ContainerId, append(execCmd, config.Args...))
 	if err != nil {
@@ -560,7 +591,7 @@ func (s *Scheduler) CalculateNextRun(task *v1.ScheduledTask) (*time.Time, error)
 			return nil, fmt.Errorf("run_at time required for once schedule")
 		}
 		if task.RunAt.AsTime().Before(now) {
-			return nil, nil // Already passed
+			return nil, fmt.Errorf("run_at time is in the past")
 		}
 		runAt := task.RunAt.AsTime()
 		return &runAt, nil

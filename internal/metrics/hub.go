@@ -220,13 +220,21 @@ func (h *Hub) HandleMessage(ctx context.Context, serverID string, msg *agentv1.A
 			if path := p.Exited.GetCrashReportPath(); path != "" {
 				attrs["crash_report"] = path
 			}
+			mods := fatalModSummary(p.Exited.GetFatalError())
+			if mods != "" {
+				attrs["failed_mods"] = mods
+			}
 			switch {
 			case p.Exited.GetOomKilled():
 				h.rec.Announce(rctx, serverID, v1.ServerActionKind_SERVER_ACTION_KIND_SERVER_OOM, attrs, "server was killed after running out of memory (exit code %d), raise the container memory or lower the heap", p.Exited.GetExitCode())
+			case p.Exited.GetBootFailed() && mods != "":
+				h.rec.Announce(rctx, serverID, v1.ServerActionKind_SERVER_ACTION_KIND_SERVER_BOOT_FAILED, attrs, "server failed to start, mods failed to load: %s", mods)
 			case p.Exited.GetBootFailed() && p.Exited.GetCrashReportPath() != "":
 				h.rec.Announce(rctx, serverID, v1.ServerActionKind_SERVER_ACTION_KIND_SERVER_BOOT_FAILED, attrs, "server failed to start (crash report: %s)", p.Exited.GetCrashReportPath())
 			case p.Exited.GetBootFailed():
 				h.rec.Announce(rctx, serverID, v1.ServerActionKind_SERVER_ACTION_KIND_SERVER_BOOT_FAILED, attrs, "server failed to start (exit code %d)", p.Exited.GetExitCode())
+			case mods != "":
+				h.rec.Announce(rctx, serverID, v1.ServerActionKind_SERVER_ACTION_KIND_SERVER_CRASH, attrs, "server crashed, mods failed to load: %s", mods)
 			case p.Exited.GetCrashReportPath() != "":
 				h.rec.Announce(rctx, serverID, v1.ServerActionKind_SERVER_ACTION_KIND_SERVER_CRASH, attrs, "server crashed (exit code %d, crash report: %s)", p.Exited.GetExitCode(), p.Exited.GetCrashReportPath())
 			default:
@@ -262,12 +270,64 @@ func (h *Hub) HandleMessage(ctx context.Context, serverID string, msg *agentv1.A
 	}
 }
 
+// Plain words naming the mods a fatal error blamed
+func fatalModSummary(fatal *agentv1.FatalError) string {
+	if fatal == nil {
+		return ""
+	}
+	var parts []string
+	for _, fm := range fatal.GetFailedMods() {
+		name := fm.GetModId()
+		if name == "" {
+			name = fm.GetFileName()
+		}
+		if name == "" {
+			continue
+		}
+		if reason := failedModReason(fm); reason != "" {
+			name = fmt.Sprintf("%s (%s)", name, reason)
+		}
+		parts = append(parts, name)
+		if len(parts) == 3 {
+			break
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	out := strings.Join(parts, ", ")
+	if more := len(fatal.GetFailedMods()) - len(parts); more > 0 {
+		out = fmt.Sprintf("%s and %d more", out, more)
+	}
+	return out
+}
+
+// Short human words for a loader failure key
+func failedModReason(fm *agentv1.FailedMod) string {
+	if strings.Contains(fm.GetReason(), "missingdependency") {
+		if args := fm.GetReasonArgs(); len(args) > 0 {
+			return "needs " + args[0]
+		}
+		return "missing dependency"
+	}
+	if msg := fm.GetErrorMessage(); msg != "" {
+		if len(msg) > 60 {
+			msg = msg[:60] + "..."
+		}
+		return msg
+	}
+	return ""
+}
+
 // Updates roster, emits bus event, replaces agent SLP diffing
 func (h *Hub) handlePlayerEvent(ctx context.Context, serverID string, ev *agentv1.PlayerEvent) {
 	player := ev.GetPlayer()
 	data := map[string]string{"player": player}
 	if d := ev.GetDetail(); d != "" {
 		data["detail"] = d
+	}
+	if id := ev.GetUuid(); id != "" {
+		data["uuid"] = id
 	}
 
 	var eventType v1.TriggeredEventType

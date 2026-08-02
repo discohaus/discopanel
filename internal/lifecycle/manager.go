@@ -137,6 +137,19 @@ func (m *Manager) setStatus(ctx context.Context, server *v1.Server, status v1.Se
 	m.syncRoute(server)
 }
 
+// Reports whether the container runs, db status can lie
+func (m *Manager) containerLive(ctx context.Context, containerID string) bool {
+	status, err := m.docker.GetContainerStatus(ctx, containerID)
+	if err != nil {
+		return false
+	}
+	switch status {
+	case v1.ServerStatus_SERVER_STATUS_RUNNING, v1.ServerStatus_SERVER_STATUS_UNHEALTHY:
+		return true
+	}
+	return false
+}
+
 // Persists container identity columns for the server row
 func (m *Manager) persistContainer(ctx context.Context, server *v1.Server) error {
 	return m.store.UpdateServerFields(ctx, server.Id, map[string]any{
@@ -312,7 +325,14 @@ func (m *Manager) ensureContainer(ctx context.Context, server *v1.Server, server
 
 	if server.ContainerId != "" {
 		current, upToDate, err := m.docker.ContainerImageState(ctx, server.ContainerId, desired)
-		if err == nil && upToDate {
+		if err != nil && !docker.IsNotFound(err) {
+			// Transient inspect failure must not tear down a container
+			return fmt.Errorf("failed to inspect server container: %w", err)
+		}
+		if err != nil {
+			m.log.Info("lifecycle: %s container is gone, recreating container", server.Name)
+			m.rec.Announce(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_CONTAINER_RECREATE, metrics.Attrs{"reason": "container missing"}, "container went missing, recreating container")
+		} else if upToDate {
 			currentHash, herr := m.docker.ContainerConfigHash(ctx, server.ContainerId)
 			if herr == nil && currentHash == m.docker.DesiredConfigHash(server, serverCfg) {
 				if m.recordRuntimeDigest(ctx, server) {
@@ -322,10 +342,10 @@ func (m *Manager) ensureContainer(ctx context.Context, server *v1.Server, server
 			}
 			m.log.Info("lifecycle: %s container configuration drifted, recreating container", server.Name)
 			m.rec.Announce(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_CONTAINER_RECREATE, metrics.Attrs{"reason": "settings changed"}, "server settings changed, recreating container")
-		} else if err == nil && current != desired {
+		} else if current != desired {
 			m.log.Info("lifecycle: %s image changed (%s -> %s), recreating container", server.Name, current, desired)
 			m.rec.Announce(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_CONTAINER_RECREATE, metrics.Attrs{"reason": "image changed", "from": current, "to": desired}, "runtime image changed (%s -> %s), recreating container", current, desired)
-		} else if err == nil {
+		} else {
 			m.log.Info("lifecycle: %s runtime image %s was updated, recreating container", server.Name, desired)
 			m.rec.Announce(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_CONTAINER_RECREATE, metrics.Attrs{"reason": "image updated"}, "runtime image updated, recreating container")
 		}
@@ -404,7 +424,7 @@ func (m *Manager) Stop(ctx context.Context, serverID string) error {
 			m.log.Warn("lifecycle: failed to unpause %s before stop: %v", server.Name, err)
 		}
 		m.setPaused(server.Id, false)
-	} else if announceDelay > 0 && server.Status == v1.ServerStatus_SERVER_STATUS_RUNNING {
+	} else if announceDelay > 0 && m.containerLive(ctx, server.ContainerId) {
 		msg := fmt.Sprintf("say Server is shutting down in %d seconds", announceDelay)
 		if _, err := m.sender.SendCommand(ctx, server.Id, msg); err == nil {
 			select {

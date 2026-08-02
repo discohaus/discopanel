@@ -450,7 +450,8 @@
 		value={selectedIndexer}
 		onValueChange={(v: string | undefined) => {
 			selectedIndexer = v || 'modrinth';
-			syncModpacks();
+			// Undebounced so a fresh indexer always syncs
+			_syncModpacks();
 		}}
 		disabled={syncing}
 	>

@@ -74,6 +74,9 @@
 		try {
 			systemModules.refresh();
 			await Promise.all([serversStore.fetchServers(true, true), runPageRefreshers(), spin]);
+		} catch (error) {
+			// Interceptor already toasts, just log
+			console.error('Refresh failed:', error);
 		} finally {
 			refreshing = false;
 		}
@@ -129,13 +132,11 @@
 					goto(resolvePath('/login'));
 					return;
 				}
-				const isValid = await authStore.validateSession();
-				if (!isValid) {
-					const state = get(authStore);
-					if (!state.anonymousAccessEnabled) {
-						goto(resolvePath('/login'));
-						return;
-					}
+				// Session already validated inside checkAuthStatus
+				const state = get(authStore);
+				if (!state.isAuthenticated && !state.anonymousAccessEnabled) {
+					goto(resolvePath('/login'));
+					return;
 				}
 			}
 		} catch (err) {

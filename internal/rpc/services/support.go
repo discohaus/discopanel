@@ -371,6 +371,10 @@ func (s *SupportService) addLogsToBundle(ctx context.Context, tarWriter *tar.Wri
 		if logDir != "" && logDir != "." {
 			files, _ := os.ReadDir(logDir)
 			for _, file := range files {
+				// Main log already added above
+				if file.Name() == filepath.Base(logFilePath) {
+					continue
+				}
 				if strings.HasPrefix(file.Name(), "discopanel") && strings.Contains(file.Name(), ".log") {
 					fullPath := filepath.Join(logDir, file.Name())
 					if err := addFileToTar(tarWriter, fullPath, filepath.Join("logs", file.Name())); err != nil {

@@ -5,6 +5,7 @@
 	import { Textarea } from '$lib/components/ui/textarea';
 	import { Card, CardContent } from '$lib/components/ui/card';
 	import { Switch } from '$lib/components/ui/switch';
+	import { KeyValueRowsEditor } from '$lib/components/app';
 	import { Plus, AlertCircle, Code, ChevronDown, ChevronRight, X } from '@lucide/svelte';
 	import type { DockerOverrides, VolumeMount } from '$lib/proto/discopanel/v1/storage_pb';
 	import { DockerOverridesSchema, VolumeMountSchema } from '$lib/proto/discopanel/v1/storage_pb';
@@ -224,11 +225,6 @@
 		updateOverride('environment', mapFromRows(envRows));
 	}
 
-	function removeEnvRow(index: number) {
-		envRows = envRows.filter((_, i) => i !== index);
-		commitEnvRows();
-	}
-
 	function addLabelRow() {
 		labelRows = [...labelRows, { key: '', value: '' }];
 	}
@@ -238,11 +234,6 @@
 			toast.error('This namespace is reserved for system use.');
 		}
 		updateOverride('labels', mapFromRows(labelRows));
-	}
-
-	function removeLabelRow(index: number) {
-		labelRows = labelRows.filter((_, i) => i !== index);
-		commitLabelRows();
 	}
 
 	function addVolume() {
@@ -364,36 +355,16 @@
 							</Button>
 						</div>
 						{#if envRows.length > 0}
-							<div class="space-y-2 rounded-lg border p-3">
-								{#each envRows as row, i (i)}
-									<div class="flex items-center gap-2">
-										<Input
-											bind:value={row.key}
-											onchange={() => commitEnvRows()}
-											placeholder="VARIABLE_NAME"
-											{disabled}
-											class="h-8 flex-1 font-mono text-xs"
-										/>
-										<span class="text-xs text-muted-foreground">=</span>
-										<Input
-											bind:value={row.value}
-											onchange={() => commitEnvRows()}
-											placeholder="value"
-											{disabled}
-											class="h-8 flex-1 font-mono text-xs"
-										/>
-										<Button
-											type="button"
-											variant="ghost"
-											size="icon"
-											onclick={() => removeEnvRow(i)}
-											{disabled}
-											class="size-8 hover:bg-destructive/10 hover:text-destructive"
-										>
-											<X class="size-3" />
-										</Button>
-									</div>
-								{/each}
+							<div class="rounded-lg border p-3">
+								<KeyValueRowsEditor
+									bind:rows={envRows}
+									variant="compact"
+									keyPlaceholder="VARIABLE_NAME"
+									valuePlaceholder="value"
+									entryLabel="variable"
+									{disabled}
+									onrowchange={() => commitEnvRows()}
+								/>
 							</div>
 						{:else}
 							<div class="text-xs text-muted-foreground italic">
@@ -655,36 +626,16 @@
 							</Button>
 						</div>
 						{#if labelRows.length > 0}
-							<div class="space-y-2 rounded-lg border p-3">
-								{#each labelRows as row, i (i)}
-									<div class="flex items-center gap-2">
-										<Input
-											bind:value={row.key}
-											onchange={() => commitLabelRows(row.key)}
-											placeholder="label.name"
-											{disabled}
-											class="h-8 flex-1 font-mono text-xs"
-										/>
-										<span class="text-xs text-muted-foreground">=</span>
-										<Input
-											bind:value={row.value}
-											onchange={() => commitLabelRows()}
-											placeholder="value"
-											{disabled}
-											class="h-8 flex-1 font-mono text-xs"
-										/>
-										<Button
-											type="button"
-											variant="ghost"
-											size="icon"
-											onclick={() => removeLabelRow(i)}
-											{disabled}
-											class="size-8 hover:bg-destructive/10 hover:text-destructive"
-										>
-											<X class="size-3" />
-										</Button>
-									</div>
-								{/each}
+							<div class="rounded-lg border p-3">
+								<KeyValueRowsEditor
+									bind:rows={labelRows}
+									variant="compact"
+									keyPlaceholder="label.name"
+									valuePlaceholder="value"
+									entryLabel="label"
+									{disabled}
+									onrowchange={(key) => commitLabelRows(key)}
+								/>
 							</div>
 						{:else}
 							<div class="text-xs text-muted-foreground italic">No labels configured</div>

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { rpcClient } from '$lib/api/rpc-client';
 	import { registerRefresh } from '$lib/stores/refresh';
+	import { formatBytes } from '$lib/utils';
 	import { Button } from '$lib/components/ui/button';
 	import { ConfirmDialog } from '$lib/components/app';
 	import { toast } from 'svelte-sonner';
@@ -10,13 +11,16 @@
 	import { ServerStatus } from '$lib/proto/discopanel/v1/storage_pb';
 	import { timestampDate } from '@bufbuild/protobuf/wkt';
 
-	let { server }: { server: Server } = $props();
+	let { server, active = false }: { server: Server; active?: boolean } = $props();
 
 	let backups = $state<Backup[]>([]);
 	let loading = $state(true);
 	let restoreTarget = $state<Backup | null>(null);
 	let restoreOpen = $state(false);
 	let restoring = $state(false);
+
+	let hasLoaded = false;
+	let previousServerId = $state(server.id);
 
 	let serverStopped = $derived(
 		server.status === ServerStatus.STOPPED || server.status === ServerStatus.ERROR
@@ -57,12 +61,6 @@
 		}
 	}
 
-	function formatSize(size: bigint): string {
-		const n = Number(size);
-		if (n >= 1024 * 1024 * 1024) return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-		if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-		return `${Math.max(1, Math.round(n / 1024))} KB`;
-	}
 
 	function formatWhen(backup: Backup): string {
 		if (!backup.createdAt) return '';
@@ -74,11 +72,25 @@
 		});
 	}
 
+	// Reset state when server changes
 	$effect(() => {
-		if (server.id) loadBackups();
+		if (server.id !== previousServerId) {
+			previousServerId = server.id;
+			backups = [];
+			loading = true;
+			hasLoaded = false;
+		}
 	});
 
 	$effect(() => {
+		if (active && !hasLoaded) {
+			hasLoaded = true;
+			loadBackups();
+		}
+	});
+
+	$effect(() => {
+		if (!active) return;
 		return registerRefresh(loadBackups);
 	});
 </script>
@@ -103,7 +115,7 @@
 				<div class="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs">
 					<Archive class="size-3.5 shrink-0 text-muted-foreground" />
 					<span class="min-w-0 flex-1 truncate font-mono">{backup.fileName}</span>
-					<span class="tabular shrink-0 text-muted-foreground">{formatSize(backup.size)}</span>
+					<span class="tabular shrink-0 text-muted-foreground">{formatBytes(Number(backup.size), 1)}</span>
 					<span class="tabular shrink-0 text-muted-foreground">{formatWhen(backup)}</span>
 					<Button
 						variant="outline"

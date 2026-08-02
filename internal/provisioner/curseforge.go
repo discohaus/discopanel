@@ -516,10 +516,10 @@ func (p *Provisioner) completeServerPack(ctx context.Context, server *v1.Server,
 	dataPath := server.DataPath
 
 	detect := func() *v1.LaunchSpec {
-		if spec, err := detectForgeLaunch(dataPath, "minecraftforge/forge"); err == nil {
+		if spec, err := detectForgeLaunch(dataPath, "minecraftforge/forge", ""); err == nil {
 			return spec
 		}
-		if spec, err := detectForgeLaunch(dataPath, "neoforged/neoforge"); err == nil {
+		if spec, err := detectForgeLaunch(dataPath, "neoforged/neoforge", ""); err == nil {
 			return spec
 		}
 		for _, jar := range []string{"fabric-server-launch.jar", "quilt-server-launch.jar", "server.jar"} {

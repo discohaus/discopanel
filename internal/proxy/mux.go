@@ -140,10 +140,10 @@ func (s *ListenerSocket) SetRoutes(routes []Route) {
 			if route.State == v1.ProxyRouteState_PROXY_ROUTE_STATE_UNSPECIFIED {
 				route.State = v1.ProxyRouteState_PROXY_ROUTE_STATE_ONLINE
 			}
-			route.Hostname = normalizeHostname(route.Hostname)
+			route.Hostname = normalizeWireHostname(route.Hostname)
 			newMC[route.Hostname] = &route
 		case v1.ModuleProtocol_MODULE_PROTOCOL_HTTP:
-			route.Hostname = normalizeHostname(route.Hostname)
+			route.Hostname = normalizeWireHostname(route.Hostname)
 			newHTTP[route.Hostname] = &route
 		default:
 			relay = &route
@@ -166,28 +166,13 @@ func (s *ListenerSocket) SetRoutes(routes []Route) {
 	s.statsMu.Unlock()
 }
 
-// Installs or replaces one route in its lane
-func (s *ListenerSocket) UpsertRoute(route Route) {
-	switch route.Protocol {
-	case v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT:
-		s.UpsertServerRoute(route)
-	case v1.ModuleProtocol_MODULE_PROTOCOL_HTTP:
-		route.Hostname = normalizeHostname(route.Hostname)
-		s.httpLane.upsert(&route)
-	default:
-		s.routesMu.Lock()
-		s.tcpRelay = &route
-		s.routesMu.Unlock()
-	}
-}
-
 // Removes one route from its lane
 func (s *ListenerSocket) RemoveRoute(protocol v1.ModuleProtocol, hostname string) {
 	switch protocol {
 	case v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT:
 		s.removeMCRoute(hostname)
 	case v1.ModuleProtocol_MODULE_PROTOCOL_HTTP:
-		s.httpLane.remove(normalizeHostname(hostname))
+		s.httpLane.remove(normalizeWireHostname(hostname))
 	default:
 		s.routesMu.Lock()
 		s.tcpRelay = nil
@@ -255,6 +240,15 @@ func (c *recordedConn) take() []byte {
 	return pending
 }
 
+// Forwards half-close so relay drains work through the wrapper
+func (c *recordedConn) CloseWrite() error {
+	type closeWriter interface{ CloseWrite() error }
+	if cw, ok := c.Conn.(closeWriter); ok {
+		return cw.CloseWrite()
+	}
+	return c.Conn.Close()
+}
+
 // Serves buffered sniff bytes ahead of the live socket
 type replayConn struct {
 	net.Conn
@@ -268,6 +262,15 @@ func (c *replayConn) Read(p []byte) (int, error) {
 		return n, nil
 	}
 	return c.Conn.Read(p)
+}
+
+// Forwards half-close so relay drains work through the wrapper
+func (c *replayConn) CloseWrite() error {
+	type closeWriter interface{ CloseWrite() error }
+	if cw, ok := c.Conn.(closeWriter); ok {
+		return cw.CloseWrite()
+	}
+	return c.Conn.Close()
 }
 
 // Methods every http verb can open with
@@ -378,7 +381,7 @@ func (s *ListenerSocket) serveRelay(raw net.Conn, pending []byte) {
 		return
 	}
 
-	backendAddr := net.JoinHostPort(route.BackendHost, fmt.Sprintf("%d", route.BackendPort))
+	backendAddr := route.BackendAddr()
 	backendConn, err := dialBackend(s.ctx, backendAddr)
 	if err != nil {
 		s.logger.Error("Relay dial failed for %s: %v", backendAddr, err)

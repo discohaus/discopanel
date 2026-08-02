@@ -3,7 +3,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Dialog, DialogContent, DialogHeader, DialogTitle } from '$lib/components/ui/dialog';
 	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
-	import { rpcClient } from '$lib/api/rpc-client';
+	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import type { Module } from '$lib/proto/discopanel/v1/storage_pb';
 	import { ModuleStatus } from '$lib/proto/discopanel/v1/storage_pb';
 	import type { LogEntry } from '$lib/proto/discopanel/v1/server_pb';
@@ -105,10 +105,13 @@
 
 		fetching = true;
 		try {
-			const response = await rpcClient.module.getModuleLogs({
-				id: module.id,
-				tail: tailLines
-			});
+			const response = await rpcClient.module.getModuleLogs(
+				{
+					id: module.id,
+					tail: tailLines
+				},
+				silentCallOptions
+			);
 			logEntries = response.logs || [];
 		} catch (error) {
 			console.error('Failed to fetch module logs:', error);

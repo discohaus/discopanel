@@ -399,16 +399,5 @@ func InitBuiltinTemplates(store *storage.Store) error {
 		}
 	}
 
-	// Removes obsolete templates unless modules still use them
-	for _, id := range []string{"builtin-mc-backup", "builtin-rcon-web"} {
-		if _, err := store.GetModuleTemplate(ctx, id); err != nil {
-			continue
-		}
-		if err := store.DeleteModuleTemplate(ctx, id); err != nil {
-			// Modules still reference it, leave in place
-			continue
-		}
-	}
-
 	return nil
 }

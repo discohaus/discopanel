@@ -37,6 +37,7 @@ import (
 	"github.com/discohaus/discopanel/pkg/transfer"
 	utils "github.com/discohaus/discopanel/pkg/utils"
 	"github.com/google/uuid"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -115,6 +116,19 @@ func normalizeAdditionalPorts(ports []*v1.NetworkPort, proxyOn bool) ([]*v1.Netw
 	return out, nil
 }
 
+// Reports whether both port lists match exactly
+func networkPortsEqual(a, b []*v1.NetworkPort) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !proto.Equal(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 // NewServerService creates a new server service
 func NewServerService(store *storage.Store, docker *docker.Client, sender *command.Sender, config *config.Config, proxy *proxy.Manager, lifecycleManager *lifecycle.Manager, logStreamer *logger.LogStreamer, metricsCollector *metrics.Collector, moduleManager *module.Manager, bus *events.Bus, uploadManager *transfer.UploadManager, rec *metrics.Recorder, log *logger.Logger) *ServerService {
 	return &ServerService{
@@ -138,6 +152,15 @@ func NewServerService(store *storage.Store, docker *docker.Client, sender *comma
 // Detaches request work from cancellation, values ride along
 func detach(ctx context.Context) context.Context {
 	return context.WithoutCancel(ctx)
+}
+
+// Loads a server or returns the canonical not found error
+func getServer(ctx context.Context, store *storage.Store, id string) (*v1.Server, error) {
+	server, err := store.GetServer(ctx, id)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+	}
+	return server, nil
 }
 
 // Serves server-icon.png from disk, cached by file identity
@@ -243,9 +266,9 @@ func (s *ServerService) ListServers(ctx context.Context, req *connect.Request[v1
 
 // GetServer gets a specific server
 func (s *ServerService) GetServer(ctx context.Context, req *connect.Request[v1.GetServerRequest]) (*connect.Response[v1.GetServerResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
 	if err := s.store.HydrateProxyPorts(ctx, server); err != nil {
@@ -276,8 +299,10 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 	modLoader := msg.ModLoader
 
 	// If modpack is selected, load it and derive settings
+	var modpack *v1.IndexedModpack
 	if msg.ModpackId != "" {
-		modpack, err := s.store.GetIndexedModpack(ctx, msg.ModpackId)
+		var err error
+		modpack, err = s.store.GetIndexedModpack(ctx, msg.ModpackId)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid modpack"))
 		}
@@ -466,6 +491,7 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 	// Save to database
 	if err := s.store.CreateServer(ctx, server); err != nil {
 		s.log.Error("Failed to create server: %v", err)
+		os.RemoveAll(server.DataPath)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create server"))
 	}
 	netClaim.Confirm()
@@ -494,11 +520,7 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 	}
 
 	// Configure modpack if selected
-	if msg.ModpackId != "" {
-		modpack, err := s.store.GetIndexedModpack(ctx, msg.ModpackId)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid modpack"))
-		}
+	if modpack != nil {
 		if err := s.applyModpackSelection(ctx, server, serverConfig, modpack, msg.ModpackVersionId); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
@@ -537,9 +559,9 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v1.UpdateServerRequest]) (*connect.Response[v1.UpdateServerResponse], error) {
 	msg := req.Msg
 
-	server, err := s.store.GetServer(ctx, msg.Id)
+	server, err := getServer(ctx, s.store, msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
 	// Check if container recreation is needed
@@ -570,7 +592,7 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 		server.Port = int32(newPort)
 		needsRecreation = true
 	}
-	if msg.MaxPlayers > 0 {
+	if msg.MaxPlayers > 0 && msg.MaxPlayers != server.MaxPlayers {
 		server.MaxPlayers = msg.MaxPlayers
 		needsRecreation = true
 	}
@@ -623,8 +645,10 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
-		server.AdditionalPorts = additionalPorts
-		needsRecreation = true
+		if !networkPortsEqual(additionalPorts, server.AdditionalPorts) {
+			server.AdditionalPorts = additionalPorts
+			needsRecreation = true
+		}
 	} else if msg.ClearAdditionalPorts && len(server.AdditionalPorts) > 0 {
 		server.AdditionalPorts = nil
 		needsRecreation = true
@@ -639,8 +663,10 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 			}
 		}
 
-		server.DockerOverrides = msg.DockerOverrides
-		needsRecreation = true
+		if !proto.Equal(server.DockerOverrides, msg.DockerOverrides) {
+			server.DockerOverrides = msg.DockerOverrides
+			needsRecreation = true
+		}
 	}
 
 	// Handle modpack version update
@@ -652,15 +678,16 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 		}
 
 		modpack, err := s.store.GetIndexedModpack(ctx, msg.ModpackId)
-		if err == nil {
-			if err := s.applyModpackSelection(ctx, server, serverConfig, modpack, msg.ModpackVersionId); err != nil {
-				return nil, connect.NewError(connect.CodeInternal, err)
-			}
-			needsRecreation = true
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid modpack"))
+		}
+		if err := s.applyModpackSelection(ctx, server, serverConfig, modpack, msg.ModpackVersionId); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		needsRecreation = true
 
-			if err := s.store.UpdateServerProperties(ctx, serverConfig); err != nil {
-				s.log.Error("Failed to update server config with modpack settings: %v", err)
-			}
+		if err := s.store.UpdateServerProperties(ctx, serverConfig); err != nil {
+			s.log.Error("Failed to update server config with modpack settings: %v", err)
 		}
 	}
 
@@ -823,9 +850,9 @@ func (s *ServerService) adoptModpackIcon(ctx context.Context, server *v1.Server,
 func (s *ServerService) UploadServerIcon(ctx context.Context, req *connect.Request[v1.UploadServerIconRequest]) (*connect.Response[v1.UploadServerIconResponse], error) {
 	const maxIconBytes = 4 << 20
 
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 	if len(req.Msg.Image) == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("image data is required"))
@@ -863,9 +890,9 @@ func (s *ServerService) UploadServerIcon(ctx context.Context, req *connect.Reque
 
 // DeleteServer deletes a server
 func (s *ServerService) DeleteServer(ctx context.Context, req *connect.Request[v1.DeleteServerRequest]) (*connect.Response[v1.DeleteServerResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
 	// Delete every module row with its container and token
@@ -914,9 +941,9 @@ func (s *ServerService) DeleteServer(ctx context.Context, req *connect.Request[v
 
 // StartServer starts a server (provisioning + container start run async)
 func (s *ServerService) StartServer(ctx context.Context, req *connect.Request[v1.StartServerRequest]) (*connect.Response[v1.StartServerResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
 	if s.lifecycle.IsStarting(server.Id) {
@@ -925,8 +952,7 @@ func (s *ServerService) StartServer(ctx context.Context, req *connect.Request[v1
 		}), nil
 	}
 
-	server.Status = v1.ServerStatus_SERVER_STATUS_PROVISIONING
-	if err := s.store.UpdateServer(ctx, server); err != nil {
+	if err := s.store.UpdateServerFields(ctx, server.Id, map[string]any{"status": v1.ServerStatus_SERVER_STATUS_PROVISIONING}); err != nil {
 		s.log.Error("Failed to update server status: %v", err)
 	}
 
@@ -945,14 +971,13 @@ func (s *ServerService) StartServer(ctx context.Context, req *connect.Request[v1
 
 // StopServer stops a server (graceful stop runs async)
 func (s *ServerService) StopServer(ctx context.Context, req *connect.Request[v1.StopServerRequest]) (*connect.Response[v1.StopServerResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
 	if server.ContainerId == "" {
-		server.Status = v1.ServerStatus_SERVER_STATUS_STOPPED
-		if err := s.store.UpdateServer(ctx, server); err != nil {
+		if err := s.store.UpdateServerFields(ctx, server.Id, map[string]any{"status": v1.ServerStatus_SERVER_STATUS_STOPPED}); err != nil {
 			s.log.Error("Failed to update server status: %v", err)
 		}
 		return connect.NewResponse(&v1.StopServerResponse{
@@ -960,8 +985,7 @@ func (s *ServerService) StopServer(ctx context.Context, req *connect.Request[v1.
 		}), nil
 	}
 
-	server.Status = v1.ServerStatus_SERVER_STATUS_STOPPING
-	if err := s.store.UpdateServer(ctx, server); err != nil {
+	if err := s.store.UpdateServerFields(ctx, server.Id, map[string]any{"status": v1.ServerStatus_SERVER_STATUS_STOPPING}); err != nil {
 		s.log.Error("Failed to update server status: %v", err)
 	}
 
@@ -980,9 +1004,9 @@ func (s *ServerService) StopServer(ctx context.Context, req *connect.Request[v1.
 
 // RestartServer restarts a server (runs async)
 func (s *ServerService) RestartServer(ctx context.Context, req *connect.Request[v1.RestartServerRequest]) (*connect.Response[v1.RestartServerResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
 	go func() {
@@ -1000,9 +1024,9 @@ func (s *ServerService) RestartServer(ctx context.Context, req *connect.Request[
 
 // Destroys and recreates the container from scratch
 func (s *ServerService) RecreateServer(ctx context.Context, req *connect.Request[v1.RecreateServerRequest]) (*connect.Response[v1.RecreateServerResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
 	go func() {
@@ -1049,9 +1073,9 @@ func (s *ServerService) SendCommand(ctx context.Context, req *connect.Request[v1
 
 // Reads the server's latest.log and uploads it to mclo.gs
 func (s *ServerService) UploadToMCLogs(ctx context.Context, req *connect.Request[v1.UploadToMCLogsRequest]) (*connect.Response[v1.UploadToMCLogsResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
 	logPath := filepath.Join(server.DataPath, "logs", "latest.log")
@@ -1118,13 +1142,13 @@ func (s *ServerService) UploadToMCLogs(ctx context.Context, req *connect.Request
 func (s *ServerService) GetServerLogs(ctx context.Context, req *connect.Request[v1.GetServerLogsRequest]) (*connect.Response[v1.GetServerLogsResponse], error) {
 	// Parse tail parameter
 	tail := int(req.Msg.Tail)
-	if tail == 0 {
+	if tail <= 0 {
 		tail = 100
 	}
 
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
 	// Get structured log entries from the log streamer if available
@@ -1147,9 +1171,9 @@ func (s *ServerService) GetServerLogs(ctx context.Context, req *connect.Request[
 
 // ClearServerLogs clears server logs
 func (s *ServerService) ClearServerLogs(ctx context.Context, req *connect.Request[v1.ClearServerLogsRequest]) (*connect.Response[v1.ClearServerLogsResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
 	// Clear structured log entries if log streamer is available
@@ -1264,9 +1288,9 @@ func (s *ServerService) GetServerMetricsHistory(ctx context.Context, req *connec
 
 // Serves findings the doctor module published, panel adds nothing
 func (s *ServerService) GetServerPerformanceReport(ctx context.Context, req *connect.Request[v1.GetServerPerformanceReportRequest]) (*connect.Response[v1.GetServerPerformanceReportResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
 	var agentConnected bool
@@ -1299,9 +1323,9 @@ func (s *ServerService) GetServerPerformanceReport(ctx context.Context, req *con
 
 // Hides or restores one finding, scoped to its current content
 func (s *ServerService) DismissPerformanceFinding(ctx context.Context, req *connect.Request[v1.DismissPerformanceFindingRequest]) (*connect.Response[v1.DismissPerformanceFindingResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 	if req.Msg.Restore {
 		if err := s.store.DeleteFindingDismissal(ctx, server.Id, req.Msg.FindingId); err != nil {

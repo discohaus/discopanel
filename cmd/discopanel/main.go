@@ -395,8 +395,8 @@ func main() {
 	close(stopSessionCleanup)
 	close(stopMonitor)
 
-	// Graceful shutdown with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Budget must outlast the 60s graceful world save window
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	// Stop managed servers in parallel through the lifecycle owner
@@ -412,12 +412,17 @@ func main() {
 			log.Info("Skipping shutdown of detached server: %s", server.Name)
 			continue
 		}
-		if server.Status != v1.ServerStatus_SERVER_STATUS_RUNNING {
+		// Live containers stop regardless of drifted db status
+		if server.ContainerId == "" {
+			continue
+		}
+		switch server.Status {
+		case v1.ServerStatus_SERVER_STATUS_STOPPED, v1.ServerStatus_SERVER_STATUS_ERROR:
 			continue
 		}
 		stopWG.Go(func() {
 			log.Info("Stopping managed server: %s", server.Name)
-			stopCtx, stopCancel := context.WithTimeout(metrics.WithTrace(metrics.WithSource(ctx, "system")), 25*time.Second)
+			stopCtx, stopCancel := context.WithTimeout(metrics.WithTrace(metrics.WithSource(ctx, "system")), 90*time.Second)
 			defer stopCancel()
 			if err := lifecycleManager.Stop(stopCtx, server.Id); err != nil {
 				log.Error("Failed to stop server %s: %v", server.Name, err)

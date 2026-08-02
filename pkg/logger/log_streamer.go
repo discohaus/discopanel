@@ -430,22 +430,11 @@ func (ls *LogStreamer) Unsubscribe(key string, ch chan *v1.LogEntry) {
 
 // Sends a log entry to all key subscribers
 func (ls *LogStreamer) broadcast(key string, entry *v1.LogEntry) {
+	// Lock held through sends so Unsubscribe cannot close mid send
 	ls.subMu.RLock()
-	subs, ok := ls.subscribers[key]
-	if !ok || len(subs) == 0 {
-		ls.subMu.RUnlock()
-		return
-	}
+	defer ls.subMu.RUnlock()
 
-	// Copy subscriber list to avoid holding lock during sends
-	channels := make([]chan *v1.LogEntry, 0, len(subs))
-	for ch := range subs {
-		channels = append(channels, ch)
-	}
-	ls.subMu.RUnlock()
-
-	// Non-blocking send to all subscribers
-	for _, ch := range channels {
+	for ch := range ls.subscribers[key] {
 		select {
 		case ch <- entry:
 		default:

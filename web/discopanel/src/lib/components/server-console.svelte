@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onDestroy, untrack } from 'svelte';
 	import { page } from '$app/state';
-	import { rpcClient } from '$lib/api/rpc-client';
+	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { create } from '@bufbuild/protobuf';
 	import { timestampDate } from '@bufbuild/protobuf/wkt';
 	import type { Server, ServerAction } from '$lib/proto/discopanel/v1/storage_pb';
@@ -35,6 +35,7 @@
 	import { statusMeta, isUp, TONE_BG } from '$lib/server-status';
 	import { wsClient } from '$lib/stores/websocket.svelte';
 	import { registerRefresh } from '$lib/stores/refresh';
+	import { copyToClipboard } from '$lib/utils/clipboard';
 
 	let ansiConverter = $derived(themedAnsiConverter(mode.current));
 
@@ -43,6 +44,8 @@
 	let logEntries = $state<LogEntry[]>([]);
 	let command = $state('');
 	let loading = $state(false);
+	let commandInFlight = $state(false);
+	let commandTimeout: ReturnType<typeof setTimeout> | null = null;
 	let autoScroll = $state(true);
 	let unseenLines = $state(0);
 	let scrollAreaRef = $state<HTMLDivElement | null>(null);
@@ -132,10 +135,13 @@
 	async function loadActions(initial: boolean) {
 		try {
 			const last = actions.length > 0 ? actions[actions.length - 1].id : 0n;
-			const res = await rpcClient.server.getServerActions({
-				id: server.id,
-				afterId: initial ? 0n : last
-			});
+			const res = await rpcClient.server.getServerActions(
+				{
+					id: server.id,
+					afterId: initial ? 0n : last
+				},
+				silentCallOptions
+			);
 			if (initial) {
 				// Deep links inspect history, unpin before rows render
 				if (highlightMs > 0) autoScroll = false;
@@ -192,6 +198,7 @@
 
 	onDestroy(() => {
 		untrack(() => cleanupWebSocket());
+		if (commandTimeout) clearTimeout(commandTimeout);
 	});
 
 	// Follow the active tab to hold the subscription
@@ -254,7 +261,7 @@
 
 		const unsubCommandResult = wsClient.onCommandResult((result) => {
 			if (result.serverId === server.id) {
-				loading = false;
+				clearCommandInFlight();
 				if (!result.success) {
 					toast.error(result.error || 'Failed to execute command');
 				}
@@ -305,9 +312,10 @@
 	}
 
 	async function fetchLogs() {
-		if (loading) return;
+		if (loading || commandInFlight) return;
 		if (server.status === ServerStatus.STOPPED) return;
 
+		loading = true;
 		try {
 			const request = create(GetServerLogsRequestSchema, {
 				id: server.id,
@@ -318,7 +326,18 @@
 			logEntries = logs.length > MAX_LOG_ENTRIES ? logs.slice(-MAX_LOG_ENTRIES) : logs;
 		} catch (error) {
 			console.error('Failed to fetch logs:', error);
+		} finally {
+			loading = false;
 		}
+	}
+
+	// Clears the in flight flag and its fallback timer
+	function clearCommandInFlight() {
+		if (commandTimeout) {
+			clearTimeout(commandTimeout);
+			commandTimeout = null;
+		}
+		commandInFlight = false;
 	}
 
 	function navigateHistory(direction: -1 | 1) {
@@ -354,7 +373,10 @@
 	async function sendCommand() {
 		if (!command.trim() || !canSend) return;
 
-		loading = true;
+		commandInFlight = true;
+		if (commandTimeout) clearTimeout(commandTimeout);
+		// Frees the flag if the socket drops mid command
+		commandTimeout = setTimeout(() => clearCommandInFlight(), 10000);
 		const cmdToSend = command;
 		command = '';
 		if (history[history.length - 1] !== cmdToSend) {
@@ -382,19 +404,25 @@
 					'Failed to send command: ' + (error instanceof Error ? error.message : 'Unknown error')
 				);
 			} finally {
-				loading = false;
+				clearCommandInFlight();
 			}
 		}
 	}
 
 	async function clearLogs() {
-		const request = create(ClearServerLogsRequestSchema, {
-			id: server.id
-		});
-		await rpcClient.server.clearServerLogs(request);
-		logEntries = [];
-		unseenLines = 0;
-		toast.success('Console cleared');
+		try {
+			const request = create(ClearServerLogsRequestSchema, {
+				id: server.id
+			});
+			await rpcClient.server.clearServerLogs(request, silentCallOptions);
+			logEntries = [];
+			unseenLines = 0;
+			toast.success('Console cleared');
+		} catch (error) {
+			toast.error(
+				'Failed to clear console: ' + (error instanceof Error ? error.message : 'Unknown error')
+			);
+		}
 	}
 
 	let uploading = $state(false);
@@ -402,11 +430,11 @@
 	async function uploadToMCLogs() {
 		if (uploading) return;
 		uploading = true;
+		let url = '';
 		try {
 			const request = create(UploadToMCLogsRequestSchema, { id: server.id });
-			const response = await rpcClient.server.uploadToMCLogs(request);
-			await navigator.clipboard.writeText(response.url);
-			toast.success('mclo.gs URL copied to clipboard');
+			const response = await rpcClient.server.uploadToMCLogs(request, silentCallOptions);
+			url = response.url;
 		} catch (error) {
 			toast.error(
 				'Failed to upload to mclo.gs: ' + (error instanceof Error ? error.message : 'Unknown error')
@@ -414,6 +442,13 @@
 		} finally {
 			uploading = false;
 		}
+		if (!url) return;
+		// Upload worked, copying is only a bonus
+		const copied = await copyToClipboard(url);
+		toast.success(copied ? 'mclo.gs link copied' : 'Logs uploaded, copy this link', {
+			description: url,
+			duration: 15000
+		});
 	}
 
 	function downloadLogs() {

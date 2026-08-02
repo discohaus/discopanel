@@ -14,7 +14,7 @@
 		DropdownMenuSeparator,
 		DropdownMenuTrigger
 	} from '$lib/components/ui/dropdown-menu';
-	import { StatusBadge, ServerAvatar, ConfirmDialog, TabRail } from '$lib/components/app';
+	import { StatusBadge, ServerAvatar, ConfirmDialog, TabRail, EmptyState } from '$lib/components/app';
 	import { toast } from 'svelte-sonner';
 	import {
 		Play,
@@ -24,7 +24,8 @@
 		MoreVertical,
 		Loader2,
 		Trash2,
-		Copy
+		Copy,
+		ServerOff
 	} from '@lucide/svelte';
 	import { create } from '@bufbuild/protobuf';
 	import type { Server } from '$lib/proto/discopanel/v1/storage_pb';
@@ -129,6 +130,7 @@
 			if (prev !== serverId) {
 				untrack(() => {
 					loading = true;
+					server = null;
 					prevServerId = serverId;
 					modulePrompts = [];
 					hasModules = null;
@@ -197,10 +199,17 @@
 
 	async function confirmDelete() {
 		if (!server) return;
-		await rpcClient.server.deleteServer(create(DeleteServerRequestSchema, { id: server.id }));
-		serversStore.removeServer(server.id);
-		toast.success('Server deleted');
-		goto(resolve('/servers'));
+		try {
+			await rpcClient.server.deleteServer(
+				create(DeleteServerRequestSchema, { id: server.id }),
+				silentCallOptions
+			);
+			serversStore.removeServer(server.id);
+			toast.success('Server deleted');
+			goto(resolve('/servers'));
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : 'Failed to delete server');
+		}
 	}
 
 	async function copyServerId() {
@@ -369,7 +378,7 @@
 				{:else if activeTab === 'files'}
 					<div class="flex min-h-0 flex-1 flex-col gap-4">
 						<ServerFiles {server} active={true} />
-						<ServerBackups {server} />
+						<ServerBackups {server} active={true} />
 					</div>
 				{:else if activeTab === 'mods'}
 					<ServerMods {server} active={true} />
@@ -410,7 +419,13 @@
 	</div>
 {:else}
 	<div class="flex h-96 items-center justify-center">
-		<p class="text-muted-foreground">Server not found</p>
+		<EmptyState
+			icon={ServerOff}
+			title="Server not found"
+			description="This server may have been deleted or the link is wrong."
+		>
+			<Button onclick={() => goto(resolve('/servers'))}>Back to servers</Button>
+		</EmptyState>
 	</div>
 {/if}
 

@@ -42,7 +42,7 @@ message PanelMessage {
   }
 }
 
-// Asks the JVM agent to report stuck threads
+// Asks the JVM agent to report stuck threads, loopback only
 message ThreadDumpRequest {}
 
 // Mandatory first message identifying the connecting party
@@ -105,7 +105,7 @@ message Exited {
   bool stop_requested = 10;
 }
 
-// Signals the javaagent hooked the game's error logging
+// Signals the javaagent hooked error logging, loopback only
 message CaptureArmed {
   // Log4j contexts hooked so far
   int32 contexts_hooked = 1;

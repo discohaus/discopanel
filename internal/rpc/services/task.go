@@ -82,9 +82,9 @@ func (s *TaskService) CreateTask(ctx context.Context, req *connect.Request[v1.Cr
 	msg := req.Msg
 
 	// Validate server exists
-	_, err := s.store.GetServer(ctx, msg.ServerId)
+	_, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
 	// Validate required fields
@@ -150,10 +150,10 @@ func (s *TaskService) CreateTask(ctx context.Context, req *connect.Request[v1.Cr
 		task.RunAt = msg.RunAt
 	}
 
-	// Calculate next run
+	// Bad schedules reject instead of never running
 	nextRun, err := s.scheduler.CalculateNextRun(task)
 	if err != nil {
-		s.log.Debug("Could not calculate next run: %v", err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid schedule: %w", err))
 	}
 	task.NextRun = nextRunPb(nextRun)
 
@@ -255,8 +255,11 @@ func (s *TaskService) UpdateTask(ctx context.Context, req *connect.Request[v1.Up
 		}
 	}
 
-	// Recalculate next run
-	nextRun, _ := s.scheduler.CalculateNextRun(task)
+	// Bad schedules reject instead of never running
+	nextRun, err := s.scheduler.CalculateNextRun(task)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid schedule: %w", err))
+	}
 	task.NextRun = nextRunPb(nextRun)
 
 	// Save changes
@@ -303,7 +306,10 @@ func (s *TaskService) ToggleTask(ctx context.Context, req *connect.Request[v1.To
 
 	// Recalculate next run if enabling
 	if task.Status == v1.TaskStatus_TASK_STATUS_ENABLED {
-		nextRun, _ := s.scheduler.CalculateNextRun(task)
+		nextRun, err := s.scheduler.CalculateNextRun(task)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid schedule: %w", err))
+		}
 		task.NextRun = nextRunPb(nextRun)
 	}
 

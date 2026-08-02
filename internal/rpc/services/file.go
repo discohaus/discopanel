@@ -33,6 +33,7 @@ const maxInlineFileBytes = 10 << 20
 
 // Tracks an in-progress or completed extraction
 type extractionOp struct {
+	mu             sync.Mutex
 	State          v1.ExtractionState
 	FilesExtracted atomic.Int32
 	Error          string
@@ -69,9 +70,9 @@ func (s *FileService) ListFiles(ctx context.Context, req *connect.Request[v1.Lis
 	msg := req.Msg
 
 	// Get server
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	// Get path parameter
@@ -109,9 +110,9 @@ func (s *FileService) GetFile(ctx context.Context, req *connect.Request[v1.GetFi
 	msg := req.Msg
 
 	// Get server
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	// Clean and validate path
@@ -165,9 +166,9 @@ func (s *FileService) SaveUploadedFile(ctx context.Context, req *connect.Request
 	}
 
 	// Get server
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	// Get temp file path and original filename from upload manager
@@ -233,9 +234,9 @@ func (s *FileService) UpdateFile(ctx context.Context, req *connect.Request[v1.Up
 	msg := req.Msg
 
 	// Get server
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	// Clean and validate path
@@ -269,9 +270,9 @@ func (s *FileService) DeleteFile(ctx context.Context, req *connect.Request[v1.De
 	msg := req.Msg
 
 	// Get server
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	// Prefers bulk paths, falls back to single path
@@ -330,9 +331,9 @@ func (s *FileService) RenameFile(ctx context.Context, req *connect.Request[v1.Re
 	}
 
 	// Get server
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	// Clean and validate old path
@@ -382,9 +383,9 @@ func (s *FileService) ExtractArchive(ctx context.Context, req *connect.Request[v
 	msg := req.Msg
 
 	// Get server
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	// Clean and validate archive path
@@ -428,16 +429,21 @@ func (s *FileService) ExtractArchive(ctx context.Context, req *connect.Request[v
 	bgCtx := detach(ctx)
 	go func() {
 		_, err := files.ExtractArchive(bgCtx, fullArchivePath, destPath, &op.FilesExtracted)
+		op.mu.Lock()
 		if err != nil {
 			op.Error = err.Error()
 			op.State = v1.ExtractionState_EXTRACTION_STATE_FAILED
-			s.log.Error("Extraction %s failed: %v", opID, err)
 		} else {
 			op.State = v1.ExtractionState_EXTRACTION_STATE_COMPLETED
+		}
+		op.CompletedAt = time.Now()
+		op.mu.Unlock()
+		if err != nil {
+			s.log.Error("Extraction %s failed: %v", opID, err)
+		} else {
 			s.rec.Record(bgCtx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_FILE_EXTRACT, metrics.Attrs{"archive": msg.Path, "files": strconv.Itoa(int(op.FilesExtracted.Load()))}, "extracted %s (%d files)", msg.Path, op.FilesExtracted.Load())
 			s.log.Info("Extraction %s completed: %d files", opID, op.FilesExtracted.Load())
 		}
-		op.CompletedAt = time.Now()
 	}()
 
 	return connect.NewResponse(&v1.ExtractArchiveResponse{
@@ -453,10 +459,13 @@ func (s *FileService) GetExtractionStatus(ctx context.Context, req *connect.Requ
 	}
 	op := val.(*extractionOp)
 
+	op.mu.Lock()
+	state, opErr := op.State, op.Error
+	op.mu.Unlock()
 	return connect.NewResponse(&v1.GetExtractionStatusResponse{
-		State:          op.State,
+		State:          state,
 		FilesExtracted: op.FilesExtracted.Load(),
-		Error:          op.Error,
+		Error:          opErr,
 	}), nil
 }
 
@@ -468,7 +477,10 @@ func (s *FileService) cleanupExtractions() {
 		cutoff := time.Now().Add(-1 * time.Hour)
 		s.extractions.Range(func(key, value any) bool {
 			op := value.(*extractionOp)
-			if !op.CompletedAt.IsZero() && op.CompletedAt.Before(cutoff) {
+			op.mu.Lock()
+			expired := !op.CompletedAt.IsZero() && op.CompletedAt.Before(cutoff)
+			op.mu.Unlock()
+			if expired {
 				s.extractions.Delete(key)
 			}
 			return true
@@ -480,9 +492,9 @@ func (s *FileService) cleanupExtractions() {
 func (s *FileService) CreateFolder(ctx context.Context, req *connect.Request[v1.CreateFolderRequest]) (*connect.Response[v1.CreateFolderResponse], error) {
 	msg := req.Msg
 
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	fullPath, err := files.ResolveUnder(server.DataPath, msg.Path)
@@ -505,9 +517,9 @@ func (s *FileService) CreateFolder(ctx context.Context, req *connect.Request[v1.
 func (s *FileService) MoveFile(ctx context.Context, req *connect.Request[v1.MoveFileRequest]) (*connect.Response[v1.MoveFileResponse], error) {
 	msg := req.Msg
 
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	srcFull, err := files.ResolveUnder(server.DataPath, msg.SourcePath)
@@ -524,6 +536,15 @@ func (s *FileService) MoveFile(ctx context.Context, req *connect.Request[v1.Move
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("source not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to access source"))
+	}
+
+	// Moving into itself would destroy the source
+	if files.Within(srcFull, dstFull) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("destination is inside the source"))
+	}
+
+	if _, err := os.Stat(dstFull); err == nil {
+		return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("a file or folder with that name already exists"))
 	}
 
 	// Ensure destination parent exists
@@ -561,9 +582,9 @@ func (s *FileService) MoveFile(ctx context.Context, req *connect.Request[v1.Move
 func (s *FileService) CopyFile(ctx context.Context, req *connect.Request[v1.CopyFileRequest]) (*connect.Response[v1.CopyFileResponse], error) {
 	msg := req.Msg
 
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	srcFull, err := files.ResolveUnder(server.DataPath, msg.SourcePath)
@@ -586,6 +607,11 @@ func (s *FileService) CopyFile(ctx context.Context, req *connect.Request[v1.Copy
 	// Generates copy name when src equals dst
 	if srcFull == dstFull {
 		dstFull = uniqueCopyPath(dstFull, srcInfo.IsDir())
+	}
+
+	// Copying a dir into itself would recurse forever
+	if srcInfo.IsDir() && files.Within(srcFull, dstFull) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("destination is inside the source"))
 	}
 
 	if err := os.MkdirAll(filepath.Dir(dstFull), 0755); err != nil {
@@ -613,9 +639,9 @@ func (s *FileService) CopyFile(ctx context.Context, req *connect.Request[v1.Copy
 func (s *FileService) CreateArchive(ctx context.Context, req *connect.Request[v1.CreateArchiveRequest]) (*connect.Response[v1.CreateArchiveResponse], error) {
 	msg := req.Msg
 
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	if len(msg.Paths) == 0 {
@@ -666,9 +692,9 @@ func (s *FileService) CreateArchive(ctx context.Context, req *connect.Request[v1
 func (s *FileService) DownloadArchive(ctx context.Context, req *connect.Request[v1.DownloadArchiveRequest]) (*connect.Response[v1.DownloadArchiveResponse], error) {
 	msg := req.Msg
 
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	if len(msg.Paths) == 0 {
@@ -717,9 +743,9 @@ func (s *FileService) DownloadArchive(ctx context.Context, req *connect.Request[
 func (s *FileService) InitFileDownload(ctx context.Context, req *connect.Request[v1.InitFileDownloadRequest]) (*connect.Response[v1.InitFileDownloadResponse], error) {
 	msg := req.Msg
 
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	fullPath, err := files.ResolveUnder(server.DataPath, msg.Path)

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/discohaus/discopanel/pkg/minecraft"
 	"github.com/mholt/archives"
 )
 
@@ -27,24 +28,23 @@ func ResolveUnder(base, rel string) (string, error) {
 	return full, nil
 }
 
+// Reports whether child sits at or under parent
+func Within(parent, child string) bool {
+	r, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return r == "." || (r != ".." && !strings.HasPrefix(r, ".."+string(filepath.Separator)))
+}
+
 // Reads level-name from server.properties, vanilla default otherwise
 func worldName(dataDir string) string {
-	data, err := os.ReadFile(filepath.Join(dataDir, "server.properties"))
+	props, err := minecraft.LoadPropertiesFile(dataDir)
 	if err != nil {
 		return "world"
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, val, ok := strings.Cut(line, "=")
-		if !ok || strings.TrimSpace(key) != "level-name" {
-			continue
-		}
-		if name := strings.TrimSpace(val); name != "" {
-			return name
-		}
+	if name := props["level-name"]; name != "" {
+		return name
 	}
 	return "world"
 }
@@ -389,7 +389,19 @@ func CopyDir(src, dst string) error {
 		target := filepath.Join(dst, rel)
 
 		if d.IsDir() {
-			return os.MkdirAll(target, 0755)
+			mode := fs.FileMode(0755)
+			if info, ierr := d.Info(); ierr == nil {
+				mode = info.Mode().Perm()
+			}
+			return os.MkdirAll(target, mode)
+		}
+		// Symlinks recreate instead of following
+		if d.Type()&fs.ModeSymlink != 0 {
+			link, lerr := os.Readlink(path)
+			if lerr != nil {
+				return lerr
+			}
+			return os.Symlink(link, target)
 		}
 		return CopyFile(path, target)
 	})
@@ -407,16 +419,23 @@ func CopyFile(src, dst string) error {
 	}
 	defer srcFile.Close()
 
+	info, err := srcFile.Stat()
+	if err != nil {
+		return err
+	}
+
 	dstFile, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
 	defer dstFile.Close()
 
-	_, err = io.Copy(dstFile, srcFile)
-	if err != nil {
+	if _, err = io.Copy(dstFile, srcFile); err != nil {
 		return err
 	}
-
-	return dstFile.Sync()
+	if err := dstFile.Sync(); err != nil {
+		return err
+	}
+	// Exec bits and friends survive the copy
+	return os.Chmod(dst, info.Mode().Perm())
 }

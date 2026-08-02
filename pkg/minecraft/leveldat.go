@@ -63,8 +63,9 @@ func ReadLevelDat(path string) (*LevelInfo, error) {
 }
 
 type nbtReader struct {
-	r   io.Reader
-	err error
+	r     io.Reader
+	err   error
+	depth int
 }
 
 func (n *nbtReader) read(buf []byte) {
@@ -133,6 +134,13 @@ func (n *nbtReader) walkCompound(path string, info *LevelInfo) {
 }
 
 func (n *nbtReader) walkValue(tagType byte, path string, info *LevelInfo) {
+	// Depth cap keeps a crafted file from blowing the stack
+	n.depth++
+	defer func() { n.depth-- }()
+	if n.depth > 128 {
+		n.err = fmt.Errorf("nbt nesting too deep at %s", path)
+		return
+	}
 	switch tagType {
 	case tagByte:
 		n.skip(1)

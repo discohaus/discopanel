@@ -397,6 +397,11 @@ func (c *Client) StartContainer(ctx context.Context, containerID string) error {
 	return c.docker.ContainerStart(ctx, containerID, container.StartOptions{})
 }
 
+// Reports whether err means the docker object is gone
+func IsNotFound(err error) bool {
+	return errdefs.IsNotFound(err)
+}
+
 // Stops container gracefully then force kills on failure
 func (c *Client) StopContainer(ctx context.Context, containerID string, timeoutSeconds int) (bool, error) {
 	if timeoutSeconds <= 0 {
@@ -779,24 +784,33 @@ func (c *Client) refreshImageAsync(imageName string) {
 	c.imageRefreshed[imageName] = time.Now()
 	c.refreshMu.Unlock()
 
-	// Never clobbers a locally built image with registry pull
-	if img, err := c.docker.ImageInspect(context.Background(), imageName); err == nil &&
-		img.Config != nil && img.Config.Labels["app.discopanel.build"] == "local" {
-		c.log.Debug("Image %s is locally built, skipping background refresh", imageName)
-		return
-	}
-
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
+
+		// Never clobbers a locally built image with registry pull
+		if img, err := c.docker.ImageInspect(ctx, imageName); err == nil &&
+			img.Config != nil && img.Config.Labels["app.discopanel.build"] == "local" {
+			c.log.Debug("Image %s is locally built, skipping background refresh", imageName)
+			return
+		}
+
+		// Failed pulls retry on the next start, not next hour
+		clearMark := func() {
+			c.refreshMu.Lock()
+			delete(c.imageRefreshed, imageName)
+			c.refreshMu.Unlock()
+		}
 		reader, err := c.docker.ImagePull(ctx, imageName, image.PullOptions{})
 		if err != nil {
 			c.log.Debug("Background refresh of image %s failed: %v", imageName, err)
+			clearMark()
 			return
 		}
 		defer reader.Close()
 		if _, err := io.Copy(io.Discard, reader); err != nil {
 			c.log.Debug("Background refresh of image %s interrupted: %v", imageName, err)
+			clearMark()
 		}
 	}()
 }

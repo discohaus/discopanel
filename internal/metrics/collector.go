@@ -13,6 +13,7 @@ import (
 	"github.com/discohaus/discopanel/pkg/files"
 	"github.com/discohaus/discopanel/pkg/logger"
 	"github.com/discohaus/discopanel/pkg/minecraft"
+	agentv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/agent/v1"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -74,12 +75,8 @@ type ServerMetrics struct {
 	LastExitBootFailed bool // Boot died and the runtime ended the hung JVM
 	LastExitWasReady   bool // Server reached ready before this exit
 	LastExitedAt       time.Time
-
-	// Crash-loop bookkeeping fed by exit reports
-	CrashExits         []time.Time // Recent crash exit times, pruned
-	UnexpectedExits    []time.Time // Clean exits nobody requested, pruned
-	CrashLoopStoppedAt time.Time   // When the panel broke a crash loop
-	LastAgentSessionAt time.Time   // Last time an agent session attached
+	LastExitExcerpt    string              // Crash report head for display
+	LastExitFatal      *agentv1.FatalError // Structured diagnosis from the runtime
 
 	// Live proxied connection count from the routing layer
 	ProxyActiveConns int64
@@ -113,36 +110,7 @@ func (m *ServerMetrics) snapshot() *ServerMetrics {
 	}
 	cp := *m
 	cp.PlayerSample = slices.Clone(m.PlayerSample)
-	cp.CrashExits = slices.Clone(m.CrashExits)
-	cp.UnexpectedExits = slices.Clone(m.UnexpectedExits)
 	return &cp
-}
-
-// Counts crash exits inside the given window
-func (m *ServerMetrics) CrashesWithin(window time.Duration) int {
-	if m == nil {
-		return 0
-	}
-	return countWithin(m.CrashExits, window)
-}
-
-// Counts crash and unexpected exits inside the window
-func (m *ServerMetrics) ExitsWithin(window time.Duration) int {
-	if m == nil {
-		return 0
-	}
-	return countWithin(m.CrashExits, window) + countWithin(m.UnexpectedExits, window)
-}
-
-func countWithin(times []time.Time, window time.Duration) int {
-	cutoff := time.Now().Add(-window)
-	n := 0
-	for _, t := range times {
-		if t.After(cutoff) {
-			n++
-		}
-	}
-	return n
 }
 
 // Cached usage sample for one module container
@@ -326,15 +294,36 @@ func (c *Collector) Start() error {
 		loopCount += 1
 	}
 	c.wg.Add(loopCount)
-	go c.collectDockerStatsLoop()
-	go c.collectDiskUsageLoop()
-	go c.collectLifecycleEventsLoop()
+	go c.loop(c.collectorConfig.StatsInterval, c.collectDockerStats)
+	go c.loop(c.collectorConfig.DiskInterval, c.collectDiskUsage)
+	eventsInterval := c.collectorConfig.EventsInterval
+	if eventsInterval <= 0 {
+		eventsInterval = 10 * time.Second
+	}
+	// First pass seeds baselines so running servers stay quiet
+	go c.loop(eventsInterval, c.detectLifecycleEvents)
 	go c.collectHistoryLoop()
 	if c.collectorConfig.SLPEnabled {
-		go c.collectSLPDataLoop()
+		go c.loop(c.collectorConfig.SLPInterval, c.collectSLPData)
 	}
 
 	return nil
+}
+
+// Runs fn now then on every tick until stop
+func (c *Collector) loop(interval time.Duration, fn func()) {
+	defer c.wg.Done()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	fn()
+	for {
+		select {
+		case <-ticker.C:
+			fn()
+		case <-c.stopChan:
+			return
+		}
+	}
 }
 
 // Stops background metrics collection
@@ -384,45 +373,6 @@ func (c *Collector) GetModuleStats(moduleID string) *ModuleStats {
 }
 
 // Collects Docker container stats periodically
-func (c *Collector) collectDockerStatsLoop() {
-	defer c.wg.Done()
-
-	ticker := time.NewTicker(c.collectorConfig.StatsInterval)
-	defer ticker.Stop()
-
-	// Collect immediately on start
-	c.collectDockerStats()
-
-	for {
-		select {
-		case <-ticker.C:
-			c.collectDockerStats()
-		case <-c.stopChan:
-			return
-		}
-	}
-}
-
-// Collects disk usage periodically
-func (c *Collector) collectDiskUsageLoop() {
-	defer c.wg.Done()
-
-	ticker := time.NewTicker(c.collectorConfig.DiskInterval)
-	defer ticker.Stop()
-
-	// Collect immediately on start
-	c.collectDiskUsage()
-
-	for {
-		select {
-		case <-ticker.C:
-			c.collectDiskUsage()
-		case <-c.stopChan:
-			return
-		}
-	}
-}
-
 // Rebuilds the server container set from the store
 func (c *Collector) refreshServerContainers(ctx context.Context) {
 	servers, err := c.store.ListServers(ctx)
@@ -741,26 +691,6 @@ func (c *Collector) PlayersOnline(serverID string) (int, bool) {
 	return 0, false
 }
 
-// Collects SLP data
-func (c *Collector) collectSLPDataLoop() {
-	defer c.wg.Done()
-
-	ticker := time.NewTicker(c.collectorConfig.SLPInterval)
-	defer ticker.Stop()
-
-	// Collect on start
-	c.collectSLPData()
-
-	for {
-		select {
-		case <-ticker.C:
-			c.collectSLPData()
-		case <-c.stopChan:
-			return
-		}
-	}
-}
-
 func (c *Collector) collectSLPData() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -772,6 +702,21 @@ func (c *Collector) collectSLPData() {
 	}
 
 	slpClient := minecraft.NewSLPClient(c.collectorConfig.SLPTimeout)
+
+	// Recreated containers leave stale health records behind
+	live := make(map[string]bool, len(servers))
+	for _, server := range servers {
+		if server.ContainerId != "" {
+			live[server.ContainerId] = true
+		}
+	}
+	c.healthMu.Lock()
+	for id := range c.health {
+		if !live[id] {
+			delete(c.health, id)
+		}
+	}
+	c.healthMu.Unlock()
 
 	for _, server := range servers {
 		if server.ContainerId == "" {
@@ -845,29 +790,6 @@ func (c *Collector) collectSLPData() {
 	}
 }
 
-// Derives lifecycle events from state and emits them
-func (c *Collector) collectLifecycleEventsLoop() {
-	defer c.wg.Done()
-
-	interval := c.collectorConfig.EventsInterval
-	if interval <= 0 {
-		interval = 10 * time.Second
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	// Seeds baselines so already-running servers don't emit on boot
-	c.detectLifecycleEvents()
-
-	for {
-		select {
-		case <-ticker.C:
-			c.detectLifecycleEvents()
-		case <-c.stopChan:
-			return
-		}
-	}
-}
 
 // Compares each servers current health/player state against the previous state
 func (c *Collector) detectLifecycleEvents() {

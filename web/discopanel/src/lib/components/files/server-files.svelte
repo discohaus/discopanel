@@ -155,6 +155,9 @@
 			previousServerId = server.id;
 			// Stops in flight uploads targeting the old server
 			uploadAbortController?.abort();
+			// Stops extraction polling aimed at the old server
+			stopExtractionPoll();
+			extracting = false;
 			files = [];
 			loading = true;
 			uploading = false;

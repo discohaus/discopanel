@@ -70,6 +70,29 @@ func modDisplayName(fileName string) string {
 	return fileName
 }
 
+// Builds one mod entry with jar declared metadata
+func modFromFile(serverID, dir, name string, enabled bool, info os.FileInfo) *v1.Mod {
+	mod := &v1.Mod{
+		Id:          modEntryID(serverID, name),
+		ServerId:    serverID,
+		FileName:    name,
+		DisplayName: modDisplayName(name),
+		Enabled:     enabled,
+		FileSize:    info.Size(),
+		UploadedAt:  timestamppb.New(info.ModTime()),
+	}
+	if meta, err := minecraft.ReadModJar(filepath.Join(dir, name)); err == nil {
+		for i := range meta.Mods {
+			if meta.Mods[i].Declared {
+				mod.ModId = meta.Mods[i].ID
+				mod.Version = meta.Mods[i].Version
+				break
+			}
+		}
+	}
+	return mod
+}
+
 // Builds mod entries for every jar in one directory
 func scanModDir(serverID, dir string, loader v1.ModLoader, enabled bool) []*v1.Mod {
 	entries, err := os.ReadDir(dir)
@@ -85,36 +108,45 @@ func scanModDir(serverID, dir string, loader v1.ModLoader, enabled bool) []*v1.M
 		if err != nil {
 			continue
 		}
-		mod := &v1.Mod{
-			Id:          modEntryID(serverID, file.Name()),
-			ServerId:    serverID,
-			FileName:    file.Name(),
-			DisplayName: modDisplayName(file.Name()),
-			Enabled:     enabled,
-			FileSize:    info.Size(),
-			UploadedAt:  timestamppb.New(info.ModTime()),
-		}
-		if meta, err := minecraft.ReadModJar(filepath.Join(dir, file.Name())); err == nil {
-			for i := range meta.Mods {
-				if meta.Mods[i].Declared {
-					mod.ModId = meta.Mods[i].ID
-					mod.Version = meta.Mods[i].Version
-					break
-				}
-			}
-		}
-		mods = append(mods, mod)
+		mods = append(mods, modFromFile(serverID, dir, file.Name(), enabled, info))
 	}
 	return mods
+}
+
+// Locates a mod by id across active and disabled dirs
+func findModFile(serverID, modsDir string, loader v1.ModLoader, modID string) (dir, name string, enabled bool, info os.FileInfo, ok bool) {
+	for _, scan := range []struct {
+		dir     string
+		enabled bool
+	}{{modsDir, true}, {modsDir + "_disabled", false}} {
+		entries, err := os.ReadDir(scan.dir)
+		if err != nil {
+			continue
+		}
+		for _, file := range entries {
+			if file.IsDir() || !minecraft.IsValidModFile(file.Name(), loader) {
+				continue
+			}
+			if modEntryID(serverID, file.Name()) != modID {
+				continue
+			}
+			fi, err := file.Info()
+			if err != nil {
+				continue
+			}
+			return scan.dir, file.Name(), scan.enabled, fi, true
+		}
+	}
+	return "", "", false, nil, false
 }
 
 func (s *ModService) ListMods(ctx context.Context, req *connect.Request[v1.ListModsRequest]) (*connect.Response[v1.ListModsResponse], error) {
 	msg := req.Msg
 
 	// Get server to find data path and mod loader
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	// Get the mods directory path
@@ -254,9 +286,9 @@ func (s *ModService) GetMod(ctx context.Context, req *connect.Request[v1.GetModR
 	msg := req.Msg
 
 	// Get server to validate and find mod
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	// Get the mods directory path
@@ -265,67 +297,14 @@ func (s *ModService) GetMod(ctx context.Context, req *connect.Request[v1.GetModR
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("this server type does not support mods"))
 	}
 
-	// Try to find the mod file in active directory
-	if files, err := os.ReadDir(modsDir); err == nil {
-		for _, file := range files {
-			if !file.IsDir() && minecraft.IsValidModFile(file.Name(), server.ModLoader) {
-				// Generate the same ID as in ListMods to match
-				fileID := modEntryID(msg.ServerId, file.Name())
-				if fileID == msg.ModId {
-					info, _ := file.Info()
-
-					displayName := file.Name()
-					if ext := filepath.Ext(displayName); ext != "" {
-						displayName = displayName[:len(displayName)-len(ext)]
-					}
-
-					return connect.NewResponse(&v1.GetModResponse{
-						Mod: &v1.Mod{
-							Id:          fileID,
-							ServerId:    msg.ServerId,
-							FileName:    file.Name(),
-							DisplayName: displayName,
-							Enabled:     true,
-							FileSize:    info.Size(),
-							UploadedAt:  timestamppb.New(info.ModTime()),
-						},
-					}), nil
-				}
-			}
-		}
+	dir, name, enabled, info, ok := findModFile(msg.ServerId, modsDir, server.ModLoader, msg.ModId)
+	if !ok {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("mod not found"))
 	}
 
-	// Try disabled directory
-	disabledDir := modsDir + "_disabled"
-	if files, err := os.ReadDir(disabledDir); err == nil {
-		for _, file := range files {
-			if !file.IsDir() && minecraft.IsValidModFile(file.Name(), server.ModLoader) {
-				fileID := modEntryID(msg.ServerId, file.Name())
-				if fileID == msg.ModId {
-					info, _ := file.Info()
-
-					displayName := file.Name()
-					if ext := filepath.Ext(displayName); ext != "" {
-						displayName = displayName[:len(displayName)-len(ext)]
-					}
-
-					return connect.NewResponse(&v1.GetModResponse{
-						Mod: &v1.Mod{
-							Id:          fileID,
-							ServerId:    msg.ServerId,
-							FileName:    file.Name(),
-							DisplayName: displayName,
-							Enabled:     false,
-							FileSize:    info.Size(),
-							UploadedAt:  timestamppb.New(info.ModTime()),
-						},
-					}), nil
-				}
-			}
-		}
-	}
-
-	return nil, connect.NewError(connect.CodeNotFound, errors.New("mod not found"))
+	return connect.NewResponse(&v1.GetModResponse{
+		Mod: modFromFile(msg.ServerId, dir, name, enabled, info),
+	}), nil
 }
 
 // ImportUploadedMod imports a mod
@@ -338,9 +317,9 @@ func (s *ModService) ImportUploadedMod(ctx context.Context, req *connect.Request
 	}
 
 	// Get server to find data path and mod loader
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	// Get temp file path and original filename from upload manager
@@ -411,9 +390,9 @@ func (s *ModService) UpdateMod(ctx context.Context, req *connect.Request[v1.Upda
 	msg := req.Msg
 
 	// Get server to find mod path
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	modsDir := minecraft.GetModsPath(server.DataPath, server.ModLoader)
@@ -423,45 +402,8 @@ func (s *ModService) UpdateMod(ctx context.Context, req *connect.Request[v1.Upda
 
 	disabledDir := modsDir + "_disabled"
 
-	// Find the mod file
-	var modFileName string
-	var currentlyEnabled bool
-	var modInfo os.FileInfo
-
-	// First, scan the mods directory
-	if files, err := os.ReadDir(modsDir); err == nil {
-		for _, file := range files {
-			if !file.IsDir() && minecraft.IsValidModFile(file.Name(), server.ModLoader) {
-				// Generate the same ID as in ListMods to match
-				fileID := modEntryID(msg.ServerId, file.Name())
-				if fileID == msg.ModId {
-					modFileName = file.Name()
-					currentlyEnabled = true
-					modInfo, _ = file.Info()
-					break
-				}
-			}
-		}
-	}
-
-	// If not found, check disabled directory
-	if modFileName == "" {
-		if files, err := os.ReadDir(disabledDir); err == nil {
-			for _, file := range files {
-				if !file.IsDir() && minecraft.IsValidModFile(file.Name(), server.ModLoader) {
-					fileID := modEntryID(msg.ServerId, file.Name())
-					if fileID == msg.ModId {
-						modFileName = file.Name()
-						currentlyEnabled = false
-						modInfo, _ = file.Info()
-						break
-					}
-				}
-			}
-		}
-	}
-
-	if modFileName == "" {
+	_, modFileName, currentlyEnabled, modInfo, found := findModFile(msg.ServerId, modsDir, server.ModLoader, msg.ModId)
+	if !found {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("mod not found"))
 	}
 
@@ -492,24 +434,15 @@ func (s *ModService) UpdateMod(ctx context.Context, req *connect.Request[v1.Upda
 		}
 	}
 
-	// Build response
-	displayName := modFileName
-	if ext := filepath.Ext(displayName); ext != "" {
-		displayName = displayName[:len(displayName)-len(ext)]
+	// Build response from the post move location
+	finalDir := modsDir
+	if !finalEnabled {
+		finalDir = disabledDir
 	}
+	mod := modFromFile(msg.ServerId, finalDir, modFileName, finalEnabled, modInfo)
+	mod.UpdatedAt = timestamppb.Now()
 
-	return connect.NewResponse(&v1.UpdateModResponse{
-		Mod: &v1.Mod{
-			Id:          msg.ModId,
-			ServerId:    msg.ServerId,
-			FileName:    modFileName,
-			DisplayName: displayName,
-			Enabled:     finalEnabled,
-			FileSize:    modInfo.Size(),
-			UploadedAt:  timestamppb.New(modInfo.ModTime()),
-			UpdatedAt:   timestamppb.Now(),
-		},
-	}), nil
+	return connect.NewResponse(&v1.UpdateModResponse{Mod: mod}), nil
 }
 
 // DeleteMod deletes a mod
@@ -517,9 +450,9 @@ func (s *ModService) DeleteMod(ctx context.Context, req *connect.Request[v1.Dele
 	msg := req.Msg
 
 	// Get server to find file path
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	modsDir := minecraft.GetModsPath(server.DataPath, server.ModLoader)
@@ -527,50 +460,13 @@ func (s *ModService) DeleteMod(ctx context.Context, req *connect.Request[v1.Dele
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("this server type does not support mods"))
 	}
 
-	// Try to find and delete the mod file
-	deletedName := ""
-
-	// Check active directory
-	if files, err := os.ReadDir(modsDir); err == nil {
-		for _, file := range files {
-			if !file.IsDir() && minecraft.IsValidModFile(file.Name(), server.ModLoader) {
-				fileID := modEntryID(msg.ServerId, file.Name())
-				if fileID == msg.ModId {
-					modPath := filepath.Join(modsDir, file.Name())
-					if err := os.Remove(modPath); err != nil {
-						s.log.Error("Failed to delete mod file: %v", err)
-						return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete mod file"))
-					}
-					deletedName = file.Name()
-					break
-				}
-			}
-		}
-	}
-
-	// Check disabled directory
-	if deletedName == "" {
-		disabledDir := modsDir + "_disabled"
-		if files, err := os.ReadDir(disabledDir); err == nil {
-			for _, file := range files {
-				if !file.IsDir() && minecraft.IsValidModFile(file.Name(), server.ModLoader) {
-					fileID := modEntryID(msg.ServerId, file.Name())
-					if fileID == msg.ModId {
-						modPath := filepath.Join(disabledDir, file.Name())
-						if err := os.Remove(modPath); err != nil {
-							s.log.Error("Failed to delete mod file: %v", err)
-							return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete mod file"))
-						}
-						deletedName = file.Name()
-						break
-					}
-				}
-			}
-		}
-	}
-
-	if deletedName == "" {
+	dir, deletedName, _, _, found := findModFile(msg.ServerId, modsDir, server.ModLoader, msg.ModId)
+	if !found {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("mod not found"))
+	}
+	if err := os.Remove(filepath.Join(dir, deletedName)); err != nil {
+		s.log.Error("Failed to delete mod file: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete mod file"))
 	}
 	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_MOD_DELETE, metrics.Attrs{"file": deletedName}, "deleted mod %s", deletedName)
 

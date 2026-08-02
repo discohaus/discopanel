@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"connectrpc.com/connect"
 	"github.com/discohaus/discopanel/internal/auth"
@@ -165,6 +166,20 @@ func (s *UserService) DeleteUser(ctx context.Context, req *connect.Request[v1.De
 
 	if msg.Id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user ID is required"))
+	}
+
+	// Deleting yourself locks you out mid session
+	if actor := auth.GetUserFromContext(ctx); actor != nil && actor.Id == msg.Id {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("you cannot delete your own account"))
+	}
+
+	// The last admin must survive or nobody administers
+	roles, err := s.store.GetUserRoleNames(ctx, msg.Id)
+	if err == nil && slices.Contains(roles, "admin") {
+		admins, aerr := s.store.CountUsersWithRole(ctx, "admin")
+		if aerr == nil && admins <= 1 {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("cannot delete the last admin account"))
+		}
 	}
 
 	if err := s.store.DeleteUser(ctx, msg.Id); err != nil {

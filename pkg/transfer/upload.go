@@ -142,6 +142,14 @@ func (m *UploadManager) WriteChunk(sessionID string, chunkIndex int32, data []by
 	if chunkIndex < 0 || chunkIndex >= session.TotalChunks {
 		return false, ErrInvalidChunk
 	}
+	// Every chunk except the last must fill its slot exactly
+	expected := int64(session.ChunkSize)
+	if chunkIndex == session.TotalChunks-1 {
+		expected = session.TotalSize - int64(session.ChunkSize)*int64(session.TotalChunks-1)
+	}
+	if int64(len(data)) != expected {
+		return false, ErrInvalidChunk
+	}
 	// Re-upload of the same chunk is idempotent
 	if session.ReceivedChunks[chunkIndex] {
 		return session.Completed, nil
@@ -186,6 +194,10 @@ func (m *UploadManager) WriteStream(sessionID string, r io.Reader, offset int64)
 		session.mu.Unlock()
 		return 0, true, ErrSessionCompleted
 	}
+	if offset < 0 || offset > session.TotalSize {
+		session.mu.Unlock()
+		return 0, false, ErrInvalidOffset
+	}
 	file := session.file
 	if file == nil {
 		session.mu.Unlock()
@@ -199,6 +211,10 @@ func (m *UploadManager) WriteStream(sessionID string, r io.Reader, offset int64)
 	for {
 		n, readErr := r.Read(buf)
 		if n > 0 {
+			// Writes past the declared size are rejected
+			if pos+int64(n) > session.TotalSize {
+				return pos - offset, false, ErrFileTooLarge
+			}
 			if _, writeErr := file.WriteAt(buf[:n], pos); writeErr != nil {
 				return pos - offset, false, fmt.Errorf("failed to write: %w", writeErr)
 			}

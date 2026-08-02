@@ -30,12 +30,6 @@
 	import { onMount } from 'svelte';
 	import { registerRefresh } from '$lib/stores/refresh';
 
-	interface Props {
-		active?: boolean;
-	}
-
-	let { active = true }: Props = $props();
-
 	let modules = $state<Module[]>([]);
 	let loading = $state(true);
 	let actionLoading = $state<string | null>(null);
@@ -80,37 +74,25 @@
 		}
 	}
 
-	let hasLoaded = $state(false);
 	let pageVisible = $state(true);
 
 	onMount(() => {
 		pageVisible = document.visibilityState === 'visible';
+		loadModules();
+		return registerRefresh(() => loadModules(true));
 	});
 
-	// Loads once when tab first activates
+	// Polls while the page stays visible
 	$effect(() => {
-		if (active && !hasLoaded) {
-			hasLoaded = true;
-			loadModules();
-		}
-	});
-
-	// Polls while tab active and page visible
-	$effect(() => {
-		if (!active || !hasLoaded || !pageVisible) return;
+		if (!pageVisible) return;
 		const interval = setInterval(() => loadModules(true), 5000);
 		return () => clearInterval(interval);
-	});
-
-	$effect(() => {
-		if (!active) return;
-		return registerRefresh(() => loadModules(true));
 	});
 
 	// Refreshes once the page turns visible again
 	function handleVisibilityChange() {
 		pageVisible = document.visibilityState === 'visible';
-		if (pageVisible && active && hasLoaded) loadModules(true);
+		if (pageVisible) loadModules(true);
 	}
 
 	async function loadModules(silent = false) {

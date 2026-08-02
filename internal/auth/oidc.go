@@ -264,7 +264,7 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate session token
-	expiresAt := time.Now().Add(time.Duration(h.manager.config.SessionTimeout) * time.Second)
+	expiresAt := time.Now().Add(h.manager.SessionTTL())
 	token, err := h.manager.generateJWT(user.Id, user.Username, roleNames, expiresAt)
 	if err != nil {
 		h.log.Error("OIDC: failed to generate JWT: %v", err)

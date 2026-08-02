@@ -11,7 +11,13 @@
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import * as Select from '$lib/components/ui/select';
 	import * as Dialog from '$lib/components/ui/dialog';
-	import { ConfirmDialog, CopyButton, EmptyState, SectionCard } from '$lib/components/app';
+	import {
+		ConfirmDialog,
+		CopyButton,
+		EmptyState,
+		SectionCard,
+		SectionedDialogLayout
+	} from '$lib/components/app';
 	import {
 		Loader2,
 		Plus,
@@ -730,7 +736,9 @@
 	}
 
 	function getScheduleTypeLabel(s: ScheduleType): string {
-		return enumLabel(ScheduleTypeSchema, s) || enumLabel(ScheduleTypeSchema, ScheduleType.UNSPECIFIED);
+		return (
+			enumLabel(ScheduleTypeSchema, s) || enumLabel(ScheduleTypeSchema, ScheduleType.UNSPECIFIED)
+		);
 	}
 
 	function getScheduleLabel(task: ScheduledTask): string {
@@ -988,9 +996,15 @@
 		class="flex h-[80vh]! w-[95vw]! max-w-4xl! flex-col gap-0! overflow-hidden p-0!"
 		showCloseButton={false}
 	>
-		<div class="flex h-full min-h-0">
-			<!-- Section nav -->
-			<div class="flex w-40 shrink-0 flex-col border-r bg-muted/20 sm:w-52">
+		<SectionedDialogLayout
+			bind:activeSection
+			navItems={dialogSections}
+			title={currentSection.title}
+			description={currentSection.description}
+			sidebarClass="w-40 bg-muted/20 sm:w-52"
+			onclose={closeDialog}
+		>
+			{#snippet sidebarHeader()}
 				<div class="border-b p-4">
 					<div class="flex items-center gap-2.5">
 						<div class="flex size-9 shrink-0 items-center justify-center rounded-lg border bg-card">
@@ -1004,464 +1018,425 @@
 						</div>
 					</div>
 				</div>
+			{/snippet}
 
-				<nav class="flex-1 space-y-0.5 overflow-y-auto p-2">
-					{#each dialogSections as section (section.id)}
-						{@const SectionIcon = section.icon}
-						<button
-							type="button"
-							onclick={() => (activeSection = section.id)}
-							class="flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm transition-colors {activeSection ===
-							section.id
-								? 'bg-accent font-medium text-accent-foreground'
-								: 'text-muted-foreground hover:bg-accent/40 hover:text-foreground'}"
+			<div class="max-w-2xl space-y-5">
+				{#if activeSection === 'general'}
+					<div class="space-y-2">
+						<Label for="taskName">Task name *</Label>
+						<Input id="taskName" bind:value={taskName} placeholder="Daily Backup" />
+					</div>
+
+					<div class="space-y-2">
+						<Label for="taskDescription">Description</Label>
+						<Input
+							id="taskDescription"
+							bind:value={taskDescription}
+							placeholder="Runs every day at midnight"
+						/>
+					</div>
+
+					<div class="space-y-2">
+						<Label>Task type</Label>
+						<Select.Root
+							type="single"
+							name="taskType"
+							value={taskType.toString()}
+							onValueChange={(v) => {
+								if (v) taskType = parseInt(v) as TaskType;
+							}}
 						>
-							<SectionIcon class="size-4" />
-							{section.label}
-						</button>
-					{/each}
-				</nav>
-			</div>
-
-			<!-- Section content -->
-			<div class="flex min-w-0 flex-1 flex-col">
-				<div class="flex items-start justify-between gap-4 border-b px-6 py-4">
-					<div>
-						<h2 class="text-lg font-semibold">{currentSection.title}</h2>
-						<p class="mt-0.5 text-sm text-muted-foreground">{currentSection.description}</p>
+							<Select.Trigger class="w-full">
+								{getTaskTypeLabel(taskType)}
+							</Select.Trigger>
+							<Select.Content>
+								{#each TASK_TYPE_OPTIONS as t (t)}
+									<Select.Item value={t.toString()} label={getTaskTypeLabel(t)}>
+										{getTaskTypeLabel(t)}
+									</Select.Item>
+								{/each}
+							</Select.Content>
+						</Select.Root>
 					</div>
-					<Button
-						variant="ghost"
-						size="icon"
-						class="size-8"
-						onclick={closeDialog}
-						title="Close"
-						aria-label="Close"
-					>
-						<X class="size-4" />
-					</Button>
-				</div>
 
-				<div class="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-					<div class="max-w-2xl space-y-5">
-						{#if activeSection === 'general'}
-							<div class="space-y-2">
-								<Label for="taskName">Task name *</Label>
-								<Input id="taskName" bind:value={taskName} placeholder="Daily Backup" />
-							</div>
-
-							<div class="space-y-2">
-								<Label for="taskDescription">Description</Label>
-								<Input
-									id="taskDescription"
-									bind:value={taskDescription}
-									placeholder="Runs every day at midnight"
-								/>
-							</div>
-
-							<div class="space-y-2">
-								<Label>Task type</Label>
-								<Select.Root
-									type="single"
-									name="taskType"
-									value={taskType.toString()}
-									onValueChange={(v) => {
-										if (v) taskType = parseInt(v) as TaskType;
-									}}
-								>
-									<Select.Trigger class="w-full">
-										{getTaskTypeLabel(taskType)}
-									</Select.Trigger>
-									<Select.Content>
-										{#each TASK_TYPE_OPTIONS as t (t)}
-											<Select.Item value={t.toString()} label={getTaskTypeLabel(t)}>
-												{getTaskTypeLabel(t)}
-											</Select.Item>
-										{/each}
-									</Select.Content>
-								</Select.Root>
-							</div>
-
-							{#if taskType === TaskType.COMMAND}
-								<div class="space-y-2">
-									<Label for="command">RCON command *</Label>
-									<Input
-										id="command"
-										bind:value={commandConfig.command}
-										placeholder="say Hello World!"
-										class="font-mono"
-									/>
-									<p class="text-xs text-muted-foreground">The command to execute via RCON</p>
-								</div>
-							{:else if taskType === TaskType.SCRIPT}
-								<div class="space-y-2">
-									<Label for="scriptPath">Script path or executable *</Label>
-									<Input
-										id="scriptPath"
-										bind:value={scriptConfig.scriptPath}
-										placeholder="/data/scripts/cleanup.sh"
-										class="font-mono"
-									/>
-									<p class="text-xs text-muted-foreground">
-										Path to the script/executable inside the container
-									</p>
-								</div>
-								<div class="space-y-2">
-									<Label for="scriptArgs">Arguments</Label>
-									<Input
-										id="scriptArgs"
-										bind:value={scriptArgs}
-										placeholder="--verbose --level 2"
-										class="font-mono"
-									/>
-									<p class="text-xs text-muted-foreground">
-										Space-separated arguments to pass to the script/executable
-									</p>
-								</div>
-							{:else if taskType === TaskType.BACKUP}
-								<div class="space-y-2">
-									<Label for="backupName">Backup name</Label>
-									<Input
-										id="backupName"
-										bind:value={backupConfig.backupName}
-										placeholder={taskName || 'Daily Backup'}
-									/>
-									<p class="text-xs text-muted-foreground">
-										Used as the archive filename prefix. Defaults to the task name.
-									</p>
-								</div>
-								<div class="space-y-2">
-									<Label for="backupPaths">Paths to include</Label>
-									<Input
-										id="backupPaths"
-										bind:value={backupPaths}
-										placeholder="world, world_nether, world_the_end"
-										class="font-mono"
-									/>
-									<p class="text-xs text-muted-foreground">
-										Comma-separated paths relative to the server directory. Leave empty to back up
-										the world directory.
-									</p>
-								</div>
-								<label
-									class="flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-accent/40"
-								>
-									<Switch bind:checked={backupConfig.compress} class="mt-0.5" />
-									<div class="space-y-0.5">
-										<span class="text-sm font-medium">Compress archive</span>
-										<p class="text-xs text-muted-foreground">
-											Smaller backups at the cost of more CPU while archiving
-										</p>
-									</div>
-								</label>
-								<div class="grid gap-4 sm:grid-cols-3">
-									<div class="space-y-2">
-										<Label for="retentionDays">Retention (days)</Label>
-										<Input
-											id="retentionDays"
-											type="number"
-											bind:value={backupConfig.retentionDays}
-											min={0}
-										/>
-										<p class="text-xs text-muted-foreground">
-											Delete backups older than this. 0 = keep forever
-										</p>
-									</div>
-									<div class="space-y-2">
-										<Label for="minBackups">Min backups</Label>
-										<Input
-											id="minBackups"
-											type="number"
-											bind:value={backupConfig.minBackups}
-											min={0}
-											disabled={backupConfig.retentionDays <= 0}
-										/>
-										<p class="text-xs text-muted-foreground">
-											Never expire by age below this many, even past retention
-										</p>
-									</div>
-									<div class="space-y-2">
-										<Label for="maxBackups">Max backups</Label>
-										<Input id="maxBackups" type="number" bind:value={backupConfig.maxBackups} min={0} />
-										<p class="text-xs text-muted-foreground">
-											Hard cap, oldest deleted first. 0 = unlimited
-										</p>
-									</div>
-								</div>
+					{#if taskType === TaskType.COMMAND}
+						<div class="space-y-2">
+							<Label for="command">RCON command *</Label>
+							<Input
+								id="command"
+								bind:value={commandConfig.command}
+								placeholder="say Hello World!"
+								class="font-mono"
+							/>
+							<p class="text-xs text-muted-foreground">The command to execute via RCON</p>
+						</div>
+					{:else if taskType === TaskType.SCRIPT}
+						<div class="space-y-2">
+							<Label for="scriptPath">Script path or executable *</Label>
+							<Input
+								id="scriptPath"
+								bind:value={scriptConfig.scriptPath}
+								placeholder="/data/scripts/cleanup.sh"
+								class="font-mono"
+							/>
+							<p class="text-xs text-muted-foreground">
+								Path to the script/executable inside the container
+							</p>
+						</div>
+						<div class="space-y-2">
+							<Label for="scriptArgs">Arguments</Label>
+							<Input
+								id="scriptArgs"
+								bind:value={scriptArgs}
+								placeholder="--verbose --level 2"
+								class="font-mono"
+							/>
+							<p class="text-xs text-muted-foreground">
+								Space-separated arguments to pass to the script/executable
+							</p>
+						</div>
+					{:else if taskType === TaskType.BACKUP}
+						<div class="space-y-2">
+							<Label for="backupName">Backup name</Label>
+							<Input
+								id="backupName"
+								bind:value={backupConfig.backupName}
+								placeholder={taskName || 'Daily Backup'}
+							/>
+							<p class="text-xs text-muted-foreground">
+								Used as the archive filename prefix. Defaults to the task name.
+							</p>
+						</div>
+						<div class="space-y-2">
+							<Label for="backupPaths">Paths to include</Label>
+							<Input
+								id="backupPaths"
+								bind:value={backupPaths}
+								placeholder="world, world_nether, world_the_end"
+								class="font-mono"
+							/>
+							<p class="text-xs text-muted-foreground">
+								Comma-separated paths relative to the server directory. Leave empty to back up the
+								world directory.
+							</p>
+						</div>
+						<label
+							class="flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-accent/40"
+						>
+							<Switch bind:checked={backupConfig.compress} class="mt-0.5" />
+							<div class="space-y-0.5">
+								<span class="text-sm font-medium">Compress archive</span>
 								<p class="text-xs text-muted-foreground">
-									World saving is automatically paused and flushed while the backup runs, then
-									re-enabled.
+									Smaller backups at the cost of more CPU while archiving
 								</p>
-							{:else if taskType === TaskType.WEBHOOK}
-								<div class="space-y-2">
-									<Label for="url">Webhook URL *</Label>
-									<Input
-										id="url"
-										bind:value={webhookConfig.url}
-										placeholder="https://example.com/webhook"
-										class="font-mono"
-									/>
-									<p class="text-xs text-muted-foreground">
-										The endpoint the request is sent to. Discord/Slack/Teams/ntfy URLs are
-										auto-detected for the default payload preset.
-									</p>
-								</div>
-							{:else}
-								<div class="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-									No additional configuration required for this task type.
-								</div>
-							{/if}
-						{:else if activeSection === 'payload' && taskType === TaskType.WEBHOOK}
-							<div class="flex items-center justify-between gap-4 rounded-lg border p-3">
-								<div>
-									<p class="text-sm font-medium">Customize payload</p>
-									<p class="mt-0.5 text-xs text-muted-foreground">
-										{#if customizePayload}
-											Using a custom payload template
-										{:else}
-											Using the default {presetLabels[getDefaultPresetKey(webhookConfig.url)] ||
-												'Generic'}
-											preset
-										{/if}
-									</p>
-								</div>
-								<Switch
-									checked={customizePayload}
-									onCheckedChange={(checked) => {
-										customizePayload = checked;
-										if (checked && !webhookConfig.payloadTemplate) {
-											webhookConfig.payloadTemplate = getDefaultTemplate(webhookConfig.url);
-										}
-									}}
-								/>
 							</div>
-
-							<div class={!customizePayload ? 'pointer-events-none opacity-40' : ''}>
-								<p class="stat-label mb-1.5">Presets</p>
-								<div class="flex flex-wrap gap-1">
-									{#each Object.keys(presetLabels) as key (key)}
-										{#if webhookTemplatePresets[key]}
-											<Button
-												variant="outline"
-												size="sm"
-												class="h-7 text-xs"
-												onclick={() => applyPreset(key)}
-											>
-												{presetLabels[key]}
-											</Button>
-										{/if}
-									{/each}
-								</div>
-							</div>
-
-							<div class={!customizePayload ? 'pointer-events-none opacity-50' : ''}>
-								<CodeEditor
-									value={displayValue}
-									language="json-template"
-									readOnly={!customizePayload}
-									height="340px"
-									onChange={(v) => {
-										if (customizePayload) webhookConfig.payloadTemplate = v;
-									}}
-								/>
-							</div>
-
-							<div class={!customizePayload ? 'opacity-40' : ''}>
-								<p class="stat-label mb-1.5">Available variables</p>
-								<div
-									class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md border bg-muted/20 p-3 font-mono text-xs text-muted-foreground"
-								>
-									{#each TEMPLATE_VARIABLES as [variable, description] (variable)}
-										<button
-											type="button"
-											class="cursor-pointer text-left transition-colors hover:text-foreground"
-											title="Copy {variable}"
-											onclick={() => copyVariable(variable)}>{variable}</button
-										>
-										<span class="font-sans">{description}</span>
-									{/each}
-								</div>
-							</div>
-						{:else if activeSection === 'schedule'}
+						</label>
+						<div class="grid gap-4 sm:grid-cols-3">
 							<div class="space-y-2">
-								<Label>Schedule type</Label>
-								<Select.Root
-									type="single"
-									name="scheduleType"
-									value={scheduleType.toString()}
-									onValueChange={(v) => {
-										if (v) scheduleType = parseInt(v) as ScheduleType;
-									}}
-								>
-									<Select.Trigger class="w-full">
-										{getScheduleTypeLabel(scheduleType)}
-									</Select.Trigger>
-									<Select.Content>
-										{#each SCHEDULE_TYPE_OPTIONS as s (s)}
-											<Select.Item value={s.toString()} label={getScheduleTypeLabel(s)}>
-												{getScheduleTypeLabel(s)}
-											</Select.Item>
-										{/each}
-									</Select.Content>
-								</Select.Root>
+								<Label for="retentionDays">Retention (days)</Label>
+								<Input
+									id="retentionDays"
+									type="number"
+									bind:value={backupConfig.retentionDays}
+									min={0}
+								/>
+								<p class="text-xs text-muted-foreground">
+									Delete backups older than this. 0 = keep forever
+								</p>
 							</div>
-
-							{#if scheduleType === ScheduleType.CRON}
-								<div class="space-y-2">
-									<Label for="cronExpr">Cron expression *</Label>
-									<Input
-										id="cronExpr"
-										bind:value={cronExpr}
-										placeholder="0 0 * * *"
-										class="font-mono"
-									/>
-									<p class="text-xs text-muted-foreground">
-										Format: minute hour day month weekday (e.g., "0 0 * * *" for daily at midnight)
-									</p>
-								</div>
-							{:else if scheduleType === ScheduleType.INTERVAL}
-								<div class="space-y-2">
-									<Label for="intervalSecs">Interval (seconds)</Label>
-									<Input id="intervalSecs" type="number" bind:value={intervalSecs} min={60} />
-									<p class="text-xs text-muted-foreground">
-										Minimum 60 seconds. Current: every {formatInterval(intervalSecs)}
-									</p>
-								</div>
-							{:else if scheduleType === ScheduleType.ONCE}
-								<div class="space-y-2">
-									<Label for="runAt">Run at</Label>
-									<Input id="runAt" type="datetime-local" bind:value={runAt} />
-									<p class="text-xs text-muted-foreground">
-										The task runs once at this time, then is disabled
-									</p>
-								</div>
-							{:else if scheduleType === ScheduleType.EVENT}
-								<div class="space-y-2">
-									<Label>Events *</Label>
-									<div class="space-y-1 rounded-lg border bg-muted/20 p-2">
-										{#each SERVER_EVENT_TYPES as { type, label, description } (type)}
-											<label
-												class="flex cursor-pointer items-center gap-3 rounded-md p-2 transition-colors hover:bg-accent/40"
-											>
-												<Checkbox
-													checked={eventTriggers.includes(type)}
-													onCheckedChange={() => toggleEventTrigger(type)}
-												/>
-												<div>
-													<span class="text-sm font-medium">{label}</span>
-													<p class="text-xs text-muted-foreground">{description}</p>
-												</div>
-											</label>
-										{/each}
-									</div>
-									<p class="text-xs text-muted-foreground">
-										The task runs whenever any selected event fires.
-									</p>
-								</div>
-							{/if}
-						{:else if activeSection === 'advanced'}
-							{#if taskType === TaskType.WEBHOOK}
-								<div class="space-y-2">
-									<Label for="secret">Secret (optional)</Label>
-									<Input
-										id="secret"
-										type="password"
-										bind:value={webhookSecret}
-										placeholder={originalWebhookHasSecret ? '(unchanged)' : 'HMAC signing secret'}
-									/>
-									<p class="text-xs text-muted-foreground">
-										Signs the payload with HMAC-SHA256 so the receiver can verify it.
-									</p>
-								</div>
-
-								<div class="grid gap-4 sm:grid-cols-3">
-									<div class="space-y-2">
-										<Label for="maxRetries">Max retries</Label>
-										<Input
-											id="maxRetries"
-											type="number"
-											bind:value={webhookConfig.maxRetries}
-											min={0}
-											max={10}
-										/>
-										<p class="text-xs text-muted-foreground">Delivery attempts before giving up</p>
-									</div>
-									<div class="space-y-2">
-										<Label for="retryDelayMs">Retry delay (ms)</Label>
-										<Input
-											id="retryDelayMs"
-											type="number"
-											bind:value={webhookConfig.retryDelayMs}
-											min={100}
-											max={60000}
-										/>
-										<p class="text-xs text-muted-foreground">Wait between delivery attempts</p>
-									</div>
-									<div class="space-y-2">
-										<Label for="webhookTimeout">Timeout (ms)</Label>
-										<Input
-											id="webhookTimeout"
-											type="number"
-											bind:value={webhookConfig.timeoutMs}
-											min={1000}
-											max={30000}
-										/>
-										<p class="text-xs text-muted-foreground">Per-attempt request timeout</p>
-									</div>
-								</div>
-							{:else}
-								<div class="space-y-2">
-									<Label for="timeout">Timeout (seconds)</Label>
-									<Input id="timeout" type="number" bind:value={timeout} min={10} max={3600} />
-									<p class="text-xs text-muted-foreground">
-										Maximum execution time before the task is cancelled
-									</p>
-								</div>
-
-								<div class="grid gap-4 sm:grid-cols-2">
-									<div class="space-y-2">
-										<Label for="retryCount">Retry count</Label>
-										<Input id="retryCount" type="number" bind:value={retryCount} min={0} max={10} />
-										<p class="text-xs text-muted-foreground">
-											Times to retry on failure. 0 = no retries
-										</p>
-									</div>
-									<div class="space-y-2">
-										<Label for="retryDelay">Retry delay (seconds)</Label>
-										<Input id="retryDelay" type="number" bind:value={retryDelay} min={1} />
-										<p class="text-xs text-muted-foreground">Wait between retry attempts</p>
-									</div>
-								</div>
-
-								<label
-									class="flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-accent/40"
-								>
-									<Switch bind:checked={requireOnline} class="mt-0.5" />
-									<div class="space-y-0.5">
-										<span class="text-sm font-medium">Require server online</span>
-										<p class="text-xs text-muted-foreground">
-											Skip this task when the server is offline
-										</p>
-									</div>
-								</label>
-							{/if}
-						{/if}
+							<div class="space-y-2">
+								<Label for="minBackups">Min backups</Label>
+								<Input
+									id="minBackups"
+									type="number"
+									bind:value={backupConfig.minBackups}
+									min={0}
+									disabled={backupConfig.retentionDays <= 0}
+								/>
+								<p class="text-xs text-muted-foreground">
+									Never expire by age below this many, even past retention
+								</p>
+							</div>
+							<div class="space-y-2">
+								<Label for="maxBackups">Max backups</Label>
+								<Input id="maxBackups" type="number" bind:value={backupConfig.maxBackups} min={0} />
+								<p class="text-xs text-muted-foreground">
+									Hard cap, oldest deleted first. 0 = unlimited
+								</p>
+							</div>
+						</div>
+						<p class="text-xs text-muted-foreground">
+							World saving is automatically paused and flushed while the backup runs, then
+							re-enabled.
+						</p>
+					{:else if taskType === TaskType.WEBHOOK}
+						<div class="space-y-2">
+							<Label for="url">Webhook URL *</Label>
+							<Input
+								id="url"
+								bind:value={webhookConfig.url}
+								placeholder="https://example.com/webhook"
+								class="font-mono"
+							/>
+							<p class="text-xs text-muted-foreground">
+								The endpoint the request is sent to. Discord/Slack/Teams/ntfy URLs are auto-detected
+								for the default payload preset.
+							</p>
+						</div>
+					{:else}
+						<div class="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+							No additional configuration required for this task type.
+						</div>
+					{/if}
+				{:else if activeSection === 'payload' && taskType === TaskType.WEBHOOK}
+					<div class="flex items-center justify-between gap-4 rounded-lg border p-3">
+						<div>
+							<p class="text-sm font-medium">Customize payload</p>
+							<p class="mt-0.5 text-xs text-muted-foreground">
+								{#if customizePayload}
+									Using a custom payload template
+								{:else}
+									Using the default {presetLabels[getDefaultPresetKey(webhookConfig.url)] ||
+										'Generic'}
+									preset
+								{/if}
+							</p>
+						</div>
+						<Switch
+							checked={customizePayload}
+							onCheckedChange={(checked) => {
+								customizePayload = checked;
+								if (checked && !webhookConfig.payloadTemplate) {
+									webhookConfig.payloadTemplate = getDefaultTemplate(webhookConfig.url);
+								}
+							}}
+						/>
 					</div>
-				</div>
 
-				<div class="flex items-center justify-end gap-2 border-t px-6 py-4">
-					<Button variant="ghost" onclick={closeDialog}>Cancel</Button>
-					<Button onclick={saveTask} disabled={!taskName.trim() || creating} class="min-w-28">
-						{#if creating}
-							<Loader2 class="size-4 animate-spin" />
-							{selectedTask ? 'Saving...' : 'Creating...'}
-						{:else}
-							{selectedTask ? 'Save changes' : 'Create task'}
-						{/if}
-					</Button>
-				</div>
+					<div class={!customizePayload ? 'pointer-events-none opacity-40' : ''}>
+						<p class="stat-label mb-1.5">Presets</p>
+						<div class="flex flex-wrap gap-1">
+							{#each Object.keys(presetLabels) as key (key)}
+								{#if webhookTemplatePresets[key]}
+									<Button
+										variant="outline"
+										size="sm"
+										class="h-7 text-xs"
+										onclick={() => applyPreset(key)}
+									>
+										{presetLabels[key]}
+									</Button>
+								{/if}
+							{/each}
+						</div>
+					</div>
+
+					<div class={!customizePayload ? 'pointer-events-none opacity-50' : ''}>
+						<CodeEditor
+							value={displayValue}
+							language="json-template"
+							readOnly={!customizePayload}
+							height="340px"
+							onChange={(v) => {
+								if (customizePayload) webhookConfig.payloadTemplate = v;
+							}}
+						/>
+					</div>
+
+					<div class={!customizePayload ? 'opacity-40' : ''}>
+						<p class="stat-label mb-1.5">Available variables</p>
+						<div
+							class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md border bg-muted/20 p-3 font-mono text-xs text-muted-foreground"
+						>
+							{#each TEMPLATE_VARIABLES as [variable, description] (variable)}
+								<button
+									type="button"
+									class="cursor-pointer text-left transition-colors hover:text-foreground"
+									title="Copy {variable}"
+									onclick={() => copyVariable(variable)}>{variable}</button
+								>
+								<span class="font-sans">{description}</span>
+							{/each}
+						</div>
+					</div>
+				{:else if activeSection === 'schedule'}
+					<div class="space-y-2">
+						<Label>Schedule type</Label>
+						<Select.Root
+							type="single"
+							name="scheduleType"
+							value={scheduleType.toString()}
+							onValueChange={(v) => {
+								if (v) scheduleType = parseInt(v) as ScheduleType;
+							}}
+						>
+							<Select.Trigger class="w-full">
+								{getScheduleTypeLabel(scheduleType)}
+							</Select.Trigger>
+							<Select.Content>
+								{#each SCHEDULE_TYPE_OPTIONS as s (s)}
+									<Select.Item value={s.toString()} label={getScheduleTypeLabel(s)}>
+										{getScheduleTypeLabel(s)}
+									</Select.Item>
+								{/each}
+							</Select.Content>
+						</Select.Root>
+					</div>
+
+					{#if scheduleType === ScheduleType.CRON}
+						<div class="space-y-2">
+							<Label for="cronExpr">Cron expression *</Label>
+							<Input
+								id="cronExpr"
+								bind:value={cronExpr}
+								placeholder="0 0 * * *"
+								class="font-mono"
+							/>
+							<p class="text-xs text-muted-foreground">
+								Format: minute hour day month weekday (e.g., "0 0 * * *" for daily at midnight)
+							</p>
+						</div>
+					{:else if scheduleType === ScheduleType.INTERVAL}
+						<div class="space-y-2">
+							<Label for="intervalSecs">Interval (seconds)</Label>
+							<Input id="intervalSecs" type="number" bind:value={intervalSecs} min={60} />
+							<p class="text-xs text-muted-foreground">
+								Minimum 60 seconds. Current: every {formatInterval(intervalSecs)}
+							</p>
+						</div>
+					{:else if scheduleType === ScheduleType.ONCE}
+						<div class="space-y-2">
+							<Label for="runAt">Run at</Label>
+							<Input id="runAt" type="datetime-local" bind:value={runAt} />
+							<p class="text-xs text-muted-foreground">
+								The task runs once at this time, then is disabled
+							</p>
+						</div>
+					{:else if scheduleType === ScheduleType.EVENT}
+						<div class="space-y-2">
+							<Label>Events *</Label>
+							<div class="space-y-1 rounded-lg border bg-muted/20 p-2">
+								{#each SERVER_EVENT_TYPES as { type, label, description } (type)}
+									<label
+										class="flex cursor-pointer items-center gap-3 rounded-md p-2 transition-colors hover:bg-accent/40"
+									>
+										<Checkbox
+											checked={eventTriggers.includes(type)}
+											onCheckedChange={() => toggleEventTrigger(type)}
+										/>
+										<div>
+											<span class="text-sm font-medium">{label}</span>
+											<p class="text-xs text-muted-foreground">{description}</p>
+										</div>
+									</label>
+								{/each}
+							</div>
+							<p class="text-xs text-muted-foreground">
+								The task runs whenever any selected event fires.
+							</p>
+						</div>
+					{/if}
+				{:else if activeSection === 'advanced'}
+					{#if taskType === TaskType.WEBHOOK}
+						<div class="space-y-2">
+							<Label for="secret">Secret (optional)</Label>
+							<Input
+								id="secret"
+								type="password"
+								bind:value={webhookSecret}
+								placeholder={originalWebhookHasSecret ? '(unchanged)' : 'HMAC signing secret'}
+							/>
+							<p class="text-xs text-muted-foreground">
+								Signs the payload with HMAC-SHA256 so the receiver can verify it.
+							</p>
+						</div>
+
+						<div class="grid gap-4 sm:grid-cols-3">
+							<div class="space-y-2">
+								<Label for="maxRetries">Max retries</Label>
+								<Input
+									id="maxRetries"
+									type="number"
+									bind:value={webhookConfig.maxRetries}
+									min={0}
+									max={10}
+								/>
+								<p class="text-xs text-muted-foreground">Delivery attempts before giving up</p>
+							</div>
+							<div class="space-y-2">
+								<Label for="retryDelayMs">Retry delay (ms)</Label>
+								<Input
+									id="retryDelayMs"
+									type="number"
+									bind:value={webhookConfig.retryDelayMs}
+									min={100}
+									max={60000}
+								/>
+								<p class="text-xs text-muted-foreground">Wait between delivery attempts</p>
+							</div>
+							<div class="space-y-2">
+								<Label for="webhookTimeout">Timeout (ms)</Label>
+								<Input
+									id="webhookTimeout"
+									type="number"
+									bind:value={webhookConfig.timeoutMs}
+									min={1000}
+									max={30000}
+								/>
+								<p class="text-xs text-muted-foreground">Per-attempt request timeout</p>
+							</div>
+						</div>
+					{:else}
+						<div class="space-y-2">
+							<Label for="timeout">Timeout (seconds)</Label>
+							<Input id="timeout" type="number" bind:value={timeout} min={10} max={3600} />
+							<p class="text-xs text-muted-foreground">
+								Maximum execution time before the task is cancelled
+							</p>
+						</div>
+
+						<div class="grid gap-4 sm:grid-cols-2">
+							<div class="space-y-2">
+								<Label for="retryCount">Retry count</Label>
+								<Input id="retryCount" type="number" bind:value={retryCount} min={0} max={10} />
+								<p class="text-xs text-muted-foreground">
+									Times to retry on failure. 0 = no retries
+								</p>
+							</div>
+							<div class="space-y-2">
+								<Label for="retryDelay">Retry delay (seconds)</Label>
+								<Input id="retryDelay" type="number" bind:value={retryDelay} min={1} />
+								<p class="text-xs text-muted-foreground">Wait between retry attempts</p>
+							</div>
+						</div>
+
+						<label
+							class="flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-accent/40"
+						>
+							<Switch bind:checked={requireOnline} class="mt-0.5" />
+							<div class="space-y-0.5">
+								<span class="text-sm font-medium">Require server online</span>
+								<p class="text-xs text-muted-foreground">
+									Skip this task when the server is offline
+								</p>
+							</div>
+						</label>
+					{/if}
+				{/if}
 			</div>
-		</div>
+
+			{#snippet footer()}
+				<Button variant="ghost" onclick={closeDialog}>Cancel</Button>
+				<Button onclick={saveTask} disabled={!taskName.trim() || creating} class="min-w-28">
+					{#if creating}
+						<Loader2 class="size-4 animate-spin" />
+						{selectedTask ? 'Saving...' : 'Creating...'}
+					{:else}
+						{selectedTask ? 'Save changes' : 'Create task'}
+					{/if}
+				</Button>
+			{/snippet}
+		</SectionedDialogLayout>
 	</Dialog.Content>
 </Dialog.Root>
 

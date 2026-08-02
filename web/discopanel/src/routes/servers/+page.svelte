@@ -21,7 +21,7 @@
 		TabRail
 	} from '$lib/components/app';
 	import MetricsSparkline from '$lib/components/metrics-sparkline.svelte';
-	import { rpcClient } from '$lib/api/rpc-client';
+	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { serversStore, sortServersByActivity, claimFullStats } from '$lib/stores/servers';
 	import {
 		tpsTone,
@@ -169,10 +169,15 @@
 
 	async function confirmDelete() {
 		if (!deleteTarget) return;
-		await rpcClient.server.deleteServer({ id: deleteTarget.id });
-		serversStore.removeServer(deleteTarget.id);
-		toast.success(`Deleted ${deleteTarget.name}`);
-		deleteTarget = null;
+		try {
+			await rpcClient.server.deleteServer({ id: deleteTarget.id }, silentCallOptions);
+			serversStore.removeServer(deleteTarget.id);
+			toast.success(`Deleted ${deleteTarget.name}`);
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : 'Failed to delete server');
+		} finally {
+			deleteTarget = null;
+		}
 	}
 
 	function connectionLabel(server: Server): string {

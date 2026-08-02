@@ -13,11 +13,17 @@ import (
 	"github.com/discohaus/discopanel/pkg/logger"
 )
 
+// Keys the proxy cache by backend and transport flavor
+type proxyKey struct {
+	addr string
+	h2c  bool
+}
+
 // Serves the http lane of a listener socket by Host header
 type httpLane struct {
 	routesMap    map[string]*Route
 	routesMutex  sync.RWMutex
-	proxies      map[string]*httputil.ReverseProxy
+	proxies      map[proxyKey]*httputil.ReverseProxy
 	proxiesMutex sync.Mutex
 	server       *http.Server
 	serverMutex  sync.Mutex
@@ -28,7 +34,7 @@ type httpLane struct {
 func newHTTPLane(log *logger.Logger) *httpLane {
 	return &httpLane{
 		routesMap: make(map[string]*Route),
-		proxies:   make(map[string]*httputil.ReverseProxy),
+		proxies:   make(map[proxyKey]*httputil.ReverseProxy),
 		logger:    log,
 	}
 }
@@ -73,7 +79,7 @@ func isWebSocketRequest(r *http.Request) bool {
 // Implements http.Handler for routing requests
 func (p *httpLane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Same normalizer as route keys, trailing dots included
-	hostname := normalizeHostname(r.Host)
+	hostname := normalizeWireHostname(r.Host)
 
 	// Find the route, empty hostname key is the catch all
 	p.routesMutex.RLock()
@@ -95,20 +101,26 @@ func (p *httpLane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	backendAddr := net.JoinHostPort(route.BackendHost, fmt.Sprintf("%d", route.BackendPort))
-	p.proxyFor(route, backendAddr).ServeHTTP(w, r)
+	p.proxyFor(route).ServeHTTP(w, r)
+}
+
+// Cache key for a route's backend transport
+func routeProxyKey(route *Route) proxyKey {
+	return proxyKey{addr: route.BackendAddr(), h2c: route.OwnerKind == OwnerPanel}
 }
 
 // Returns the cached reverse proxy for a backend
-func (p *httpLane) proxyFor(route *Route, backendAddr string) *httputil.ReverseProxy {
+func (p *httpLane) proxyFor(route *Route) *httputil.ReverseProxy {
+	key := routeProxyKey(route)
+
 	p.proxiesMutex.Lock()
 	defer p.proxiesMutex.Unlock()
 
-	if proxy, ok := p.proxies[backendAddr]; ok {
+	if proxy, ok := p.proxies[key]; ok {
 		return proxy
 	}
 
-	target := &url.URL{Scheme: "http", Host: backendAddr}
+	target := &url.URL{Scheme: "http", Host: key.addr}
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
@@ -121,20 +133,36 @@ func (p *httpLane) proxyFor(route *Route, backendAddr string) *httputil.ReverseP
 		},
 	}
 	// Panel backend speaks cleartext http2 for agent streams
-	if route.OwnerKind == OwnerPanel {
+	if key.h2c {
 		protocols := new(http.Protocols)
 		protocols.SetUnencryptedHTTP2(true)
 		proxy.Transport = &http.Transport{Protocols: protocols}
 	}
-	p.proxies[backendAddr] = proxy
+	p.proxies[key] = proxy
 	return proxy
 }
 
-// Drops cached reverse proxies after route changes
-func (p *httpLane) dropProxies() {
+// Evicts cached proxies no current route needs
+func (p *httpLane) pruneProxies() {
+	p.routesMutex.RLock()
+	live := make(map[proxyKey]bool, len(p.routesMap))
+	for _, route := range p.routesMap {
+		live[routeProxyKey(route)] = true
+	}
+	p.routesMutex.RUnlock()
+
 	p.proxiesMutex.Lock()
-	p.proxies = make(map[string]*httputil.ReverseProxy)
-	p.proxiesMutex.Unlock()
+	defer p.proxiesMutex.Unlock()
+	for key, proxy := range p.proxies {
+		if live[key] {
+			continue
+		}
+		delete(p.proxies, key)
+		// Custom transports strand conns unless idles close
+		if t, ok := proxy.Transport.(*http.Transport); ok && t != nil {
+			t.CloseIdleConnections()
+		}
+	}
 }
 
 // Handles WebSocket upgrade requests
@@ -156,7 +184,7 @@ func (p *httpLane) handleWebSocket(w http.ResponseWriter, r *http.Request, route
 	defer clientConn.Close()
 
 	// Connect to backend
-	backendAddr := net.JoinHostPort(route.BackendHost, fmt.Sprintf("%d", route.BackendPort))
+	backendAddr := route.BackendAddr()
 	backendConn, err := net.DialTimeout("tcp", backendAddr, 5*time.Second)
 	if err != nil {
 		p.logger.Error("WebSocket: Failed to connect to backend %s: %v", backendAddr, err)
@@ -198,7 +226,7 @@ func (p *httpLane) setRoutes(routes map[string]*Route) {
 	p.routesMutex.Lock()
 	p.routesMap = routes
 	p.routesMutex.Unlock()
-	p.dropProxies()
+	p.pruneProxies()
 }
 
 // Installs or replaces one route
@@ -206,7 +234,7 @@ func (p *httpLane) upsert(route *Route) {
 	p.routesMutex.Lock()
 	p.routesMap[route.Hostname] = route
 	p.routesMutex.Unlock()
-	p.dropProxies()
+	p.pruneProxies()
 	p.logger.Info("HTTP lane added route: hostname=%s backend=%s:%d", route.Hostname, route.BackendHost, route.BackendPort)
 }
 
@@ -217,7 +245,7 @@ func (p *httpLane) remove(hostname string) {
 	delete(p.routesMap, hostname)
 	p.routesMutex.Unlock()
 	if existed {
-		p.dropProxies()
+		p.pruneProxies()
 		p.logger.Info("HTTP lane removed route: hostname=%s", hostname)
 	}
 }

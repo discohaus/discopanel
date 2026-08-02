@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -47,6 +48,7 @@ type Manager struct {
 	store       *db.Store
 	enforcer    *rbac.Enforcer
 	config      *config.AuthConfig
+	cfgMu       sync.RWMutex
 	jwtSecret   []byte
 	recoveryKey string
 }
@@ -101,7 +103,7 @@ func NewManager(store *db.Store, enforcer *rbac.Enforcer, cfg *config.AuthConfig
 }
 
 func (m *Manager) Login(ctx context.Context, username, password string) (*v1.User, []string, string, time.Time, error) {
-	if !m.config.Local.Enabled {
+	if !m.IsLocalAuthEnabled() {
 		return nil, nil, "", time.Time{}, ErrLocalAuthDisabled
 	}
 
@@ -125,7 +127,7 @@ func (m *Manager) Login(ctx context.Context, username, password string) (*v1.Use
 	}
 
 	// Generate token
-	expiresAt := time.Now().Add(time.Duration(m.config.SessionTimeout) * time.Second)
+	expiresAt := time.Now().Add(m.SessionTTL())
 	token, err := m.generateJWT(user.Id, user.Username, roleNames, expiresAt)
 	if err != nil {
 		return nil, nil, "", time.Time{}, err
@@ -265,11 +267,22 @@ func (m *Manager) SystemUser() *v1.User {
 }
 
 func (m *Manager) IsAnonymousAccessEnabled() bool {
+	m.cfgMu.RLock()
+	defer m.cfgMu.RUnlock()
 	return m.config.AnonymousAccess
 }
 
 func (m *Manager) IsAnyAuthEnabled() bool {
+	m.cfgMu.RLock()
+	defer m.cfgMu.RUnlock()
 	return m.config.Local.Enabled || m.config.OIDC.Enabled
+}
+
+// Session lifetime from the live timeout setting
+func (m *Manager) SessionTTL() time.Duration {
+	m.cfgMu.RLock()
+	defer m.cfgMu.RUnlock()
+	return time.Duration(m.config.SessionTimeout) * time.Second
 }
 
 // Validates bearer token, handles session, API token, or anon
@@ -298,19 +311,28 @@ func (m *Manager) AuthenticateFromHeader(ctx context.Context, authHeader string)
 }
 
 func (m *Manager) IsLocalAuthEnabled() bool {
+	m.cfgMu.RLock()
+	defer m.cfgMu.RUnlock()
 	return m.config.Local.Enabled
 }
 
 func (m *Manager) IsRegistrationAllowed() bool {
+	m.cfgMu.RLock()
+	defer m.cfgMu.RUnlock()
 	return m.config.Local.Enabled && m.config.Local.AllowRegistration
 }
 
-func (m *Manager) GetConfig() *config.AuthConfig {
-	return m.config
+// Returns a settings snapshot safe to read without locks
+func (m *Manager) GetConfig() config.AuthConfig {
+	m.cfgMu.RLock()
+	defer m.cfgMu.RUnlock()
+	return *m.config
 }
 
 // Applies db setting overrides so db wins over config.yaml
 func (m *Manager) loadSettingOverrides(ctx context.Context) {
+	m.cfgMu.Lock()
+	defer m.cfgMu.Unlock()
 	if v, err := m.store.GetSystemSetting(ctx, settingLocalEnabled); err == nil {
 		if b, err := strconv.ParseBool(v.Value); err == nil {
 			m.config.Local.Enabled = b
@@ -526,7 +548,7 @@ func (m *Manager) generateJWT(userID, username string, roles []string, expiresAt
 }
 
 func (m *Manager) validateJWT(tokenString string) (jwt.MapClaims, error) {
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (any, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}

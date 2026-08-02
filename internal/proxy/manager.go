@@ -445,7 +445,40 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 			OwnerModule, mod.Id, ip, func(p *v1.NetworkPort) int { return m.moduleContainerPort(module, p) })
 	}
 
+	m.pruneStatsLocked(servers, modules, tcpRoutes, udpRoutes)
+
 	return tcpRoutes, udpRoutes
+}
+
+// Drops stat baselines for routes whose owner or key vanished
+func (m *Manager) pruneStatsLocked(servers []*v1.Server, modules []*v1.Module, tcpRoutes map[int][]Route, udpRoutes map[int]Route) {
+	// Owner ids keep service counters across stop and start
+	owners := make(map[string]bool, len(servers)+len(modules)+1)
+	owners[PanelListenerID] = true
+	for _, s := range servers {
+		owners[s.Id] = true
+	}
+	for _, mod := range modules {
+		owners[mod.Id] = true
+	}
+	live := make(map[string]bool)
+	for _, routes := range tcpRoutes {
+		for _, r := range routes {
+			live[r.ServerID] = true
+		}
+	}
+	for _, r := range udpRoutes {
+		live[r.ServerID] = true
+	}
+	prune := func(stats map[string]*v1.ProxyRoute) {
+		for id := range stats {
+			if !live[id] && !owners[id] {
+				delete(stats, id)
+			}
+		}
+	}
+	prune(m.statsBase)
+	prune(m.statsLast)
 }
 
 // Adds one port list's routes onto the desired tables

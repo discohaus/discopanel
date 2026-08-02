@@ -61,17 +61,6 @@ func Best(query string, candidates []string) (Match, bool) {
 	return best, found
 }
 
-// Best for an arbitrary item type
-func BestFunc[T any](query string, items []T, key func(T) string) (best T, score float64, ok bool) {
-	for i, it := range items {
-		s := Score(query, key(it))
-		if i == 0 || s > score {
-			best, score, ok = it, s, true
-		}
-	}
-	return best, score, ok
-}
-
 // Scores substring containment weighted by coverage and token boundary fit
 func containmentScore(q, c string) float64 {
 	short, long := q, c
@@ -96,7 +85,7 @@ func containmentScore(q, c string) float64 {
 		// Buried inside a larger word, likely spurious
 		score -= midWordPenalty
 	}
-	return clamp(score, 0, containmentCap)
+	return min(max(score, 0), containmentCap)
 }
 
 // Finds index of short within long with most boundary matches
@@ -148,10 +137,7 @@ func tokenScore(q, c string) float64 {
 
 // Scores edit-distance similarity capped by editWeight
 func editScore(q, c string) float64 {
-	maxLen := len(q)
-	if len(c) > maxLen {
-		maxLen = len(c)
-	}
+	maxLen := max(len(q), len(c))
 	if maxLen == 0 {
 		return 0
 	}
@@ -207,32 +193,11 @@ func levenshtein(a, b string) int {
 			if ra[i-1] == rb[j-1] {
 				cost = 0
 			}
-			curr[j] = min3(prev[j]+1, curr[j-1]+1, prev[j-1]+cost)
+			curr[j] = min(prev[j]+1, curr[j-1]+1, prev[j-1]+cost)
 		}
 		prev, curr = curr, prev
 	}
 	return prev[len(rb)]
-}
-
-func min3(a, b, c int) int {
-	m := a
-	if b < m {
-		m = b
-	}
-	if c < m {
-		m = c
-	}
-	return m
-}
-
-func clamp(v, lo, hi float64) float64 {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
 }
 
 func DeduplicateStrings(strings []string) []string {

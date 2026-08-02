@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
 	import { PageHeader, TabRail } from '$lib/components/app';
 	import { Plus } from '@lucide/svelte';
 	import TemplateManagement from './TemplateManagement.svelte';
@@ -10,11 +12,20 @@
 		{ key: 'active', label: 'Active instances', desc: 'Every module running across the panel' }
 	] as const;
 
-	// Deep links pick the starting tab via query param
-	const requestedTab = page.url.searchParams.get('tab');
-	let activeTab = $state<string>(
-		TABS.some((t) => t.key === requestedTab) ? (requestedTab as string) : 'templates'
-	);
+	// Url query param always decides the visible tab
+	let activeTab = $derived.by(() => {
+		const requested = page.url.searchParams.get('tab');
+		return TABS.some((t) => t.key === requested) ? (requested as string) : 'templates';
+	});
+
+	function setTab(tab: string | undefined) {
+		if (!tab || tab === activeTab) return;
+		const base = resolve('/modules');
+		const target = tab === 'templates' ? base : `${base}?tab=${tab}`;
+		// eslint-disable-next-line svelte/no-navigation-without-resolve -- base is resolved, only query varies
+		goto(target, { noScroll: true, keepFocus: true });
+	}
+
 	let createOpen = $state(false);
 	let templateCategory = $state<string | null>(null);
 	let templateCategories = $state<string[]>([]);
@@ -49,7 +60,8 @@
 <div class="flex min-h-0 flex-1 flex-col">
 	<TabRail
 		tabs={TABS}
-		bind:value={activeTab}
+		value={activeTab}
+		onValueChange={setTab}
 		submenu={activeTab === 'templates' && templateCategories.length > 0
 			? categoryFilter
 			: undefined}
@@ -84,7 +96,7 @@
 					bind:categories={templateCategories}
 				/>
 			{:else if activeTab === 'active'}
-				<ActiveModules active={activeTab === 'active'} />
+				<ActiveModules />
 			{/if}
 		</div>
 	</div>

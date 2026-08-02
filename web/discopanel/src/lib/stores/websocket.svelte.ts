@@ -112,10 +112,8 @@ class WebSocketClient {
 				this.cleanup();
 				this.state.connectionState = 'disconnected';
 
-				// Attempt reconnection if not a clean close
-				if (event.code !== 1000) {
-					this.scheduleReconnect();
-				}
+				// Reconnects on any close unless disconnect turned it off
+				this.scheduleReconnect();
 			};
 
 			this.socket.onerror = (error) => {
@@ -306,6 +304,14 @@ class WebSocketClient {
 		}
 		this.socket.send(data);
 		return true;
+	}
+
+	// Re-sends auth with the current token after login
+	reauthenticate(): void {
+		if (this.socket?.readyState === WebSocket.OPEN) {
+			const authState = get(authStore);
+			this.authenticate(authState.token || '');
+		}
 	}
 
 	private authenticate(token: string): void {

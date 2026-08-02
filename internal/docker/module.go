@@ -186,7 +186,7 @@ func (c *Client) CreateModuleContainer(ctx context.Context, module *v1.Module, t
 	// Create the container
 	resp, err := c.docker.ContainerCreate(
 		ctx, config, hostConfig, networkConfig, nil,
-		fmt.Sprintf("discopanel-module-%s", module.Id),
+		models.ModuleContainerName(module.Id),
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed to create module container: %w", err)
@@ -305,26 +305,3 @@ func (c *Client) moduleVolumesToMounts(volumes []*v1.VolumeMount) []mount.Mount 
 	return mounts
 }
 
-// Gets a module container's IP on the discopanel network
-func (c *Client) GetModuleContainerIP(ctx context.Context, containerID string) (string, error) {
-	inspect, err := c.docker.ContainerInspect(ctx, containerID)
-	if err != nil {
-		return "", err
-	}
-
-	// Try to get IP from the configured network
-	if c.config.NetworkName != "" {
-		if endpoint, ok := inspect.NetworkSettings.Networks[c.config.NetworkName]; ok {
-			return endpoint.IPAddress, nil
-		}
-	}
-
-	// Fallback to any available network
-	for _, endpoint := range inspect.NetworkSettings.Networks {
-		if endpoint.IPAddress != "" {
-			return endpoint.IPAddress, nil
-		}
-	}
-
-	return "", fmt.Errorf("no IP address found for container")
-}

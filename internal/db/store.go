@@ -23,6 +23,11 @@ import (
 
 const MinecraftDefaultPort = 25565
 
+// Docker container name for a module id
+func ModuleContainerName(moduleID string) string {
+	return "discopanel-module-" + moduleID
+}
+
 // Port the server listens on inside its container
 func InContainerPort(s *v1.Server) int {
 	if len(s.ProxyHostnames) > 0 {
@@ -478,9 +483,9 @@ func (s *Store) SeedGlobalSettings() error {
 	if isNew || s.cfg.Minecraft.ResetGlobal {
 		gc := s.CreateDefaultServerProperties(GlobalSettingsID)
 		if len(s.cfg.Minecraft.GlobalConfig) > 0 {
-			mapstructure.WeakDecode(s.cfg.Minecraft.GlobalConfig, gc)
-			gc.Id = GlobalSettingsID + "-config"
-			gc.ServerId = GlobalSettingsID
+			if err := mapstructure.WeakDecode(s.cfg.Minecraft.GlobalConfig, gc); err != nil {
+				return fmt.Errorf("invalid minecraft.global_config: %w", err)
+			}
 		}
 		return s.UpdateGlobalSettings(ctx, gc)
 	}
@@ -553,6 +558,42 @@ func (s *Store) DeleteRole(ctx context.Context, id string) error {
 	})
 }
 
+// Counts users holding one role
+func (s *Store) CountUsersWithRole(ctx context.Context, roleName string) (int64, error) {
+	var count int64
+	err := s.db.WithContext(ctx).Model(&v1.UserRole{}).
+		Where("role_name = ?", roleName).
+		Distinct("user_id").
+		Count(&count).Error
+	return count, err
+}
+
+// Atomically claims one invite use, false when exhausted
+func (s *Store) ClaimInviteUse(ctx context.Context, id string) (bool, error) {
+	res := s.db.WithContext(ctx).Exec(
+		"UPDATE registration_invites SET use_count = use_count + 1 WHERE id = ? AND (max_uses <= 0 OR use_count < max_uses)", id)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
+}
+
+// Returns a claimed invite use after a failed registration
+func (s *Store) ReleaseInviteUse(ctx context.Context, id string) error {
+	return s.db.WithContext(ctx).Exec(
+		"UPDATE registration_invites SET use_count = use_count - 1 WHERE id = ? AND use_count > 0", id).Error
+}
+
+// Renames a role and its user assignments together
+func (s *Store) RenameRole(ctx context.Context, role *v1.Role, oldName string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&v1.UserRole{}).Where("role_name = ?", oldName).Update("role_name", role.Name).Error; err != nil {
+			return err
+		}
+		return tx.Save(role).Error
+	})
+}
+
 // Assigns a role once, repeat calls are no-ops
 func (s *Store) AssignRole(ctx context.Context, userID, roleName string, source v1.RoleSource) error {
 	existing, err := s.GetUserRoleAssignment(ctx, userID, roleName)
@@ -607,34 +648,11 @@ func (s *Store) ResetAllUsers(ctx context.Context) error {
 	})
 }
 
-// Removes old executions per task, always keeping the newest few
-func (s *Store) CleanOldTaskExecutions(ctx context.Context, olderThan time.Time, keepMinimum int) error {
-	var taskIDs []string
-	if err := s.db.WithContext(ctx).Model(&v1.ScheduledTask{}).Pluck("id", &taskIDs).Error; err != nil {
-		return err
-	}
-
-	for _, taskID := range taskIDs {
-		var count int64
-		if err := s.db.WithContext(ctx).Model(&v1.TaskExecution{}).Where("task_id = ?", taskID).Count(&count).Error; err != nil {
-			continue
-		}
-
-		// Only delete when count exceeds the minimum to keep
-		if count > int64(keepMinimum) {
-			var keepIDs []string
-			s.db.WithContext(ctx).Model(&v1.TaskExecution{}).
-				Where("task_id = ?", taskID).
-				Order("datetime(started_at) DESC").
-				Limit(keepMinimum).
-				Pluck("id", &keepIDs)
-
-			s.db.WithContext(ctx).
-				Where("task_id = ? AND datetime(started_at) < datetime(?) AND id NOT IN ?", taskID, olderThan.UTC(), keepIDs).
-				Delete(&v1.TaskExecution{})
-		}
-	}
-	return nil
+// Deletes task executions older than the cutoff
+func (s *Store) PruneTaskExecutions(ctx context.Context, olderThan time.Time) error {
+	return s.db.WithContext(ctx).
+		Where("datetime(started_at) < datetime(?)", olderThan.UTC()).
+		Delete(&v1.TaskExecution{}).Error
 }
 
 // Transport a protocol rides on, unspecified reads tcp

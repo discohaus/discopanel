@@ -123,7 +123,7 @@ func (p *Provisioner) Ensure(ctx context.Context, server *v1.Server, cfg *v1.Ser
 	desired := p.desiredModpackFor(server, cfg)
 
 	var result *Result
-	if p.needsInstall(server, manifest, desired, force) {
+	if p.needsInstall(server, manifest, desired, force, pinnedLoaderVersion(server, cfg)) {
 		p.snapshotWorld(server)
 		result, err = p.install(ctx, server, cfg, desired, force)
 		if err != nil {
@@ -177,11 +177,24 @@ func (p *Provisioner) Ensure(ctx context.Context, server *v1.Server, cfg *v1.Ser
 	return result, nil
 }
 
-func (p *Provisioner) needsInstall(server *v1.Server, manifest *v1.Manifest, desired *desiredModpack, force bool) bool {
+// Pinned loader version for loaders that honor pins
+func pinnedLoaderVersion(server *v1.Server, cfg *v1.ServerProperties) string {
+	switch server.ModLoader {
+	case v1.ModLoader_MOD_LOADER_FORGE, v1.ModLoader_MOD_LOADER_NEOFORGE:
+		return strVal(cfg.ForgeVersion)
+	}
+	return ""
+}
+
+func (p *Provisioner) needsInstall(server *v1.Server, manifest *v1.Manifest, desired *desiredModpack, force bool, pinned string) bool {
 	if force || manifest == nil {
 		return true
 	}
 	if manifest.Loader != server.ModLoader {
+		return true
+	}
+	// Pinned loader version changes force a reinstall
+	if pinned != "" && manifest.LoaderVersion != pinned {
 		return true
 	}
 	// Modpack servers derive MC version from the pack

@@ -38,7 +38,7 @@
 	} from '@lucide/svelte';
 	import { Switch } from '$lib/components/ui/switch';
 	import { create } from '@bufbuild/protobuf';
-	import { rpcClient } from '$lib/api/rpc-client';
+	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import type { User, Role, RegistrationInvite } from '$lib/proto/discopanel/v1/storage_pb';
 	import { AuthProvider, AuthProviderSchema } from '$lib/proto/discopanel/v1/storage_pb';
 	import { enumLabel } from '$lib/proto-meta';
@@ -53,6 +53,7 @@
 	} from '$lib/proto/discopanel/v1/auth_pb';
 	import { getRoleBadgeVariant } from '$lib/utils/role-colors';
 	import { formatDate, formatDateTime } from '$lib/utils/time';
+	import { copyToClipboard } from '$lib/utils/clipboard';
 
 	let users = $state<User[]>([]);
 	let availableRoles = $state<Role[]>([]);
@@ -230,6 +231,7 @@
 
 	async function createInvite() {
 		creatingInvite = true;
+		let inviteUrl = '';
 		try {
 			const unitMultipliers = { hours: 1, days: 24, weeks: 168 };
 			const expiresInHours = newInviteForm.expiresValue
@@ -242,12 +244,10 @@
 				pin: newInviteForm.pin || undefined,
 				expiresInHours
 			});
-			const resp = await rpcClient.auth.createInvite(req);
+			const resp = await rpcClient.auth.createInvite(req, silentCallOptions);
 			if (resp.invite) {
 				invites = [resp.invite, ...invites];
-				const url = `${window.location.origin}/login?invite=${resp.invite.code}`;
-				await navigator.clipboard.writeText(url);
-				toast.success('Invite created and URL copied to clipboard');
+				inviteUrl = `${window.location.origin}/login?invite=${resp.invite.code}`;
 			}
 			showCreateInviteDialog = false;
 			newInviteForm = {
@@ -263,17 +263,28 @@
 		} finally {
 			creatingInvite = false;
 		}
+		if (!inviteUrl) return;
+		// Invite exists either way, copying is only a bonus
+		const copied = await copyToClipboard(inviteUrl);
+		toast.success(copied ? 'Invite created and URL copied' : 'Invite created, copy this link', {
+			description: inviteUrl,
+			duration: 15000
+		});
 	}
 
 	async function copyInviteUrl(code: string) {
 		const url = `${window.location.origin}/login?invite=${code}`;
-		await navigator.clipboard.writeText(url);
-		toast.success('Invite URL copied to clipboard');
+		const copied = await copyToClipboard(url);
+		if (copied) {
+			toast.success('Invite URL copied to clipboard');
+		} else {
+			toast.info('Copy this invite link', { description: url, duration: 15000 });
+		}
 	}
 
 	async function deleteInvite(id: string) {
 		try {
-			await rpcClient.auth.deleteInvite(create(DeleteInviteRequestSchema, { id }));
+			await rpcClient.auth.deleteInvite(create(DeleteInviteRequestSchema, { id }), silentCallOptions);
 			invites = invites.filter((i) => i.id !== id);
 			toast.success('Invite revoked');
 		} catch (error: unknown) {
