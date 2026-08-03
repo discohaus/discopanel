@@ -746,6 +746,8 @@ message NetworkPort {
   bool proxy_enabled = 5;
   // Override the owning server hostnames for routed ports
   repeated string hostnames = 6;
+  // Also answers unmatched hostnames, http ports only
+  bool catch_all = 7;
 }
 
 // Volume mount configuration for container
@@ -1841,6 +1843,29 @@ message ProxyConfig {
   // Hostnames the panel answers on
   repeated string hostnames = 3;
   google.protobuf.Timestamp updated_at = 4 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
+  // Panel also answers unmatched hostnames
+  bool catch_all = 5 [(protogorm.v1.db) = {tag: "not null;default:true"}];
+}
+
+// One tls certificate with its private key
+message Certificate {
+  option (protogorm.v1.model) = {
+    table: "certificates"
+    order_by: "created_at ASC"
+  };
+  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  // Leaf first pem chain
+  string cert_pem = 3;
+  // Pem private key, never leaves the backend
+  string key_pem = 4;
+  google.protobuf.Timestamp created_at = 5 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
+  google.protobuf.Timestamp updated_at = 6 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
+  // Names the leaf covers, derived from the pem
+  repeated string covered_names = 7 [(protogorm.v1.db) = {skip: true}];
+  // Leaf expiry, derived from the pem
+  google.protobuf.Timestamp expires_at = 8 [(protogorm.v1.db) = {skip: true}];
+  // Issuer common name, derived from the pem
+  string issuer = 9 [(protogorm.v1.db) = {skip: true}];
 }
 
 // All tunable server properties for one server

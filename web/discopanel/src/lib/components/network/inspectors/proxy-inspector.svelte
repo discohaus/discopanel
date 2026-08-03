@@ -3,49 +3,84 @@
 	import { Label } from '$lib/components/ui/label';
 	import { Button } from '$lib/components/ui/button';
 	import { Switch } from '$lib/components/ui/switch';
+	import { ConfirmDialog } from '$lib/components/app';
 	import HostnameListInput from '../hostname-list-input.svelte';
+	import CertificateDialog from '../certificate-dialog.svelte';
+	import InspectorHeader from './inspector-header.svelte';
+	import { certificatesStore } from '$lib/stores/certificates.svelte';
 	import { toast } from 'svelte-sonner';
-	import { Globe, Loader2, Network, RotateCcw, Save, Waypoints, X } from '@lucide/svelte';
+	import {
+		Globe,
+		Loader2,
+		Lock,
+		MousePointerClick,
+		Network,
+		Plus,
+		RotateCcw,
+		Save,
+		Settings,
+		Trash2,
+		TriangleAlert,
+		Waypoints
+	} from '@lucide/svelte';
 
 	let {
 		enabled,
 		running,
 		hostnames,
+		catchAll,
 		listenerCount,
 		routeCount,
 		hasProxiedWorkloads,
+		knownHostnames,
 		onRequestDisable,
-		onChanged,
-		onClose
+		onChanged
 	}: {
 		enabled: boolean;
 		running: boolean;
 		hostnames: string[];
+		catchAll: boolean;
 		listenerCount: number;
 		routeCount: number;
 		hasProxiedWorkloads: boolean;
+		// Every name on the map, certificates report coverage
+		knownHostnames: string[];
 		onRequestDisable: () => void;
 		onChanged: () => Promise<void>;
-		onClose: () => void;
 	} = $props();
 
 	let draftEnabled = $state(true);
 	let draftHostnames = $state<string[]>([]);
+	let draftCatchAll = $state(true);
 	let saving = $state(false);
+	let certOpen = $state(false);
+	let removeId = $state('');
+	let removeOpen = $state(false);
+	let deletingId = $state('');
+
+	$effect(() => {
+		certificatesStore.ensure();
+	});
 
 	// Draft reseeds whenever the saved config changes
 	let seeded = $state('unseeded');
 	$effect(() => {
-		const snapshot = `${enabled}|${hostnames.join(',')}`;
+		const snapshot = `${enabled}|${catchAll}|${hostnames.join(',')}`;
 		if (seeded === snapshot) return;
 		seeded = snapshot;
 		draftEnabled = enabled;
+		draftCatchAll = catchAll;
 		draftHostnames = [...hostnames];
 	});
 
 	let dirty = $derived(
-		draftEnabled !== enabled || draftHostnames.join(',') !== hostnames.join(',')
+		draftEnabled !== enabled ||
+			draftCatchAll !== catchAll ||
+			draftHostnames.join(',') !== hostnames.join(',')
 	);
+
+	// Catch all only turns off once a name exists
+	let catchAllLocked = $derived(draftCatchAll && draftHostnames.length === 0);
 
 	function toggleEnabled(next: boolean) {
 		// Turning off proxied workloads goes through the convert dialog
@@ -65,7 +100,8 @@
 		try {
 			await rpcClient.proxy.updateProxyConfig({
 				enabled: draftEnabled,
-				hostnames: draftHostnames
+				hostnames: draftHostnames,
+				catchAll: draftCatchAll
 			});
 			toast.success('Network settings saved');
 			await onChanged();
@@ -76,28 +112,40 @@
 			saving = false;
 		}
 	}
+
+	function askRemove(id: string) {
+		removeId = id;
+		removeOpen = true;
+	}
+
+	async function removeCert() {
+		const id = removeId;
+		if (!id) return;
+		deletingId = id;
+		try {
+			await rpcClient.proxy.deleteCertificate({ id });
+			toast.success('Certificate removed');
+			await certificatesStore.refresh();
+		} catch (error: unknown) {
+			toast.error(rpcErrorMessage(error, 'Failed to remove the certificate'));
+		} finally {
+			deletingId = '';
+			removeId = '';
+		}
+	}
+
+	function expiryDate(seconds: bigint | undefined): Date | null {
+		if (!seconds) return null;
+		return new Date(Number(seconds) * 1000);
+	}
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
-	<div class="flex items-center justify-between gap-2 border-b bg-muted/30 px-4 py-3">
-		<div class="min-w-0">
-			<h3 class="text-sm font-semibold">Proxy</h3>
-			<p class="text-xs text-muted-foreground">
-				{#if !draftEnabled}
-					Off, servers bind host ports directly
-				{:else if running}
-					Running · {listenerCount}
-					{listenerCount === 1 ? 'listener' : 'listeners'} · {routeCount}
-					{routeCount === 1 ? 'route' : 'routes'}
-				{:else}
-					Enabled but not running
-				{/if}
-			</p>
-		</div>
-		<Button variant="ghost" size="icon" class="size-8" onclick={onClose} title="Close">
-			<X class="size-4" />
-		</Button>
-	</div>
+	<InspectorHeader title="Network Settings">
+		{#snippet icon()}
+			<Settings class="size-4 shrink-0 text-primary" />
+		{/snippet}
+	</InspectorHeader>
 
 	<div class="min-h-0 flex-1 space-y-5 overflow-y-auto p-4">
 		<label class="flex cursor-pointer items-center justify-between gap-3 rounded-lg border p-3.5">
@@ -113,11 +161,40 @@
 			<Switch checked={draftEnabled} onCheckedChange={toggleEnabled} disabled={saving} />
 		</label>
 
+		{#if enabled && !running}
+			<p class="flex items-start gap-2 text-xs text-status-busy">
+				<TriangleAlert class="mt-0.5 size-3.5 shrink-0" />
+				Routing is on but the proxy is not running yet
+			</p>
+		{/if}
+
 		{#if draftEnabled}
 			<div class="space-y-2">
 				<Label for="panel-hostnames">Panel hostnames</Label>
-				<HostnameListInput inputId="panel-hostnames" bind:hostnames={draftHostnames} disabled={saving} />
+				<HostnameListInput
+					inputId="panel-hostnames"
+					bind:hostnames={draftHostnames}
+					disabled={saving}
+				/>
 			</div>
+
+			<label class="flex cursor-pointer items-center justify-between gap-3 rounded-lg border p-3.5">
+				<span class="text-sm">
+					<span class="font-medium">Catch all</span>
+					<span class="mt-0.5 block text-xs font-normal text-muted-foreground">
+						{#if catchAllLocked}
+							Add a panel hostname first to turn this off
+						{:else}
+							The panel answers addresses that are not listed
+						{/if}
+					</span>
+				</span>
+				<Switch
+					checked={draftCatchAll}
+					onCheckedChange={(next) => (draftCatchAll = next)}
+					disabled={saving || catchAllLocked}
+				/>
+			</label>
 		{/if}
 
 		<div class="space-y-2 text-sm">
@@ -137,7 +214,67 @@
 			</div>
 		</div>
 
-		<p class="text-xs text-muted-foreground">Click anything on the map to inspect it</p>
+		<div class="overflow-hidden rounded-lg border">
+			<div class="flex items-center gap-2 border-b bg-muted/20 px-3.5 py-3">
+				<Lock class="size-4 shrink-0 text-primary" />
+				<span class="min-w-0 flex-1 text-sm">
+					<span class="block font-medium">Certificates</span>
+					<span class="mt-0.5 block text-xs text-muted-foreground">
+						Serve your web addresses over https
+					</span>
+				</span>
+				<Button variant="outline" size="sm" class="shrink-0" onclick={() => (certOpen = true)}>
+					<Plus class="size-4" />
+					Add
+				</Button>
+			</div>
+			<div class="divide-y">
+				{#each certificatesStore.certificates as cert (cert.id)}
+					{@const expires = expiryDate(cert.expiresAt?.seconds)}
+					{@const expired = !!expires && expires.getTime() < Date.now()}
+					<div class="flex items-start gap-2 px-3.5 py-2.5">
+						<div class="min-w-0 flex-1">
+							<p class="truncate font-mono text-xs" title={cert.coveredNames.join(', ')}>
+								{cert.coveredNames.join(', ') || 'Unreadable certificate'}
+							</p>
+							<p
+								class="mt-0.5 text-[11px] {expired
+									? 'text-status-danger'
+									: 'text-muted-foreground'}"
+							>
+								{#if expires}
+									{expired ? 'Expired' : 'Expires'}
+									{expires.toLocaleDateString(undefined, { dateStyle: 'medium' })}
+								{/if}
+							</p>
+						</div>
+						<Button
+							variant="ghost"
+							size="icon"
+							class="size-7 shrink-0 text-muted-foreground hover:text-status-danger"
+							title="Remove certificate"
+							disabled={deletingId === cert.id}
+							onclick={() => askRemove(cert.id)}
+						>
+							{#if deletingId === cert.id}
+								<Loader2 class="size-3.5 animate-spin" />
+							{:else}
+								<Trash2 class="size-3.5" />
+							{/if}
+						</Button>
+					</div>
+				{:else}
+					<p class="px-3.5 py-3 text-xs text-muted-foreground">
+						No certificates yet. Add one to serve your addresses over https.
+					</p>
+				{/each}
+			</div>
+		</div>
+
+		<p class="flex items-start gap-2 text-xs text-muted-foreground">
+			<MousePointerClick class="mt-0.5 size-3.5 shrink-0" />
+			Click anything on the map to open its settings here
+		</p>
 	</div>
 
 	{#if dirty}
@@ -157,3 +294,14 @@
 		</div>
 	{/if}
 </div>
+
+<CertificateDialog bind:open={certOpen} hostnames={knownHostnames} />
+
+<ConfirmDialog
+	bind:open={removeOpen}
+	title="Remove this certificate?"
+	description="Addresses it covers fall back to http until another certificate covers them."
+	confirmLabel="Remove certificate"
+	destructive
+	onConfirm={removeCert}
+/>

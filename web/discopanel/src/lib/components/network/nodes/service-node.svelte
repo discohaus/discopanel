@@ -1,10 +1,15 @@
 <script lang="ts">
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
-	import { Globe, MoonStar } from '@lucide/svelte';
+	import { Globe, Lock, MoonStar } from '@lucide/svelte';
+	import { certificatesStore } from '$lib/stores/certificates.svelte';
 	import type { ServiceNodeData } from '../topology-data';
+
+	// Lock follows certificate coverage of the shown name
+	certificatesStore.ensure();
 
 	let { data }: NodeProps = $props();
 	let d = $derived(data as ServiceNodeData);
+	let secured = $derived(d.http && certificatesStore.isSecured(d.summary));
 
 	const BORDER: Record<string, string> = {
 		'topo-edge-ok': 'border-l-status-ok',
@@ -23,7 +28,16 @@
 >
 	<div class="flex items-center gap-2">
 		<Globe class="size-3.5 shrink-0 text-muted-foreground" />
-		<p class="min-w-0 flex-1 truncate font-mono text-xs" title={d.names}>{d.summary}</p>
+		<p class="min-w-0 truncate font-mono text-xs" title={d.names}>{d.summary}</p>
+		{#if d.nameCount > 1}
+			<span class="shrink-0 font-mono text-[10px] text-muted-foreground" title={d.names}>
+				+{d.nameCount - 1}
+			</span>
+		{/if}
+		<span class="min-w-0 flex-1"></span>
+		{#if secured}
+			<Lock class="size-3 shrink-0 text-emerald-500" aria-label="Secure" />
+		{/if}
 		{#if d.staleCount > 0}
 			<span class="text-[10px] font-medium text-status-busy">stale</span>
 		{/if}
@@ -39,9 +53,7 @@
 	</div>
 	<div class="mt-1 flex items-center gap-2 pl-5.5">
 		<span class="text-[11px] text-muted-foreground">route</span>
-		<span class="font-mono text-[11px] text-muted-foreground">
-			:{d.port}{d.nameCount > 1 ? ` · ${d.nameCount} names` : ''}
-		</span>
+		<span class="font-mono text-[11px] text-muted-foreground">:{d.port}</span>
 	</div>
 </div>
 <Handle type="target" position={Position.Left} />

@@ -1,45 +1,44 @@
 <script lang="ts">
-	import { Button } from '$lib/components/ui/button';
 	import { AddressSelect } from '$lib/components/app';
-	import { PanelsTopLeft, X } from '@lucide/svelte';
+	import InspectorHeader from './inspector-header.svelte';
+	import { PanelsTopLeft } from '@lucide/svelte';
 	import { panelHost } from '$lib/utils/host';
+	import { webUrl } from '$lib/certs';
+	import { certificatesStore } from '$lib/stores/certificates.svelte';
+
+	// Schemes follow certificate coverage per name
+	certificatesStore.ensure();
 
 	let {
 		port,
 		hosts,
-		onClose
+		onBack
 	}: {
 		port: number;
 		// Hosts the panel answers on, configured else detected
 		hosts: string[];
-		onClose: () => void;
+		onBack: () => void;
 	} = $props();
 
 	// Browser host fills in when detection has nothing
 	let names = $derived(hosts.length > 0 ? hosts : [panelHost()]);
 
 	function addressFor(host: string): string {
-		const secure = window.location.protocol === 'https:';
-		const proto = secure ? 'https' : 'http';
-		return port === (secure ? 443 : 80) ? `${proto}://${host}` : `${proto}://${host}:${port}`;
+		const secure =
+			certificatesStore.isSecured(host) ||
+			(host === panelHost() && window.location.protocol === 'https:');
+		return webUrl(host, port, secure);
 	}
 
 	let addresses = $derived(names.map(addressFor));
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
-	<div class="flex items-center justify-between gap-2 border-b bg-muted/30 px-4 py-3">
-		<div class="flex min-w-0 items-center gap-2.5">
+	<InspectorHeader title="DiscoPanel" subtitle="Web UI on port {port}" {onBack}>
+		{#snippet icon()}
 			<PanelsTopLeft class="size-4 shrink-0 text-primary" />
-			<div class="min-w-0">
-				<h3 class="truncate text-sm font-semibold">DiscoPanel</h3>
-				<p class="text-xs text-muted-foreground">Web UI on port {port}</p>
-			</div>
-		</div>
-		<Button variant="ghost" size="icon" class="size-8" onclick={onClose} title="Back to overview">
-			<X class="size-4" />
-		</Button>
-	</div>
+		{/snippet}
+	</InspectorHeader>
 
 	<div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
 		<div>

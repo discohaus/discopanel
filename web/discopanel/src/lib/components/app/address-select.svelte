@@ -2,6 +2,7 @@
 	import { portal } from '$lib/portal';
 	import { addressScope } from '$lib/hostname';
 	import CopyButton from './copy-button.svelte';
+	import { Lock } from '@lucide/svelte';
 
 	let {
 		addresses = [],
@@ -55,6 +56,9 @@
 </script>
 
 {#snippet scopeBadge(address: string)}
+	{#if address.startsWith('https://')}
+		<Lock class="size-3 shrink-0 text-emerald-500" aria-label="Secure" />
+	{/if}
 	{@const scope = addressScope(address)}
 	{#if scope}
 		<span

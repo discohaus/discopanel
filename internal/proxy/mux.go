@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/discohaus/discopanel/pkg/logger"
 	"github.com/discohaus/discopanel/pkg/mcproto"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"golang.org/x/crypto/cryptobyte"
 )
 
 // One tcp socket dispatching minecraft, http, and relay lanes
@@ -24,6 +27,7 @@ type ListenerSocket struct {
 	routesMu sync.RWMutex
 
 	httpLane *httpLane
+	certs    CertSource
 
 	stats   map[string]*RouteStats
 	statsMu sync.Mutex
@@ -51,6 +55,7 @@ func NewListenerSocket(cfg *Config) *ListenerSocket {
 		ctx:        ctx,
 		cancel:     cancel,
 		gate:       cfg.Gate,
+		certs:      cfg.Certs,
 	}
 }
 
@@ -253,6 +258,8 @@ func (c *recordedConn) CloseWrite() error {
 type replayConn struct {
 	net.Conn
 	pending []byte
+	// Marks conns that arrived through tls termination
+	secure bool
 }
 
 func (c *replayConn) Read(p []byte) (int, error) {
@@ -314,13 +321,28 @@ func sniffHTTP(br *bufio.Reader) bool {
 
 // Sniffs the first bytes and dispatches to a lane
 func (s *ListenerSocket) handleConnection(raw net.Conn) {
-	rec := &recordedConn{Conn: raw}
-	raw.SetReadDeadline(time.Now().Add(handshakeTimeout))
+	s.dispatch(raw, false)
+}
+
+// Peek and descend dispatch, tls unwraps at most once
+func (s *ListenerSocket) dispatch(conn net.Conn, terminated bool) {
+	rec := &recordedConn{Conn: conn}
+	conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
 	br := bufio.NewReaderSize(rec, mcproto.MaxHandshakeLength)
 
-	// Pure relay ports skip the sniff entirely
+	// Pure relay ports skip the sniff, hello peek excepted
 	if s.relayOnly() {
-		s.serveRelay(raw, rec.take())
+		if !terminated && s.certsAvailable() {
+			// Short grace keeps server first protocols flowing
+			conn.SetReadDeadline(time.Now().Add(relaySniffGrace))
+			if hdr, err := br.Peek(3); err == nil && hdr[0] == tlsRecordHandshake && hdr[1] == 0x03 {
+				conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
+				s.serveTLS(conn, br, rec)
+				return
+			}
+			conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
+		}
+		s.serveRelay(conn, rec.take())
 		return
 	}
 
@@ -328,11 +350,19 @@ func (s *ListenerSocket) handleConnection(raw net.Conn) {
 	if err != nil {
 		// Silent clients still reach a configured relay
 		if _, ok := s.relayRoute(); ok {
-			s.serveRelay(raw, rec.take())
+			s.serveRelay(conn, rec.take())
 			return
 		}
-		raw.Close()
+		conn.Close()
 		return
+	}
+
+	// Hello detection, mc handshakes never carry 0x03 second
+	if !terminated && first[0] == tlsRecordHandshake {
+		if hdr, herr := br.Peek(3); herr == nil && hdr[1] == 0x03 {
+			s.serveTLS(conn, br, rec)
+			return
+		}
 	}
 
 	// Legacy ping detection, big handshakes also start 0xfe
@@ -340,36 +370,194 @@ func (s *ListenerSocket) handleConnection(raw net.Conn) {
 		peeked, _ := br.Peek(br.Buffered())
 		if len(peeked) < 3 {
 			// Grace peek separates split handshakes from bare pings
-			raw.SetReadDeadline(time.Now().Add(legacyPeekGrace))
+			conn.SetReadDeadline(time.Now().Add(legacyPeekGrace))
 			if more, err := br.Peek(3); err == nil {
 				peeked = more
 			}
-			raw.SetReadDeadline(time.Now().Add(handshakeTimeout))
+			conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
 		}
 		if len(peeked) < 3 || peeked[2] != 0x00 {
-			defer raw.Close()
-			s.serveLegacyPing(raw, peeked)
+			defer conn.Close()
+			s.serveLegacyPing(conn, peeked)
 			return
 		}
 	} else if sniffHTTP(br) {
-		s.serveHTTPConn(rec, raw)
+		s.serveHTTPConn(rec, conn, terminated)
 		return
 	}
 
 	handshake, err := mcproto.ReadHandshakePacket(br)
 	if err != nil {
 		if _, ok := s.relayRoute(); ok {
-			s.serveRelay(raw, rec.take())
+			s.serveRelay(conn, rec.take())
 			return
 		}
-		s.logger.Debug("Unrecognized protocol from %s on %s: %v", raw.RemoteAddr(), s.listenAddr, err)
-		raw.Close()
+		s.logger.Debug("Unrecognized protocol from %s on %s: %v", conn.RemoteAddr(), s.listenAddr, err)
+		conn.Close()
 		return
 	}
 
 	rec.stopRecording()
-	defer raw.Close()
-	s.serveMinecraft(raw, br, handshake)
+	defer conn.Close()
+	s.serveMinecraft(conn, br, handshake)
+}
+
+// First byte of a tls handshake record
+const tlsRecordHandshake = 0x16
+
+// Hello wait budget on otherwise sniffless relay ports
+const relaySniffGrace = 250 * time.Millisecond
+
+// Client hello size cap across records
+const maxClientHello = 64 << 10
+
+// True when termination material exists
+func (s *ListenerSocket) certsAvailable() bool {
+	return s.certs != nil && s.certs.HasCertificates()
+}
+
+// Terminates tls when a certificate matches the hello
+func (s *ListenerSocket) serveTLS(conn net.Conn, br *bufio.Reader, rec *recordedConn) {
+	sni, ok := readClientHelloSNI(br)
+	pending := rec.take()
+
+	var cert *tls.Certificate
+	if ok && s.certs != nil {
+		if matched, found := s.certs.MatchCertificate(sni); found {
+			cert = matched
+		}
+	}
+	if cert == nil {
+		// Unknown names pass through to a relay backend
+		if _, hasRelay := s.relayRoute(); hasRelay {
+			s.serveRelay(conn, pending)
+			return
+		}
+		s.logger.Debug("No certificate for %q from %s on %s", sni, conn.RemoteAddr(), s.listenAddr)
+		conn.Close()
+		return
+	}
+
+	tlsConn := tls.Server(&replayConn{Conn: conn, pending: pending}, terminationConfig(cert))
+	conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
+	if err := tlsConn.HandshakeContext(s.ctx); err != nil {
+		s.logger.Debug("TLS handshake failed from %s on %s: %v", conn.RemoteAddr(), s.listenAddr, err)
+		conn.Close()
+		return
+	}
+
+	// Plaintext re-enters the sniff exactly once
+	s.dispatch(tlsConn, true)
+}
+
+// Server tls config for one matched certificate
+func terminationConfig(cert *tls.Certificate) *tls.Config {
+	return &tls.Config{
+		Certificates: []tls.Certificate{*cert},
+		NextProtos:   []string{"h2", "http/1.1"},
+	}
+}
+
+// Reads the hello and extracts the sni, consumed bytes stay recorded
+func readClientHelloSNI(br *bufio.Reader) (string, bool) {
+	msg, ok := readHandshakeMessage(br)
+	if !ok {
+		return "", false
+	}
+	return parseHelloSNI(msg)
+}
+
+// Reassembles one handshake message across records
+func readHandshakeMessage(br *bufio.Reader) ([]byte, bool) {
+	var msg []byte
+	need := -1
+	for {
+		var hdr [5]byte
+		if _, err := io.ReadFull(br, hdr[:]); err != nil {
+			return nil, false
+		}
+		if hdr[0] != tlsRecordHandshake || hdr[1] != 0x03 {
+			return nil, false
+		}
+		recLen := int(hdr[3])<<8 | int(hdr[4])
+		if recLen == 0 || recLen > (1<<14)+256 {
+			return nil, false
+		}
+		frag := make([]byte, recLen)
+		if _, err := io.ReadFull(br, frag); err != nil {
+			return nil, false
+		}
+		msg = append(msg, frag...)
+		if need < 0 && len(msg) >= 4 {
+			if msg[0] != 0x01 {
+				return nil, false
+			}
+			need = (int(msg[1])<<16 | int(msg[2])<<8 | int(msg[3])) + 4
+			if need > maxClientHello {
+				return nil, false
+			}
+		}
+		if need >= 0 && len(msg) >= need {
+			return msg[:need], true
+		}
+		if len(msg) > maxClientHello {
+			return nil, false
+		}
+	}
+}
+
+// Pulls the server name extension from a hello
+func parseHelloSNI(msg []byte) (string, bool) {
+	s := cryptobyte.String(msg)
+	var msgType uint8
+	var body cryptobyte.String
+	if !s.ReadUint8(&msgType) || msgType != 0x01 || !s.ReadUint24LengthPrefixed(&body) {
+		return "", false
+	}
+	var legacyVersion uint16
+	var random []byte
+	if !body.ReadUint16(&legacyVersion) || !body.ReadBytes(&random, 32) {
+		return "", false
+	}
+	var sessionID, ciphers, compression cryptobyte.String
+	if !body.ReadUint8LengthPrefixed(&sessionID) ||
+		!body.ReadUint16LengthPrefixed(&ciphers) ||
+		!body.ReadUint8LengthPrefixed(&compression) {
+		return "", false
+	}
+	if body.Empty() {
+		return "", false
+	}
+	var extensions cryptobyte.String
+	if !body.ReadUint16LengthPrefixed(&extensions) {
+		return "", false
+	}
+	for !extensions.Empty() {
+		var extType uint16
+		var extData cryptobyte.String
+		if !extensions.ReadUint16(&extType) || !extensions.ReadUint16LengthPrefixed(&extData) {
+			return "", false
+		}
+		if extType != 0 {
+			continue
+		}
+		var names cryptobyte.String
+		if !extData.ReadUint16LengthPrefixed(&names) {
+			return "", false
+		}
+		for !names.Empty() {
+			var nameType uint8
+			var name cryptobyte.String
+			if !names.ReadUint8(&nameType) || !names.ReadUint16LengthPrefixed(&name) {
+				return "", false
+			}
+			if nameType == 0 {
+				return string(name), true
+			}
+		}
+		return "", false
+	}
+	return "", false
 }
 
 // Forwards sniffed bytes then splices raw sockets
@@ -400,10 +588,10 @@ func (s *ListenerSocket) serveRelay(raw net.Conn, pending []byte) {
 }
 
 // Hands an http connection to the lane server
-func (s *ListenerSocket) serveHTTPConn(rec *recordedConn, raw net.Conn) {
-	raw.SetReadDeadline(time.Time{})
-	if !s.feed.Push(&replayConn{Conn: raw, pending: rec.take()}) {
-		raw.Close()
+func (s *ListenerSocket) serveHTTPConn(rec *recordedConn, conn net.Conn, secure bool) {
+	conn.SetReadDeadline(time.Time{})
+	if !s.feed.Push(&replayConn{Conn: conn, pending: rec.take(), secure: secure}) {
+		conn.Close()
 	}
 }
 

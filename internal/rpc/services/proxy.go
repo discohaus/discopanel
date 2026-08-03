@@ -107,6 +107,7 @@ func (s *ProxyService) GetProxyStatus(ctx context.Context, req *connect.Request[
 		proxyConfig = &v1.ProxyConfig{
 			Enabled:   s.proxyManager.Enabled(),
 			Hostnames: s.proxyManager.PanelHostnames(),
+			CatchAll:  s.proxyManager.PanelCatchAll(),
 		}
 	}
 
@@ -150,7 +151,63 @@ func (s *ProxyService) GetProxyStatus(ctx context.Context, req *connect.Request[
 		ListenPort:   primaryPort,
 		Running:      running,
 		ActiveRoutes: activeRoutes,
+		CatchAll:     proxyConfig.CatchAll,
 	}), nil
+}
+
+// Lists certificates with derived coverage
+func (s *ProxyService) GetCertificates(ctx context.Context, req *connect.Request[v1.GetCertificatesRequest]) (*connect.Response[v1.GetCertificatesResponse], error) {
+	rows, err := s.store.ListCertificates(ctx)
+	if err != nil {
+		s.log.Error("Failed to list certificates: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list certificates"))
+	}
+	for _, row := range rows {
+		proxy.FillCertificateDerived(row)
+	}
+	return connect.NewResponse(&v1.GetCertificatesResponse{Certificates: rows}), nil
+}
+
+// Validates and stores an uploaded pair
+func (s *ProxyService) UploadCertificate(ctx context.Context, req *connect.Request[v1.UploadCertificateRequest]) (*connect.Response[v1.UploadCertificateResponse], error) {
+	certPEM := strings.TrimSpace(req.Msg.CertPem)
+	keyPEM := strings.TrimSpace(req.Msg.KeyPem)
+	if certPEM == "" || keyPEM == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("certificate and key are both required"))
+	}
+	if err := proxy.ValidateCertificatePair(certPEM, keyPEM); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	row := &v1.Certificate{
+		Id:      uuid.New().String(),
+		CertPem: certPEM,
+		KeyPem:  keyPEM,
+	}
+	if err := s.store.CreateCertificate(ctx, row); err != nil {
+		s.log.Error("Failed to store certificate: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to store certificate"))
+	}
+	if err := s.proxyManager.ReloadCertificates(ctx); err != nil {
+		s.log.Error("Failed to reload certificates: %v", err)
+	}
+	out, _ := proto.Clone(row).(*v1.Certificate)
+	proxy.FillCertificateDerived(out)
+	return connect.NewResponse(&v1.UploadCertificateResponse{Certificate: out}), nil
+}
+
+// Removes an uploaded certificate
+func (s *ProxyService) DeleteCertificate(ctx context.Context, req *connect.Request[v1.DeleteCertificateRequest]) (*connect.Response[v1.DeleteCertificateResponse], error) {
+	if _, err := s.store.GetCertificate(ctx, req.Msg.Id); err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("certificate not found"))
+	}
+	if err := s.store.DeleteCertificate(ctx, req.Msg.Id); err != nil {
+		s.log.Error("Failed to delete certificate: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete certificate"))
+	}
+	if err := s.proxyManager.ReloadCertificates(ctx); err != nil {
+		s.log.Error("Failed to reload certificates: %v", err)
+	}
+	return connect.NewResponse(&v1.DeleteCertificateResponse{}), nil
 }
 
 // Computes hostname suggestions for any hostname input
@@ -169,6 +226,12 @@ func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Reque
 	hostnames, err := proxy.NormalizeHostnames(msg.Hostnames)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// Catch all off needs at least one named hostname
+	if !msg.CatchAll && len(hostnames) == 0 {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("add a panel hostname before turning catch all off"))
 	}
 
 	// Registry claim holds the names through the persist
@@ -197,6 +260,7 @@ func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Reque
 		Id:        "default",
 		Enabled:   msg.Enabled,
 		Hostnames: hostnames,
+		CatchAll:  msg.CatchAll,
 	}
 
 	if err := s.store.SaveProxyConfig(ctx, proxyConfig); err != nil {
@@ -215,13 +279,13 @@ func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Reque
 		if rerr := s.store.SaveProxyConfig(ctx, prevConfig); rerr != nil {
 			s.log.Error("Failed to restore previous proxy configuration: %v", rerr)
 		} else {
-			s.proxyManager.ApplyConfig(ctx, prevConfig.Enabled, prevConfig.Hostnames)
+			s.proxyManager.ApplyConfig(ctx, prevConfig.Enabled, prevConfig.Hostnames, prevConfig.CatchAll)
 		}
 	}
 
 	// Manager owns runtime state and reconciles sockets
 	if s.proxyManager != nil {
-		if err := s.proxyManager.ApplyConfig(ctx, msg.Enabled, hostnames); err != nil {
+		if err := s.proxyManager.ApplyConfig(ctx, msg.Enabled, hostnames, msg.CatchAll); err != nil {
 			s.log.Error("Failed to apply proxy configuration: %v", err)
 			restorePrev()
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to apply proxy configuration: %w", err))

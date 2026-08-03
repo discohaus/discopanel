@@ -139,7 +139,7 @@ func TestReservationProto(t *testing.T) {
 
 func TestPortNetRequests(t *testing.T) {
 	ports := []*v1.NetworkPort{
-		{Name: "web", ContainerPort: 8100, HostPort: 8100, Protocol: httpProto, ProxyEnabled: true},
+		{Name: "web", ContainerPort: 8100, HostPort: 8100, Protocol: httpProto, ProxyEnabled: true, CatchAll: true},
 		{Name: "voice", ContainerPort: 19132, HostPort: 19132, Protocol: udp, ProxyEnabled: true},
 		{Name: "raw", ContainerPort: 9000, HostPort: 9000, Protocol: tcp},
 		{Name: "unset", ContainerPort: 9001, HostPort: 0, Protocol: tcp},
@@ -167,9 +167,10 @@ func TestPortNetRequests(t *testing.T) {
 		t.Fatalf("hostname override must apply: %+v", reqs[3])
 	}
 
+	// Flagged web port claims its name and the catch all
 	reqs = PortNetRequests(ports, []string{"play.example.com"}, true)
-	if len(reqs) != 5 {
-		t.Fatalf("want 5 requests with fallback hostname, got %d", len(reqs))
+	if len(reqs) != 6 {
+		t.Fatalf("want 6 requests with fallback hostname, got %d", len(reqs))
 	}
 
 	// Disabled proxy downgrades every port to a bind

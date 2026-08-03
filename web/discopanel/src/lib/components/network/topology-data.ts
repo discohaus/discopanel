@@ -116,6 +116,7 @@ export interface ServiceNodeData extends Record<string, unknown>, ActiveFlag {
 	wakeable: boolean;
 	live: boolean;
 	dimmed: boolean;
+	http: boolean;
 	selection: Selection;
 }
 
@@ -656,6 +657,7 @@ export function buildGraph(
 			wakeable: svc.wakeable,
 			live: svc.live,
 			dimmed,
+			http: svc.protocols.includes(ModuleProtocol.HTTP),
 			selection: {
 				kind: 'service',
 				port: svc.port,

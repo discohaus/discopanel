@@ -3,23 +3,28 @@
 	import { NetworkOwnerKind } from '$lib/proto/discopanel/v1/proxy_pb';
 	import { ModuleProtocol } from '$lib/proto/discopanel/v1/storage_pb';
 	import { Badge } from '$lib/components/ui/badge';
-	import { Button } from '$lib/components/ui/button';
 	import { AddressSelect } from '$lib/components/app';
+	import InspectorHeader from './inspector-header.svelte';
 	import { routeStateClass, routeStateLabel, routeStatsSummary } from '$lib/proxy-route';
 	import { playerAddress } from '$lib/hostname';
+	import { webUrl } from '$lib/certs';
+	import { certificatesStore } from '$lib/stores/certificates.svelte';
 	import { laneLabel, type LaneService } from '../topology-data';
-	import { ArrowUpRight, X } from '@lucide/svelte';
+	import { ArrowUpRight, Globe } from '@lucide/svelte';
+
+	// Locks and schemes follow certificate coverage
+	certificatesStore.ensure();
 
 	let {
 		service,
 		ownerName,
 		serverId,
-		onClose
+		onBack
 	}: {
 		service: LaneService;
 		ownerName: string;
 		serverId: string;
-		onClose: () => void;
+		onBack: () => void;
 	} = $props();
 
 	let isHttp = $derived(service.protocols.includes(ModuleProtocol.HTTP));
@@ -31,16 +36,14 @@
 		for (const name of service.hostnames) {
 			if (isMinecraft) out.push(playerAddress(name, service.port));
 			if (isHttp) {
-				out.push(service.port === 80 ? `http://${name}` : `http://${name}:${service.port}`);
+				out.push(webUrl(name, service.port, certificatesStore.isSecured(name)));
 			}
 			if (!isMinecraft && !isHttp) out.push(name);
 		}
 		return out;
 	});
 
-	let addressLabel = $derived(
-		isMinecraft ? 'Player address' : isHttp ? 'Web address' : 'Address'
-	);
+	let addressLabel = $derived(isMinecraft ? 'Player address' : isHttp ? 'Web address' : 'Address');
 	// Per name state matches, one route speaks for the service
 	let route = $derived(service.routes[0] ?? null);
 	let stats = $derived(route ? routeStatsSummary(route) : '');
@@ -48,17 +51,15 @@
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
-	<div class="flex items-center justify-between gap-2 border-b bg-muted/30 px-4 py-3">
-		<div class="min-w-0">
-			<h3 class="truncate text-sm font-semibold">{ownerName}</h3>
-			<p class="text-xs text-muted-foreground">
-				{service.protocols.map(laneLabel).join(' + ')} on port {service.port}
-			</p>
-		</div>
-		<Button variant="ghost" size="icon" class="size-8" onclick={onClose} title="Back to overview">
-			<X class="size-4" />
-		</Button>
-	</div>
+	<InspectorHeader
+		title={ownerName}
+		subtitle="{service.protocols.map(laneLabel).join(' + ')} on port {service.port}"
+		{onBack}
+	>
+		{#snippet icon()}
+			<Globe class="size-4 shrink-0 text-primary" />
+		{/snippet}
+	</InspectorHeader>
 
 	<div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
 		{#if service.hostnames.length > 0}

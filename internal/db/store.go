@@ -9,12 +9,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-viper/mapstructure/v2"
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/minecraft"
 	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/runtimespec"
+	"github.com/go-viper/mapstructure/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -500,8 +500,9 @@ func (s *Store) GetProxyConfig(ctx context.Context) (*v1.ProxyConfig, bool, erro
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Missing row mirrors the file config defaults
 			return &v1.ProxyConfig{
-				Id:      "default",
-				Enabled: s.cfg.Proxy.Enabled,
+				Id:       "default",
+				Enabled:  s.cfg.Proxy.Enabled,
+				CatchAll: true,
 			}, true, nil
 		}
 		return nil, false, err

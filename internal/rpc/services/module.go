@@ -158,6 +158,9 @@ func (s *ModuleService) CreateModuleTemplate(ctx context.Context, req *connect.R
 	if err := module.ValidateConfigFieldDefs(msg.ConfigFields); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	if err := validateTemplatePorts(msg.Ports); err != nil {
+		return nil, err
+	}
 
 	template := &v1.ModuleTemplate{
 		Id:                      uuid.New().String(),
@@ -258,6 +261,9 @@ func (s *ModuleService) UpdateModuleTemplate(ctx context.Context, req *connect.R
 		template.Documentation = *msg.Documentation
 	}
 	if len(msg.Ports) > 0 {
+		if err := validateTemplatePorts(msg.Ports); err != nil {
+			return nil, err
+		}
 		template.Ports = msg.Ports
 	}
 	if len(msg.SuggestedDependencies) > 0 {
@@ -463,7 +469,7 @@ func (s *ModuleService) rejectProxiedPortsWhileDisabled(ports []*v1.NetworkPort)
 }
 
 // Validates hostname overrides on a port list in place
-func normalizeModulePorts(ports []*v1.NetworkPort) error {
+func normalizeModulePorts(ports []*v1.NetworkPort, fallbackHostnames []string) error {
 	for _, port := range ports {
 		if port == nil {
 			continue
@@ -474,14 +480,30 @@ func normalizeModulePorts(ports []*v1.NetworkPort) error {
 		}
 		if len(hostnames) == 0 {
 			port.Hostnames = nil
+		} else {
+			switch port.Protocol {
+			case v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT:
+			default:
+				return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("hostnames only apply to http and minecraft ports, not %s", port.Name))
+			}
+			port.Hostnames = hostnames
+		}
+		if err := proxy.ValidatePortRouting(port, fallbackHostnames); err != nil {
+			return connect.NewError(connect.CodeInvalidArgument, err)
+		}
+	}
+	return nil
+}
+
+// Rejects impossible catch all flags on template ports
+func validateTemplatePorts(ports []*v1.NetworkPort) error {
+	for _, port := range ports {
+		if port == nil {
 			continue
 		}
-		switch port.Protocol {
-		case v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT:
-		default:
-			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("hostnames only apply to http and minecraft ports, not %s", port.Name))
+		if port.CatchAll && port.Protocol != v1.ModuleProtocol_MODULE_PROTOCOL_HTTP {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("catch all only applies to http ports, not %s", port.Name))
 		}
-		port.Hostnames = hostnames
 	}
 	return nil
 }
@@ -543,7 +565,7 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 		}
 	}
 
-	if err := normalizeModulePorts(ports); err != nil {
+	if err := normalizeModulePorts(ports, server.ProxyHostnames); err != nil {
 		return nil, err
 	}
 
@@ -739,7 +761,7 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 			allocatedInRequest[allocatedPort] = true
 		}
 
-		if err := normalizeModulePorts(msg.Ports); err != nil {
+		if err := normalizeModulePorts(msg.Ports, hostnames); err != nil {
 			return nil, err
 		}
 

@@ -97,6 +97,28 @@ service ProxyService {
       action: ACTION_TYPE_READ
     };
   }
+  // List certificates with derived coverage
+  rpc GetCertificates(GetCertificatesRequest) returns (GetCertificatesResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_PROXY
+      action: ACTION_TYPE_READ
+    };
+  }
+  // Store a validated certificate and key pair
+  rpc UploadCertificate(UploadCertificateRequest) returns (UploadCertificateResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_PROXY
+      action: ACTION_TYPE_CREATE
+    };
+  }
+  // Remove an uploaded certificate
+  rpc DeleteCertificate(DeleteCertificateRequest) returns (DeleteCertificateResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_PROXY
+      action: ACTION_TYPE_DELETE
+      object_id_field: "id"
+    };
+  }
 }
 
 // Route serving state
@@ -227,6 +249,8 @@ message GetProxyStatusResponse {
   int32 listen_port = 5; // Primary port
   bool running = 6;
   int32 active_routes = 7;
+  // Panel also answers unmatched hostnames
+  bool catch_all = 8;
 }
 
 // Proxy settings to update
@@ -238,6 +262,8 @@ message UpdateProxyConfigRequest {
   bool convert_to_direct = 3;
   // Port picks for the convert, missing servers auto assign
   repeated ProxiedServerImpact assignments = 4;
+  // Panel also answers unmatched hostnames
+  bool catch_all = 5;
 }
 
 // Empty impact request
@@ -366,6 +392,35 @@ message UpdateServerRoutingResponse {
   repeated string hostnames = 1;
   string proxy_listener_id = 2;
 }
+
+// Empty certificates request
+message GetCertificatesRequest {}
+
+// All certificates, keys redacted
+message GetCertificatesResponse {
+  repeated Certificate certificates = 1;
+}
+
+// Pem material to validate and store
+message UploadCertificateRequest {
+  // Leaf first pem chain
+  string cert_pem = 1;
+  // Matching pem private key
+  string key_pem = 2;
+}
+
+// Stored certificate, key redacted
+message UploadCertificateResponse {
+  Certificate certificate = 1;
+}
+
+// Certificate to delete
+message DeleteCertificateRequest {
+  string id = 1;
+}
+
+// Empty deletion response
+message DeleteCertificateResponse {}
 
 // Suggestion context, label prefixes every base name
 message GetHostnameSuggestionsRequest {

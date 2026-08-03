@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,6 +13,18 @@ import (
 
 	"github.com/discohaus/discopanel/pkg/logger"
 )
+
+// Context key marking tls terminated requests
+type secureConnKey struct{}
+
+// True when the request arrived over tls
+func requestSecure(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	secure, _ := r.Context().Value(secureConnKey{}).(bool)
+	return secure
+}
 
 // Keys the proxy cache by backend and transport flavor
 type proxyKey struct {
@@ -54,6 +67,13 @@ func (p *httpLane) start(feed *connFeed) {
 	protocols.SetHTTP1(true)
 	protocols.SetUnencryptedHTTP2(true)
 	p.server.Protocols = protocols
+	// Terminated conns stamp their requests as secure
+	p.server.ConnContext = func(ctx context.Context, c net.Conn) context.Context {
+		if rc, ok := c.(*replayConn); ok && rc.secure {
+			return context.WithValue(ctx, secureConnKey{}, true)
+		}
+		return ctx
+	}
 	go func(server *http.Server) {
 		if err := server.Serve(feed); err != nil && err != http.ErrServerClosed && err != net.ErrClosed {
 			p.logger.Error("HTTP lane error: %v", err)
@@ -126,6 +146,10 @@ func (p *httpLane) proxyFor(route *Route) *httputil.ReverseProxy {
 			pr.SetURL(target)
 			pr.SetXForwarded()
 			pr.Out.Host = pr.In.Host
+			// Terminated requests report the https scheme
+			if requestSecure(pr.In) {
+				pr.Out.Header.Set("X-Forwarded-Proto", "https")
+			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			p.logger.Error("Proxy error for %s: %v", r.Host, err)
@@ -198,7 +222,7 @@ func (p *httpLane) handleWebSocket(w http.ResponseWriter, r *http.Request, route
 		r.Header.Set("X-Forwarded-For", clientIP)
 	}
 	proto := "http"
-	if r.TLS != nil {
+	if requestSecure(r) {
 		proto = "https"
 	}
 	r.Header.Set("X-Forwarded-Proto", proto)

@@ -23,7 +23,7 @@ const publicIPTTL = 30 * time.Minute
 const publicRetryDelay = time.Minute
 
 // Wildcard dns providers resolving ip-shaped names
-var instantSuffixes = []string{"sslip.io", "traefik.me"}
+var instantSuffixes = []string{"sslip.io"}
 
 // Echo services answering with the caller's address
 var publicIPEndpoints = []string{
@@ -66,6 +66,19 @@ func instantBase(suffix, ip string) string {
 	return strings.ReplaceAll(ip, ".", "-") + "." + suffix
 }
 
+// Ip embedded in one label, dash prefixes tolerated
+func embeddedIP(label string) net.IP {
+	if ip := net.ParseIP(strings.ReplaceAll(label, "-", ".")); ip != nil {
+		return ip
+	}
+	parts := strings.Split(label, "-")
+	if len(parts) < 4 {
+		return nil
+	}
+	tail := parts[len(parts)-4:]
+	return net.ParseIP(strings.Join(tail, "."))
+}
+
 // Reachability a base name implies for players
 func hostnameScope(name string) v1.HostnameScope {
 	for _, suffix := range instantSuffixes {
@@ -76,7 +89,7 @@ func hostnameScope(name string) v1.HostnameScope {
 		if i := strings.LastIndexByte(trimmed, '.'); i >= 0 {
 			trimmed = trimmed[i+1:]
 		}
-		ip := net.ParseIP(strings.ReplaceAll(trimmed, "-", "."))
+		ip := embeddedIP(trimmed)
 		if ip == nil {
 			continue
 		}
@@ -148,16 +161,27 @@ func (m *Manager) HostnameSuggestions(label string) []*v1.HostnameSuggestion {
 
 	var out []*v1.HostnameSuggestion
 	seen := make(map[string]bool)
-	add := func(base string, scope v1.HostnameScope) {
-		name := base
-		if label != "" {
-			name = label + "." + base
-		}
+	push := func(name string, scope v1.HostnameScope) {
 		if name == "" || seen[name] || !ValidHostname(name) {
 			return
 		}
 		seen[name] = true
 		out = append(out, &v1.HostnameSuggestion{Hostname: name, Scope: scope})
+	}
+	add := func(base string, scope v1.HostnameScope) {
+		name := base
+		if label != "" {
+			name = label + "." + base
+		}
+		push(name, scope)
+	}
+	// Dash join keeps instant names one wildcard label
+	addInstant := func(base string, scope v1.HostnameScope) {
+		name := base
+		if label != "" {
+			name = label + "-" + base
+		}
+		push(name, scope)
 	}
 
 	// Configured names first, they are deliberate
@@ -166,12 +190,12 @@ func (m *Manager) HostnameSuggestions(label string) []*v1.HostnameSuggestion {
 	}
 	if ip, ok := m.lanIPLocked(); ok {
 		for _, suffix := range instantSuffixes {
-			add(instantBase(suffix, ip), v1.HostnameScope_HOSTNAME_SCOPE_LAN)
+			addInstant(instantBase(suffix, ip), v1.HostnameScope_HOSTNAME_SCOPE_LAN)
 		}
 	}
 	if ip := m.publicIPLocked(); ip != "" {
 		for _, suffix := range instantSuffixes {
-			add(instantBase(suffix, ip), v1.HostnameScope_HOSTNAME_SCOPE_PUBLIC)
+			addInstant(instantBase(suffix, ip), v1.HostnameScope_HOSTNAME_SCOPE_PUBLIC)
 		}
 	}
 	return out

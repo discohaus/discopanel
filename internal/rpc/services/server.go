@@ -72,7 +72,7 @@ type faviconEntry struct {
 }
 
 // Normalizes additional ports, proxied ones may route
-func normalizeAdditionalPorts(ports []*v1.NetworkPort, proxyOn bool) ([]*v1.NetworkPort, error) {
+func normalizeAdditionalPorts(ports []*v1.NetworkPort, serverHostnames []string, proxyOn bool) ([]*v1.NetworkPort, error) {
 	var out []*v1.NetworkPort
 	for _, p := range ports {
 		if p == nil {
@@ -104,14 +104,19 @@ func normalizeAdditionalPorts(ports []*v1.NetworkPort, proxyOn bool) ([]*v1.Netw
 		if err != nil {
 			return nil, fmt.Errorf("%w on port %s", err, p.Name)
 		}
-		out = append(out, &v1.NetworkPort{
+		normalized := &v1.NetworkPort{
 			ContainerPort: p.ContainerPort,
 			HostPort:      p.HostPort,
 			Protocol:      protocol,
 			Name:          p.Name,
 			ProxyEnabled:  p.ProxyEnabled,
 			Hostnames:     hostnames,
-		})
+			CatchAll:      p.CatchAll,
+		}
+		if err := proxy.ValidatePortRouting(normalized, serverHostnames); err != nil {
+			return nil, err
+		}
+		out = append(out, normalized)
 	}
 	return out, nil
 }
@@ -393,7 +398,7 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 		dockerImage = ""
 	}
 
-	additionalPorts, err := normalizeAdditionalPorts(msg.AdditionalPorts, s.proxy.Enabled())
+	additionalPorts, err := normalizeAdditionalPorts(msg.AdditionalPorts, proxyHostnames, s.proxy.Enabled())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -641,7 +646,7 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 
 	// Handle additional ports update
 	if len(msg.AdditionalPorts) > 0 {
-		additionalPorts, err := normalizeAdditionalPorts(msg.AdditionalPorts, s.proxy.Enabled())
+		additionalPorts, err := normalizeAdditionalPorts(msg.AdditionalPorts, server.ProxyHostnames, s.proxy.Enabled())
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}

@@ -74,6 +74,7 @@
 	let listeners = $state<ProxyListenerWithCount[]>([]);
 	let modules = $state<Module[]>([]);
 	let configHostnames = $state<string[]>([]);
+	let configCatchAll = $state(true);
 	let suggestions = $state<GetHostnameSuggestionsResponse | null>(null);
 	let selection = $state<Selection>({ kind: 'overview' });
 	let disableOpen = $state(false);
@@ -85,9 +86,17 @@
 	// Graph rebuilds whenever any input changes
 	$effect(() => {
 		if (!topology) return;
-		const graph = buildGraph(topology, listeners, $serversStore, modules, selection, moved, (sel) => {
-			selection = sel;
-		});
+		const graph = buildGraph(
+			topology,
+			listeners,
+			$serversStore,
+			modules,
+			selection,
+			moved,
+			(sel) => {
+				selection = sel;
+			}
+		);
 		nodes = graph.nodes;
 		edges = graph.edges;
 	});
@@ -156,6 +165,7 @@
 			listeners = lst.listeners;
 			modules = mods.modules;
 			configHostnames = status.hostnames;
+			configCatchAll = status.catchAll;
 			suggestions = sugg;
 			loadError = false;
 		} catch {
@@ -178,6 +188,7 @@
 			listeners = lst.listeners;
 			modules = mods.modules;
 			configHostnames = status.hostnames;
+			configCatchAll = status.catchAll;
 			suggestions = sugg;
 			loadError = false;
 		} catch {
@@ -374,6 +385,17 @@
 				transport: r.transport === NetworkTransport.UDP ? 'udp' : 'tcp'
 			}));
 	});
+	// Every hostname on the map, certificates report coverage
+	let knownHostnames = $derived.by(() => {
+		const names = [...configHostnames];
+		const push = (name: string) => {
+			if (name && !names.includes(name)) names.push(name);
+		};
+		for (const res of topology?.reservations ?? []) push(res.hostname);
+		for (const route of topology?.routes ?? []) push(route.hostname);
+		return names.sort();
+	});
+
 	let selectedServerListenPort = $derived.by(() => {
 		if (!selectedServer?.proxyListenerId) return 0;
 		return (
@@ -481,11 +503,11 @@
 			<Pane defaultSize={30} minSize={22} class="max-lg:!flex-auto">
 				<div class="h-full min-h-0 border-l bg-card max-lg:border-t max-lg:border-l-0">
 					{#if selection.kind === 'panel'}
-						<PanelInspector port={topology.panelPort} hosts={panelHosts} onClose={backToOverview} />
+						<PanelInspector port={topology.panelPort} hosts={panelHosts} onBack={backToOverview} />
 					{:else if selection.kind === 'internet'}
-						<InternetInspector publicIp={topology.publicIp} onClose={backToOverview} />
+						<InternetInspector publicIp={topology.publicIp} onBack={backToOverview} />
 					{:else if selection.kind === 'router'}
-						<RouterInspector gatewayIp={topology.gatewayIp} onClose={backToOverview} />
+						<RouterInspector gatewayIp={topology.gatewayIp} onBack={backToOverview} />
 					{:else if selection.kind === 'listener' && selectedListener}
 						<ListenerInspector
 							target={selectedListener}
@@ -495,7 +517,7 @@
 							servers={$serversStore}
 							{modules}
 							onDone={onMutated}
-							onClose={backToOverview}
+							onBack={backToOverview}
 						/>
 					{:else if selection.kind === 'listener-create'}
 						<ListenerInspector
@@ -506,7 +528,7 @@
 							servers={$serversStore}
 							{modules}
 							onDone={onMutated}
-							onClose={backToOverview}
+							onBack={backToOverview}
 						/>
 					{:else if selection.kind === 'lane' && selectedLane}
 						<LaneInspector
@@ -516,7 +538,7 @@
 							routeCount={selectedLane.routeCount}
 							ownerName={selectedLane.ownerName}
 							serverId={selectedLane.serverId}
-							onClose={backToOverview}
+							onBack={backToOverview}
 						/>
 					{:else if selection.kind === 'entry' && selectedEntry}
 						<EntryInspector
@@ -527,14 +549,14 @@
 							serverId={selectedEntry.serverId}
 							detail={selectedEntry.detail}
 							addresses={entryAddresses}
-							onClose={backToOverview}
+							onBack={backToOverview}
 						/>
 					{:else if selection.kind === 'service' && selectedService}
 						<ServiceInspector
 							service={selectedService}
 							ownerName={selectedServiceOwner.name}
 							serverId={selectedServiceOwner.serverId}
-							onClose={backToOverview}
+							onBack={backToOverview}
 						/>
 					{:else if (selection.kind === 'server' && selectedServer) || (selection.kind === 'module' && selectedModule)}
 						<BackendInspector
@@ -542,19 +564,20 @@
 							module={selectedModule}
 							listenPort={selectedServerListenPort}
 							extraPorts={selectedExtraPorts}
-							onClose={backToOverview}
+							onBack={backToOverview}
 						/>
 					{:else}
 						<ProxyInspector
 							enabled={topology.proxyEnabled}
 							running={topology.proxyRunning}
 							hostnames={configHostnames}
+							catchAll={configCatchAll}
 							listenerCount={listeners.length}
 							{routeCount}
 							{hasProxiedWorkloads}
+							{knownHostnames}
 							onRequestDisable={() => (disableOpen = true)}
 							onChanged={onMutated}
-							onClose={backToOverview}
 						/>
 					{/if}
 				</div>

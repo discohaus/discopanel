@@ -16,7 +16,7 @@ func TestInstantBase(t *testing.T) {
 	if !hostnamePattern.MatchString("survival." + instantBase("sslip.io", "10.0.0.2")) {
 		t.Fatal("derived base must pass the hostname pattern")
 	}
-	if got := instantBase("traefik.me", ""); got != "" {
+	if got := instantBase("sslip.io", ""); got != "" {
 		t.Fatalf("empty ip must derive nothing, got %q", got)
 	}
 }
@@ -25,14 +25,16 @@ func TestHostnameScope(t *testing.T) {
 	lan := v1.HostnameScope_HOSTNAME_SCOPE_LAN
 	public := v1.HostnameScope_HOSTNAME_SCOPE_PUBLIC
 	cases := map[string]v1.HostnameScope{
-		"192-168-1-5.sslip.io":     lan,
-		"smp.10-0-0-2.traefik.me":  lan,
-		"127-0-0-1.traefik.me":     lan,
-		"198-51-100-4.sslip.io":    public,
-		"mc.198-51-100-4.sslip.io": public,
-		"mc.example.com":           public,
-		// Dropped providers read as ordinary public names
-		"10-0-0-2.nip.io": public,
+		"192-168-1-5.sslip.io":      lan,
+		"smp.10-0-0-2.sslip.io":     lan,
+		"127-0-0-1.sslip.io":        lan,
+		"198-51-100-4.sslip.io":     public,
+		"mc.198-51-100-4.sslip.io":  public,
+		"mc.example.com":            public,
+		"smp-10-0-0-2.sslip.io":     lan,
+		"smp-192-168-1-5.sslip.io":  lan,
+		"smp-198-51-100-4.sslip.io": public,
+		"10-0-0-2.nip.io":           public,
 	}
 	for name, want := range cases {
 		if got := hostnameScope(name); got != want {
@@ -69,8 +71,16 @@ func TestRoutedHostnames(t *testing.T) {
 		t.Fatalf("minecraft without hostname must skip, got %v", got)
 	}
 	http := &v1.NetworkPort{Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP}
+	if got := routedHostnames(http, nil); got != nil {
+		t.Fatalf("http without the flag must stay dark, got %v", got)
+	}
+	http.CatchAll = true
 	if got := routedHostnames(http, nil); !slices.Equal(got, []string{""}) {
-		t.Fatalf("http without hostname must catch all, got %v", got)
+		t.Fatalf("flagged http must catch all, got %v", got)
+	}
+	http.Hostnames = []string{"map.example.com"}
+	if got := routedHostnames(http, nil); !slices.Equal(got, []string{"map.example.com", ""}) {
+		t.Fatalf("names and catch all must combine, got %v", got)
 	}
 }
 
@@ -94,19 +104,23 @@ func TestHostnameSuggestions(t *testing.T) {
 	if bare[0] != "mc.example.com" {
 		t.Fatalf("configured name must lead, got %v", bare)
 	}
-	if !slices.Contains(bare, "192-168-1-5.sslip.io") || !slices.Contains(bare, "198-51-100-4.traefik.me") {
+	if !slices.Contains(bare, "192-168-1-5.sslip.io") || !slices.Contains(bare, "198-51-100-4.sslip.io") {
 		t.Fatalf("instant bases missing, got %v", bare)
 	}
 
+	// Instant names dash join so wildcards still cover them
 	labeled := names("smp")
-	if labeled[0] != "smp.mc.example.com" || !slices.Contains(labeled, "smp.192-168-1-5.sslip.io") {
+	if labeled[0] != "smp.mc.example.com" || !slices.Contains(labeled, "smp-192-168-1-5.sslip.io") {
 		t.Fatalf("label not prefixed, got %v", labeled)
+	}
+	if !slices.Contains(labeled, "smp-198-51-100-4.sslip.io") {
+		t.Fatalf("labeled public name missing, got %v", labeled)
 	}
 
 	// Scopes tag lan and public addresses apart
 	for _, s := range m.HostnameSuggestions("") {
 		want := v1.HostnameScope_HOSTNAME_SCOPE_PUBLIC
-		if s.Hostname == "192-168-1-5.sslip.io" || s.Hostname == "192-168-1-5.traefik.me" {
+		if s.Hostname == "192-168-1-5.sslip.io" {
 			want = v1.HostnameScope_HOSTNAME_SCOPE_LAN
 		}
 		if s.Scope != want {

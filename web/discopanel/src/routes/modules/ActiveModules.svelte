@@ -10,6 +10,8 @@
 	import { ModuleStatus } from '$lib/proto/discopanel/v1/storage_pb';
 	import { TONE_BADGE, TONE_BG } from '$lib/server-status';
 	import { moduleStatusMeta } from '$lib/module-status';
+	import { certificatesStore } from '$lib/stores/certificates.svelte';
+	import { upgradeUrl } from '$lib/certs';
 	import { cn } from '$lib/utils';
 	import {
 		Loader2,
@@ -134,15 +136,21 @@
 		return input.replace(/\{\{[^}]+\}\}/g, (match) => vals[match] ?? match);
 	}
 
+	// Lock aware urls need coverage loaded
+	certificatesStore.ensure();
+
 	const HOST_ALIASES = ['{{host.hostname}}', '{{server.proxy_hostnames}}'];
 
 	// Host templates expand into one url per hostname
 	function resolveUrls(input: string, moduleId: string, hostnames: string[]): string[] {
 		const hostAlias = HOST_ALIASES.find((alias) => input.includes(alias));
+		const secured = (name: string) => certificatesStore.isSecured(name);
 		if (hostAlias && hostnames.length > 0) {
-			return hostnames.map((name) => resolve(input.replaceAll(hostAlias, name), moduleId));
+			return hostnames.map((name) =>
+				upgradeUrl(resolve(input.replaceAll(hostAlias, name), moduleId), secured)
+			);
 		}
-		return [resolve(input, moduleId)];
+		return [upgradeUrl(resolve(input, moduleId), secured)];
 	}
 
 	async function handleStartModule(module: Module) {

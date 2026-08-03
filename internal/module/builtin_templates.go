@@ -30,7 +30,7 @@ func doctorPorts(cfg *config.Config) []*v1.NetworkPort {
 		proxied = cfg.Proxy.Enabled
 	}
 	return []*v1.NetworkPort{
-		{Name: "Web", ContainerPort: 8190, HostPort: port, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, ProxyEnabled: proxied},
+		{Name: "Web", ContainerPort: 8190, HostPort: port, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, ProxyEnabled: proxied, CatchAll: proxied},
 	}
 }
 
@@ -105,7 +105,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			RequiresServer: true,
 			Icon:           "chart-bar",
 			Ports: []*v1.NetworkPort{
-				{Name: "Metrics", ContainerPort: 9225, HostPort: 0, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, ProxyEnabled: true},
+				{Name: "Metrics", ContainerPort: 9225, HostPort: 0, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, ProxyEnabled: true, CatchAll: true},
 			},
 			DefaultAccessUrls: []string{"http://{{host.hostname}}:{{module.ports.Metrics.host_port}}/metrics"},
 			DefaultEnv: map[string]string{
@@ -129,7 +129,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			Icon:           "map",
 			DefaultCmd:     "-r -u -w",
 			Ports: []*v1.NetworkPort{
-				{Name: "Web", ContainerPort: 8100, HostPort: 0, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, ProxyEnabled: true},
+				{Name: "Web", ContainerPort: 8100, HostPort: 0, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, ProxyEnabled: true, CatchAll: true},
 			},
 			DefaultAccessUrls: []string{"http://{{host.hostname}}:{{module.ports.Web.host_port}}"},
 			DefaultVolumes: []*v1.VolumeMount{
@@ -159,7 +159,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			RequiresServer: true,
 			Icon:           "monitor",
 			Ports: []*v1.NetworkPort{
-				{Name: "Web", ContainerPort: 8181, HostPort: 0, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, ProxyEnabled: true},
+				{Name: "Web", ContainerPort: 8181, HostPort: 0, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, ProxyEnabled: true, CatchAll: true},
 			},
 			DefaultAccessUrls: []string{"http://{{host.hostname}}:{{module.ports.Web.host_port}}"},
 			DefaultEnv: map[string]string{
@@ -369,7 +369,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			Global:         true,
 			Icon:           "stethoscope",
 			Ports: []*v1.NetworkPort{
-				{Name: "Web", ContainerPort: 8190, HostPort: 0, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, ProxyEnabled: true},
+				{Name: "Web", ContainerPort: 8190, HostPort: 0, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, ProxyEnabled: true, CatchAll: true},
 			},
 			DefaultAccessUrls: doctorAccessURLs(),
 			DefaultEnv:        doctorEnv(),

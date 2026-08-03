@@ -14,7 +14,7 @@ export function hostnameSummary(hostnames: string[]): string {
 }
 
 // Instant domain names resolve without any DNS setup
-const instantSuffixes = ['.sslip.io', '.traefik.me'];
+const instantSuffixes = ['.sslip.io'];
 export function needsDnsSetup(hostname: string): boolean {
 	const name = hostname.trim().toLowerCase();
 	return !instantSuffixes.some((suffix) => name.endsWith(suffix));

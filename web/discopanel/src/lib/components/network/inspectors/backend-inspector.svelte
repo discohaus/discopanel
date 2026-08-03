@@ -5,21 +5,22 @@
 	import { CopyButton, ServerAvatar, StatusBadge } from '$lib/components/app';
 	import { playerAddress } from '$lib/hostname';
 	import { panelHost } from '$lib/utils/host';
+	import InspectorHeader from './inspector-header.svelte';
 	import type { ExposedPort } from '../topology-data';
-	import { ArrowUpRight, Container, X } from '@lucide/svelte';
+	import { ArrowUpRight, Container } from '@lucide/svelte';
 
 	let {
 		server,
 		module,
 		listenPort,
 		extraPorts,
-		onClose
+		onBack
 	}: {
 		server: Server | null;
 		module: Module | null;
 		listenPort: number;
 		extraPorts: ExposedPort[];
-		onClose: () => void;
+		onBack: () => void;
 	} = $props();
 
 	let name = $derived(server?.name ?? module?.name ?? '');
@@ -35,22 +36,15 @@
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
-	<div class="flex items-center justify-between gap-2 border-b bg-muted/30 px-4 py-3">
-		<div class="flex min-w-0 items-center gap-2.5">
+	<InspectorHeader title={name} subtitle={server ? 'Server' : 'Module'} {onBack}>
+		{#snippet icon()}
 			{#if server}
 				<ServerAvatar name={server.name} favicon={server.favicon} size="sm" />
 			{:else}
-				<Container class="size-4 text-muted-foreground" />
+				<Container class="size-4 shrink-0 text-primary" />
 			{/if}
-			<div class="min-w-0">
-				<h3 class="truncate text-sm font-semibold">{name}</h3>
-				<p class="text-xs text-muted-foreground">{server ? 'Server' : 'Module'}</p>
-			</div>
-		</div>
-		<Button variant="ghost" size="icon" class="size-8" onclick={onClose} title="Back to overview">
-			<X class="size-4" />
-		</Button>
-	</div>
+		{/snippet}
+	</InspectorHeader>
 
 	<div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
 		{#if server}

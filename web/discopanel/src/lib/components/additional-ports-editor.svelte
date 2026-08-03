@@ -223,6 +223,19 @@
 								{/if}
 							</div>
 						{/if}
+						{#if port.proxyEnabled && port.protocol === ModuleProtocol.HTTP}
+							<label class="flex w-fit cursor-pointer items-center gap-2 pl-1">
+								<Checkbox
+									checked={port.catchAll}
+									onCheckedChange={(v) => updatePort(index, 'catchAll', !!v)}
+									{disabled}
+								/>
+								<span class="text-xs">Catch all</span>
+								<span class="text-[11px] text-muted-foreground"
+									>also answers unlisted addresses</span
+								>
+							</label>
+						{/if}
 					{/if}
 
 					{#if portErrors[index]}

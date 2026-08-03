@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	db "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/docker"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/protometa"
+	"github.com/google/uuid"
 )
 
 /* THE RULE OF PROXY / PORTS AND THEIR RESERVATIONS
@@ -30,6 +30,10 @@ at most one relay.
 
 
 Dispatch is peek-and-descend: MC handshake? → MC table → HTTP Host? → HTTP table → TCP relay → descriptive error; UDP → relay → drop.
+
+TLS unwraps before the descent when a certificate matches the hello SNI, exactly once, then the plaintext re-enters the same descent.
+No cert match on a relay port passes the encrypted bytes through untouched.
+TLS claims nothing here, it is an unwrap step, not a lane.
 */
 
 // Owner kinds for network reservations
@@ -209,7 +213,7 @@ func (m *Manager) CheckoutPanelHostnames(ctx context.Context, hostnames []string
 	return m.CheckoutNetwork(ctx, NetOwner{Kind: OwnerPanel, ID: OwnerPanel}, reqs)
 }
 
-// Hostnames a routed port serves, minecraft needs at least one
+// Hostnames a routed port serves, the flag adds the catch all
 func routedHostnames(port *v1.NetworkPort, fallback []string) []string {
 	var out []string
 	seen := make(map[string]bool)
@@ -222,14 +226,11 @@ func routedHostnames(port *v1.NetworkPort, fallback []string) []string {
 		out = append(out, name)
 	}
 	if len(out) == 0 {
-		out = fallback
+		out = append(out, fallback...)
 	}
-	if len(out) == 0 {
-		// Http still serves as the port's catch all
-		if port.Protocol == v1.ModuleProtocol_MODULE_PROTOCOL_HTTP {
-			return []string{""}
-		}
-		return nil
+	// Catch all rides the flag, never inference
+	if port.CatchAll && port.Protocol == v1.ModuleProtocol_MODULE_PROTOCOL_HTTP {
+		out = append(out, "")
 	}
 	return out
 }
@@ -305,6 +306,32 @@ func conflictReason(want, holder *Reservation) string {
 		return fmt.Sprintf("port %d already has a %s relay (%s)", want.Port, transport, who)
 	}
 	return fmt.Sprintf("port %d/%s is already in use by %s", want.Port, transport, who)
+}
+
+// Validates routing needs on one proxied port
+func ValidatePortRouting(port *v1.NetworkPort, fallbackHostnames []string) error {
+	if port == nil || !port.ProxyEnabled {
+		return nil
+	}
+	named := len(port.Hostnames) > 0 || len(fallbackHostnames) > 0
+	switch port.Protocol {
+	case v1.ModuleProtocol_MODULE_PROTOCOL_HTTP:
+		if !named && !port.CatchAll {
+			return fmt.Errorf("port %s needs a hostname or catch all", port.Name)
+		}
+	case v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT:
+		if port.CatchAll {
+			return fmt.Errorf("catch all only applies to http ports, not %s", port.Name)
+		}
+		if !named {
+			return fmt.Errorf("port %s needs a hostname", port.Name)
+		}
+	default:
+		if port.CatchAll {
+			return fmt.Errorf("catch all only applies to http ports, not %s", port.Name)
+		}
+	}
+	return nil
 }
 
 // Builds reservation requests for a module's ports
@@ -384,16 +411,18 @@ func (m *Manager) reservationsLocked(ctx context.Context) ([]Reservation, error)
 			OwnerID:   OwnerPanel,
 			Detail:    "web interface",
 		})
-		// Web ui answers every hostname the port misses
-		all = append(all, Reservation{
-			Port:      p,
-			Transport: v1.NetworkTransport_NETWORK_TRANSPORT_TCP,
-			Kind:      kindRouted,
-			Protocol:  v1.ModuleProtocol_MODULE_PROTOCOL_HTTP,
-			OwnerKind: OwnerPanel,
-			OwnerID:   OwnerPanel,
-			Detail:    "web interface",
-		})
+		// Catch all is an explicit setting, never a default
+		if m.panelCatchAll {
+			all = append(all, Reservation{
+				Port:      p,
+				Transport: v1.NetworkTransport_NETWORK_TRANSPORT_TCP,
+				Kind:      kindRouted,
+				Protocol:  v1.ModuleProtocol_MODULE_PROTOCOL_HTTP,
+				OwnerKind: OwnerPanel,
+				OwnerID:   OwnerPanel,
+				Detail:    "web interface",
+			})
+		}
 		// Every panel hostname gets a named claim
 		for _, name := range m.panelNames {
 			all = append(all, Reservation{
@@ -405,6 +434,26 @@ func (m *Manager) reservationsLocked(ctx context.Context) ([]Reservation, error)
 				OwnerKind: OwnerPanel,
 				OwnerID:   OwnerPanel,
 				Detail:    "web interface",
+			})
+		}
+		// Agent paths stay claimed no matter the catch all
+		claimed := make(map[string]bool, len(m.panelNames))
+		for _, name := range m.panelNames {
+			claimed[name] = true
+		}
+		for _, name := range m.infraNamesLocked(ctx) {
+			if claimed[name] {
+				continue
+			}
+			all = append(all, Reservation{
+				Port:      p,
+				Transport: v1.NetworkTransport_NETWORK_TRANSPORT_TCP,
+				Kind:      kindRouted,
+				Protocol:  v1.ModuleProtocol_MODULE_PROTOCOL_HTTP,
+				Hostname:  name,
+				OwnerKind: OwnerPanel,
+				OwnerID:   OwnerPanel,
+				Detail:    "agent path",
 			})
 		}
 	}

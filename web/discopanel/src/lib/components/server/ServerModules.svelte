@@ -5,6 +5,8 @@
 	import { SectionCard, EmptyState, ConfirmDialog, AddressSelect } from '$lib/components/app';
 	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { registerRefresh } from '$lib/stores/refresh';
+	import { certificatesStore } from '$lib/stores/certificates.svelte';
+	import { upgradeUrl } from '$lib/certs';
 	import { toast } from 'svelte-sonner';
 	import type { Server, Module, ModuleTemplate } from '$lib/proto/discopanel/v1/storage_pb';
 	import type { PendingModulePrompt } from '$lib/proto/discopanel/v1/module_pb';
@@ -185,15 +187,21 @@
 		return input.replace(/\{\{[^}]+\}\}/g, (match) => vals[match] ?? match);
 	}
 
+	// Lock aware urls need coverage loaded
+	certificatesStore.ensure();
+
 	const HOST_ALIASES = ['{{host.hostname}}', '{{server.proxy_hostnames}}'];
 
 	// Host templates expand into one url per hostname
 	function resolveUrls(input: string, moduleId: string, hostnames: string[]): string[] {
 		const hostAlias = HOST_ALIASES.find((alias) => input.includes(alias));
+		const secured = (name: string) => certificatesStore.isSecured(name);
 		if (hostAlias && hostnames.length > 0) {
-			return hostnames.map((name) => resolve(input.replaceAll(hostAlias, name), moduleId));
+			return hostnames.map((name) =>
+				upgradeUrl(resolve(input.replaceAll(hostAlias, name), moduleId), secured)
+			);
 		}
-		return [resolve(input, moduleId)];
+		return [upgradeUrl(resolve(input, moduleId), secured)];
 	}
 
 	async function loadSnapshot(moduleId: string) {

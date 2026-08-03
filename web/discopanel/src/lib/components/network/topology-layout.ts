@@ -42,27 +42,43 @@ export function layoutColumns(
 		byColumn.set(item.column, list);
 	}
 
-	const stack = (list: LayoutItem[], startY: number): number => {
+	const heights = new Map(items.map((i) => [i.id, i.height]));
+	const xFor = (item: LayoutItem): number =>
+		(COLUMN_X[item.column] ?? item.column * 270) + (item.indent ? INDENT_X : 0);
+
+	// Mean center of placed neighbors on one side
+	const meanCenter = (id: string, incoming: boolean): number | null => {
+		let sum = 0;
+		let count = 0;
+		for (const edge of edges) {
+			const own = incoming ? edge.target : edge.source;
+			const other = incoming ? edge.source : edge.target;
+			if (own !== id) continue;
+			const pos = positions.get(other);
+			if (!pos) continue;
+			sum += pos.y + (heights.get(other) ?? 0) / 2;
+			count++;
+		}
+		return count === 0 ? null : sum / count;
+	};
+
+	// Stacks a list, pulling each node level with its neighbors
+	const place = (
+		list: LayoutItem[],
+		startY: number,
+		want: (item: LayoutItem) => number | null
+	): number => {
 		let y = startY;
 		for (const item of list) {
-			const x = (COLUMN_X[item.column] ?? item.column * 270) + (item.indent ? INDENT_X : 0);
-			positions.set(item.id, { x, y });
-			y += item.height + NODE_GAP;
+			const center = want(item);
+			const at = center === null ? y : Math.max(y, center - item.height / 2);
+			positions.set(item.id, { x: xFor(item), y: at });
+			y = at + item.height + NODE_GAP;
 		}
 		return Math.max(startY, y - NODE_GAP);
 	};
 
-	// Mean source height pulls nodes toward their feeders
-	const meanSourceY = (id: string): number => {
-		const ys: number[] = [];
-		for (const edge of edges) {
-			if (edge.target !== id) continue;
-			const src = positions.get(edge.source);
-			if (src) ys.push(src.y);
-		}
-		if (ys.length === 0) return Number.MAX_VALUE;
-		return ys.reduce((a, b) => a + b, 0) / ys.length;
-	};
+	const alignToSources = (item: LayoutItem) => meanCenter(item.id, true);
 
 	// First band places left to right so edges never cross
 	const bandHeights = new Map<number, number>();
@@ -72,12 +88,12 @@ export function layoutColumns(
 		list.sort((a, b) => a.band - b.band || a.order - b.order || a.id.localeCompare(b.id));
 		const bandZero = list.filter((i) => i.band === 0);
 		if (column >= 3) {
-			const means = new Map(bandZero.map((i) => [i.id, meanSourceY(i.id)]));
-			bandZero.sort(
-				(a, b) => (means.get(a.id) ?? 0) - (means.get(b.id) ?? 0) || a.order - b.order
+			const means = new Map(
+				bandZero.map((i) => [i.id, meanCenter(i.id, true) ?? Number.MAX_VALUE])
 			);
+			bandZero.sort((a, b) => (means.get(a.id) ?? 0) - (means.get(b.id) ?? 0) || a.order - b.order);
 		}
-		bandHeights.set(column, stack(bandZero, 0));
+		bandHeights.set(column, place(bandZero, 0, alignToSources));
 	}
 
 	// Backends order by grouped barycenter of their sources
@@ -90,25 +106,22 @@ export function layoutColumns(
 	const backends = byColumn.get(4) ?? [];
 	const groups: Group[] = [];
 	if (backends.length > 0) {
-		const incoming = new Map<string, number[]>();
-		for (const edge of edges) {
-			const src = positions.get(edge.source);
-			if (!src) continue;
-			const list = incoming.get(edge.target) ?? [];
-			list.push(src.y);
-			incoming.set(edge.target, list);
-		}
 		const byGroup = new Map<string, Group>();
 		for (const item of backends) {
 			const key = item.group ?? item.id;
 			const g = byGroup.get(key) ?? { key, members: [], band: 9, mean: Number.MAX_VALUE };
 			g.members.push(item);
 			g.band = Math.min(g.band, item.band);
-			const ys = incoming.get(item.id);
-			if (ys && ys.length > 0) {
-				g.mean = Math.min(g.mean, ys.reduce((a, b) => a + b, 0) / ys.length);
-			}
 			byGroup.set(key, g);
+		}
+		// Group center follows every feeder of its members
+		for (const group of byGroup.values()) {
+			const centers = group.members
+				.map((m) => meanCenter(m.id, true))
+				.filter((c): c is number => c !== null);
+			if (centers.length > 0) {
+				group.mean = centers.reduce((a, b) => a + b, 0) / centers.length;
+			}
 		}
 		groups.push(
 			...[...byGroup.values()].sort(
@@ -125,20 +138,35 @@ export function layoutColumns(
 			group.members.sort(
 				(a, b) => Number(a.indent ?? false) - Number(b.indent ?? false) || a.order - b.order
 			);
+			// Whole group rides level with what feeds it
+			const block =
+				group.members.reduce((sum, m) => sum + m.height, 0) + NODE_GAP * (group.members.length - 1);
+			let top = group.mean === Number.MAX_VALUE ? y : Math.max(y, group.mean - block / 2);
 			for (const item of group.members) {
-				positions.set(item.id, { x: COLUMN_X[4] + (item.indent ? INDENT_X : 0), y });
-				y += item.height + NODE_GAP;
+				positions.set(item.id, { x: COLUMN_X[4] + (item.indent ? INDENT_X : 0), y: top });
+				top += item.height + NODE_GAP;
 			}
+			y = top;
 		}
 		if (!done) bandHeights.set(4, Math.max(0, y - NODE_GAP));
 	}
 
+	// Trunk nodes center against everything they feed
+	for (const column of [1, 0]) {
+		const list = (byColumn.get(column) ?? []).filter((i) => i.band === 0);
+		if (list.length === 0) continue;
+		bandHeights.set(
+			column,
+			place(list, 0, (item) => meanCenter(item.id, false))
+		);
+	}
+
 	// Second band starts below the tallest first band
 	const bandZeroMax = Math.max(0, ...bandHeights.values());
-	for (const [column, list] of byColumn) {
+	for (const column of [...byColumn.keys()].sort((a, b) => a - b)) {
 		if (column === 4) continue;
-		const bandOne = list.filter((i) => i.band > 0);
-		if (bandOne.length > 0) stack(bandOne, bandZeroMax + BAND_GAP);
+		const bandOne = (byColumn.get(column) ?? []).filter((i) => i.band > 0);
+		if (bandOne.length > 0) place(bandOne, bandZeroMax + BAND_GAP, alignToSources);
 	}
 
 	// Lower band backends shift under the same divider
@@ -152,18 +180,6 @@ export function layoutColumns(
 				shift = bandZeroMax + BAND_GAP - pos.y;
 			}
 			if (shift > 0) positions.set(item.id, { x: pos.x, y: pos.y + shift });
-		}
-	}
-
-	// Center short first bands against the tallest one
-	for (const [column, list] of byColumn) {
-		const height = bandHeights.get(column) ?? 0;
-		const offset = (bandZeroMax - height) / 2;
-		if (offset <= 0) continue;
-		for (const item of list) {
-			if (item.band > 0) continue;
-			const pos = positions.get(item.id);
-			if (pos) positions.set(item.id, { x: pos.x, y: pos.y + offset });
 		}
 	}
 

@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	db "github.com/discohaus/discopanel/internal/db"
@@ -56,6 +58,16 @@ type Manager struct {
 
 	// Loopback port the panel http server answers on
 	panelBackend int
+
+	// Parsed certificates for sni matching
+	certIdx atomic.Pointer[certIndex]
+
+	// Panel also answers unmatched hostnames
+	panelCatchAll bool
+
+	// Cached agent reachability names for panel routes
+	infraNames   []string
+	infraNamesAt time.Time
 }
 
 // Registers the wake gate, must be called before Start
@@ -83,7 +95,9 @@ func NewManager(store *db.Store, dockerClient *docker.Client, cfg *config.Config
 		logger:        logger,
 		enabled:       cfg.Proxy.Enabled,
 		pendingClaims: make(map[uint64]pendingClaim),
+		panelCatchAll: true,
 	}
+	m.certIdx.Store(&certIndex{})
 	return m
 }
 
@@ -106,12 +120,79 @@ func (m *Manager) panelWebPort() int {
 	return p
 }
 
-// Catch all http route landing on the panel backend
-func (m *Manager) panelRouteLocked() (Route, bool) {
-	if m.panelBackend == 0 {
-		return Route{}, false
+// How long resolved agent names stay cached
+const infraNameTTL = 5 * time.Minute
+
+// Agent reachability names the panel always answers
+func (m *Manager) infraNamesLocked(ctx context.Context) []string {
+	if m.infraNames != nil && time.Since(m.infraNamesAt) < infraNameTTL {
+		return m.infraNames
 	}
-	route := Route{
+	seen := make(map[string]bool)
+	var out []string
+	add := func(raw string) {
+		name := NormalizeHostname(raw)
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	// Loopback access works no matter the catch all
+	add("localhost")
+	add("127.0.0.1")
+	add(docker.PanelNetworkAlias)
+	add("host.docker.internal")
+	if m.appCfg != nil && m.appCfg.Docker.AgentURL != "" {
+		if u, err := url.Parse(m.appCfg.Docker.AgentURL); err == nil {
+			add(u.Hostname())
+		}
+	}
+	if m.docker != nil && m.appCfg != nil {
+		inspectCtx, cancel := context.WithTimeout(ctx, containerInspectTimeout)
+		if agentURL, err := m.docker.PanelAgentURL(inspectCtx, m.appCfg.Server.Port); err == nil {
+			if u, uerr := url.Parse(agentURL); uerr == nil {
+				add(u.Hostname())
+			}
+		}
+		cancel()
+	}
+	// Ip keeps the host hostname alias reachable
+	if len(m.panelNames) == 0 {
+		if ip, ok := m.lanIPLocked(); ok {
+			add(ip)
+		}
+	}
+	m.infraNames = out
+	m.infraNamesAt = time.Now()
+	return out
+}
+
+// User names plus agent names the panel serves
+func (m *Manager) panelServedNamesLocked(ctx context.Context) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, name := range m.panelNames {
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	for _, name := range m.infraNamesLocked(ctx) {
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// Panel routes, named always plus an optional catch all
+func (m *Manager) panelRoutesLocked(ctx context.Context) []Route {
+	if m.panelBackend == 0 {
+		return nil
+	}
+	base := Route{
 		ServerID:    PanelListenerID,
 		OwnerKind:   OwnerPanel,
 		OwnerID:     OwnerPanel,
@@ -119,7 +200,16 @@ func (m *Manager) panelRouteLocked() (Route, bool) {
 		BackendPort: m.panelBackend,
 		Protocol:    v1.ModuleProtocol_MODULE_PROTOCOL_HTTP,
 	}
-	return route, true
+	var routes []Route
+	if m.panelCatchAll {
+		routes = append(routes, base)
+	}
+	for _, name := range m.panelServedNamesLocked(ctx) {
+		variant := base
+		variant.Hostname = name
+		routes = append(routes, variant)
+	}
+	return routes
 }
 
 // Keeps the panel listener row present and current
@@ -162,6 +252,7 @@ func (m *Manager) ensurePanelSocketLocked() error {
 		ListenAddr: net.JoinHostPort(m.appCfg.Server.Host, strconv.Itoa(port)),
 		Logger:     m.logger,
 		Gate:       m.gate,
+		Certs:      m,
 	})
 	if err := sock.Start(); err != nil {
 		return fmt.Errorf("panel socket failed on port %d: %w", port, err)
@@ -178,11 +269,19 @@ func (m *Manager) Enabled() bool {
 	return m.enabled
 }
 
+// Reports the panel catch all state
+func (m *Manager) PanelCatchAll() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.panelCatchAll
+}
+
 // Applies a config change and reconciles running sockets
-func (m *Manager) ApplyConfig(ctx context.Context, enabled bool, hostnames []string) error {
+func (m *Manager) ApplyConfig(ctx context.Context, enabled bool, hostnames []string, catchAll bool) error {
 	m.mu.Lock()
 	m.enabled = enabled
 	m.panelNames = hostnames
+	m.panelCatchAll = catchAll
 	err := m.syncListenersLocked(ctx)
 	m.mu.Unlock()
 	return err
@@ -211,13 +310,21 @@ func (m *Manager) Start() error {
 
 	// Panel hostnames live on the config row
 	var names []string
+	catchAll := true
 	if cfg, _, err := m.store.GetProxyConfig(context.Background()); err == nil && cfg != nil {
 		names = cfg.Hostnames
+		catchAll = cfg.CatchAll
+	}
+
+	// Termination material loads before any socket accepts
+	if err := m.ReloadCertificates(context.Background()); err != nil {
+		m.logger.Error("Failed to load certificates: %v", err)
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.panelNames = names
+	m.panelCatchAll = catchAll
 
 	if err := m.syncListenersLocked(context.Background()); err != nil {
 		return err
@@ -293,6 +400,7 @@ func (m *Manager) syncListenersLocked(ctx context.Context) error {
 				ListenAddr: fmt.Sprintf(":%d", port),
 				Logger:     m.logger,
 				Gate:       m.gate,
+				Certs:      m,
 			})
 			if err := sock.Start(); err != nil {
 				m.logger.Error("Failed to start listener %s on port %d: %v", listener.Name, port, err)
@@ -304,8 +412,8 @@ func (m *Manager) syncListenersLocked(ctx context.Context) error {
 	}
 
 	tcpRoutes, udpRoutes := m.desiredRoutesLocked(ctx, byID)
-	if route, ok := m.panelRouteLocked(); ok {
-		tcpRoutes[m.panelWebPort()] = append(tcpRoutes[m.panelWebPort()], route)
+	if panelRoutes := m.panelRoutesLocked(ctx); len(panelRoutes) > 0 {
+		tcpRoutes[m.panelWebPort()] = append(tcpRoutes[m.panelWebPort()], panelRoutes...)
 	}
 
 	// Route tables replace wholesale, stale entries die here
@@ -358,11 +466,7 @@ func (m *Manager) syncDisabledLocked(ctx context.Context) error {
 		delete(m.udpSockets, port)
 	}
 	if sock := m.tcpSockets[panelPort]; sock != nil {
-		var routes []Route
-		if route, ok := m.panelRouteLocked(); ok {
-			routes = append(routes, route)
-		}
-		sock.SetRoutes(routes)
+		sock.SetRoutes(m.panelRoutesLocked(ctx))
 	}
 	return nil
 }
