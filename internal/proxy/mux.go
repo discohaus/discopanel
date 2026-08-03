@@ -49,7 +49,7 @@ func NewListenerSocket(cfg *Config) *ListenerSocket {
 	return &ListenerSocket{
 		mcRoutes:   make(map[string]*Route),
 		stats:      make(map[string]*RouteStats),
-		httpLane:   newHTTPLane(cfg.Logger),
+		httpLane:   newHTTPLane(cfg.Logger, cfg.Certs),
 		logger:     cfg.Logger,
 		listenAddr: cfg.ListenAddr,
 		ctx:        ctx,
@@ -358,7 +358,7 @@ func (s *ListenerSocket) dispatch(conn net.Conn, terminated bool) {
 	}
 
 	// Hello detection, mc handshakes never carry 0x03 second
-	if !terminated && first[0] == tlsRecordHandshake {
+	if !terminated && s.certsAvailable() && first[0] == tlsRecordHandshake {
 		if hdr, herr := br.Peek(3); herr == nil && hdr[1] == 0x03 {
 			s.serveTLS(conn, br, rec)
 			return
@@ -411,9 +411,9 @@ const relaySniffGrace = 250 * time.Millisecond
 // Client hello size cap across records
 const maxClientHello = 64 << 10
 
-// True when termination material exists
+// True when this panel owns termination on this socket
 func (s *ListenerSocket) certsAvailable() bool {
-	return s.certs != nil && s.certs.HasCertificates()
+	return s.certs != nil && s.certs.TerminatesTLS()
 }
 
 // Terminates tls when a certificate matches the hello

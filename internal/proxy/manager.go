@@ -62,6 +62,9 @@ type Manager struct {
 	// Parsed certificates for sni matching
 	certIdx atomic.Pointer[certIndex]
 
+	// Https settings the lanes read without the lock
+	policy atomic.Pointer[tlsPolicy]
+
 	// Panel also answers unmatched hostnames
 	panelCatchAll bool
 
@@ -98,6 +101,7 @@ func NewManager(store *db.Store, dockerClient *docker.Client, cfg *config.Config
 		panelCatchAll: true,
 	}
 	m.certIdx.Store(&certIndex{})
+	m.setTLSPolicy(false, v1.TlsProvider_TLS_PROVIDER_DNS)
 	return m
 }
 
@@ -277,11 +281,12 @@ func (m *Manager) PanelCatchAll() bool {
 }
 
 // Applies a config change and reconciles running sockets
-func (m *Manager) ApplyConfig(ctx context.Context, enabled bool, hostnames []string, catchAll bool) error {
+func (m *Manager) ApplyConfig(ctx context.Context, cfg *v1.ProxyConfig) error {
+	m.setTLSPolicy(cfg.HttpsEnabled, cfg.TlsProvider)
 	m.mu.Lock()
-	m.enabled = enabled
-	m.panelNames = hostnames
-	m.panelCatchAll = catchAll
+	m.enabled = cfg.Enabled
+	m.panelNames = cfg.Hostnames
+	m.panelCatchAll = cfg.CatchAll
 	err := m.syncListenersLocked(ctx)
 	m.mu.Unlock()
 	return err
@@ -314,6 +319,7 @@ func (m *Manager) Start() error {
 	if cfg, _, err := m.store.GetProxyConfig(context.Background()); err == nil && cfg != nil {
 		names = cfg.Hostnames
 		catchAll = cfg.CatchAll
+		m.setTLSPolicy(cfg.HttpsEnabled, cfg.TlsProvider)
 	}
 
 	// Termination material loads before any socket accepts

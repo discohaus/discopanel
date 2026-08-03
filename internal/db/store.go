@@ -500,9 +500,10 @@ func (s *Store) GetProxyConfig(ctx context.Context) (*v1.ProxyConfig, bool, erro
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Missing row mirrors the file config defaults
 			return &v1.ProxyConfig{
-				Id:       "default",
-				Enabled:  s.cfg.Proxy.Enabled,
-				CatchAll: true,
+				Id:          "default",
+				Enabled:     s.cfg.Proxy.Enabled,
+				CatchAll:    true,
+				TlsProvider: v1.TlsProvider_TLS_PROVIDER_DNS,
 			}, true, nil
 		}
 		return nil, false, err

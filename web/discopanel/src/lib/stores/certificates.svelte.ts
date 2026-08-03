@@ -1,10 +1,13 @@
 import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 import type { Certificate } from '$lib/proto/discopanel/v1/storage_pb';
+import { TlsProvider } from '$lib/proto/discopanel/v1/storage_pb';
 import { hostnameSecured } from '$lib/certs';
 
-// Loads certificate coverage once for lock glyphs
+// Loads https settings and coverage once for scheme glyphs
 class CertificatesStore {
 	certificates = $state<Certificate[]>([]);
+	httpsEnabled = $state(false);
+	tlsProvider = $state<TlsProvider>(TlsProvider.DNS);
 	loaded = $state(false);
 	private pending: Promise<void> | null = null;
 
@@ -19,18 +22,31 @@ class CertificatesStore {
 		await this.fetch();
 	}
 
-	// True when a live certificate covers the hostname
+	// True when the panel serves its own certificates
+	get panelTerminates(): boolean {
+		return this.httpsEnabled && this.tlsProvider === TlsProvider.DISCOPANEL;
+	}
+
+	// True when the hostname answers over https
 	isSecured(hostname: string): boolean {
+		if (!this.httpsEnabled) return false;
+		// An edge covers every name it fronts
+		if (!this.panelTerminates) return true;
 		return hostnameSecured(hostname, this.certificates);
 	}
 
 	private async fetch(): Promise<void> {
 		try {
-			const response = await rpcClient.proxy.getCertificates({}, silentCallOptions);
-			this.certificates = response.certificates;
+			const [certs, status] = await Promise.all([
+				rpcClient.proxy.getCertificates({}, silentCallOptions),
+				rpcClient.proxy.getProxyStatus({}, silentCallOptions)
+			]);
+			this.certificates = certs.certificates;
+			this.httpsEnabled = status.httpsEnabled;
+			this.tlsProvider = status.tlsProvider;
 			this.loaded = true;
 		} catch {
-			// Locks simply stay off without read access
+			// Scheme glyphs stay off without read access
 		} finally {
 			this.pending = null;
 		}

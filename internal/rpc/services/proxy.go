@@ -152,7 +152,17 @@ func (s *ProxyService) GetProxyStatus(ctx context.Context, req *connect.Request[
 		Running:      running,
 		ActiveRoutes: activeRoutes,
 		CatchAll:     proxyConfig.CatchAll,
+		HttpsEnabled: proxyConfig.HttpsEnabled,
+		TlsProvider:  tlsProviderOrDefault(proxyConfig.TlsProvider),
 	}), nil
+}
+
+// Falls unset providers back to the upstream edge
+func tlsProviderOrDefault(provider v1.TlsProvider) v1.TlsProvider {
+	if provider == v1.TlsProvider_TLS_PROVIDER_UNSPECIFIED {
+		return v1.TlsProvider_TLS_PROVIDER_DNS
+	}
+	return provider
 }
 
 // Lists certificates with derived coverage
@@ -257,10 +267,12 @@ func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Reque
 
 	// Save to database
 	proxyConfig := &v1.ProxyConfig{
-		Id:        "default",
-		Enabled:   msg.Enabled,
-		Hostnames: hostnames,
-		CatchAll:  msg.CatchAll,
+		Id:           "default",
+		Enabled:      msg.Enabled,
+		Hostnames:    hostnames,
+		CatchAll:     msg.CatchAll,
+		HttpsEnabled: msg.HttpsEnabled,
+		TlsProvider:  tlsProviderOrDefault(msg.TlsProvider),
 	}
 
 	if err := s.store.SaveProxyConfig(ctx, proxyConfig); err != nil {
@@ -279,13 +291,13 @@ func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Reque
 		if rerr := s.store.SaveProxyConfig(ctx, prevConfig); rerr != nil {
 			s.log.Error("Failed to restore previous proxy configuration: %v", rerr)
 		} else {
-			s.proxyManager.ApplyConfig(ctx, prevConfig.Enabled, prevConfig.Hostnames, prevConfig.CatchAll)
+			s.proxyManager.ApplyConfig(ctx, prevConfig)
 		}
 	}
 
 	// Manager owns runtime state and reconciles sockets
 	if s.proxyManager != nil {
-		if err := s.proxyManager.ApplyConfig(ctx, msg.Enabled, hostnames, msg.CatchAll); err != nil {
+		if err := s.proxyManager.ApplyConfig(ctx, proxyConfig); err != nil {
 			s.log.Error("Failed to apply proxy configuration: %v", err)
 			restorePrev()
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to apply proxy configuration: %w", err))

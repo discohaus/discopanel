@@ -251,6 +251,10 @@ message GetProxyStatusResponse {
   int32 active_routes = 7;
   // Panel also answers unmatched hostnames
   bool catch_all = 8;
+  // Web addresses are reachable over https
+  bool https_enabled = 9;
+  // Who turns https into plain traffic
+  TlsProvider tls_provider = 10;
 }
 
 // Proxy settings to update
@@ -264,6 +268,10 @@ message UpdateProxyConfigRequest {
   repeated ProxiedServerImpact assignments = 4;
   // Panel also answers unmatched hostnames
   bool catch_all = 5;
+  // Web addresses are reachable over https
+  bool https_enabled = 6;
+  // Who turns https into plain traffic
+  TlsProvider tls_provider = 7;
 }
 
 // Empty impact request

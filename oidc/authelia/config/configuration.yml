@@ -39,8 +39,8 @@ session:
   secret: 'discopanel-dev-session-secret-change-me-in-production'
   cookies:
     - name: 'authelia_session'
-      domain: 'traefik.me'
-      authelia_url: 'https://authelia.traefik.me:9091'
+      domain: '127-0-0-1.sslip.io'
+      authelia_url: 'https://authelia.127-0-0-1.sslip.io:9091'
       expiration: '1 hour'
       inactivity: '5 minutes'
 

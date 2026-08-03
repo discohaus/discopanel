@@ -17,13 +17,53 @@ import (
 // Context key marking tls terminated requests
 type secureConnKey struct{}
 
-// True when the request arrived over tls
-func requestSecure(r *http.Request) bool {
+// True when the panel itself terminated the request
+func panelTerminated(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
 	secure, _ := r.Context().Value(secureConnKey{}).(bool)
 	return secure
+}
+
+// Chains the peer onto every hop the edge recorded
+func appendForwardedFor(r *http.Request, clientIP string) string {
+	prior := r.Header.Values("X-Forwarded-For")
+	if len(prior) == 0 {
+		return clientIP
+	}
+	return strings.Join(prior, ", ") + ", " + clientIP
+}
+
+// Scheme an upstream edge claims it served the client
+func forwardedScheme(r *http.Request) string {
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		// Leftmost hop is the one facing the client
+		first, _, _ := strings.Cut(proto, ",")
+		return strings.ToLower(strings.TrimSpace(first))
+	}
+	first, _, _ := strings.Cut(r.Header.Get("Forwarded"), ",")
+	for _, part := range strings.Split(first, ";") {
+		key, value, found := strings.Cut(part, "=")
+		if found && strings.EqualFold(strings.TrimSpace(key), "proto") {
+			return strings.ToLower(strings.Trim(strings.TrimSpace(value), `"`))
+		}
+	}
+	return ""
+}
+
+// Scheme the client actually used, edge claims included
+func (p *httpLane) requestScheme(r *http.Request) string {
+	if panelTerminated(r) {
+		return "https"
+	}
+	// Edge claims count only when an edge is declared
+	if p.certs != nil && p.certs.TrustsForwardedProto() {
+		if scheme := forwardedScheme(r); scheme == "https" || scheme == "http" {
+			return scheme
+		}
+	}
+	return "http"
 }
 
 // Keys the proxy cache by backend and transport flavor
@@ -41,14 +81,16 @@ type httpLane struct {
 	server       *http.Server
 	serverMutex  sync.Mutex
 	logger       *logger.Logger
+	certs        CertSource
 }
 
 // Creates the http lane for one socket
-func newHTTPLane(log *logger.Logger) *httpLane {
+func newHTTPLane(log *logger.Logger, certs CertSource) *httpLane {
 	return &httpLane{
 		routesMap: make(map[string]*Route),
 		proxies:   make(map[proxyKey]*httputil.ReverseProxy),
 		logger:    log,
+		certs:     certs,
 	}
 }
 
@@ -144,12 +186,15 @@ func (p *httpLane) proxyFor(route *Route) *httputil.ReverseProxy {
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
-			pr.SetXForwarded()
-			pr.Out.Host = pr.In.Host
-			// Terminated requests report the https scheme
-			if requestSecure(pr.In) {
-				pr.Out.Header.Set("X-Forwarded-Proto", "https")
+			// Hand rolled, SetXForwarded overwrites the edge scheme
+			if clientIP, _, err := net.SplitHostPort(pr.In.RemoteAddr); err == nil {
+				pr.Out.Header.Set("X-Forwarded-For", appendForwardedFor(pr.In, clientIP))
+			} else {
+				pr.Out.Header.Del("X-Forwarded-For")
 			}
+			pr.Out.Header.Set("X-Forwarded-Host", pr.In.Host)
+			pr.Out.Header.Set("X-Forwarded-Proto", p.requestScheme(pr.In))
+			pr.Out.Host = pr.In.Host
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			p.logger.Error("Proxy error for %s: %v", r.Host, err)
@@ -219,13 +264,9 @@ func (p *httpLane) handleWebSocket(w http.ResponseWriter, r *http.Request, route
 
 	// Forward the original HTTP upgrade request to backend
 	if clientIP, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		r.Header.Set("X-Forwarded-For", clientIP)
+		r.Header.Set("X-Forwarded-For", appendForwardedFor(r, clientIP))
 	}
-	proto := "http"
-	if requestSecure(r) {
-		proto = "https"
-	}
-	r.Header.Set("X-Forwarded-Proto", proto)
+	r.Header.Set("X-Forwarded-Proto", p.requestScheme(r))
 	if err := r.Write(backendConn); err != nil {
 		p.logger.Error("WebSocket: Failed to forward upgrade request: %v", err)
 		return

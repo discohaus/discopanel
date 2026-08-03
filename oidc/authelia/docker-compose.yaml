@@ -27,7 +27,7 @@ services:
       - DISCOPANEL_AUTH_OIDC_ENABLED=true
 
       # MUST MATCH oidc/authelia/config/configuration.yaml
-      - DISCOPANEL_AUTH_OIDC_ISSUER_URI=https://authelia.traefik.me:9091
+      - DISCOPANEL_AUTH_OIDC_ISSUER_URI=https://authelia.127-0-0-1.sslip.io:9091
 
       # ONLY CHANGE THIS IF YOUR CLIENT NAME IS DIFFERENT
       - DISCOPANEL_AUTH_OIDC_CLIENT_ID=discopanel

@@ -21,7 +21,7 @@
 		type ProxyListenerWithCount
 	} from '$lib/proto/discopanel/v1/proxy_pb';
 	import { directAddresses } from '$lib/hostname';
-	import { NetworkTransport, type Module } from '$lib/proto/discopanel/v1/storage_pb';
+	import { NetworkTransport, TlsProvider, type Module } from '$lib/proto/discopanel/v1/storage_pb';
 	import { Button } from '$lib/components/ui/button';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { EmptyState } from '$lib/components/app';
@@ -75,6 +75,8 @@
 	let modules = $state<Module[]>([]);
 	let configHostnames = $state<string[]>([]);
 	let configCatchAll = $state(true);
+	let configHttps = $state(false);
+	let configProvider = $state<TlsProvider>(TlsProvider.DNS);
 	let suggestions = $state<GetHostnameSuggestionsResponse | null>(null);
 	let selection = $state<Selection>({ kind: 'overview' });
 	let disableOpen = $state(false);
@@ -166,6 +168,8 @@
 			modules = mods.modules;
 			configHostnames = status.hostnames;
 			configCatchAll = status.catchAll;
+			configHttps = status.httpsEnabled;
+			configProvider = status.tlsProvider;
 			suggestions = sugg;
 			loadError = false;
 		} catch {
@@ -189,6 +193,8 @@
 			modules = mods.modules;
 			configHostnames = status.hostnames;
 			configCatchAll = status.catchAll;
+			configHttps = status.httpsEnabled;
+			configProvider = status.tlsProvider;
 			suggestions = sugg;
 			loadError = false;
 		} catch {
@@ -572,6 +578,8 @@
 							running={topology.proxyRunning}
 							hostnames={configHostnames}
 							catchAll={configCatchAll}
+							httpsEnabled={configHttps}
+							tlsProvider={configProvider}
 							listenerCount={listeners.length}
 							{routeCount}
 							{hasProxiedWorkloads}

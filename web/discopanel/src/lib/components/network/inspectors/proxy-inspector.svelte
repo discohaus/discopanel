@@ -8,6 +8,9 @@
 	import CertificateDialog from '../certificate-dialog.svelte';
 	import InspectorHeader from './inspector-header.svelte';
 	import { certificatesStore } from '$lib/stores/certificates.svelte';
+	import { TlsProvider, TlsProviderSchema } from '$lib/proto/discopanel/v1/storage_pb';
+	import { enumDesc, enumLabel } from '$lib/proto-meta';
+	import { Tabs, TabsList, TabsTrigger } from '$lib/components/ui/tabs';
 	import { toast } from 'svelte-sonner';
 	import {
 		Globe,
@@ -29,6 +32,8 @@
 		running,
 		hostnames,
 		catchAll,
+		httpsEnabled,
+		tlsProvider,
 		listenerCount,
 		routeCount,
 		hasProxiedWorkloads,
@@ -40,6 +45,8 @@
 		running: boolean;
 		hostnames: string[];
 		catchAll: boolean;
+		httpsEnabled: boolean;
+		tlsProvider: TlsProvider;
 		listenerCount: number;
 		routeCount: number;
 		hasProxiedWorkloads: boolean;
@@ -52,6 +59,8 @@
 	let draftEnabled = $state(true);
 	let draftHostnames = $state<string[]>([]);
 	let draftCatchAll = $state(true);
+	let draftHttps = $state(false);
+	let draftProvider = $state<TlsProvider>(TlsProvider.DNS);
 	let saving = $state(false);
 	let certOpen = $state(false);
 	let removeId = $state('');
@@ -65,19 +74,33 @@
 	// Draft reseeds whenever the saved config changes
 	let seeded = $state('unseeded');
 	$effect(() => {
-		const snapshot = `${enabled}|${catchAll}|${hostnames.join(',')}`;
+		const snapshot = `${enabled}|${catchAll}|${httpsEnabled}|${tlsProvider}|${hostnames.join(',')}`;
 		if (seeded === snapshot) return;
 		seeded = snapshot;
 		draftEnabled = enabled;
 		draftCatchAll = catchAll;
+		draftHttps = httpsEnabled;
+		draftProvider = tlsProvider === TlsProvider.UNSPECIFIED ? TlsProvider.DNS : tlsProvider;
 		draftHostnames = [...hostnames];
 	});
 
 	let dirty = $derived(
 		draftEnabled !== enabled ||
 			draftCatchAll !== catchAll ||
+			draftHttps !== httpsEnabled ||
+			draftProvider !== tlsProvider ||
 			draftHostnames.join(',') !== hostnames.join(',')
 	);
+
+	// Certificates only matter when the panel terminates
+	let panelTerminates = $derived(draftHttps && draftProvider === TlsProvider.DISCOPANEL);
+
+	// Labels and help text come from the proto descriptor
+	const providerChoices = [TlsProvider.DNS, TlsProvider.DISCOPANEL].map((value) => ({
+		value,
+		label: enumLabel(TlsProviderSchema, value)
+	}));
+	let providerDesc = $derived(enumDesc(TlsProviderSchema, draftProvider));
 
 	// Catch all only turns off once a name exists
 	let catchAllLocked = $derived(draftCatchAll && draftHostnames.length === 0);
@@ -101,10 +124,13 @@
 			await rpcClient.proxy.updateProxyConfig({
 				enabled: draftEnabled,
 				hostnames: draftHostnames,
-				catchAll: draftCatchAll
+				catchAll: draftCatchAll,
+				httpsEnabled: draftHttps,
+				tlsProvider: draftProvider
 			});
 			toast.success('Network settings saved');
 			await onChanged();
+			await certificatesStore.refresh();
 			seeded = 'unseeded';
 		} catch (error: unknown) {
 			toast.error(rpcErrorMessage(error, 'Failed to save network settings'));
@@ -197,6 +223,44 @@
 			</label>
 		{/if}
 
+		<div class="space-y-3 rounded-lg border p-3.5">
+			<label class="flex cursor-pointer items-center justify-between gap-3">
+				<span class="text-sm">
+					<span class="flex items-center gap-2 font-medium">
+						<Lock class="size-4 text-primary" />
+						HTTPS
+					</span>
+					<span class="mt-0.5 block text-xs font-normal text-muted-foreground">
+						Serve web addresses over https instead of http
+					</span>
+				</span>
+				<Switch
+					checked={draftHttps}
+					onCheckedChange={(next) => (draftHttps = next)}
+					disabled={saving}
+				/>
+			</label>
+
+			{#if draftHttps}
+				<div class="space-y-2 border-t pt-3">
+					<Label>Handled by</Label>
+					<Tabs
+						value={String(draftProvider)}
+						onValueChange={(next) => (draftProvider = Number(next) as TlsProvider)}
+					>
+						<TabsList class="w-full">
+							{#each providerChoices as choice (choice.value)}
+								<TabsTrigger value={String(choice.value)} disabled={saving} class="flex-1">
+									{choice.label}
+								</TabsTrigger>
+							{/each}
+						</TabsList>
+					</Tabs>
+					<p class="text-xs text-muted-foreground">{providerDesc}</p>
+				</div>
+			{/if}
+		</div>
+
 		<div class="space-y-2 text-sm">
 			<div class="flex items-center justify-between gap-3">
 				<span class="flex items-center gap-2 text-muted-foreground">
@@ -214,62 +278,64 @@
 			</div>
 		</div>
 
-		<div class="overflow-hidden rounded-lg border">
-			<div class="flex items-center gap-2 border-b bg-muted/20 px-3.5 py-3">
-				<Lock class="size-4 shrink-0 text-primary" />
-				<span class="min-w-0 flex-1 text-sm">
-					<span class="block font-medium">Certificates</span>
-					<span class="mt-0.5 block text-xs text-muted-foreground">
-						Serve your web addresses over https
+		{#if panelTerminates}
+			<div class="overflow-hidden rounded-lg border">
+				<div class="flex items-center gap-2 border-b bg-muted/20 px-3.5 py-3">
+					<Lock class="size-4 shrink-0 text-primary" />
+					<span class="min-w-0 flex-1 text-sm">
+						<span class="block font-medium">Certificates</span>
+						<span class="mt-0.5 block text-xs text-muted-foreground">
+							One per domain you serve
+						</span>
 					</span>
-				</span>
-				<Button variant="outline" size="sm" class="shrink-0" onclick={() => (certOpen = true)}>
-					<Plus class="size-4" />
-					Add
-				</Button>
-			</div>
-			<div class="divide-y">
-				{#each certificatesStore.certificates as cert (cert.id)}
-					{@const expires = expiryDate(cert.expiresAt?.seconds)}
-					{@const expired = !!expires && expires.getTime() < Date.now()}
-					<div class="flex items-start gap-2 px-3.5 py-2.5">
-						<div class="min-w-0 flex-1">
-							<p class="truncate font-mono text-xs" title={cert.coveredNames.join(', ')}>
-								{cert.coveredNames.join(', ') || 'Unreadable certificate'}
-							</p>
-							<p
-								class="mt-0.5 text-[11px] {expired
-									? 'text-status-danger'
-									: 'text-muted-foreground'}"
+					<Button variant="outline" size="sm" class="shrink-0" onclick={() => (certOpen = true)}>
+						<Plus class="size-4" />
+						Add
+					</Button>
+				</div>
+				<div class="divide-y">
+					{#each certificatesStore.certificates as cert (cert.id)}
+						{@const expires = expiryDate(cert.expiresAt?.seconds)}
+						{@const expired = !!expires && expires.getTime() < Date.now()}
+						<div class="flex items-start gap-2 px-3.5 py-2.5">
+							<div class="min-w-0 flex-1">
+								<p class="truncate font-mono text-xs" title={cert.coveredNames.join(', ')}>
+									{cert.coveredNames.join(', ') || 'Unreadable certificate'}
+								</p>
+								<p
+									class="mt-0.5 text-[11px] {expired
+										? 'text-status-danger'
+										: 'text-muted-foreground'}"
+								>
+									{#if expires}
+										{expired ? 'Expired' : 'Expires'}
+										{expires.toLocaleDateString(undefined, { dateStyle: 'medium' })}
+									{/if}
+								</p>
+							</div>
+							<Button
+								variant="ghost"
+								size="icon"
+								class="size-7 shrink-0 text-muted-foreground hover:text-status-danger"
+								title="Remove certificate"
+								disabled={deletingId === cert.id}
+								onclick={() => askRemove(cert.id)}
 							>
-								{#if expires}
-									{expired ? 'Expired' : 'Expires'}
-									{expires.toLocaleDateString(undefined, { dateStyle: 'medium' })}
+								{#if deletingId === cert.id}
+									<Loader2 class="size-3.5 animate-spin" />
+								{:else}
+									<Trash2 class="size-3.5" />
 								{/if}
-							</p>
+							</Button>
 						</div>
-						<Button
-							variant="ghost"
-							size="icon"
-							class="size-7 shrink-0 text-muted-foreground hover:text-status-danger"
-							title="Remove certificate"
-							disabled={deletingId === cert.id}
-							onclick={() => askRemove(cert.id)}
-						>
-							{#if deletingId === cert.id}
-								<Loader2 class="size-3.5 animate-spin" />
-							{:else}
-								<Trash2 class="size-3.5" />
-							{/if}
-						</Button>
-					</div>
-				{:else}
-					<p class="px-3.5 py-3 text-xs text-muted-foreground">
-						No certificates yet. Add one to serve your addresses over https.
-					</p>
-				{/each}
+					{:else}
+						<p class="px-3.5 py-3 text-xs text-muted-foreground">
+							No certificates yet. Add one to serve your addresses over https.
+						</p>
+					{/each}
+				</div>
 			</div>
-		</div>
+		{/if}
 
 		<p class="flex items-start gap-2 text-xs text-muted-foreground">
 			<MousePointerClick class="mt-0.5 size-3.5 shrink-0" />

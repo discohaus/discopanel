@@ -13,12 +13,14 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// For TLS termination
+// Tls policy and material for one socket
 type CertSource interface {
 	// Best certificate for a client hello name
 	MatchCertificate(serverName string) (*tls.Certificate, bool)
-	// True when any certificate is loaded
-	HasCertificates() bool
+	// True when this panel terminates tls itself
+	TerminatesTLS() bool
+	// True when an upstream edge terminates ahead of us
+	TrustsForwardedProto() bool
 }
 
 // One parsed certificate ready for sni matching
@@ -138,10 +140,31 @@ func (m *Manager) MatchCertificate(serverName string) (*tls.Certificate, bool) {
 	return m.certIdx.Load().match(serverName)
 }
 
-// True when termination has any material
-func (m *Manager) HasCertificates() bool {
+// Https settings snapshot read on every accept
+type tlsPolicy struct {
+	enabled  bool
+	provider v1.TlsProvider
+}
+
+// Replaces the policy lane dispatch reads
+func (m *Manager) setTLSPolicy(enabled bool, provider v1.TlsProvider) {
+	m.policy.Store(&tlsPolicy{enabled: enabled, provider: provider})
+}
+
+// True when the panel holds certificates and owns termination
+func (m *Manager) TerminatesTLS() bool {
 	idx := m.certIdx.Load()
-	return idx != nil && len(idx.entries) > 0
+	if idx == nil || len(idx.entries) == 0 {
+		return false
+	}
+	p := m.policy.Load()
+	return p != nil && p.enabled && p.provider == v1.TlsProvider_TLS_PROVIDER_DISCOPANEL
+}
+
+// True when an edge terminates and asserts the scheme
+func (m *Manager) TrustsForwardedProto() bool {
+	p := m.policy.Load()
+	return p != nil && p.enabled && p.provider == v1.TlsProvider_TLS_PROVIDER_DNS
 }
 
 // Reloads certificate rows into the matching index

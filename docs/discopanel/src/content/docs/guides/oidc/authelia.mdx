@@ -11,7 +11,7 @@ import usersYml from '../../../../../../../oidc/authelia/config/users_database.y
 This guide walks through running DiscoPanel with [Authelia](https://www.authelia.com/) as an OIDC identity provider using a ready-made Docker Compose stack. Authelia provides a file-based user store, so no external database is needed.
 
 <Aside>
-Authelia is typically deployed behind a reverse proxy like Traefik. The included configuration uses self-signed TLS certificates and the `traefik.me` wildcard domain for development. See the [Authelia docs](https://www.authelia.com/integration/proxies/) for production proxy integration.
+Authelia is typically deployed behind a reverse proxy. The included configuration uses self-signed TLS certificates and the `127-0-0-1.sslip.io` instant domain, which resolves to loopback with no DNS setup. See the [Authelia docs](https://www.authelia.com/integration/proxies/) for production proxy integration.
 </Aside>
 
 ## Prerequisites
@@ -50,7 +50,7 @@ docker compose up -d
 - **`identity_providers.oidc.clients`**: the DiscoPanel OIDC client - `client_secret` is a PBKDF2-SHA512 hash of the plaintext secret
 - **`claims_policies.discopanel`**: puts `groups` directly in the ID token so DiscoPanel can read roles without a separate UserInfo call
 - **`identity_providers.oidc.jwks`**: an RSA key pair used for signing tokens - generate your own for production
-- **`session.cookies.domain`**: set to `traefik.me` for development - change to your actual domain
+- **`session.cookies.domain`**: set to `127-0-0-1.sslip.io` for development - change to your actual domain
 
 ## User database
 
@@ -73,7 +73,7 @@ docker run --rm authelia/authelia:latest \
 | Service | URL | Username | Password |
 |---|---|---|---|
 | DiscoPanel | [http://localhost:8080](http://localhost:8080) | - | Log in via OIDC |
-| Authelia login portal | [https://authelia.traefik.me:9091](https://authelia.traefik.me:9091) | `admin` | `admin` |
+| Authelia login portal | [https://authelia.127-0-0-1.sslip.io:9091](https://authelia.127-0-0-1.sslip.io:9091) | `admin` | `admin` |
 
 ## Production notes
 
@@ -84,6 +84,6 @@ The included configuration uses development secrets and self-signed certificates
 - **Use real TLS certificates**: replace `tls.crt` and `tls.key`, then remove `DISCOPANEL_AUTH_OIDC_SKIP_TLS_VERIFY`
 - **Change all secrets**: the HMAC secret, session secret, storage encryption key, JWT reset secret, and the OIDC client secret (both the hash in `configuration.yml` and the plaintext in the compose file)
 - **Generate new JWKS keys**: replace the RSA key pair in `configuration.yml`
-- **Update the session domain**: change `traefik.me` to your actual domain
+- **Update the session domain**: change `127-0-0-1.sslip.io` to your actual domain
 - **Update redirect URIs**: change `localhost` entries to your actual domain
 - **Disable local auth** (optional): set `DISCOPANEL_AUTH_LOCAL_ENABLED=false` if you want OIDC-only login

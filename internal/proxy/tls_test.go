@@ -53,7 +53,10 @@ func testCertPEM(t *testing.T, names ...string) (string, string) {
 }
 
 // Static cert source for socket tests
-type staticCerts struct{ idx *certIndex }
+type staticCerts struct {
+	idx     *certIndex
+	edgeTLS bool
+}
 
 func newStaticCerts(t *testing.T, rows ...*v1.Certificate) *staticCerts {
 	t.Helper()
@@ -72,8 +75,12 @@ func (s *staticCerts) MatchCertificate(name string) (*tls.Certificate, bool) {
 	return s.idx.match(name)
 }
 
-func (s *staticCerts) HasCertificates() bool {
+func (s *staticCerts) TerminatesTLS() bool {
 	return len(s.idx.entries) > 0
+}
+
+func (s *staticCerts) TrustsForwardedProto() bool {
+	return s.edgeTLS
 }
 
 // Pool trusting one test pair
@@ -223,6 +230,75 @@ func TestTLSSocketStillServesPlainHTTP(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "proto=http") || strings.Contains(string(body), "https") {
 		t.Fatalf("plain request must stay http, got %q", body)
+	}
+}
+
+// Edge terminated requests carry their scheme to the backend
+func TestEdgeTerminationForwardsScheme(t *testing.T) {
+	cases := []struct {
+		name    string
+		edgeTLS bool
+		header  string
+		value   string
+		want    string
+	}{
+		{"trusted xfp", true, "X-Forwarded-Proto", "https", "proto=https"},
+		{"trusted forwarded", true, "Forwarded", `proto=https;host=map.example.com`, "proto=https"},
+		{"trusted chain takes leftmost", true, "X-Forwarded-Proto", "https, http", "proto=https"},
+		{"untrusted claim is dropped", false, "X-Forwarded-Proto", "https", "proto=http"},
+		{"no claim stays http", true, "X-Forwarded-Proto", "", "proto=http"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			backendLn, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("backend listen failed %v", err)
+			}
+			backend := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintf(w, "proto=%s", r.Header.Get("X-Forwarded-Proto"))
+			})}
+			go func() { _ = backend.Serve(backendLn) }()
+			defer backend.Close()
+
+			certs := newStaticCerts(t)
+			certs.edgeTLS = tc.edgeTLS
+			sock := NewListenerSocket(&Config{
+				ListenAddr: "127.0.0.1:0",
+				Logger:     logger.New(),
+				Certs:      certs,
+			})
+			if err := sock.Start(); err != nil {
+				t.Fatalf("socket start failed %v", err)
+			}
+			defer sock.Stop()
+			sock.SetRoutes([]Route{{
+				ServerID:    "svc",
+				OwnerKind:   OwnerModule,
+				OwnerID:     "svc",
+				Hostname:    "map.example.com",
+				Protocol:    v1.ModuleProtocol_MODULE_PROTOCOL_HTTP,
+				BackendHost: "127.0.0.1",
+				BackendPort: backendLn.Addr().(*net.TCPAddr).Port,
+			}})
+
+			req, err := http.NewRequest(http.MethodGet, "http://"+sock.listener.Addr().String()+"/", nil)
+			if err != nil {
+				t.Fatalf("request build failed %v", err)
+			}
+			req.Host = "map.example.com"
+			if tc.value != "" {
+				req.Header.Set(tc.header, tc.value)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("get failed %v", err)
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			if string(body) != tc.want {
+				t.Fatalf("scheme wrong, want %q got %q", tc.want, body)
+			}
+		})
 	}
 }
 

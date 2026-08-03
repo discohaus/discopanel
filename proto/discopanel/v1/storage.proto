@@ -1845,6 +1845,26 @@ message ProxyConfig {
   google.protobuf.Timestamp updated_at = 4 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
   // Panel also answers unmatched hostnames
   bool catch_all = 5 [(protogorm.v1.db) = {tag: "not null;default:true"}];
+  // Web addresses are reachable over https
+  bool https_enabled = 6 [(protogorm.v1.db) = {tag: "not null;default:false"}];
+  // Who turns https into plain traffic
+  TlsProvider tls_provider = 7 [(protogorm.v1.db) = {tag: "not null;default:1"}];
+}
+
+// Who terminates tls ahead of the routing lanes
+enum TlsProvider {
+  option (discopanel.options.v1.enum_type) = {label: "TLS Provider"};
+  TLS_PROVIDER_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  // An upstream edge terminates and forwards plain traffic
+  TLS_PROVIDER_DNS = 1 [(discopanel.options.v1.value) = {
+    label: "DNS"
+    desc: "Your domain host handles https before traffic reaches DiscoPanel"
+  }];
+  // The panel terminates with its own certificates
+  TLS_PROVIDER_DISCOPANEL = 2 [(discopanel.options.v1.value) = {
+    label: "DiscoPanel"
+    desc: "DiscoPanel handles https with certificates you add"
+  }];
 }
 
 // One tls certificate with its private key
