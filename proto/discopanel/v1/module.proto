@@ -274,6 +274,8 @@ message CreateModuleTemplateRequest {
   bool default_restart_after_init = 24;
   // Container security options
   repeated string default_security_opt = 25;
+  // Container dir an uploaded cert pair mounts into
+  string cert_mount_path = 26;
 }
 
 // CreateModuleTemplateResponse contains the created template.
@@ -310,6 +312,8 @@ message UpdateModuleTemplateRequest {
   optional int32 default_init_command_delay = 24;
   optional bool default_restart_after_init = 25;
   repeated string default_security_opt = 26;
+  // Container dir an uploaded cert pair mounts into
+  optional string cert_mount_path = 27;
 }
 
 // UpdateModuleTemplateResponse contains the updated template.
@@ -404,6 +408,10 @@ message CreateModuleRequest {
   int32 init_command_delay = 25;
   // Restart after init
   bool restart_after_init = 26;
+  // Pem chain for templates that mount certificates
+  string cert_pem = 27;
+  // Matching pem private key
+  string key_pem = 28;
 }
 
 // CreateModuleResponse contains the created module.

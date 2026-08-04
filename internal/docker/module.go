@@ -82,6 +82,11 @@ func (c *Client) CreateModuleContainer(ctx context.Context, module *v1.Module, t
 		resolveWorldSources(vols, server.DataPath)
 	}
 
+	vols, err := c.mountModuleCerts(module, template, cfg, vols)
+	if err != nil {
+		return "", err
+	}
+
 	// Pre-create bind sources, read-only ones must exist before create
 	for _, vol := range vols {
 		if vol.Type != "" && vol.Type != "bind" {
@@ -253,6 +258,35 @@ func resolveWorldSources(vols []*v1.VolumeMount, dataPath string) {
 			vols[i].Source = filepath.Join(worldDir, src[len(declared):])
 		}
 	}
+}
+
+// Panel owned host dir for one module's files
+func ModuleDataDir(cfg *config.Config, moduleID string) string {
+	return filepath.Join(cfg.Storage.DataDir, "modules", moduleID)
+}
+
+// Writes the stored cert pair and mounts it read only
+func (c *Client) mountModuleCerts(module *v1.Module, template *v1.ModuleTemplate, cfg *config.Config, vols []*v1.VolumeMount) ([]*v1.VolumeMount, error) {
+	if template.CertMountPath == "" || module.CertPem == "" || module.KeyPem == "" {
+		return vols, nil
+	}
+	// Parent stays private, mounted dir stays container readable
+	base := ModuleDataDir(cfg, module.Id)
+	if err := os.MkdirAll(base, 0700); err != nil {
+		return nil, fmt.Errorf("failed to create module data dir: %w", err)
+	}
+	dir := filepath.Join(base, "certs")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create module cert dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tls.crt"), []byte(module.CertPem), 0644); err != nil {
+		return nil, fmt.Errorf("failed to write module certificate: %w", err)
+	}
+	// Any container uid must read the key through the mount
+	if err := os.WriteFile(filepath.Join(dir, "tls.key"), []byte(module.KeyPem), 0644); err != nil {
+		return nil, fmt.Errorf("failed to write module key: %w", err)
+	}
+	return append(vols, &v1.VolumeMount{Source: dir, Target: template.CertMountPath, ReadOnly: true}), nil
 }
 
 // Clones volume mounts and substitutes aliases in paths

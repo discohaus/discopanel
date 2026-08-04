@@ -27,7 +27,7 @@ type ListenerSocket struct {
 	routesMu sync.RWMutex
 
 	httpLane *httpLane
-	certs    CertSource
+	certs    *certIndex
 
 	stats   map[string]*RouteStats
 	statsMu sync.Mutex
@@ -49,7 +49,7 @@ func NewListenerSocket(cfg *Config) *ListenerSocket {
 	return &ListenerSocket{
 		mcRoutes:   make(map[string]*Route),
 		stats:      make(map[string]*RouteStats),
-		httpLane:   newHTTPLane(cfg.Logger, cfg.Certs),
+		httpLane:   newHTTPLane(cfg.Logger),
 		logger:     cfg.Logger,
 		listenAddr: cfg.ListenAddr,
 		ctx:        ctx,
@@ -358,9 +358,9 @@ func (s *ListenerSocket) dispatch(conn net.Conn, terminated bool) {
 	}
 
 	// Hello detection, mc handshakes never carry 0x03 second
-	if !terminated && s.certsAvailable() && first[0] == tlsRecordHandshake {
+	if !terminated && first[0] == tlsRecordHandshake {
 		if hdr, herr := br.Peek(3); herr == nil && hdr[1] == 0x03 {
-			s.serveTLS(conn, br, rec)
+			s.serveHello(conn, br, rec)
 			return
 		}
 	}
@@ -411,9 +411,24 @@ const relaySniffGrace = 250 * time.Millisecond
 // Client hello size cap across records
 const maxClientHello = 64 << 10
 
-// True when this panel owns termination on this socket
+// True when config file certificates cover this socket
 func (s *ListenerSocket) certsAvailable() bool {
-	return s.certs != nil && s.certs.TerminatesTLS()
+	return s.certs != nil && len(s.certs.entries) > 0
+}
+
+// Routes a hello to termination, relay, or refusal
+func (s *ListenerSocket) serveHello(conn net.Conn, br *bufio.Reader, rec *recordedConn) {
+	if s.certsAvailable() {
+		s.serveTLS(conn, br, rec)
+		return
+	}
+	// Relay backends terminate their own traffic
+	if _, ok := s.relayRoute(); ok {
+		s.serveRelay(conn, rec.take())
+		return
+	}
+	s.logger.Debug("Refused TLS client %s on %s, no certificates configured", conn.RemoteAddr(), s.listenAddr)
+	conn.Close()
 }
 
 // Terminates tls when a certificate matches the hello
@@ -422,8 +437,8 @@ func (s *ListenerSocket) serveTLS(conn net.Conn, br *bufio.Reader, rec *recorded
 	pending := rec.take()
 
 	var cert *tls.Certificate
-	if ok && s.certs != nil {
-		if matched, found := s.certs.MatchCertificate(sni); found {
+	if ok {
+		if matched, found := s.certs.match(sni); found {
 			cert = matched
 		}
 	}

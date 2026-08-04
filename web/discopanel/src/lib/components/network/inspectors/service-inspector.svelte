@@ -6,14 +6,9 @@
 	import { AddressSelect } from '$lib/components/app';
 	import InspectorHeader from './inspector-header.svelte';
 	import { routeStateClass, routeStateLabel, routeStatsSummary } from '$lib/proxy-route';
-	import { playerAddress } from '$lib/hostname';
-	import { webUrl } from '$lib/certs';
-	import { certificatesStore } from '$lib/stores/certificates.svelte';
+	import { playerAddress, webUrl } from '$lib/hostname';
 	import { laneLabel, type LaneService } from '../topology-data';
 	import { ArrowUpRight, Globe } from '@lucide/svelte';
-
-	// Locks and schemes follow certificate coverage
-	certificatesStore.ensure();
 
 	let {
 		service,
@@ -36,7 +31,7 @@
 		for (const name of service.hostnames) {
 			if (isMinecraft) out.push(playerAddress(name, service.port));
 			if (isHttp) {
-				out.push(webUrl(name, service.port, certificatesStore.isSecured(name)));
+				out.push(webUrl(name, service.port));
 			}
 			if (!isMinecraft && !isHttp) out.push(name);
 		}

@@ -14,10 +14,13 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/logger"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"golang.org/x/net/http2"
@@ -52,35 +55,30 @@ func testCertPEM(t *testing.T, names ...string) (string, string) {
 	return string(certPEM), string(keyPEM)
 }
 
-// Static cert source for socket tests
-type staticCerts struct {
-	idx     *certIndex
-	edgeTLS bool
-}
-
-func newStaticCerts(t *testing.T, rows ...*v1.Certificate) *staticCerts {
+// Writes a pair to disk as config file entries do
+func testCertFiles(t *testing.T, names ...string) (config.TLSCertificate, string) {
 	t.Helper()
-	idx := &certIndex{}
-	for _, row := range rows {
-		entry, err := parseCertEntry(row)
-		if err != nil {
-			t.Fatalf("cert parse failed %v", err)
-		}
-		idx.entries = append(idx.entries, entry)
+	certPEM, keyPEM := testCertPEM(t, names...)
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "tls.crt")
+	keyFile := filepath.Join(dir, "tls.key")
+	if err := os.WriteFile(certFile, []byte(certPEM), 0644); err != nil {
+		t.Fatalf("cert write failed %v", err)
 	}
-	return &staticCerts{idx: idx}
+	if err := os.WriteFile(keyFile, []byte(keyPEM), 0600); err != nil {
+		t.Fatalf("key write failed %v", err)
+	}
+	return config.TLSCertificate{CertFile: certFile, KeyFile: keyFile}, certPEM
 }
 
-func (s *staticCerts) MatchCertificate(name string) (*tls.Certificate, bool) {
-	return s.idx.match(name)
-}
-
-func (s *staticCerts) TerminatesTLS() bool {
-	return len(s.idx.entries) > 0
-}
-
-func (s *staticCerts) TrustsForwardedProto() bool {
-	return s.edgeTLS
+// Index loaded through the config file path
+func testIndex(t *testing.T, entries ...config.TLSCertificate) *certIndex {
+	t.Helper()
+	idx := LoadTLSCertificates(entries, logger.New())
+	if idx == nil {
+		t.Fatal("index must load")
+	}
+	return idx
 }
 
 // Pool trusting one test pair
@@ -93,45 +91,42 @@ func testPool(t *testing.T, certPEM string) *x509.CertPool {
 	return pool
 }
 
-// Wildcards cover one label, exacts beat them
-func TestCertIndexMatch(t *testing.T) {
-	certPEM, keyPEM := testCertPEM(t, "*.sslip.io")
-	exactPEM, exactKey := testCertPEM(t, "map.example.com")
-	src := newStaticCerts(t,
-		&v1.Certificate{Id: "wild", CertPem: certPEM, KeyPem: keyPEM},
-		&v1.Certificate{Id: "exact", CertPem: exactPEM, KeyPem: exactKey},
-	)
-
-	if _, ok := src.MatchCertificate("smp-192-168-1-5.sslip.io"); !ok {
-		t.Fatal("dash label must match the wildcard")
+// Broken entries skip and an empty load returns nil
+func TestLoadTLSCertificates(t *testing.T) {
+	if idx := LoadTLSCertificates(nil, logger.New()); idx != nil {
+		t.Fatal("no entries must return nil")
 	}
-	if _, ok := src.MatchCertificate("smp.192-168-1-5.sslip.io"); ok {
-		t.Fatal("two labels must not match a single wildcard")
+	missing := config.TLSCertificate{CertFile: "/nope/tls.crt", KeyFile: "/nope/tls.key"}
+	if idx := LoadTLSCertificates([]config.TLSCertificate{missing}, logger.New()); idx != nil {
+		t.Fatal("unreadable entries must return nil")
 	}
-	if _, ok := src.MatchCertificate("sslip.io"); ok {
-		t.Fatal("bare suffix must not match the wildcard")
-	}
-	if cert, ok := src.MatchCertificate("MAP.example.com."); !ok || cert == nil {
-		t.Fatal("exact match must normalize case and dots")
-	}
-	if _, ok := src.MatchCertificate("other.example.com"); ok {
-		t.Fatal("uncovered name must not match")
+	good, _ := testCertFiles(t, "map.example.com")
+	idx := LoadTLSCertificates([]config.TLSCertificate{missing, good}, logger.New())
+	if idx == nil || len(idx.entries) != 1 {
+		t.Fatal("good entry must survive a broken sibling")
 	}
 }
 
-// Derived fields fill and the key never leaves
-func TestFillCertificateDerived(t *testing.T) {
-	certPEM, keyPEM := testCertPEM(t, "a.example.com", "*.b.example.com")
-	row := &v1.Certificate{Id: "x", CertPem: certPEM, KeyPem: keyPEM}
-	FillCertificateDerived(row)
-	if row.KeyPem != "" {
-		t.Fatal("key must be redacted")
+// Wildcards cover one label, exacts beat them
+func TestCertIndexMatch(t *testing.T) {
+	wild, _ := testCertFiles(t, "*.sslip.io")
+	exact, _ := testCertFiles(t, "map.example.com")
+	idx := testIndex(t, wild, exact)
+
+	if _, ok := idx.match("smp-192-168-1-5.sslip.io"); !ok {
+		t.Fatal("dash label must match the wildcard")
 	}
-	if len(row.CoveredNames) != 2 || row.CoveredNames[0] != "*.b.example.com" {
-		t.Fatalf("derived names wrong: %v", row.CoveredNames)
+	if _, ok := idx.match("smp.192-168-1-5.sslip.io"); ok {
+		t.Fatal("two labels must not match a single wildcard")
 	}
-	if row.ExpiresAt == nil || row.ExpiresAt.AsTime().Before(time.Now()) {
-		t.Fatalf("derived expiry wrong: %v", row.ExpiresAt)
+	if _, ok := idx.match("sslip.io"); ok {
+		t.Fatal("bare suffix must not match the wildcard")
+	}
+	if cert, ok := idx.match("MAP.example.com."); !ok || cert == nil {
+		t.Fatal("exact match must normalize case and dots")
+	}
+	if _, ok := idx.match("other.example.com"); ok {
+		t.Fatal("uncovered name must not match")
 	}
 }
 
@@ -147,11 +142,11 @@ func TestTLSTerminationServesHTTPS(t *testing.T) {
 	go func() { _ = backend.Serve(backendLn) }()
 	defer backend.Close()
 
-	certPEM, keyPEM := testCertPEM(t, "map.example.com")
+	entry, certPEM := testCertFiles(t, "map.example.com")
 	sock := NewListenerSocket(&Config{
 		ListenAddr: "127.0.0.1:0",
 		Logger:     logger.New(),
-		Certs:      newStaticCerts(t, &v1.Certificate{Id: "c", CertPem: certPEM, KeyPem: keyPEM}),
+		Certs:      testIndex(t, entry),
 	})
 	if err := sock.Start(); err != nil {
 		t.Fatalf("socket start failed %v", err)
@@ -197,11 +192,11 @@ func TestTLSSocketStillServesPlainHTTP(t *testing.T) {
 	go func() { _ = backend.Serve(backendLn) }()
 	defer backend.Close()
 
-	certPEM, keyPEM := testCertPEM(t, "map.example.com")
+	entry, _ := testCertFiles(t, "map.example.com")
 	sock := NewListenerSocket(&Config{
 		ListenAddr: "127.0.0.1:0",
 		Logger:     logger.New(),
-		Certs:      newStaticCerts(t, &v1.Certificate{Id: "c", CertPem: certPEM, KeyPem: keyPEM}),
+		Certs:      testIndex(t, entry),
 	})
 	if err := sock.Start(); err != nil {
 		t.Fatalf("socket start failed %v", err)
@@ -233,20 +228,16 @@ func TestTLSSocketStillServesPlainHTTP(t *testing.T) {
 	}
 }
 
-// Edge terminated requests carry their scheme to the backend
-func TestEdgeTerminationForwardsScheme(t *testing.T) {
+// Edge scheme claims pass through, bare conns say http
+func TestForwardedProtoPassthrough(t *testing.T) {
 	cases := []struct {
-		name    string
-		edgeTLS bool
-		header  string
-		value   string
-		want    string
+		name  string
+		value string
+		want  string
 	}{
-		{"trusted xfp", true, "X-Forwarded-Proto", "https", "proto=https"},
-		{"trusted forwarded", true, "Forwarded", `proto=https;host=map.example.com`, "proto=https"},
-		{"trusted chain takes leftmost", true, "X-Forwarded-Proto", "https, http", "proto=https"},
-		{"untrusted claim is dropped", false, "X-Forwarded-Proto", "https", "proto=http"},
-		{"no claim stays http", true, "X-Forwarded-Proto", "", "proto=http"},
+		{"claim passes untouched", "https", "proto=https"},
+		{"chains pass untouched", "https, http", "proto=https, http"},
+		{"no claim stays http", "", "proto=http"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -260,12 +251,9 @@ func TestEdgeTerminationForwardsScheme(t *testing.T) {
 			go func() { _ = backend.Serve(backendLn) }()
 			defer backend.Close()
 
-			certs := newStaticCerts(t)
-			certs.edgeTLS = tc.edgeTLS
 			sock := NewListenerSocket(&Config{
 				ListenAddr: "127.0.0.1:0",
 				Logger:     logger.New(),
-				Certs:      certs,
 			})
 			if err := sock.Start(); err != nil {
 				t.Fatalf("socket start failed %v", err)
@@ -287,7 +275,7 @@ func TestEdgeTerminationForwardsScheme(t *testing.T) {
 			}
 			req.Host = "map.example.com"
 			if tc.value != "" {
-				req.Header.Set(tc.header, tc.value)
+				req.Header.Set("X-Forwarded-Proto", tc.value)
 			}
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
@@ -321,11 +309,11 @@ func TestTLSTerminatedRelay(t *testing.T) {
 		got <- buf[:n]
 	}()
 
-	certPEM, keyPEM := testCertPEM(t, "relay.example.com")
+	entry, certPEM := testCertFiles(t, "relay.example.com")
 	sock := NewListenerSocket(&Config{
 		ListenAddr: "127.0.0.1:0",
 		Logger:     logger.New(),
-		Certs:      newStaticCerts(t, &v1.Certificate{Id: "c", CertPem: certPEM, KeyPem: keyPEM}),
+		Certs:      testIndex(t, entry),
 	})
 	if err := sock.Start(); err != nil {
 		t.Fatalf("socket start failed %v", err)
@@ -381,11 +369,11 @@ func TestTLSUnknownNamePassthroughToRelay(t *testing.T) {
 		}
 	}()
 
-	certPEM, keyPEM := testCertPEM(t, "other.example.com")
+	entry, _ := testCertFiles(t, "other.example.com")
 	sock := NewListenerSocket(&Config{
 		ListenAddr: "127.0.0.1:0",
 		Logger:     logger.New(),
-		Certs:      newStaticCerts(t, &v1.Certificate{Id: "c", CertPem: certPEM, KeyPem: keyPEM}),
+		Certs:      testIndex(t, entry),
 	})
 	if err := sock.Start(); err != nil {
 		t.Fatalf("socket start failed %v", err)
@@ -420,11 +408,11 @@ func TestTLSUnknownNamePassthroughToRelay(t *testing.T) {
 
 // No cert and no relay closes the handshake
 func TestTLSUnknownNameWithoutRelayCloses(t *testing.T) {
-	certPEM, keyPEM := testCertPEM(t, "other.example.com")
+	entry, _ := testCertFiles(t, "other.example.com")
 	sock := NewListenerSocket(&Config{
 		ListenAddr: "127.0.0.1:0",
 		Logger:     logger.New(),
-		Certs:      newStaticCerts(t, &v1.Certificate{Id: "c", CertPem: certPEM, KeyPem: keyPEM}),
+		Certs:      testIndex(t, entry),
 	})
 	if err := sock.Start(); err != nil {
 		t.Fatalf("socket start failed %v", err)
@@ -470,11 +458,11 @@ func TestTLSCarriesH2ToPanelBackend(t *testing.T) {
 	go func() { _ = backend.Serve(backendLn) }()
 	defer backend.Close()
 
-	certPEM, keyPEM := testCertPEM(t, "panel.example.com")
+	entry, certPEM := testCertFiles(t, "panel.example.com")
 	sock := NewListenerSocket(&Config{
 		ListenAddr: "127.0.0.1:0",
 		Logger:     logger.New(),
-		Certs:      newStaticCerts(t, &v1.Certificate{Id: "c", CertPem: certPEM, KeyPem: keyPEM}),
+		Certs:      testIndex(t, entry),
 	})
 	if err := sock.Start(); err != nil {
 		t.Fatalf("socket start failed %v", err)

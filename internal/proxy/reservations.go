@@ -31,9 +31,7 @@ at most one relay.
 
 Dispatch is peek-and-descend: MC handshake? → MC table → HTTP Host? → HTTP table → TCP relay → descriptive error; UDP → relay → drop.
 
-TLS unwraps before the descent when a certificate matches the hello SNI, exactly once, then the plaintext re-enters the same descent.
-No cert match on a relay port passes the encrypted bytes through untouched.
-TLS claims nothing here, it is an unwrap step, not a lane.
+Encrypted relay bytes pass through untouched, backends terminate them.
 */
 
 // Owner kinds for network reservations

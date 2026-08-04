@@ -3,11 +3,7 @@
 	import InspectorHeader from './inspector-header.svelte';
 	import { PanelsTopLeft } from '@lucide/svelte';
 	import { panelHost } from '$lib/utils/host';
-	import { webUrl } from '$lib/certs';
-	import { certificatesStore } from '$lib/stores/certificates.svelte';
-
-	// Schemes follow certificate coverage per name
-	certificatesStore.ensure();
+	import { webUrl } from '$lib/hostname';
 
 	let {
 		port,
@@ -23,14 +19,7 @@
 	// Browser host fills in when detection has nothing
 	let names = $derived(hosts.length > 0 ? hosts : [panelHost()]);
 
-	function addressFor(host: string): string {
-		const secure =
-			certificatesStore.isSecured(host) ||
-			(host === panelHost() && window.location.protocol === 'https:');
-		return webUrl(host, port, secure);
-	}
-
-	let addresses = $derived(names.map(addressFor));
+	let addresses = $derived(names.map((host) => webUrl(host, port)));
 </script>
 
 <div class="flex h-full min-h-0 flex-col">

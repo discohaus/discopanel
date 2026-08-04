@@ -20,6 +20,24 @@ export function needsDnsSetup(hostname: string): boolean {
 	return !instantSuffixes.some((suffix) => name.endsWith(suffix));
 }
 
+// True when the browser itself rides https
+function browserSecure(): boolean {
+	return typeof window !== 'undefined' && window.location.protocol === 'https:';
+}
+
+// Web link, scheme mirrors the browser
+export function webUrl(hostname: string, port: number): string {
+	const scheme = browserSecure() ? 'https' : 'http';
+	const defaultPort = browserSecure() ? 443 : 80;
+	return port && port !== defaultPort ? `${scheme}://${hostname}:${port}` : `${scheme}://${hostname}`;
+}
+
+// Upgrades an http link when the browser rides https
+export function mirrorScheme(url: string): string {
+	if (!browserSecure()) return url;
+	return url.replace(/^http:\/\//, 'https://');
+}
+
 // Lan or public reachability tag for one address
 export function addressScope(address: string): string {
 	let host = address.trim().toLowerCase();

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -797,6 +798,11 @@ func (m *Manager) DeleteModule(ctx context.Context, moduleID string) error {
 		if err := m.proxyManager.SyncListeners(ctx); err != nil {
 			m.logger.Error("Failed to sync routes after deleting %s: %v", module.Name, err)
 		}
+	}
+
+	// Panel written files leave with the module
+	if err := os.RemoveAll(docker.ModuleDataDir(m.config, moduleID)); err != nil {
+		m.logger.Error("Failed to remove module data dir: %v", err)
 	}
 
 	m.logger.Info("Deleted module: %s", module.Name)

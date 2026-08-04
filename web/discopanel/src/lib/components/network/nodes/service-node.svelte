@@ -1,15 +1,10 @@
 <script lang="ts">
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
-	import { Globe, Lock, MoonStar } from '@lucide/svelte';
-	import { certificatesStore } from '$lib/stores/certificates.svelte';
+	import { Globe, MoonStar } from '@lucide/svelte';
 	import type { ServiceNodeData } from '../topology-data';
-
-	// Lock follows certificate coverage of the shown name
-	certificatesStore.ensure();
 
 	let { data }: NodeProps = $props();
 	let d = $derived(data as ServiceNodeData);
-	let secured = $derived(d.http && certificatesStore.isSecured(d.summary));
 
 	const BORDER: Record<string, string> = {
 		'topo-edge-ok': 'border-l-status-ok',
@@ -35,9 +30,6 @@
 			</span>
 		{/if}
 		<span class="min-w-0 flex-1"></span>
-		{#if secured}
-			<Lock class="size-3 shrink-0 text-emerald-500" aria-label="Secure" />
-		{/if}
 		{#if d.staleCount > 0}
 			<span class="text-[10px] font-medium text-status-busy">stale</span>
 		{/if}

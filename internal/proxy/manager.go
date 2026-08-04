@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	db "github.com/discohaus/discopanel/internal/db"
@@ -59,11 +58,8 @@ type Manager struct {
 	// Loopback port the panel http server answers on
 	panelBackend int
 
-	// Parsed certificates for sni matching
-	certIdx atomic.Pointer[certIndex]
-
-	// Https settings the lanes read without the lock
-	policy atomic.Pointer[tlsPolicy]
+	// Config file certificates every socket terminates with
+	certs *certIndex
 
 	// Panel also answers unmatched hostnames
 	panelCatchAll bool
@@ -99,9 +95,8 @@ func NewManager(store *db.Store, dockerClient *docker.Client, cfg *config.Config
 		enabled:       cfg.Proxy.Enabled,
 		pendingClaims: make(map[uint64]pendingClaim),
 		panelCatchAll: true,
+		certs:         LoadTLSCertificates(cfg.Proxy.TLS.Certificates, logger),
 	}
-	m.certIdx.Store(&certIndex{})
-	m.setTLSPolicy(false, v1.TlsProvider_TLS_PROVIDER_DNS)
 	return m
 }
 
@@ -256,7 +251,7 @@ func (m *Manager) ensurePanelSocketLocked() error {
 		ListenAddr: net.JoinHostPort(m.appCfg.Server.Host, strconv.Itoa(port)),
 		Logger:     m.logger,
 		Gate:       m.gate,
-		Certs:      m,
+		Certs:      m.certs,
 	})
 	if err := sock.Start(); err != nil {
 		return fmt.Errorf("panel socket failed on port %d: %w", port, err)
@@ -282,7 +277,6 @@ func (m *Manager) PanelCatchAll() bool {
 
 // Applies a config change and reconciles running sockets
 func (m *Manager) ApplyConfig(ctx context.Context, cfg *v1.ProxyConfig) error {
-	m.setTLSPolicy(cfg.HttpsEnabled, cfg.TlsProvider)
 	m.mu.Lock()
 	m.enabled = cfg.Enabled
 	m.panelNames = cfg.Hostnames
@@ -319,12 +313,6 @@ func (m *Manager) Start() error {
 	if cfg, _, err := m.store.GetProxyConfig(context.Background()); err == nil && cfg != nil {
 		names = cfg.Hostnames
 		catchAll = cfg.CatchAll
-		m.setTLSPolicy(cfg.HttpsEnabled, cfg.TlsProvider)
-	}
-
-	// Termination material loads before any socket accepts
-	if err := m.ReloadCertificates(context.Background()); err != nil {
-		m.logger.Error("Failed to load certificates: %v", err)
 	}
 
 	m.mu.Lock()
@@ -406,7 +394,7 @@ func (m *Manager) syncListenersLocked(ctx context.Context) error {
 				ListenAddr: fmt.Sprintf(":%d", port),
 				Logger:     m.logger,
 				Gate:       m.gate,
-				Certs:      m,
+				Certs:      m.certs,
 			})
 			if err := sock.Start(); err != nil {
 				m.logger.Error("Failed to start listener %s on port %d: %v", listener.Name, port, err)

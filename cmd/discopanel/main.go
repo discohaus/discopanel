@@ -378,7 +378,7 @@ func main() {
 		IdleTimeout:       time.Duration(cfg.Server.IdleTimeout) * time.Second,
 	}
 
-	// Panel socket terminates tls and relays plain http here
+	// Panel socket relays plain http here
 	go func() {
 		log.Info("Starting DiscoPanel on %s:%s", cfg.Server.Host, cfg.Server.Port)
 		if err := srv.Serve(panelLn); err != nil && err != http.ErrServerClosed {

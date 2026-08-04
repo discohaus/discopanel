@@ -82,10 +82,22 @@ type StorageConfig struct {
 }
 
 type ProxyConfig struct {
-	Enabled      bool   `mapstructure:"enabled" json:"enabled"`
-	PublicIp     string `mapstructure:"public_ip" json:"public_ip"` // Public address for hostname suggestions
-	ListenPort   int    `mapstructure:"listen_port" json:"listen_port"` // Primary listen port
-	PortRangeMin int    `mapstructure:"port_range_min" json:"port_range_min"`
+	Enabled      bool           `mapstructure:"enabled" json:"enabled"`
+	PublicIp     string         `mapstructure:"public_ip" json:"public_ip"`     // Public address for hostname suggestions
+	ListenPort   int            `mapstructure:"listen_port" json:"listen_port"` // Primary listen port
+	PortRangeMin int            `mapstructure:"port_range_min" json:"port_range_min"`
+	TLS          ProxyTLSConfig `mapstructure:"tls" json:"tls"`
+}
+
+// File configured certificates the proxy terminates with
+type ProxyTLSConfig struct {
+	Certificates []TLSCertificate `mapstructure:"certificates" json:"certificates"`
+}
+
+// One pem pair on disk, traefik style
+type TLSCertificate struct {
+	CertFile string `mapstructure:"cert_file" json:"cert_file"`
+	KeyFile  string `mapstructure:"key_file" json:"key_file"`
 }
 
 type ModuleConfig struct {

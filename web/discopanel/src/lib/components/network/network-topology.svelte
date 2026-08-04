@@ -21,7 +21,7 @@
 		type ProxyListenerWithCount
 	} from '$lib/proto/discopanel/v1/proxy_pb';
 	import { directAddresses } from '$lib/hostname';
-	import { NetworkTransport, TlsProvider, type Module } from '$lib/proto/discopanel/v1/storage_pb';
+	import { NetworkTransport, type Module } from '$lib/proto/discopanel/v1/storage_pb';
 	import { Button } from '$lib/components/ui/button';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { EmptyState } from '$lib/components/app';
@@ -75,8 +75,6 @@
 	let modules = $state<Module[]>([]);
 	let configHostnames = $state<string[]>([]);
 	let configCatchAll = $state(true);
-	let configHttps = $state(false);
-	let configProvider = $state<TlsProvider>(TlsProvider.DNS);
 	let suggestions = $state<GetHostnameSuggestionsResponse | null>(null);
 	let selection = $state<Selection>({ kind: 'overview' });
 	let disableOpen = $state(false);
@@ -168,8 +166,6 @@
 			modules = mods.modules;
 			configHostnames = status.hostnames;
 			configCatchAll = status.catchAll;
-			configHttps = status.httpsEnabled;
-			configProvider = status.tlsProvider;
 			suggestions = sugg;
 			loadError = false;
 		} catch {
@@ -193,8 +189,6 @@
 			modules = mods.modules;
 			configHostnames = status.hostnames;
 			configCatchAll = status.catchAll;
-			configHttps = status.httpsEnabled;
-			configProvider = status.tlsProvider;
 			suggestions = sugg;
 			loadError = false;
 		} catch {
@@ -391,17 +385,6 @@
 				transport: r.transport === NetworkTransport.UDP ? 'udp' : 'tcp'
 			}));
 	});
-	// Every hostname on the map, certificates report coverage
-	let knownHostnames = $derived.by(() => {
-		const names = [...configHostnames];
-		const push = (name: string) => {
-			if (name && !names.includes(name)) names.push(name);
-		};
-		for (const res of topology?.reservations ?? []) push(res.hostname);
-		for (const route of topology?.routes ?? []) push(route.hostname);
-		return names.sort();
-	});
-
 	let selectedServerListenPort = $derived.by(() => {
 		if (!selectedServer?.proxyListenerId) return 0;
 		return (
@@ -578,12 +561,9 @@
 							running={topology.proxyRunning}
 							hostnames={configHostnames}
 							catchAll={configCatchAll}
-							httpsEnabled={configHttps}
-							tlsProvider={configProvider}
 							listenerCount={listeners.length}
 							{routeCount}
 							{hasProxiedWorkloads}
-							{knownHostnames}
 							onRequestDisable={() => (disableOpen = true)}
 							onChanged={onMutated}
 						/>

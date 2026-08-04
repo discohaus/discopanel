@@ -6,11 +6,7 @@
 	import { HostnameScope, type HostnameSuggestion } from '$lib/proto/discopanel/v1/proxy_pb';
 	import { validHostname } from '$lib/hostname';
 	import { CopyButton } from '$lib/components/app';
-	import { certificatesStore } from '$lib/stores/certificates.svelte';
-	import { ChevronDown, Globe, Lock, Plus, Wifi, X } from '@lucide/svelte';
-
-	// Https marks need the coverage list loaded once
-	certificatesStore.ensure();
+	import { ChevronDown, Globe, Plus, Wifi, X } from '@lucide/svelte';
 
 	let {
 		hostnames = $bindable([]),
@@ -238,9 +234,6 @@
 					? 'placeholder:text-foreground'
 					: ''}"
 			/>
-			{#if previewing && certificatesStore.isSecured(newest)}
-				<Lock class="mr-1 size-3.5 shrink-0 text-emerald-500" aria-label="Secured" />
-			{/if}
 			{#if draft.trim()}
 				<Button
 					type="button"
@@ -292,9 +285,6 @@
 						{#each hostnames as name (name)}
 							<div class="flex items-center gap-2 py-1.5 pr-1.5 pl-3">
 								<span class="min-w-0 flex-1 truncate font-mono text-xs">{shown(name)}</span>
-								{#if certificatesStore.isSecured(name)}
-									<Lock class="size-3.5 shrink-0 text-emerald-500" aria-label="Secured" />
-								{/if}
 								{#if copyable}
 									<CopyButton text={shown(name)} label="Copy address" />
 								{/if}

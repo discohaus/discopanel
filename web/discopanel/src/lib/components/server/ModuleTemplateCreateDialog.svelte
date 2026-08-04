@@ -89,6 +89,7 @@
 	let name = $state('');
 	let description = $state('');
 	let dockerImage = $state('');
+	let certMountPath = $state('');
 	let healthCheckPath = $state('');
 	let healthCheckPort = $state(0);
 	let requiresServer = $state(true);
@@ -294,6 +295,7 @@
 		name = t.name;
 		description = t.description;
 		dockerImage = t.dockerImage;
+		certMountPath = t.certMountPath;
 		healthCheckPath = t.healthCheckPath;
 		healthCheckPort = t.healthCheckPort;
 		requiresServer = t.requiresServer;
@@ -323,6 +325,7 @@
 		name = '';
 		description = '';
 		dockerImage = '';
+		certMountPath = '';
 		healthCheckPath = '';
 		healthCheckPort = 0;
 		requiresServer = true;
@@ -377,6 +380,7 @@
 				name: name.trim(),
 				description: description.trim(),
 				dockerImage: dockerImage.trim(),
+				certMountPath: certMountPath.trim(),
 				configFields: validFields,
 				defaultEnv: envVarsToMap(),
 				defaultVolumes: volumes.filter((v) => v.source && v.target),
@@ -516,6 +520,19 @@
 						/>
 						<p class="text-xs text-muted-foreground">
 							The Docker image to pull and run for this module
+						</p>
+					</div>
+
+					<div class="space-y-2">
+						<Label for="tpl-cert-mount">Certificate mount path</Label>
+						<Input
+							id="tpl-cert-mount"
+							bind:value={certMountPath}
+							placeholder="/etc/certs"
+							class="font-mono"
+						/>
+						<p class="text-xs text-muted-foreground">
+							Optional. Lets instances upload a cert pair mounted here as tls.crt and tls.key
 						</p>
 					</div>
 

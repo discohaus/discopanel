@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -190,6 +191,7 @@ func (s *ModuleService) CreateModuleTemplate(ctx context.Context, req *connect.R
 		DefaultInitCommandDelay: msg.DefaultInitCommandDelay,
 		DefaultRestartAfterInit: msg.DefaultRestartAfterInit,
 		DefaultSecurityOpt:      msg.DefaultSecurityOpt,
+		CertMountPath:           msg.CertMountPath,
 	}
 
 	if err := s.store.CreateModuleTemplate(ctx, template); err != nil {
@@ -259,6 +261,9 @@ func (s *ModuleService) UpdateModuleTemplate(ctx context.Context, req *connect.R
 	}
 	if msg.Documentation != nil {
 		template.Documentation = *msg.Documentation
+	}
+	if msg.CertMountPath != nil {
+		template.CertMountPath = *msg.CertMountPath
 	}
 	if len(msg.Ports) > 0 {
 		if err := validateTemplatePorts(msg.Ports); err != nil {
@@ -537,6 +542,16 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("this module runs panel wide and cannot attach to a server"))
 	}
 
+	// Cert uploads only land where the template mounts them
+	certPem := strings.TrimSpace(msg.CertPem)
+	keyPem := strings.TrimSpace(msg.KeyPem)
+	if (certPem != "" || keyPem != "") && template.CertMountPath == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("this module does not accept certificates"))
+	}
+	if (certPem == "") != (keyPem == "") {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("certificate and key are both required"))
+	}
+
 	// Use ports from request, or fall back to template defaults
 	ports := msg.Ports
 	if len(ports) == 0 {
@@ -612,6 +627,8 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 		InitCommand:           msg.InitCommand,
 		InitCommandDelay:      msg.InitCommandDelay,
 		RestartAfterInit:      msg.RestartAfterInit,
+		CertPem:               certPem,
+		KeyPem:                keyPem,
 	}
 
 	// Manager mints a scoped token at container create

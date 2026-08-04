@@ -67,7 +67,7 @@ type Config struct {
 	ListenAddr string // Host and port to listen on
 	Logger     *logger.Logger
 	Gate       ServerGate
-	Certs      CertSource
+	Certs      *certIndex // File loaded termination material
 }
 
 const (

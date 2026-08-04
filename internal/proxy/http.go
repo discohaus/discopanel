@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -26,6 +25,20 @@ func panelTerminated(r *http.Request) bool {
 	return secure
 }
 
+// Stamps the scheme header for one outbound hop
+func setForwardedProto(r *http.Request, header http.Header) {
+	if panelTerminated(r) {
+		header.Set("X-Forwarded-Proto", "https")
+		return
+	}
+	// Edge claims pass through, bare conns say http
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		header.Set("X-Forwarded-Proto", proto)
+		return
+	}
+	header.Set("X-Forwarded-Proto", "http")
+}
+
 // Chains the peer onto every hop the edge recorded
 func appendForwardedFor(r *http.Request, clientIP string) string {
 	prior := r.Header.Values("X-Forwarded-For")
@@ -33,37 +46,6 @@ func appendForwardedFor(r *http.Request, clientIP string) string {
 		return clientIP
 	}
 	return strings.Join(prior, ", ") + ", " + clientIP
-}
-
-// Scheme an upstream edge claims it served the client
-func forwardedScheme(r *http.Request) string {
-	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
-		// Leftmost hop is the one facing the client
-		first, _, _ := strings.Cut(proto, ",")
-		return strings.ToLower(strings.TrimSpace(first))
-	}
-	first, _, _ := strings.Cut(r.Header.Get("Forwarded"), ",")
-	for _, part := range strings.Split(first, ";") {
-		key, value, found := strings.Cut(part, "=")
-		if found && strings.EqualFold(strings.TrimSpace(key), "proto") {
-			return strings.ToLower(strings.Trim(strings.TrimSpace(value), `"`))
-		}
-	}
-	return ""
-}
-
-// Scheme the client actually used, edge claims included
-func (p *httpLane) requestScheme(r *http.Request) string {
-	if panelTerminated(r) {
-		return "https"
-	}
-	// Edge claims count only when an edge is declared
-	if p.certs != nil && p.certs.TrustsForwardedProto() {
-		if scheme := forwardedScheme(r); scheme == "https" || scheme == "http" {
-			return scheme
-		}
-	}
-	return "http"
 }
 
 // Keys the proxy cache by backend and transport flavor
@@ -81,16 +63,14 @@ type httpLane struct {
 	server       *http.Server
 	serverMutex  sync.Mutex
 	logger       *logger.Logger
-	certs        CertSource
 }
 
 // Creates the http lane for one socket
-func newHTTPLane(log *logger.Logger, certs CertSource) *httpLane {
+func newHTTPLane(log *logger.Logger) *httpLane {
 	return &httpLane{
 		routesMap: make(map[string]*Route),
 		proxies:   make(map[proxyKey]*httputil.ReverseProxy),
 		logger:    log,
-		certs:     certs,
 	}
 }
 
@@ -153,7 +133,7 @@ func (p *httpLane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if !exists {
 		p.logger.Debug("No route found for hostname: %s", hostname)
-		http.Error(w, fmt.Sprintf("DiscoPanel routes nothing at %s on this port", hostname), http.StatusBadGateway)
+		http.Error(w, "404 page not found", http.StatusNotFound)
 		return
 	}
 
@@ -193,7 +173,7 @@ func (p *httpLane) proxyFor(route *Route) *httputil.ReverseProxy {
 				pr.Out.Header.Del("X-Forwarded-For")
 			}
 			pr.Out.Header.Set("X-Forwarded-Host", pr.In.Host)
-			pr.Out.Header.Set("X-Forwarded-Proto", p.requestScheme(pr.In))
+			setForwardedProto(pr.In, pr.Out.Header)
 			pr.Out.Host = pr.In.Host
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
@@ -266,7 +246,7 @@ func (p *httpLane) handleWebSocket(w http.ResponseWriter, r *http.Request, route
 	if clientIP, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		r.Header.Set("X-Forwarded-For", appendForwardedFor(r, clientIP))
 	}
-	r.Header.Set("X-Forwarded-Proto", p.requestScheme(r))
+	setForwardedProto(r, r.Header)
 	if err := r.Write(backendConn); err != nil {
 		p.logger.Error("WebSocket: Failed to forward upgrade request: %v", err)
 		return

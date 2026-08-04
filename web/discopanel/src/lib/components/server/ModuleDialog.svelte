@@ -122,6 +122,8 @@
 
 	// Form state
 	let name = $state('');
+	let certPem = $state('');
+	let keyPem = $state('');
 	let autoStart = $state(true);
 	let followServerLifecycle = $state(true);
 	let detached = $state(false);
@@ -342,6 +344,8 @@
 		serverModules = [];
 		configValues = {};
 		editTemplate = null;
+		certPem = '';
+		keyPem = '';
 	}
 
 	function backToTemplates() {
@@ -352,6 +356,8 @@
 	async function selectTemplate(template: ModuleTemplate) {
 		selectedTemplate = template;
 		name = template.name;
+		certPem = '';
+		keyPem = '';
 		await loadServerModules();
 		const fieldKeys = new Set(template.configFields.map((f) => f.env));
 		envVars = parseEnvVars(template.defaultEnv).filter((e) => !fieldKeys.has(e.key));
@@ -614,7 +620,9 @@
 					gid,
 					initCommand,
 					initCommandDelay,
-					restartAfterInit
+					restartAfterInit,
+					certPem: certPem.trim(),
+					keyPem: keyPem.trim()
 				});
 				toast.success(`Module "${name}" created`);
 			} else if (module && systemLocked) {
@@ -858,6 +866,35 @@
 								A unique identifier for this module instance
 							</p>
 						</div>
+
+						{#if mode === 'create' && selectedTemplate?.certMountPath}
+							<div class="space-y-3">
+								<h3 class="text-sm font-semibold">Certificate</h3>
+								<div class="space-y-2">
+									<Label for="module-cert">Certificate (PEM)</Label>
+									<Textarea
+										id="module-cert"
+										bind:value={certPem}
+										placeholder="-----BEGIN CERTIFICATE-----"
+										rows={4}
+										class="font-mono text-xs"
+									/>
+								</div>
+								<div class="space-y-2">
+									<Label for="module-key">Private key (PEM)</Label>
+									<Textarea
+										id="module-key"
+										bind:value={keyPem}
+										placeholder="-----BEGIN PRIVATE KEY-----"
+										rows={4}
+										class="font-mono text-xs"
+									/>
+								</div>
+								<p class="text-xs text-muted-foreground">
+									Optional. Mounted into {selectedTemplate.certMountPath} as tls.crt and tls.key
+								</p>
+							</div>
+						{/if}
 
 						<div class="space-y-3">
 							<h3 class="text-sm font-semibold">Resource limits</h3>

@@ -101,6 +101,10 @@ func (c *Client) DesiredModuleConfigHash(module *v1.Module, template *v1.ModuleT
 	for _, v := range vols {
 		w("vol", v.Type, v.Source, v.Target, strconv.FormatBool(v.ReadOnly))
 	}
+	// Cert mount drift must also trigger recreate
+	if template.CertMountPath != "" && module.CertPem != "" && module.KeyPem != "" {
+		w("cert", template.CertMountPath, module.CertPem, module.KeyPem)
+	}
 	w("user", alias.Substitute(module.Uid, aliasCtx), alias.Substitute(module.Gid, aliasCtx))
 	cmd := module.CmdOverride
 	if cmd == "" {

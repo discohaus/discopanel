@@ -152,72 +152,7 @@ func (s *ProxyService) GetProxyStatus(ctx context.Context, req *connect.Request[
 		Running:      running,
 		ActiveRoutes: activeRoutes,
 		CatchAll:     proxyConfig.CatchAll,
-		HttpsEnabled: proxyConfig.HttpsEnabled,
-		TlsProvider:  tlsProviderOrDefault(proxyConfig.TlsProvider),
 	}), nil
-}
-
-// Falls unset providers back to the upstream edge
-func tlsProviderOrDefault(provider v1.TlsProvider) v1.TlsProvider {
-	if provider == v1.TlsProvider_TLS_PROVIDER_UNSPECIFIED {
-		return v1.TlsProvider_TLS_PROVIDER_DNS
-	}
-	return provider
-}
-
-// Lists certificates with derived coverage
-func (s *ProxyService) GetCertificates(ctx context.Context, req *connect.Request[v1.GetCertificatesRequest]) (*connect.Response[v1.GetCertificatesResponse], error) {
-	rows, err := s.store.ListCertificates(ctx)
-	if err != nil {
-		s.log.Error("Failed to list certificates: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list certificates"))
-	}
-	for _, row := range rows {
-		proxy.FillCertificateDerived(row)
-	}
-	return connect.NewResponse(&v1.GetCertificatesResponse{Certificates: rows}), nil
-}
-
-// Validates and stores an uploaded pair
-func (s *ProxyService) UploadCertificate(ctx context.Context, req *connect.Request[v1.UploadCertificateRequest]) (*connect.Response[v1.UploadCertificateResponse], error) {
-	certPEM := strings.TrimSpace(req.Msg.CertPem)
-	keyPEM := strings.TrimSpace(req.Msg.KeyPem)
-	if certPEM == "" || keyPEM == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("certificate and key are both required"))
-	}
-	if err := proxy.ValidateCertificatePair(certPEM, keyPEM); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	row := &v1.Certificate{
-		Id:      uuid.New().String(),
-		CertPem: certPEM,
-		KeyPem:  keyPEM,
-	}
-	if err := s.store.CreateCertificate(ctx, row); err != nil {
-		s.log.Error("Failed to store certificate: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to store certificate"))
-	}
-	if err := s.proxyManager.ReloadCertificates(ctx); err != nil {
-		s.log.Error("Failed to reload certificates: %v", err)
-	}
-	out, _ := proto.Clone(row).(*v1.Certificate)
-	proxy.FillCertificateDerived(out)
-	return connect.NewResponse(&v1.UploadCertificateResponse{Certificate: out}), nil
-}
-
-// Removes an uploaded certificate
-func (s *ProxyService) DeleteCertificate(ctx context.Context, req *connect.Request[v1.DeleteCertificateRequest]) (*connect.Response[v1.DeleteCertificateResponse], error) {
-	if _, err := s.store.GetCertificate(ctx, req.Msg.Id); err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("certificate not found"))
-	}
-	if err := s.store.DeleteCertificate(ctx, req.Msg.Id); err != nil {
-		s.log.Error("Failed to delete certificate: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete certificate"))
-	}
-	if err := s.proxyManager.ReloadCertificates(ctx); err != nil {
-		s.log.Error("Failed to reload certificates: %v", err)
-	}
-	return connect.NewResponse(&v1.DeleteCertificateResponse{}), nil
 }
 
 // Computes hostname suggestions for any hostname input
@@ -267,12 +202,10 @@ func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Reque
 
 	// Save to database
 	proxyConfig := &v1.ProxyConfig{
-		Id:           "default",
-		Enabled:      msg.Enabled,
-		Hostnames:    hostnames,
-		CatchAll:     msg.CatchAll,
-		HttpsEnabled: msg.HttpsEnabled,
-		TlsProvider:  tlsProviderOrDefault(msg.TlsProvider),
+		Id:        "default",
+		Enabled:   msg.Enabled,
+		Hostnames: hostnames,
+		CatchAll:  msg.CatchAll,
 	}
 
 	if err := s.store.SaveProxyConfig(ctx, proxyConfig); err != nil {
