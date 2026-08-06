@@ -152,7 +152,6 @@ func (s *Scheduler) pauseWorldSaves(ctx context.Context, server *v1.Server) func
 }
 
 // Prunes old backups honoring retention, min, and max caps
-// Returns the number of backups removed.
 func pruneBackups(dir, prefix string, retentionDays, minBackups, maxBackups int) (int, error) {
 	if retentionDays <= 0 && maxBackups <= 0 {
 		return 0, nil

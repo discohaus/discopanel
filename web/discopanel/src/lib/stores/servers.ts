@@ -71,13 +71,7 @@ function getTimestampMs(ts: { seconds: bigint } | undefined): number {
 	return Number(ts.seconds) * 1000;
 }
 
-/**
- * AUTO SORT PRIORITY:
- * 1. Pin most recently created/updated server as #1
- * 2. Running servers w/ players first (by player count desc)
- * 3. Running servers wo/ players (by lastStarted desc)
- * 4. Non-running servers (by updatedAt desc)
- */
+// Pins newest first, then players, then running, then idle
 export function sortServersByActivity(servers: Server[]): Server[] {
 	if (servers.length <= 1) return servers;
 

@@ -474,7 +474,7 @@ func terminationConfig(cert *tls.Certificate) *tls.Config {
 	}
 }
 
-// Reads the hello and extracts the sni, consumed bytes stay recorded
+// Reads the hello for sni, consumed bytes stay recorded
 func readClientHelloSNI(br *bufio.Reader) (string, bool) {
 	msg, ok := readHandshakeMessage(br)
 	if !ok {

@@ -202,7 +202,7 @@ func (m *Manager) CheckoutPanelHostnames(ctx context.Context, hostnames []string
 	return m.CheckoutNetwork(ctx, NetOwner{Kind: OwnerPanel, ID: OwnerPanel}, reqs)
 }
 
-// Hostnames a routed port serves, the flag adds the catch all
+// Hostnames a routed port serves, flag adds catch all
 func routedHostnames(port *v1.NetworkPort, fallback []string) []string {
 	var out []string
 	seen := make(map[string]bool)

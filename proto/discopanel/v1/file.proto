@@ -104,7 +104,7 @@ service FileService {
       object_id_field: "server_id"
     };
   }
-  // Initiate a single-file download session (actual bytes served via GET /api/v1/download/{session_id})
+  // Starts a download session, bytes ride GET download/{session_id}
   rpc InitFileDownload(InitFileDownloadRequest) returns (InitFileDownloadResponse) {
     option (discopanel.options.v1.perm) = {
       resource: RESOURCE_TYPE_FILES

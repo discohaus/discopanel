@@ -61,7 +61,7 @@ type proxyKey struct {
 	h2c  bool
 }
 
-// Serves the http lane of a listener socket by Host header
+// Serves a listener socket http lane by host header
 type httpLane struct {
 	routesMap    map[string]*Route
 	routesMutex  sync.RWMutex

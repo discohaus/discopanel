@@ -263,6 +263,11 @@ func WriteLoginDisconnect(w io.Writer, message string) error {
 	if err != nil {
 		return err
 	}
+	return WriteLoginDisconnectJSON(w, reason)
+}
+
+// Sends a login disconnect with prebuilt reason json
+func WriteLoginDisconnectJSON(w io.Writer, reason []byte) error {
 	var payload bytes.Buffer
 	if err := WriteVarInt(&payload, 0x00); err != nil {
 		return err

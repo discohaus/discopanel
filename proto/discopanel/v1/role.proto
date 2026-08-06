@@ -120,7 +120,7 @@ message GetPermissionMatrixRequest {
   bool include_objects = 1;
 }
 
-// An object that can be scoped in permissions (e.g. a specific server)
+// Object a permission can scope to, like a server
 message ScopeableObject {
   string id = 1;
   string name = 2;

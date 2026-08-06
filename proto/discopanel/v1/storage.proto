@@ -2136,6 +2136,13 @@ message ServerProperties {
     label: "Message of the Day"
     category: "server"
   }];
+  optional string offline_motd = 139 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "Replaces the MOTD line while this server is offline"
+    input: "text"
+    label: "Offline Message of the Day"
+    category: "server"
+  }];
   optional string difficulty = 28 [(discopanel.options.v1.prop) = {
     prop: "difficulty"
     default_value: "easy"
@@ -2829,6 +2836,13 @@ message ServerProperties {
     desc: "Keep this server joinable while stopped; joining starts it up (proxied servers only)"
     input: "checkbox"
     label: "Wake on Connect"
+    category: "proxy"
+  }];
+  optional bool enable_offline_status = 140 [(discopanel.options.v1.prop) = {
+    default_value: "false"
+    desc: "Answer server list pings while stopped, showing the server icon and offline message"
+    input: "checkbox"
+    label: "Show Offline Status"
     category: "proxy"
   }];
   optional bool enable_proxy_protocol = 115 [(discopanel.options.v1.prop) = {

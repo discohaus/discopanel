@@ -22,8 +22,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Builds, signs, and delivers HTTP webhooks for server events
-// Concurrency is a scheduler concern, this stays sync
+// Builds and delivers webhooks sync, schedulers own concurrency
 
 // A single delivery attempt outcome
 type Result struct {

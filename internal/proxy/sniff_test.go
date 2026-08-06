@@ -3,13 +3,16 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/discohaus/discopanel/pkg/logger"
 	"github.com/discohaus/discopanel/pkg/mcproto"
+	"github.com/discohaus/discopanel/pkg/minecraft"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
@@ -218,4 +221,176 @@ func TestMCLoginSplitHandshake(t *testing.T) {
 
 	data := roundTripMC(t, sock, backendLn, sent, true)
 	assertRewrittenLogin(t, data, backendLn)
+}
+
+// Runs a status query and returns the parsed json
+func statusQuery(t *testing.T, sock *ListenerSocket, hostname string) map[string]any {
+	t.Helper()
+	client, err := net.Dial("tcp", sock.listener.Addr().String())
+	if err != nil {
+		t.Fatalf("client dial failed %v", err)
+	}
+	defer client.Close()
+	client.SetDeadline(time.Now().Add(5 * time.Second))
+
+	err = mcproto.WriteHandshakePacket(client, &mcproto.HandshakePacket{
+		ProtocolVersion: 767,
+		ServerAddress:   hostname,
+		ServerPort:      25565,
+		NextState:       mcproto.NextStateStatus,
+	})
+	if err != nil {
+		t.Fatalf("handshake write failed %v", err)
+	}
+	if err := mcproto.WriteFramed(client, []byte{0x00}); err != nil {
+		t.Fatalf("status request write failed %v", err)
+	}
+
+	br := bufio.NewReader(client)
+	length, err := mcproto.ReadVarInt(br)
+	if err != nil {
+		t.Fatalf("response length unreadable %v", err)
+	}
+	data := make([]byte, length)
+	if _, err := io.ReadFull(br, data); err != nil {
+		t.Fatalf("response body unreadable %v", err)
+	}
+	r := bytes.NewReader(data)
+	packetID, err := mcproto.ReadVarInt(r)
+	if err != nil || packetID != 0x00 {
+		t.Fatalf("expected status response, got id %d err %v", packetID, err)
+	}
+	jsonLen, err := mcproto.ReadVarInt(r)
+	if err != nil {
+		t.Fatalf("json length unreadable %v", err)
+	}
+	jsonBytes := make([]byte, jsonLen)
+	if _, err := io.ReadFull(r, jsonBytes); err != nil {
+		t.Fatalf("json body unreadable %v", err)
+	}
+	var status map[string]any
+	if err := json.Unmarshal(jsonBytes, &status); err != nil {
+		t.Fatalf("status json invalid %v", err)
+	}
+	return status
+}
+
+// Offline synthetic status carries the route icon
+func TestSyntheticStatusCarriesRouteIcon(t *testing.T) {
+	sock := NewListenerSocket(&Config{ListenAddr: "127.0.0.1:0", Logger: logger.New()})
+	if err := sock.Start(); err != nil {
+		t.Fatalf("socket start failed %v", err)
+	}
+	t.Cleanup(func() { sock.Stop() })
+	sock.SetRoutes([]Route{{
+		ServerID:   "srv-icon",
+		OwnerKind:  OwnerServer,
+		OwnerID:    "srv-icon",
+		Protocol:   v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT,
+		Hostname:   "play.example.com",
+		State:      v1.ProxyRouteState_PROXY_ROUTE_STATE_OFFLINE,
+		Motd:       "resting",
+		MaxPlayers: 7,
+		Favicon:    "data:image/png;base64,AAAA",
+	}})
+
+	status := statusQuery(t, sock, "play.example.com")
+	if got := status["favicon"]; got != "data:image/png;base64,AAAA" {
+		t.Fatalf("favicon = %v, want the route icon", got)
+	}
+	desc, _ := status["description"].(map[string]any)
+	if desc == nil || desc["text"] != "resting" {
+		t.Fatalf("description = %v, want the route motd", status["description"])
+	}
+	players, _ := status["players"].(map[string]any)
+	if players == nil || players["max"] != float64(7) {
+		t.Fatalf("players = %v, want max 7", status["players"])
+	}
+}
+
+// Offline non wakeable logins get the offline screen
+func TestOfflineLoginDisconnects(t *testing.T) {
+	sock := NewListenerSocket(&Config{ListenAddr: "127.0.0.1:0", Logger: logger.New()})
+	if err := sock.Start(); err != nil {
+		t.Fatalf("socket start failed %v", err)
+	}
+	t.Cleanup(func() { sock.Stop() })
+	sock.SetRoutes([]Route{{
+		ServerID:  "srv-off",
+		OwnerKind: OwnerServer,
+		OwnerID:   "srv-off",
+		Protocol:  v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT,
+		Hostname:  "play.example.com",
+		State:     v1.ProxyRouteState_PROXY_ROUTE_STATE_OFFLINE,
+	}})
+
+	client, err := net.Dial("tcp", sock.listener.Addr().String())
+	if err != nil {
+		t.Fatalf("client dial failed %v", err)
+	}
+	defer client.Close()
+	client.SetDeadline(time.Now().Add(5 * time.Second))
+	err = mcproto.WriteHandshakePacket(client, &mcproto.HandshakePacket{
+		ProtocolVersion: 767,
+		ServerAddress:   "play.example.com",
+		ServerPort:      25565,
+		NextState:       mcproto.NextStateLogin,
+	})
+	if err != nil {
+		t.Fatalf("handshake write failed %v", err)
+	}
+
+	br := bufio.NewReader(client)
+	length, err := mcproto.ReadVarInt(br)
+	if err != nil {
+		t.Fatalf("disconnect length unreadable %v", err)
+	}
+	data := make([]byte, length)
+	if _, err := io.ReadFull(br, data); err != nil {
+		t.Fatalf("disconnect body unreadable %v", err)
+	}
+	r := bytes.NewReader(data)
+	packetID, err := mcproto.ReadVarInt(r)
+	if err != nil || packetID != 0x00 {
+		t.Fatalf("expected login disconnect, got id %d err %v", packetID, err)
+	}
+	reasonLen, err := mcproto.ReadVarInt(r)
+	if err != nil {
+		t.Fatalf("reason length unreadable %v", err)
+	}
+	reason := make([]byte, reasonLen)
+	if _, err := io.ReadFull(r, reason); err != nil {
+		t.Fatalf("reason body unreadable %v", err)
+	}
+	var component map[string]any
+	if err := json.Unmarshal(reason, &component); err != nil {
+		t.Fatalf("reason json invalid %v", err)
+	}
+	flat, _ := component["text"].(string)
+	if extras, ok := component["extra"].([]any); ok {
+		for _, extra := range extras {
+			if part, ok := extra.(map[string]any); ok {
+				if txt, ok := part["text"].(string); ok {
+					flat += txt
+				}
+			}
+		}
+	}
+	if !strings.Contains(flat, "this server is offline") {
+		t.Fatalf("reason = %q, want the offline screen", flat)
+	}
+}
+
+// Routeless status replies fall back to the avatar icon
+func TestSyntheticStatusFallsBackToAvatar(t *testing.T) {
+	sock := NewListenerSocket(&Config{ListenAddr: "127.0.0.1:0", Logger: logger.New()})
+	if err := sock.Start(); err != nil {
+		t.Fatalf("socket start failed %v", err)
+	}
+	t.Cleanup(func() { sock.Stop() })
+
+	status := statusQuery(t, sock, "nobody.example.com")
+	if got := status["favicon"]; got != minecraft.DefaultFavicon() {
+		t.Fatalf("favicon must be the avatar fallback, got %v", got)
+	}
 }

@@ -39,6 +39,8 @@ type Route struct {
 	Motd string
 	// Fills the synthesized status player cap
 	MaxPlayers int
+	// Icon for synthesized status replies
+	Favicon string
 }
 
 // Dial address for the route's backend

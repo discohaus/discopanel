@@ -117,10 +117,11 @@ func (m *Manager) SleepingInfo(serverID string) (*proxy.SleepingServer, bool) {
 		return nil, false
 	}
 
-	motd := server.Name + " is sleeping - join to wake it up"
-	if cfg, err := m.store.GetServerProperties(ctx, serverID); err == nil && cfg.Motd != nil && *cfg.Motd != "" {
-		motd = *cfg.Motd + " (sleeping - join to wake)"
+	cfg, cfgErr := m.store.GetServerProperties(ctx, serverID)
+	if cfgErr != nil {
+		cfg = nil
 	}
+	motd := proxy.SyntheticMOTD(cfg, "§bsleeping", "§7join to wake it up")
 
 	return &proxy.SleepingServer{
 		Motd:       motd,

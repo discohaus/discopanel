@@ -98,7 +98,7 @@ class WebSocketClient {
 				this.state.connectionState = 'connected';
 				this.reconnectAttempts = 0;
 
-				// Authenticate with token or empty string for non auth to get anon token
+				// Token auth, empty string yields an anon token
 				const authState = get(authStore);
 				this.authenticate(authState.token || '');
 

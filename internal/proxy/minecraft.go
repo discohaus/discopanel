@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/discohaus/discopanel/pkg/mcproto"
+	"github.com/discohaus/discopanel/pkg/minecraft"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/protometa"
 )
@@ -145,7 +145,7 @@ func (s *ListenerSocket) lookupMCRoute(hostname string) (Route, bool) {
 	return s.soleMCRouteLocked()
 }
 
-// Raw ip and typo joins land on an only service, lock held
+// Raw ip and typo joins land on the sole service
 func (s *ListenerSocket) soleMCRouteLocked() (Route, bool) {
 	var sole *Route
 	for _, route := range s.mcRoutes {
@@ -167,13 +167,10 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 	if !ok {
 		s.logger.Debug("No active route for hostname %q from %s", hostname, clientConn.RemoteAddr())
 		if handshake.NextState == mcproto.NextStateStatus {
-			s.serveSyntheticStatus(clientConn, br, handshake,
-				fmt.Sprintf("Powered by DiscoPanel - nothing is running at %s", hostname), 0, "DiscoPanel")
+			s.serveSyntheticStatus(clientConn, br, handshake, statusUnknownHost(hostname, int(handshake.ProtocolVersion)))
 			return
 		}
-		clientConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		mcproto.WriteLoginDisconnect(clientConn,
-			fmt.Sprintf("No server answers at %s. Join with the address shown in the panel.", hostname))
+		s.kick(clientConn, handshake, kickUnknownHost(hostname))
 		return
 	}
 
@@ -190,7 +187,7 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 	if gate := s.getGate(); gate != nil {
 		if info, sleeping := gate.SleepingInfo(route.ServerID); sleeping {
 			if handshake.NextState == mcproto.NextStateStatus {
-				s.serveSyntheticStatus(clientConn, br, handshake, info.Motd, info.MaxPlayers, "Sleeping")
+				s.serveSyntheticStatus(clientConn, br, handshake, statusSleeping(info.Motd, info.MaxPlayers, route.Favicon))
 				return
 			}
 			s.logger.Info("Waking sleeping server %s for incoming login", route.ServerID)
@@ -200,8 +197,7 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 			cancel()
 			if err != nil {
 				s.logger.Error("Failed to wake server %s: %v", route.ServerID, err)
-				clientConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-				mcproto.WriteLoginDisconnect(clientConn, "The server is waking up, try again in a moment")
+				s.kick(clientConn, handshake, kickWakeFailed())
 				return
 			}
 		}
@@ -211,38 +207,36 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 	switch route.State {
 	case v1.ProxyRouteState_PROXY_ROUTE_STATE_OFFLINE:
 		if handshake.NextState == mcproto.NextStateStatus {
-			s.serveSyntheticStatus(clientConn, br, handshake, route.Motd, route.MaxPlayers, "Offline")
+			s.serveSyntheticStatus(clientConn, br, handshake, statusOffline(route))
 			return
 		}
-		clientConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		if !route.Wakeable {
-			mcproto.WriteLoginDisconnect(clientConn, "The server is offline")
+			s.kick(clientConn, handshake, kickOffline())
 			return
 		}
 		gate := s.getGate()
 		if gate == nil {
-			mcproto.WriteLoginDisconnect(clientConn, "The server is offline")
+			s.kick(clientConn, handshake, kickOffline())
 			return
 		}
 		s.logger.Info("Starting stopped server %s for incoming login", route.ServerID)
 		stats.Wakes.Add(1)
 		if err := gate.StartServer(route.ServerID); err != nil {
 			s.logger.Error("Failed to start server %s for login: %v", route.ServerID, err)
-			mcproto.WriteLoginDisconnect(clientConn, "The server could not be started, check the panel")
+			s.kick(clientConn, handshake, kickStartFailed())
 			return
 		}
-		mcproto.WriteLoginDisconnect(clientConn, "The server is starting up, join again in a minute")
+		s.kick(clientConn, handshake, kickStarted())
 		return
 
 	case v1.ProxyRouteState_PROXY_ROUTE_STATE_STARTING:
 		if handshake.NextState == mcproto.NextStateStatus {
-			s.serveSyntheticStatus(clientConn, br, handshake, route.Motd, route.MaxPlayers, "Starting")
+			s.serveSyntheticStatus(clientConn, br, handshake, statusStarting(route))
 			return
 		}
 		// No backend yet, container isn't up, tell client
 		if route.BackendHost == "" {
-			clientConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			mcproto.WriteLoginDisconnect(clientConn, "The server is still starting, join again in a moment")
+			s.kick(clientConn, handshake, kickStillStarting())
 			return
 		}
 		// Backend exists, let dial retry ride out the boot
@@ -251,8 +245,7 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 	if route.BackendHost == "" {
 		s.logger.Error("Route %s has no backend address", hostname)
 		if handshake.NextState == mcproto.NextStateLogin {
-			clientConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			mcproto.WriteLoginDisconnect(clientConn, "The server is not reachable right now")
+			s.kick(clientConn, handshake, kickUnreachable())
 		}
 		return
 	}
@@ -262,8 +255,7 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 	if err != nil {
 		s.logger.Error("Failed to connect to backend %s for %s: %v", backendAddr, hostname, err)
 		if handshake.NextState == mcproto.NextStateLogin {
-			clientConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			mcproto.WriteLoginDisconnect(clientConn, "The server is not accepting connections yet, try again in a moment")
+			s.kick(clientConn, handshake, kickNotAccepting())
 		}
 		return
 	}
@@ -314,24 +306,45 @@ func rewriteHandshakeAddress(handshake *mcproto.HandshakePacket, backendPort int
 	handshake.ServerPort = uint16(backendPort)
 }
 
+// Sends a styled kick screen to the client
+func (s *ListenerSocket) kick(conn net.Conn, handshake *mcproto.HandshakePacket, screen minecraft.Text) {
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	reason, err := json.Marshal(screen.Render(int(handshake.ProtocolVersion)))
+	if err != nil {
+		return
+	}
+	mcproto.WriteLoginDisconnectJSON(conn, reason)
+}
+
 // Synthesizes a status reply so server lists never wake backends
-func (s *ListenerSocket) serveSyntheticStatus(conn net.Conn, r io.Reader, handshake *mcproto.HandshakePacket, motd string, maxPlayers int, versionName string) {
+func (s *ListenerSocket) serveSyntheticStatus(conn net.Conn, r io.Reader, handshake *mcproto.HandshakePacket, card synthStatus) {
 	conn.SetDeadline(time.Now().Add(handshakeTimeout))
 
-	statusJSON, err := json.Marshal(map[string]any{
+	desc := card.desc
+	if motd, ok := desc.(string); ok {
+		desc = map[string]any{"text": motd}
+	}
+	sample := make([]map[string]any, 0, len(card.sample))
+	for _, line := range card.sample {
+		sample = append(sample, map[string]any{"name": line, "id": sampleUUID})
+	}
+	status := map[string]any{
 		"version": map[string]any{
 			// Echo the client protocol so the entry renders as compatible
-			"name":     versionName,
+			"name":     card.version,
 			"protocol": int(handshake.ProtocolVersion),
 		},
 		"players": map[string]any{
-			"max":    maxPlayers,
+			"max":    card.maxPlayers,
 			"online": 0,
+			"sample": sample,
 		},
-		"description": map[string]any{
-			"text": motd,
-		},
-	})
+		"description": desc,
+	}
+	if card.favicon != "" {
+		status["favicon"] = card.favicon
+	}
+	statusJSON, err := json.Marshal(status)
 	if err != nil {
 		return
 	}
@@ -388,7 +401,7 @@ func (s *ListenerSocket) serveLegacyPing(conn net.Conn, raw []byte) {
 func (s *ListenerSocket) legacyStatus(raw []byte) (string, string, int) {
 	route, ok := s.legacyPingRoute(raw)
 	if !ok {
-		return "Powered by DiscoPanel", "DiscoPanel", 0
+		return "powered by §fdisco§apanel", "discopanel", 0
 	}
 
 	stats := s.statsFor(route.ServerID)
@@ -397,7 +410,7 @@ func (s *ListenerSocket) legacyStatus(raw []byte) (string, string, int) {
 
 	if gate := s.getGate(); gate != nil {
 		if info, sleeping := gate.SleepingInfo(route.ServerID); sleeping {
-			return info.Motd, "Sleeping", info.MaxPlayers
+			return info.Motd, "sleeping", info.MaxPlayers
 		}
 	}
 
@@ -405,12 +418,12 @@ func (s *ListenerSocket) legacyStatus(raw []byte) (string, string, int) {
 	if motd == "" {
 		motd = route.Hostname
 	}
-	version := "Online"
+	version := "online"
 	switch route.State {
 	case v1.ProxyRouteState_PROXY_ROUTE_STATE_STARTING:
-		version = "Starting"
+		version = "starting"
 	case v1.ProxyRouteState_PROXY_ROUTE_STATE_OFFLINE:
-		version = "Offline"
+		version = "offline"
 	}
 	return motd, version, route.MaxPlayers
 }

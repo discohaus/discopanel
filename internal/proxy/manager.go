@@ -14,6 +14,7 @@ import (
 	"github.com/discohaus/discopanel/internal/docker"
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/logger"
+	"github.com/discohaus/discopanel/pkg/minecraft"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
@@ -71,6 +72,9 @@ type Manager struct {
 	// Container addresses cached so inspects stay off the lock
 	ipCache   map[string]ipEntry
 	ipCacheMu sync.Mutex
+
+	// Encoded server icons cached by file identity
+	favicons minecraft.FaviconCache
 }
 
 // One cached container address with its inspect time
@@ -974,6 +978,7 @@ func (m *Manager) desiredRoute(ctx context.Context, server *v1.Server) (route Ro
 		ProxyProtocol: propEnabled(cfg, func(c *v1.ServerProperties) *bool { return c.EnableProxyProtocol }),
 		PreserveHost:  propEnabled(cfg, func(c *v1.ServerProperties) *bool { return c.ProxyPreserveHostname }),
 		MaxPlayers:    int(server.MaxPlayers),
+		Favicon:       m.routeFavicon(server),
 	}
 	wakeable := propEnabled(cfg, func(c *v1.ServerProperties) *bool { return c.EnableWakeOnConnect })
 
@@ -1001,17 +1006,26 @@ func (m *Manager) desiredRoute(ctx context.Context, server *v1.Server) (route Ro
 		return route, true, nil
 
 	case v1.ServerStatus_SERVER_STATUS_STOPPED, v1.ServerStatus_SERVER_STATUS_STOPPING, v1.ServerStatus_SERVER_STATUS_ERROR:
-		if !wakeable {
+		offlineStatus := propEnabled(cfg, func(c *v1.ServerProperties) *bool { return c.EnableOfflineStatus })
+		if !wakeable && !offlineStatus {
 			return Route{}, false, nil
 		}
 		route.State = v1.ProxyRouteState_PROXY_ROUTE_STATE_OFFLINE
-		route.Wakeable = true
-		route.Motd = offlineMOTD(server, cfg)
+		route.Wakeable = wakeable
+		route.Motd = offlineMOTD(cfg, wakeable)
 		return route, true, nil
 
 	default:
 		return Route{}, false, nil
 	}
+}
+
+// Server icon else the discopanel avatar fallback
+func (m *Manager) routeFavicon(server *v1.Server) string {
+	if uri := m.favicons.Get(server.Id, server.DataPath); uri != "" {
+		return uri
+	}
+	return minecraft.DefaultFavicon()
 }
 
 // Reads an optional bool off possibly-nil properties
@@ -1023,27 +1037,32 @@ func propEnabled(cfg *v1.ServerProperties, field func(*v1.ServerProperties) *boo
 	return v != nil && *v
 }
 
-// Builds the joinable-while-stopped status line
-func offlineMOTD(server *v1.Server, cfg *v1.ServerProperties) string {
-	if cfg != nil && cfg.Motd != nil && *cfg.Motd != "" {
-		return *cfg.Motd + " (offline - join to start it up)"
+// Builds both motd lines, custom offline motd replaces head
+func SyntheticMOTD(cfg *v1.ServerProperties, head, tail string) string {
+	if cfg != nil && cfg.OfflineMotd != nil && *cfg.OfflineMotd != "" {
+		head = *cfg.OfflineMotd
 	}
-	return server.Name + " is offline - join to start it up"
+	return head + "\n§r" + tail
 }
 
-// Builds the status line shown while a server boots
+// Builds the status lines stopped servers answer with
+func offlineMOTD(cfg *v1.ServerProperties, wakeable bool) string {
+	if wakeable {
+		return SyntheticMOTD(cfg, "§7offline", "§ajoin to press play")
+	}
+	return SyntheticMOTD(cfg, "§7offline", "§7the server is paused")
+}
+
+// Builds the status lines shown while a server boots
 func bootMOTD(server *v1.Server, cfg *v1.ServerProperties) string {
-	phase := "starting up"
+	head, tail := "§estarting up...", "§fjoin in a moment"
 	switch server.Status {
 	case v1.ServerStatus_SERVER_STATUS_PROVISIONING:
-		phase = "installing server files"
+		head, tail = "§einstalling server files...", "§7hang tight"
 	case v1.ServerStatus_SERVER_STATUS_CREATING:
-		phase = "preparing the container"
+		head, tail = "§esetting up the stage...", "§7almost ready"
 	}
-	if cfg != nil && cfg.Motd != nil && *cfg.Motd != "" {
-		return fmt.Sprintf("%s (%s - join in a moment)", *cfg.Motd, phase)
-	}
-	return fmt.Sprintf("%s is %s - join in a moment", server.Name, phase)
+	return SyntheticMOTD(cfg, head, tail)
 }
 
 // One live route with its socket attribution

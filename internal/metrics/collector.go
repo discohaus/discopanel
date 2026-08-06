@@ -372,7 +372,6 @@ func (c *Collector) GetModuleStats(moduleID string) *ModuleStats {
 	return &cp
 }
 
-// Collects Docker container stats periodically
 // Rebuilds the server container set from the store
 func (c *Collector) refreshServerContainers(ctx context.Context) {
 	servers, err := c.store.ListServers(ctx)

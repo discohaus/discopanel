@@ -545,7 +545,7 @@ func splitMcmodDep(s string) (string, string) {
 	return strings.ToLower(strings.TrimSpace(id)), strings.TrimSpace(rng)
 }
 
-// Gradle stamps real versions into the manifest, toml keeps ${...}
+// Gradle stamps real versions into the manifest, toml keeps placeholders
 func resolveVersionPlaceholders(meta *ModJarMeta, manifestVersion string) {
 	for i := range meta.Mods {
 		if strings.Contains(meta.Mods[i].Version, "${") {

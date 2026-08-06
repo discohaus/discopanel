@@ -12,9 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// NewOpenAPIHandler returns an http.HandlerFunc that serves the OpenAPI spec.
-// Strips Connect protocol noise and injects per-operation security overrides.
-// When isAuthEnabled returns false, security schemes are removed entirely.
+// Serves the openapi spec, strips connect noise, patches security
 func NewOpenAPIHandler(log *logger.Logger, isAuthEnabled func() bool) http.HandlerFunc {
 	var (
 		once         sync.Once

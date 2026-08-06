@@ -20,7 +20,7 @@
 		asset('/scalar.js' as Asset) +
 		`">${'<'}/script>
         <style>
-          /* Hide "Powered by Scalar" link... */
+          /* Hides the powered by scalar link */
           a[href="https://www.scalar.com"] {
             display: none !important;
           }

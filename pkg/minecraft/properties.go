@@ -54,7 +54,7 @@ func SavePropertiesFile(serverDataPath string, properties PropertiesFile) error 
 		file.Close()
 	}
 
-	// Temp file plus rename keeps a crash from eating the file
+	// Temp file plus rename keeps crashes from eating the file
 	tmpPath := propertiesPath + ".tmp"
 	file, err := os.Create(tmpPath)
 	if err != nil {

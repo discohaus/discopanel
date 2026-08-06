@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -60,15 +59,8 @@ type ServerService struct {
 	bus              *events.Bus
 	uploadManager    *transfer.UploadManager
 
-	// Encoded server-icon.png keyed by server, checked by mtime
-	faviconMu sync.Mutex
-	favicons  map[string]faviconEntry
-}
-
-type faviconEntry struct {
-	modTime time.Time
-	size    int64
-	dataURI string
+	// Encoded server icons cached by file identity
+	favicons minecraft.FaviconCache
 }
 
 // Normalizes additional ports, proxied ones may route
@@ -177,7 +169,6 @@ func NewServerService(store *storage.Store, docker *docker.Client, sender *comma
 		moduleManager:    moduleManager,
 		bus:              bus,
 		uploadManager:    uploadManager,
-		favicons:         make(map[string]faviconEntry),
 	}
 }
 
@@ -197,26 +188,7 @@ func getServer(ctx context.Context, store *storage.Store, id string) (*v1.Server
 
 // Serves server-icon.png from disk, cached by file identity
 func (s *ServerService) serverFavicon(server *v1.Server) string {
-	if server.DataPath == "" {
-		return ""
-	}
-	iconPath := filepath.Join(server.DataPath, "server-icon.png")
-	info, err := os.Stat(iconPath)
-	if err != nil {
-		return ""
-	}
-	s.faviconMu.Lock()
-	defer s.faviconMu.Unlock()
-	if e, ok := s.favicons[server.Id]; ok && e.modTime.Equal(info.ModTime()) && e.size == info.Size() {
-		return e.dataURI
-	}
-	data, err := os.ReadFile(iconPath)
-	if err != nil {
-		return ""
-	}
-	uri := "data:image/png;base64," + base64.StdEncoding.EncodeToString(data)
-	s.favicons[server.Id] = faviconEntry{modTime: info.ModTime(), size: info.Size(), dataURI: uri}
-	return uri
+	return s.favicons.Get(server.Id, server.DataPath)
 }
 
 // Copies cached runtime stats onto transient server fields
@@ -919,6 +891,11 @@ func (s *ServerService) UploadServerIcon(ctx context.Context, req *connect.Reque
 		s.log.Error("Failed to persist icon source: %v", err)
 	}
 	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_ICON_UPLOAD, nil, "uploaded a server icon")
+
+	// Sleeping and offline status replies pick up the icon
+	if err := s.proxy.SyncServerRoutes(ctx, server); err != nil {
+		s.log.Warn("Route refresh after icon upload failed: %v", err)
+	}
 
 	favicon := "data:image/png;base64," + base64.StdEncoding.EncodeToString(iconPNG)
 	return connect.NewResponse(&v1.UploadServerIconResponse{

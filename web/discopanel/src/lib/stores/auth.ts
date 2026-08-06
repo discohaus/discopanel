@@ -83,7 +83,7 @@ function createAuthStore() {
 					anonymousAccessEnabled: response.anonymousAccessEnabled
 				}));
 
-				// If auth is enabled and we have a token, validate it
+				// Validates the stored token when auth is on
 				let currentToken: string | null = null;
 				update((state) => {
 					currentToken = state.token;
@@ -91,7 +91,7 @@ function createAuthStore() {
 				});
 
 				if (!authEnabled) {
-					// Auth is disabled - backend grants full admin access, fetch permissions
+					// Disabled auth still fetches the granted admin permissions
 					await rpcClient.auth
 						.getCurrentUser({})
 						.then((r) =>
