@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +29,7 @@ type UDPProxy struct {
 	backendHost string
 	backendPort int
 	route       Route
+	stats       *RouteStats
 
 	conn    *net.UDPConn
 	running bool
@@ -60,10 +62,27 @@ func NewUDPProxy(cfg *Config) *UDPProxy {
 	return &UDPProxy{
 		listenAddr: cfg.ListenAddr,
 		logger:     cfg.Logger,
+		stats:      &RouteStats{},
 		ctx:        ctx,
 		cancel:     cancel,
 		sessions:   make(map[string]*udpSession),
 	}
+}
+
+// Returns the current counters under the config lock
+func (p *UDPProxy) statsRef() *RouteStats {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.stats
+}
+
+// Copies the relay's counters, live sessions gauge included
+func (p *UDPProxy) StatsSnapshot() *v1.ProxyRoute {
+	snap := p.statsRef().Snapshot()
+	p.sessionsMu.Lock()
+	snap.ActiveConnections = int64(len(p.sessions))
+	p.sessionsMu.Unlock()
+	return snap
 }
 
 // Starts the UDP proxy
@@ -122,9 +141,14 @@ func (p *UDPProxy) SetRoute(route Route) {
 	route.Protocol = v1.ModuleProtocol_MODULE_PROTOCOL_UDP
 	p.mu.Lock()
 	changed := p.backendHost != route.BackendHost || p.backendPort != route.BackendPort
+	ownerChanged := p.route.ServerID != route.ServerID
 	p.route = route
 	p.backendHost = route.BackendHost
 	p.backendPort = route.BackendPort
+	// Fresh counters keep an old owner's totals out
+	if ownerChanged {
+		p.stats = &RouteStats{}
+	}
 	p.mu.Unlock()
 	if changed {
 		p.flushSessions()
@@ -180,7 +204,9 @@ func (p *UDPProxy) proxyLoop(conn *net.UDPConn) {
 		if _, err := session.backendConn.WriteToUDP(buf[:n], session.backendAddr); err != nil {
 			p.logger.Error("Failed to forward to backend: %v", err)
 			p.removeSession(clientAddr.String())
+			continue
 		}
+		p.statsRef().BytesToBackend.Add(int64(n))
 	}
 }
 
@@ -208,7 +234,7 @@ func (p *UDPProxy) getOrCreateSession(clientAddr *net.UDPAddr) (*udpSession, err
 		return nil, fmt.Errorf("no backend configured")
 	}
 
-	backendAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(backendHost, fmt.Sprintf("%d", backendPort)))
+	backendAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(backendHost, strconv.Itoa(backendPort)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve backend: %w", err)
 	}
@@ -239,6 +265,7 @@ func (p *UDPProxy) getOrCreateSession(clientAddr *net.UDPAddr) (*udpSession, err
 	}
 	p.sessions[clientKey] = session
 	p.sessionsMu.Unlock()
+	p.statsRef().TotalConns.Add(1)
 
 	go p.handleBackendResponses(session, clientKey)
 
@@ -271,7 +298,9 @@ func (p *UDPProxy) handleBackendResponses(session *udpSession, clientKey string)
 		}
 		if _, err := conn.WriteToUDP(buf[:n], session.clientAddr); err != nil {
 			p.logger.Error("Failed to send to client %s: %v", clientKey, err)
+			continue
 		}
+		p.statsRef().BytesToClient.Add(int64(n))
 	}
 }
 

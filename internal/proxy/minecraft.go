@@ -29,6 +29,13 @@ type RouteStats struct {
 	LastProtocol   atomic.Int32
 }
 
+// Relays and folds moved bytes into the counters
+func (st *RouteStats) countRelay(client, backend net.Conn) {
+	toBackend, toClient := relay(client, backend)
+	st.BytesToBackend.Add(toBackend)
+	st.BytesToClient.Add(toClient)
+}
+
 // Copies the live counters onto a fresh route message
 func (st *RouteStats) Snapshot() *v1.ProxyRoute {
 	return &v1.ProxyRoute{
@@ -77,7 +84,7 @@ func (s *ListenerSocket) StatsSnapshots() map[string]*v1.ProxyRoute {
 	return out
 }
 
-// Lowercases hostname, strips port, FML markers, and trailing dot
+// Wire side normalizer, config names use NormalizeHostname
 func normalizeWireHostname(hostname string) string {
 	if idx := strings.IndexByte(hostname, 0); idx != -1 {
 		hostname = hostname[:idx]
@@ -293,10 +300,8 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 	clientConn.SetDeadline(time.Time{})
 	backendConn.SetDeadline(time.Time{})
 	stats.ActiveConns.Add(1)
-	toBackend, toClient := relay(clientConn, backendConn)
+	stats.countRelay(clientConn, backendConn)
 	stats.ActiveConns.Add(-1)
-	stats.BytesToBackend.Add(toBackend)
-	stats.BytesToClient.Add(toClient)
 }
 
 // Points handshake at backend, optionally preserving client hostname

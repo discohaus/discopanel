@@ -97,15 +97,12 @@ proxy:
   public_ip: "" # Public address for hostname suggestions
   listen_port: 25565 # Primary port to listen on (can also use 443)
   port_range_min: 25565
+  trusted_edge: false # For external proxy headers: X-Forwarded-Proto / X-Forwarded-For
   # Optional TLS for the panel ui
-  # NOTE: Cloudflare will only do proxied HTTPS (Flexible TLS) if panel port is 443, else you have to do the below with Origin Cert -> Edge Cert on cloudflare TLS tab
   # tls:
   #   certificates:
   #     - cert_file: /etc/discopanel/certs/example.com.crt
   #       key_file: /etc/discopanel/certs/example.com.key
-
-# Hostnames live in the panel, every hostname field suggests names
-# All servers share the listen port and route by hostname
 
 
 # Minecraft server global configuration defaults

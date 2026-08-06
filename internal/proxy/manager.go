@@ -67,6 +67,16 @@ type Manager struct {
 	// Cached agent reachability names for panel routes
 	infraNames   []string
 	infraNamesAt time.Time
+
+	// Container addresses cached so inspects stay off the lock
+	ipCache   map[string]ipEntry
+	ipCacheMu sync.Mutex
+}
+
+// One cached container address with its inspect time
+type ipEntry struct {
+	ip string
+	at time.Time
 }
 
 // Registers the wake gate, must be called before Start
@@ -96,6 +106,7 @@ func NewManager(store *db.Store, dockerClient *docker.Client, cfg *config.Config
 		pendingClaims: make(map[uint64]pendingClaim),
 		panelCatchAll: true,
 		certs:         LoadTLSCertificates(cfg.Proxy.TLS.Certificates, logger),
+		ipCache:       make(map[string]ipEntry),
 	}
 	return m
 }
@@ -149,12 +160,17 @@ func (m *Manager) infraNamesLocked(ctx context.Context) []string {
 	}
 	if m.docker != nil && m.appCfg != nil {
 		inspectCtx, cancel := context.WithTimeout(ctx, containerInspectTimeout)
-		if agentURL, err := m.docker.PanelAgentURL(inspectCtx, m.appCfg.Server.Port); err == nil {
+		agentURL, err := m.docker.PanelAgentURL(inspectCtx, m.appCfg.Server.Port)
+		cancel()
+		if err != nil && m.infraNames != nil {
+			// Inspect hiccup keeps the last good set
+			return m.infraNames
+		}
+		if err == nil {
 			if u, uerr := url.Parse(agentURL); uerr == nil {
 				add(u.Hostname())
 			}
 		}
-		cancel()
 	}
 	// Ip keeps the host hostname alias reachable
 	if len(m.panelNames) == 0 {
@@ -165,6 +181,14 @@ func (m *Manager) infraNamesLocked(ctx context.Context) []string {
 	m.infraNames = out
 	m.infraNamesAt = time.Now()
 	return out
+}
+
+// Reservations reuse the sync time name snapshot
+func (m *Manager) infraNamesSnapshotLocked(ctx context.Context) []string {
+	if m.infraNames != nil {
+		return m.infraNames
+	}
+	return m.infraNamesLocked(ctx)
 }
 
 // User names plus agent names the panel serves
@@ -248,10 +272,11 @@ func (m *Manager) ensurePanelSocketLocked() error {
 		return nil
 	}
 	sock := NewListenerSocket(&Config{
-		ListenAddr: net.JoinHostPort(m.appCfg.Server.Host, strconv.Itoa(port)),
-		Logger:     m.logger,
-		Gate:       m.gate,
-		Certs:      m.certs,
+		ListenAddr:  net.JoinHostPort(m.appCfg.Server.Host, strconv.Itoa(port)),
+		Logger:      m.logger,
+		Gate:        m.gate,
+		Certs:       m.certs,
+		TrustedEdge: m.config.TrustedEdge,
 	})
 	if err := sock.Start(); err != nil {
 		return fmt.Errorf("panel socket failed on port %d: %w", port, err)
@@ -277,10 +302,13 @@ func (m *Manager) PanelCatchAll() bool {
 
 // Applies a config change and reconciles running sockets
 func (m *Manager) ApplyConfig(ctx context.Context, cfg *v1.ProxyConfig) error {
+	m.warmContainerIPs(ctx)
 	m.mu.Lock()
 	m.enabled = cfg.Enabled
 	m.panelNames = cfg.Hostnames
 	m.panelCatchAll = cfg.CatchAll
+	// Panel names gate the lan alias, recompute
+	m.infraNames = nil
 	err := m.syncListenersLocked(ctx)
 	m.mu.Unlock()
 	return err
@@ -289,14 +317,81 @@ func (m *Manager) ApplyConfig(ctx context.Context, cfg *v1.ProxyConfig) error {
 // Bounds docker inspects so a hung daemon cannot wedge syncs
 const containerInspectTimeout = 5 * time.Second
 
-// Resolves a container IP on the panel network
+// How long a cached container address stays trusted
+const containerIPTTL = 15 * time.Second
+
+// Resolves a container IP, fresh cache entries skip docker
 func (m *Manager) containerIP(ctx context.Context, containerID string) (string, error) {
+	m.ipCacheMu.Lock()
+	entry, ok := m.ipCache[containerID]
+	m.ipCacheMu.Unlock()
+	if ok && time.Since(entry.at) < containerIPTTL {
+		return entry.ip, nil
+	}
+	return m.refreshContainerIP(ctx, containerID)
+}
+
+// Inspects one container and recaches its address
+func (m *Manager) refreshContainerIP(ctx context.Context, containerID string) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	inspectCtx, cancel := context.WithTimeout(ctx, containerInspectTimeout)
 	defer cancel()
-	return m.docker.ContainerIP(inspectCtx, containerID)
+	ip, err := m.docker.ContainerIP(inspectCtx, containerID)
+	if err != nil {
+		return "", err
+	}
+	m.ipCacheMu.Lock()
+	m.ipCache[containerID] = ipEntry{ip: ip, at: time.Now()}
+	m.ipCacheMu.Unlock()
+	return ip, nil
+}
+
+// True while a server container can hold an address
+func containerAddressable(status v1.ServerStatus) bool {
+	switch status {
+	case v1.ServerStatus_SERVER_STATUS_RUNNING, v1.ServerStatus_SERVER_STATUS_PAUSED,
+		v1.ServerStatus_SERVER_STATUS_UNHEALTHY, v1.ServerStatus_SERVER_STATUS_PROVISIONING,
+		v1.ServerStatus_SERVER_STATUS_CREATING, v1.ServerStatus_SERVER_STATUS_STARTING:
+		return true
+	}
+	return false
+}
+
+// Warms eligible container addresses ahead of a locked pass
+func (m *Manager) warmContainerIPs(ctx context.Context) {
+	if m.docker == nil {
+		return
+	}
+	eligible := make(map[string]bool)
+	if servers, err := m.store.ListServers(ctx); err == nil {
+		for _, server := range servers {
+			if server.ContainerId != "" && containerAddressable(server.Status) {
+				eligible[server.ContainerId] = true
+			}
+		}
+	}
+	if modules, err := m.store.ListModules(ctx); err == nil {
+		for _, mod := range modules {
+			if mod.ContainerId != "" && mod.Status == v1.ModuleStatus_MODULE_STATUS_RUNNING {
+				eligible[mod.ContainerId] = true
+			}
+		}
+	}
+	for id := range eligible {
+		if _, err := m.containerIP(ctx, id); err != nil {
+			m.logger.Debug("Warm inspect failed for container %s: %v", id, err)
+		}
+	}
+	// Dead ids fall out so the cache cannot grow
+	m.ipCacheMu.Lock()
+	for id := range m.ipCache {
+		if !eligible[id] {
+			delete(m.ipCache, id)
+		}
+	}
+	m.ipCacheMu.Unlock()
 }
 
 // Initializes and starts the proxy if enabled
@@ -315,6 +410,7 @@ func (m *Manager) Start() error {
 		catchAll = cfg.CatchAll
 	}
 
+	m.warmContainerIPs(context.Background())
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.panelNames = names
@@ -329,6 +425,8 @@ func (m *Manager) Start() error {
 
 // Reconciles sockets and routes against database state
 func (m *Manager) SyncListeners(ctx context.Context) error {
+	// Inspects land in cache before the lock is held
+	m.warmContainerIPs(ctx)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.syncListenersLocked(ctx)
@@ -391,10 +489,11 @@ func (m *Manager) syncListenersLocked(ctx context.Context) error {
 		sock, ok := m.tcpSockets[port]
 		if !ok {
 			sock = NewListenerSocket(&Config{
-				ListenAddr: fmt.Sprintf(":%d", port),
-				Logger:     m.logger,
-				Gate:       m.gate,
-				Certs:      m.certs,
+				ListenAddr:  fmt.Sprintf(":%d", port),
+				Logger:      m.logger,
+				Gate:        m.gate,
+				Certs:       m.certs,
+				TrustedEdge: m.config.TrustedEdge,
 			})
 			if err := sock.Start(); err != nil {
 				m.logger.Error("Failed to start listener %s on port %d: %v", listener.Name, port, err)
@@ -607,6 +706,8 @@ func appendPortRoutes(tcpRoutes map[int][]Route, udpRoutes map[int]Route, ports 
 				tcpRoutes[hostPort] = append(tcpRoutes[hostPort], variant)
 			}
 		case v1.ModuleProtocol_MODULE_PROTOCOL_UDP:
+			// Udp counters never share a tcp stream id
+			route.ServerID += "-udp"
 			udpRoutes[hostPort] = route
 		default:
 			route.Protocol = v1.ModuleProtocol_MODULE_PROTOCOL_TCP
@@ -618,7 +719,7 @@ func appendPortRoutes(tcpRoutes map[int][]Route, udpRoutes map[int]Route, ports 
 // True when any port wants proxy routing
 func HasProxyPorts(ports []*v1.NetworkPort) bool {
 	for _, port := range ports {
-		if port != nil && port.ProxyEnabled && port.HostPort != 0 {
+		if port != nil && port.ProxyEnabled && port.HostPort > 0 {
 			return true
 		}
 	}
@@ -796,6 +897,13 @@ func (m *Manager) stopAllLocked() error {
 
 // Reconciles a server's game route with its current status
 func (m *Manager) UpdateServerRoute(server *v1.Server) error {
+	// Status changes refresh the address before the lock
+	if server.ContainerId != "" && m.docker != nil && containerAddressable(server.Status) {
+		if _, err := m.refreshContainerIP(context.Background(), server.ContainerId); err != nil {
+			m.logger.Debug("Refresh inspect failed for server %s: %v", server.Name, err)
+		}
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -1036,14 +1144,24 @@ func (m *Manager) GetRouteStats() map[string]*v1.ProxyRoute {
 	defer m.mu.Unlock()
 
 	stats := make(map[string]*v1.ProxyRoute)
+	merge := func(id string, raw *v1.ProxyRoute) {
+		if countersReset(m.statsLast[id], raw) {
+			m.statsBase[id] = addCounters(m.statsBase[id], m.statsLast[id])
+		}
+		m.statsLast[id] = raw
+		stats[id] = addCounters(m.statsBase[id], raw)
+	}
 	for _, sock := range m.tcpSockets {
 		for id, raw := range sock.StatsSnapshots() {
-			if countersReset(m.statsLast[id], raw) {
-				m.statsBase[id] = addCounters(m.statsBase[id], m.statsLast[id])
-			}
-			m.statsLast[id] = raw
-			stats[id] = addCounters(m.statsBase[id], raw)
+			merge(id, raw)
 		}
+	}
+	for _, up := range m.udpSockets {
+		route, ok := up.Route()
+		if !ok {
+			continue
+		}
+		merge(route.ServerID, up.StatsSnapshot())
 	}
 	return stats
 }

@@ -109,12 +109,17 @@ func (c *Collector) maintainHistory() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	if err := c.store.RollupMetricsSamples(ctx, time.Now().Add(-historyRawRetention), historyRollupSeconds); err != nil {
+	if err := c.store.RollupMetricsSamples(ctx, time.Now().UTC().Add(-historyRawRetention), historyRollupSeconds); err != nil {
 		c.log.Warn("Metrics history: rollup failed: %v", err)
 	}
-	if err := c.store.PruneMetricsSamples(ctx, historyRollupSeconds, time.Now().Add(-historyRollupRetention)); err != nil {
+	if err := c.store.PruneMetricsSamples(ctx, historyRollupSeconds, time.Now().UTC().Add(-historyRollupRetention)); err != nil {
 		c.log.Warn("Metrics history: prune failed: %v", err)
 	}
+}
+
+// Seconds between raw history samples
+func (c *Collector) HistorySampleSeconds() int {
+	return int(c.collectorConfig.HistoryInterval / time.Second)
 }
 
 // Reports whether the container was alive at last check

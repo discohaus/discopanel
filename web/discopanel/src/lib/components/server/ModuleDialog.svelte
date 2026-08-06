@@ -124,6 +124,8 @@
 	let name = $state('');
 	let certPem = $state('');
 	let keyPem = $state('');
+	// Blocks submits carrying half a certificate pair
+	const certPairIncomplete = $derived(!!certPem.trim() !== !!keyPem.trim());
 	let autoStart = $state(true);
 	let followServerLifecycle = $state(true);
 	let detached = $state(false);
@@ -577,6 +579,11 @@
 			toast.error('Fix the highlighted configuration fields first');
 			return;
 		}
+		if (certPairIncomplete) {
+			activeSection = 'general';
+			toast.error('Paste both the certificate and the private key');
+			return;
+		}
 		const proceed = await showWarnings();
 		if (!proceed) return;
 
@@ -658,7 +665,11 @@
 					gid,
 					initCommand,
 					initCommandDelay,
-					restartAfterInit
+					restartAfterInit,
+					// Full typed pair rotates, untouched blanks keep the mount
+					...(certPem.trim() && keyPem.trim()
+						? { certPem: certPem.trim(), keyPem: keyPem.trim() }
+						: {})
 				});
 				toast.success(`Module "${name}" updated`);
 			}
@@ -867,7 +878,7 @@
 							</p>
 						</div>
 
-						{#if mode === 'create' && selectedTemplate?.certMountPath}
+						{#if activeTemplate?.certMountPath && !systemLocked}
 							<div class="space-y-3">
 								<h3 class="text-sm font-semibold">Certificate</h3>
 								<div class="space-y-2">
@@ -890,8 +901,15 @@
 										class="font-mono text-xs"
 									/>
 								</div>
+								{#if certPairIncomplete}
+									<p class="text-xs text-destructive">
+										Paste both parts, the certificate and the private key go together.
+									</p>
+								{/if}
 								<p class="text-xs text-muted-foreground">
-									Optional. Mounted into {selectedTemplate.certMountPath} as tls.crt and tls.key
+									{mode === 'create'
+										? `Optional. Mounted into ${activeTemplate.certMountPath} as tls.crt and tls.key`
+										: `Paste a new pair to replace the mounted certificate. Leave blank to keep the current one.`}
 								</p>
 							</div>
 						{/if}

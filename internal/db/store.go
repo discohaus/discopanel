@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -203,56 +204,98 @@ func (s *Store) DeleteServer(ctx context.Context, id string) error {
 	})
 }
 
-// Uses datetime() since stored timestamps may lack UTC offset
+// Metrics timestamps stay utc so bare comparisons hold
 
 // Returns ordered samples, aggregated into buckets when bucketSeconds is positive
-func (s *Store) GetMetricsHistory(ctx context.Context, serverID string, from, to time.Time, bucketSeconds int) ([]*v1.MetricsSample, error) {
+func (s *Store) GetMetricsHistory(ctx context.Context, serverID string, from, to time.Time, bucketSeconds, rawSeconds int) ([]*v1.MetricsSample, error) {
 	var samples []*v1.MetricsSample
-	if bucketSeconds <= 0 {
-		err := s.db.WithContext(ctx).
-			Where("server_id = ? AND datetime(timestamp) >= datetime(?) AND datetime(timestamp) <= datetime(?)",
-				serverID, from.UTC(), to.UTC()).
-			Order("datetime(timestamp) ASC").
-			Find(&samples).Error
+	err := s.db.WithContext(ctx).
+		Where("server_id = ? AND timestamp >= ? AND timestamp <= ?",
+			serverID, from.UTC(), to.UTC()).
+		Order("timestamp ASC").
+		Find(&samples).Error
+	if err != nil || bucketSeconds <= 0 {
 		return samples, err
 	}
-	query := `
-		SELECT server_id, ? AS resolution,
-			datetime((CAST(strftime('%s', timestamp) AS INTEGER) / ?) * ?, 'unixepoch') AS timestamp,
-			AVG(tps) AS tps, AVG(mspt) AS mspt, MAX(players) AS players,
-			AVG(cpu_percent) AS cpu_percent, AVG(memory_mb) AS memory_mb,
-			AVG(heap_used_mb) AS heap_used_mb, MAX(disk_bytes) AS disk_bytes,
-			MAX(proxy_active_conns) AS proxy_active_conns, SUM(proxy_bytes_in) AS proxy_bytes_in,
-			SUM(proxy_bytes_out) AS proxy_bytes_out, SUM(proxy_logins) AS proxy_logins
-		FROM metrics_samples
-		WHERE server_id = ? AND datetime(timestamp) >= datetime(?) AND datetime(timestamp) <= datetime(?)
-		GROUP BY CAST(strftime('%s', timestamp) AS INTEGER) / ?
-		ORDER BY timestamp ASC`
-	err := s.db.WithContext(ctx).Model(&v1.MetricsSample{}).
-		Raw(query, bucketSeconds, bucketSeconds, bucketSeconds, serverID, from.UTC(), to.UTC(), bucketSeconds).
-		Scan(&samples).Error
-	return samples, err
+	// Default cadence when caller cannot say
+	if rawSeconds <= 0 {
+		rawSeconds = 30
+	}
+	return rollupSamples(samples, int64(bucketSeconds), rawSeconds), nil
 }
 
 // Folds raw samples older than cutoff into buckets
 func (s *Store) RollupMetricsSamples(ctx context.Context, olderThan time.Time, bucketSeconds int) error {
+	if bucketSeconds <= 0 {
+		return nil
+	}
+	// Whole buckets only so reruns never split one
+	bucket := int64(bucketSeconds)
+	cutoff := time.Unix(olderThan.Unix()/bucket*bucket, 0).UTC()
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		insert := `
-			INSERT INTO metrics_samples (server_id, resolution, timestamp, tps, mspt, players, cpu_percent, memory_mb, heap_used_mb, disk_bytes,
-				proxy_active_conns, proxy_bytes_in, proxy_bytes_out, proxy_logins)
-			SELECT server_id, ?,
-				datetime((CAST(strftime('%s', timestamp) AS INTEGER) / ?) * ?, 'unixepoch'),
-				AVG(tps), AVG(mspt), MAX(players), AVG(cpu_percent), AVG(memory_mb), AVG(heap_used_mb), MAX(disk_bytes),
-				MAX(proxy_active_conns), SUM(proxy_bytes_in), SUM(proxy_bytes_out), SUM(proxy_logins)
-			FROM metrics_samples
-			WHERE resolution = 0 AND datetime(timestamp) < datetime(?)
-			GROUP BY server_id, CAST(strftime('%s', timestamp) AS INTEGER) / ?`
-		if err := tx.Exec(insert, bucketSeconds, bucketSeconds, bucketSeconds, olderThan.UTC(), bucketSeconds).Error; err != nil {
+		var raw []*v1.MetricsSample
+		if err := tx.Where("resolution = 0 AND timestamp < ?", cutoff).Find(&raw).Error; err != nil {
 			return err
 		}
-		return tx.Where("resolution = 0 AND datetime(timestamp) < datetime(?)", olderThan.UTC()).
+		if len(raw) == 0 {
+			return nil
+		}
+		rolled := rollupSamples(raw, bucket, 1)
+		if err := tx.Create(&rolled).Error; err != nil {
+			return err
+		}
+		return tx.Where("resolution = 0 AND timestamp < ?", cutoff).
 			Delete(&v1.MetricsSample{}).Error
 	})
+}
+
+// Folds samples into buckets, row weight is covered seconds
+func rollupSamples(samples []*v1.MetricsSample, bucket int64, rawSeconds int) []*v1.MetricsSample {
+	index := make(map[string]*v1.MetricsSample)
+	weights := make(map[*v1.MetricsSample]float64)
+	var rolled []*v1.MetricsSample
+	for _, r := range samples {
+		start := r.Timestamp.AsTime().Unix() / bucket * bucket
+		key := fmt.Sprintf("%s/%d", r.ServerId, start)
+		agg := index[key]
+		if agg == nil {
+			agg = &v1.MetricsSample{
+				ServerId:   r.ServerId,
+				Resolution: int32(bucket),
+				Timestamp:  timestamppb.New(time.Unix(start, 0).UTC()),
+			}
+			index[key] = agg
+			rolled = append(rolled, agg)
+		}
+		w := float64(rawSeconds)
+		if r.Resolution > 0 {
+			w = float64(r.Resolution)
+		}
+		agg.Tps += r.Tps * w
+		agg.Mspt += r.Mspt * w
+		agg.CpuPercent += r.CpuPercent * w
+		agg.MemoryMb += r.MemoryMb * w
+		agg.HeapUsedMb += r.HeapUsedMb * w
+		agg.Players = max(agg.Players, r.Players)
+		agg.DiskBytes = max(agg.DiskBytes, r.DiskBytes)
+		agg.ProxyActiveConns = max(agg.ProxyActiveConns, r.ProxyActiveConns)
+		agg.ProxyBytesIn += r.ProxyBytesIn
+		agg.ProxyBytesOut += r.ProxyBytesOut
+		agg.ProxyLogins += r.ProxyLogins
+		weights[agg] += w
+	}
+	for _, agg := range rolled {
+		w := weights[agg]
+		agg.Tps /= w
+		agg.Mspt /= w
+		agg.CpuPercent /= w
+		agg.MemoryMb /= w
+		agg.HeapUsedMb /= w
+	}
+	slices.SortFunc(rolled, func(a, b *v1.MetricsSample) int {
+		return a.Timestamp.AsTime().Compare(b.Timestamp.AsTime())
+	})
+	return rolled
 }
 
 // Clears all ephemeral property fields

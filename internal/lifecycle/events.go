@@ -135,15 +135,10 @@ func (m *Manager) WakeServer(ctx context.Context, serverID string) error {
 
 // Cold-starts a stopped server asynchronously for wake-on-connect login
 func (m *Manager) StartServer(serverID string) error {
-	if m.IsStarting(serverID) {
+	// Busy servers need no second start
+	if err := m.BeginStart(serverID); err != nil {
 		return nil
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
-		defer cancel()
-		if err := m.Start(metrics.WithTrace(metrics.WithSource(ctx, "wake-on-connect")), serverID); err != nil {
-			m.log.Error("lifecycle: wake-on-connect start failed for %s: %v", serverID, err)
-		}
-	}()
+	m.RunStartAsync(metrics.WithTrace(metrics.WithSource(context.Background(), "wake-on-connect")), serverID)
 	return nil
 }

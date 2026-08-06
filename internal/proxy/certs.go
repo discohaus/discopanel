@@ -65,7 +65,7 @@ func leafNames(leaf *x509.Certificate) []string {
 	var out []string
 	seen := make(map[string]bool)
 	add := func(name string) {
-		name = strings.ToLower(strings.TrimSpace(name))
+		name = NormalizeHostname(name)
 		if name == "" || seen[name] {
 			return
 		}
@@ -101,7 +101,8 @@ func (idx *certIndex) match(serverName string) (*tls.Certificate, bool) {
 	if idx == nil {
 		return nil, false
 	}
-	name := NormalizeHostname(strings.TrimSuffix(serverName, "."))
+	// Sni names come off the wire like any hostname
+	name := normalizeWireHostname(serverName)
 	if name == "" {
 		return nil, false
 	}

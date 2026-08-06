@@ -13,8 +13,7 @@
 	} from '$lib/components/app';
 	import MetricsSparkline from '$lib/components/metrics-sparkline.svelte';
 	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
-	import { panelHost } from '$lib/utils/host';
-	import { directAddresses, playerAddress } from '$lib/hostname';
+	import { serverAddresses } from '$lib/hostname';
 	import { serversStore, sortServersByActivity, claimFullStats } from '$lib/stores/servers';
 	import { currentUser, canAccessSettings } from '$lib/stores/auth';
 	import {
@@ -158,21 +157,6 @@
 		const players = stats.players === 1 ? '1 player' : `${stats.players} players`;
 		return `${stats.running} of ${stats.total} ${stats.total === 1 ? 'server' : 'servers'} running · ${players} online`;
 	});
-
-	// Routed names else every detected direct address
-	function addresses(server: Server): string[] {
-		if (server.proxyHostnames.length > 0) return server.proxyHostnames;
-		if (suggestions) {
-			const list = directAddresses(
-				server.port,
-				suggestions.lanIp,
-				suggestions.publicIp,
-				suggestions.suggestions.map((s) => s.hostname)
-			);
-			if (list.length > 0) return list;
-		}
-		return [playerAddress(panelHost(), server.port)];
-	}
 
 	async function power(server: Server, start: boolean) {
 		actioningId = server.id;
@@ -427,7 +411,7 @@
 									</div>
 
 									<div class="relative z-10 mt-3">
-										<AddressSelect addresses={addresses(server)} />
+										<AddressSelect addresses={serverAddresses(server, suggestions)} />
 									</div>
 
 									<div class="mt-3 flex items-end justify-between gap-3">

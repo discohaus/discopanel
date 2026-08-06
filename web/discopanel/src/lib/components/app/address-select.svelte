@@ -20,6 +20,7 @@
 	let menu = $state<HTMLDivElement | null>(null);
 	let pos = $state({ top: 0, left: 0, width: 0 });
 
+	// Any address works alike, sets arrive in canonical order
 	let first = $derived(addresses[0] ?? '');
 
 	// Floating list anchors under the row, never reflows

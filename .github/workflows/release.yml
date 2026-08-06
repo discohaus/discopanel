@@ -7,8 +7,13 @@ on:
   workflow_dispatch:
 
 jobs:
+  test:
+    name: Test
+    uses: ./.github/workflows/ci.yml
+
   generate-proto:
     name: Generate Proto Code
+    needs: test
     runs-on: ubuntu-latest
 
     steps:
@@ -205,6 +210,7 @@ jobs:
 
   build-docker:
     name: Build and Push Docker Images
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -240,7 +246,7 @@ jobs:
             type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
 
       - name: Extract metadata (dev)
         id: meta-dev

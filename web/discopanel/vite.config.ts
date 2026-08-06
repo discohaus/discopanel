@@ -69,5 +69,15 @@ export default defineConfig({
 	},
 	optimizeDeps: {
 		include: ['monaco-editor']
+	},
+	build: {
+		rollupOptions: {
+			onwarn(warning, warn) {
+				if (warning.code === 'UNUSED_EXTERNAL_IMPORT') {
+					return;
+				}
+				warn(warning);
+			}
+		}
 	}
 });

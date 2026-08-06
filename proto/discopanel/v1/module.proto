@@ -448,6 +448,10 @@ message UpdateModuleRequest {
   optional bool restart_after_init = 24;
   // Empty repeated cannot signal removal on its own
   bool clear_ports = 25;
+  // Pem chain replacing the mounted certificate
+  optional string cert_pem = 26;
+  // Matching pem private key
+  optional string key_pem = 27;
 }
 
 // UpdateModuleResponse contains the updated module.

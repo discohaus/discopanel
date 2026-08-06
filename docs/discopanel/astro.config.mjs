@@ -39,6 +39,7 @@ export default defineConfig({
 						{ label: 'Server Performance', slug: 'guides/performance' },
 						{ label: 'Auto-Pause & Auto-Stop', slug: 'guides/autopause' },
 						{ label: 'Proxy & Domains', slug: 'guides/proxy' },
+						{ label: 'HTTPS & Certificates', slug: 'guides/tls' },
 						{ label: 'Server Files', slug: 'guides/server-files' },
 						{ label: 'Server Backups', slug: 'guides/backups' },
 						{ label: 'Tasks & Automation', slug: 'guides/tasks' },

@@ -31,7 +31,7 @@ Because managing Minecraft servers shouldn't be difficult:
 ```bash
 
 # Non-exhaustive list of requirements for building from source:
-# 1. Go 1.25+
+# 1. Go 1.26+
 # 2. NodeJs + npm (for building front end)
 # 3. Docker + make (code generation runs buf in docker)
 
@@ -216,7 +216,7 @@ proxy:
 ## Requirements
 
 - Docker (obviously)
-- Go 1.25+ (only if building from source)
+- Go 1.26+ (only if building from source)
 - A functioning brain (optional but recommended)
 
 ## API

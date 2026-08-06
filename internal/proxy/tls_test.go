@@ -228,16 +228,20 @@ func TestTLSSocketStillServesPlainHTTP(t *testing.T) {
 	}
 }
 
-// Edge scheme claims pass through, bare conns say http
-func TestForwardedProtoPassthrough(t *testing.T) {
+// Spoofed forwarded headers die unless an edge is trusted
+func TestForwardedHeaderTrust(t *testing.T) {
 	cases := []struct {
-		name  string
-		value string
-		want  string
+		name      string
+		trusted   bool
+		spoof     bool
+		wantProto string
+		wantXFF   string
+		wantReal  string
 	}{
-		{"claim passes untouched", "https", "proto=https"},
-		{"chains pass untouched", "https, http", "proto=https, http"},
-		{"no claim stays http", "", "proto=http"},
+		{"untrusted strips claims", false, true, "http", "127.0.0.1", ""},
+		{"untrusted bare stays http", false, false, "http", "127.0.0.1", ""},
+		{"trusted keeps edge claims", true, true, "https", "1.2.3.4, 127.0.0.1", "1.2.3.4"},
+		{"trusted bare stays http", true, false, "http", "127.0.0.1", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -246,14 +250,18 @@ func TestForwardedProtoPassthrough(t *testing.T) {
 				t.Fatalf("backend listen failed %v", err)
 			}
 			backend := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				fmt.Fprintf(w, "proto=%s", r.Header.Get("X-Forwarded-Proto"))
+				fmt.Fprintf(w, "proto=%s|xff=%s|real=%s",
+					r.Header.Get("X-Forwarded-Proto"),
+					r.Header.Get("X-Forwarded-For"),
+					r.Header.Get("X-Real-Ip"))
 			})}
 			go func() { _ = backend.Serve(backendLn) }()
 			defer backend.Close()
 
 			sock := NewListenerSocket(&Config{
-				ListenAddr: "127.0.0.1:0",
-				Logger:     logger.New(),
+				ListenAddr:  "127.0.0.1:0",
+				Logger:      logger.New(),
+				TrustedEdge: tc.trusted,
 			})
 			if err := sock.Start(); err != nil {
 				t.Fatalf("socket start failed %v", err)
@@ -274,8 +282,10 @@ func TestForwardedProtoPassthrough(t *testing.T) {
 				t.Fatalf("request build failed %v", err)
 			}
 			req.Host = "map.example.com"
-			if tc.value != "" {
-				req.Header.Set("X-Forwarded-Proto", tc.value)
+			if tc.spoof {
+				req.Header.Set("X-Forwarded-Proto", "https")
+				req.Header.Set("X-Forwarded-For", "1.2.3.4")
+				req.Header.Set("X-Real-Ip", "1.2.3.4")
 			}
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
@@ -283,8 +293,9 @@ func TestForwardedProtoPassthrough(t *testing.T) {
 			}
 			defer resp.Body.Close()
 			body, _ := io.ReadAll(resp.Body)
-			if string(body) != tc.want {
-				t.Fatalf("scheme wrong, want %q got %q", tc.want, body)
+			want := fmt.Sprintf("proto=%s|xff=%s|real=%s", tc.wantProto, tc.wantXFF, tc.wantReal)
+			if string(body) != want {
+				t.Fatalf("headers wrong, want %q got %q", want, body)
 			}
 		})
 	}

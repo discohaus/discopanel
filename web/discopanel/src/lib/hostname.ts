@@ -1,4 +1,8 @@
-// Routing pattern hostnames must pass, mirrors the backend
+import type { Server } from '$lib/proto/discopanel/v1/storage_pb';
+import type { GetHostnameSuggestionsResponse } from '$lib/proto/discopanel/v1/proxy_pb';
+import { panelHost } from '$lib/utils/host';
+
+// Hand mirror of NormalizeHostname and ValidHostname in reservations.go
 const hostnamePattern =
 	/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
 
@@ -7,10 +11,10 @@ export function validHostname(hostname: string): boolean {
 	return hostnamePattern.test(hostname.trim().toLowerCase());
 }
 
-// Shortest name stands in for the whole set
+// Any name speaks for the set, canonical sort picks one
 export function hostnameSummary(hostnames: string[]): string {
 	if (hostnames.length === 0) return '';
-	return [...hostnames].sort((a, b) => a.length - b.length || a.localeCompare(b))[0];
+	return [...hostnames].sort()[0];
 }
 
 // Instant domain names resolve without any DNS setup
@@ -85,6 +89,37 @@ export function directAddresses(
 		out.push(playerAddress(host, port));
 	}
 	return out;
+}
+
+// Routed names joined with the server's listener port
+export function routedAddresses(server: Server): string[] {
+	return server.proxyHostnames.map((h) => playerAddress(h, server.proxyPort));
+}
+
+// Detected direct addresses else the browser host
+export function fallbackAddresses(
+	port: number,
+	suggestions: GetHostnameSuggestionsResponse | null
+): string[] {
+	if (suggestions) {
+		const list = directAddresses(
+			port,
+			suggestions.lanIp,
+			suggestions.publicIp,
+			suggestions.suggestions.map((s) => s.hostname)
+		);
+		if (list.length > 0) return list;
+	}
+	return [playerAddress(panelHost(), port)];
+}
+
+// Routed names else every reachable direct address
+export function serverAddresses(
+	server: Server,
+	suggestions: GetHostnameSuggestionsResponse | null
+): string[] {
+	const routed = routedAddresses(server);
+	return routed.length > 0 ? routed : fallbackAddresses(server.port, suggestions);
 }
 
 // Turns a display name into a hostname slug

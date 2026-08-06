@@ -10,7 +10,7 @@ export function routeStateLabel(route: ProxyRoute): string {
 		case ProxyRouteState.OFFLINE:
 			return route.wakeable ? 'Wakes on join' : enumLabel(ProxyRouteStateSchema, ProxyRouteState.OFFLINE);
 		default:
-			return route.active ? enumLabel(ProxyRouteStateSchema, ProxyRouteState.ONLINE) : 'Inactive';
+			return enumLabel(ProxyRouteStateSchema, ProxyRouteState.ONLINE);
 	}
 }
 
@@ -24,9 +24,7 @@ export function routeStateClass(route: ProxyRoute): string {
 				? 'border-status-sleep/25 bg-status-sleep/10 text-status-sleep'
 				: 'border-status-idle/25 bg-status-idle/10 text-status-idle';
 		default:
-			return route.active
-				? 'border-status-ok/25 bg-status-ok/10 text-status-ok'
-				: 'border-status-idle/25 bg-status-idle/10 text-status-idle';
+			return 'border-status-ok/25 bg-status-ok/10 text-status-ok';
 	}
 }
 
@@ -38,7 +36,7 @@ export function routeStateText(route: ProxyRoute): string {
 		case ProxyRouteState.OFFLINE:
 			return route.wakeable ? 'text-status-sleep' : 'text-status-idle';
 		default:
-			return route.active ? 'text-status-ok' : 'text-status-idle';
+			return 'text-status-ok';
 	}
 }
 

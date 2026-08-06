@@ -72,7 +72,7 @@ func (m *Manager) checkIdleServers() {
 	}
 
 	for _, server := range servers {
-		if server.ContainerId == "" || server.Detached || m.IsStarting(server.Id) {
+		if server.ContainerId == "" || server.Detached || m.Busy(server.Id) {
 			continue
 		}
 

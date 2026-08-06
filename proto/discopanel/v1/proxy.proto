@@ -181,7 +181,6 @@ message ProxyRoute {
   string hostname = 2;
   string backend_host = 3;
   int32 backend_port = 4;
-  bool active = 5;
   ProxyRouteState state = 6;
   bool wakeable = 7;
   bool proxy_protocol = 8;
@@ -342,7 +341,6 @@ message GetServerRoutingRequest {
 // Active server route
 message ServerRoute {
   string hostname = 1;
-  bool active = 2;
 }
 
 // Server proxy configuration

@@ -121,6 +121,33 @@ func normalizeAdditionalPorts(ports []*v1.NetworkPort, serverHostnames []string,
 	return out, nil
 }
 
+// Zero host ports ask the registry for one
+func (s *ServerService) allocateAdditionalPorts(ctx context.Context, ports []*v1.NetworkPort) error {
+	taken := make(map[int]bool)
+	for _, p := range ports {
+		if p != nil && p.HostPort > 0 {
+			taken[int(p.HostPort)] = true
+		}
+	}
+	for _, p := range ports {
+		if p == nil || p.HostPort > 0 {
+			continue
+		}
+		free, err := s.proxy.FindFreePort(ctx, proxy.FreePortOpts{
+			Protocol: p.Protocol,
+			Start:    s.config.Proxy.PortRangeMin,
+			End:      65535,
+			Exclude:  taken,
+		})
+		if err != nil {
+			return err
+		}
+		p.HostPort = int32(free)
+		taken[free] = true
+	}
+	return nil
+}
+
 // Reports whether both port lists match exactly
 func networkPortsEqual(a, b []*v1.NetworkPort) bool {
 	if len(a) != len(b) {
@@ -398,6 +425,9 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 		dockerImage = ""
 	}
 
+	if err := s.allocateAdditionalPorts(ctx, msg.AdditionalPorts); err != nil {
+		return nil, connect.NewError(connect.CodeResourceExhausted, err)
+	}
 	additionalPorts, err := normalizeAdditionalPorts(msg.AdditionalPorts, proxyHostnames, s.proxy.Enabled())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -646,6 +676,9 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 
 	// Handle additional ports update
 	if len(msg.AdditionalPorts) > 0 {
+		if err := s.allocateAdditionalPorts(ctx, msg.AdditionalPorts); err != nil {
+			return nil, connect.NewError(connect.CodeResourceExhausted, err)
+		}
 		additionalPorts, err := normalizeAdditionalPorts(msg.AdditionalPorts, server.ProxyHostnames, s.proxy.Enabled())
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -951,23 +984,22 @@ func (s *ServerService) StartServer(ctx context.Context, req *connect.Request[v1
 		return nil, err
 	}
 
-	if s.lifecycle.IsStarting(server.Id) {
-		return connect.NewResponse(&v1.StartServerResponse{
-			Status: v1.ServerStatus_SERVER_STATUS_PROVISIONING,
-		}), nil
+	// Claim decides before any status stamp
+	if err := s.lifecycle.BeginStart(server.Id); err != nil {
+		// Running start absorbs the repeat click
+		if s.lifecycle.IsStarting(server.Id) {
+			return connect.NewResponse(&v1.StartServerResponse{
+				Status: v1.ServerStatus_SERVER_STATUS_PROVISIONING,
+			}), nil
+		}
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 	}
 
 	if err := s.store.UpdateServerFields(ctx, server.Id, map[string]any{"status": v1.ServerStatus_SERVER_STATUS_PROVISIONING}); err != nil {
 		s.log.Error("Failed to update server status: %v", err)
 	}
 
-	go func() {
-		bgCtx, cancel := context.WithTimeout(detach(ctx), 2*time.Hour)
-		defer cancel()
-		if err := s.lifecycle.Start(bgCtx, server.Id); err != nil {
-			s.log.Error("Failed to start server %s: %v", server.Name, err)
-		}
-	}()
+	s.lifecycle.RunStartAsync(detach(ctx), server.Id)
 
 	return connect.NewResponse(&v1.StartServerResponse{
 		Status: v1.ServerStatus_SERVER_STATUS_PROVISIONING,
@@ -1279,7 +1311,11 @@ func (s *ServerService) GetServerMetricsHistory(ctx context.Context, req *connec
 		resolution = 300
 	}
 
-	samples, err := s.store.GetMetricsHistory(ctx, req.Msg.Id, from, to, resolution)
+	rawSeconds := 0
+	if s.metricsCollector != nil {
+		rawSeconds = s.metricsCollector.HistorySampleSeconds()
+	}
+	samples, err := s.store.GetMetricsHistory(ctx, req.Msg.Id, from, to, resolution, rawSeconds)
 	if err != nil {
 		s.log.Error("Failed to load metrics history for %s: %v", req.Msg.Id, err)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load metrics history"))

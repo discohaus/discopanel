@@ -2,12 +2,14 @@ package proxy
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/discohaus/discopanel/pkg/logger"
@@ -25,27 +27,32 @@ func panelTerminated(r *http.Request) bool {
 	return secure
 }
 
-// Stamps the scheme header for one outbound hop
-func setForwardedProto(r *http.Request, header http.Header) {
-	if panelTerminated(r) {
+// Rewrites forwarding identity headers for one outbound hop
+func (p *httpLane) stampForwarded(in *http.Request, header http.Header) {
+	// Spoofed edge claims die unless the edge is trusted
+	if !p.trustedEdge {
+		for _, name := range []string{"Forwarded", "X-Real-Ip", "X-Forwarded-Port", "X-Forwarded-Server", "X-Forwarded-Ssl", "Via"} {
+			header.Del(name)
+		}
+	}
+	prior := in.Header.Values("X-Forwarded-For")
+	switch clientIP, _, err := net.SplitHostPort(in.RemoteAddr); {
+	case err != nil:
+		header.Del("X-Forwarded-For")
+	case p.trustedEdge && len(prior) > 0:
+		header.Set("X-Forwarded-For", strings.Join(prior, ", ")+", "+clientIP)
+	default:
+		header.Set("X-Forwarded-For", clientIP)
+	}
+	header.Set("X-Forwarded-Host", in.Host)
+	switch proto := in.Header.Get("X-Forwarded-Proto"); {
+	case panelTerminated(in):
 		header.Set("X-Forwarded-Proto", "https")
-		return
-	}
-	// Edge claims pass through, bare conns say http
-	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+	case p.trustedEdge && proto != "":
 		header.Set("X-Forwarded-Proto", proto)
-		return
+	default:
+		header.Set("X-Forwarded-Proto", "http")
 	}
-	header.Set("X-Forwarded-Proto", "http")
-}
-
-// Chains the peer onto every hop the edge recorded
-func appendForwardedFor(r *http.Request, clientIP string) string {
-	prior := r.Header.Values("X-Forwarded-For")
-	if len(prior) == 0 {
-		return clientIP
-	}
-	return strings.Join(prior, ", ") + ", " + clientIP
 }
 
 // Keys the proxy cache by backend and transport flavor
@@ -63,15 +70,46 @@ type httpLane struct {
 	server       *http.Server
 	serverMutex  sync.Mutex
 	logger       *logger.Logger
+	trustedEdge  bool
+	stats        func(serverID string) *RouteStats
 }
 
 // Creates the http lane for one socket
-func newHTTPLane(log *logger.Logger) *httpLane {
+func newHTTPLane(log *logger.Logger, trustedEdge bool, stats func(string) *RouteStats) *httpLane {
 	return &httpLane{
-		routesMap: make(map[string]*Route),
-		proxies:   make(map[proxyKey]*httputil.ReverseProxy),
-		logger:    log,
+		routesMap:   make(map[string]*Route),
+		proxies:     make(map[proxyKey]*httputil.ReverseProxy),
+		logger:      log,
+		trustedEdge: trustedEdge,
+		stats:       stats,
 	}
+}
+
+// Counts bytes the backend writes to the client
+type countingWriter struct {
+	http.ResponseWriter
+	n *atomic.Int64
+}
+
+func (w *countingWriter) Write(b []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(b)
+	w.n.Add(int64(n))
+	return n, err
+}
+
+// Lets ResponseController reach flush on the real writer
+func (w *countingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// Counts request body bytes headed to the backend
+type countingReader struct {
+	io.ReadCloser
+	n *atomic.Int64
+}
+
+func (r *countingReader) Read(b []byte) (int, error) {
+	n, err := r.ReadCloser.Read(b)
+	r.n.Add(int64(n))
+	return n, err
 }
 
 // Serves sniffed connections handed over by the mux
@@ -137,13 +175,19 @@ func (p *httpLane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	st := p.stats(route.ServerID)
+	st.TotalConns.Add(1)
+	st.ActiveConns.Add(1)
+	defer st.ActiveConns.Add(-1)
+
 	// Handle WebSocket upgrade separately
 	if isWebSocketRequest(r) {
-		p.handleWebSocket(w, r, route)
+		p.handleWebSocket(w, r, route, st)
 		return
 	}
 
-	p.proxyFor(route).ServeHTTP(w, r)
+	r.Body = &countingReader{ReadCloser: r.Body, n: &st.BytesToBackend}
+	p.proxyFor(route).ServeHTTP(&countingWriter{ResponseWriter: w, n: &st.BytesToClient}, r)
 }
 
 // Cache key for a route's backend transport
@@ -167,13 +211,7 @@ func (p *httpLane) proxyFor(route *Route) *httputil.ReverseProxy {
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			// Hand rolled, SetXForwarded overwrites the edge scheme
-			if clientIP, _, err := net.SplitHostPort(pr.In.RemoteAddr); err == nil {
-				pr.Out.Header.Set("X-Forwarded-For", appendForwardedFor(pr.In, clientIP))
-			} else {
-				pr.Out.Header.Del("X-Forwarded-For")
-			}
-			pr.Out.Header.Set("X-Forwarded-Host", pr.In.Host)
-			setForwardedProto(pr.In, pr.Out.Header)
+			p.stampForwarded(pr.In, pr.Out.Header)
 			pr.Out.Host = pr.In.Host
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
@@ -215,7 +253,7 @@ func (p *httpLane) pruneProxies() {
 }
 
 // Handles WebSocket upgrade requests
-func (p *httpLane) handleWebSocket(w http.ResponseWriter, r *http.Request, route *Route) {
+func (p *httpLane) handleWebSocket(w http.ResponseWriter, r *http.Request, route *Route, st *RouteStats) {
 	// Hijack the client connection
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
@@ -243,10 +281,7 @@ func (p *httpLane) handleWebSocket(w http.ResponseWriter, r *http.Request, route
 	defer backendConn.Close()
 
 	// Forward the original HTTP upgrade request to backend
-	if clientIP, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		r.Header.Set("X-Forwarded-For", appendForwardedFor(r, clientIP))
-	}
-	setForwardedProto(r, r.Header)
+	p.stampForwarded(r, r.Header)
 	if err := r.Write(backendConn); err != nil {
 		p.logger.Error("WebSocket: Failed to forward upgrade request: %v", err)
 		return
@@ -260,10 +295,11 @@ func (p *httpLane) handleWebSocket(w http.ResponseWriter, r *http.Request, route
 			return
 		}
 		clientRW.Reader.Discard(buffered)
+		st.BytesToBackend.Add(int64(buffered))
 	}
 
 	p.logger.Debug("WebSocket connection established: %s -> %s", r.RemoteAddr, backendAddr)
-	relay(clientConn, backendConn)
+	st.countRelay(clientConn, backendConn)
 }
 
 // Replaces the lane's route table
@@ -272,15 +308,6 @@ func (p *httpLane) setRoutes(routes map[string]*Route) {
 	p.routesMap = routes
 	p.routesMutex.Unlock()
 	p.pruneProxies()
-}
-
-// Installs or replaces one route
-func (p *httpLane) upsert(route *Route) {
-	p.routesMutex.Lock()
-	p.routesMap[route.Hostname] = route
-	p.routesMutex.Unlock()
-	p.pruneProxies()
-	p.logger.Info("HTTP lane added route: hostname=%s backend=%s:%d", route.Hostname, route.BackendHost, route.BackendPort)
 }
 
 // Removes a routing rule

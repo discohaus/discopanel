@@ -82,7 +82,6 @@ func (s *ProxyService) buildProxyRoutes() []*v1.ProxyRoute {
 		pr.Hostname = route.Hostname
 		pr.BackendHost = route.BackendHost
 		pr.BackendPort = int32(route.BackendPort)
-		pr.Active = true
 		pr.State = route.State
 		pr.Wakeable = route.Wakeable
 		pr.ProxyProtocol = route.ProxyProtocol
@@ -239,10 +238,9 @@ func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Reque
 
 	// Workloads convert only after the new config holds
 	if disabling {
-		recreateServers, recreateModules, err := s.convertForDisable(ctx, msg)
-		if err != nil {
-			s.log.Error("Failed to convert proxied workloads after disable: %v", err)
-			return nil, err
+		recreateServers, recreateModules, convErr := s.convertForDisable(ctx, msg)
+		if convErr != nil {
+			s.log.Error("Failed to convert proxied workloads after disable: %v", convErr)
 		}
 
 		// Converted containers rebind once sockets are gone
@@ -258,6 +256,9 @@ func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Reque
 			if err := s.moduleManager.RecreateModule(ctx, id); err != nil {
 				s.log.Error("Failed to recreate module %s after convert: %v", id, err)
 			}
+		}
+		if convErr != nil {
+			return nil, convErr
 		}
 	}
 
@@ -503,40 +504,7 @@ func (s *ProxyService) convertForDisable(ctx context.Context, msg *v1.UpdateProx
 		serverPortPlan[sp.ServerId] = append(serverPortPlan[sp.ServerId], sp.ProposedHostPort)
 	}
 
-	// Checkouts stay out, the plan already owns these ports
-	converted := make(map[string]bool)
-	var recreateServers []string
-	for _, sv := range impact.Servers {
-		server, err := s.store.GetServer(ctx, sv.ServerId)
-		if err != nil {
-			return nil, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("server %s not found", sv.ServerId))
-		}
-		s.flipServerPorts(ctx, server, serverPortPlan[server.Id])
-		if err := s.applyServerRouting(ctx, server, nil, "", sv.ProposedPort, true); err != nil {
-			return nil, nil, err
-		}
-		converted[server.Id] = true
-		if server.ContainerId != "" {
-			recreateServers = append(recreateServers, server.Id)
-		}
-	}
-
-	// Direct servers with proxied ports flip and rebind too
-	for serverID := range serverPortPlan {
-		if converted[serverID] {
-			continue
-		}
-		server, err := s.store.GetServer(ctx, serverID)
-		if err != nil {
-			return nil, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("server %s not found", serverID))
-		}
-		s.flipServerPorts(ctx, server, serverPortPlan[serverID])
-		if server.ContainerId != "" {
-			recreateServers = append(recreateServers, server.Id)
-		}
-	}
-
-	// Module rows flip to direct binds on their landing ports
+	// Rows all load before the first persist
 	portsByModule := make(map[string]map[string]int32)
 	for _, mp := range impact.ModulePorts {
 		if portsByModule[mp.ModuleId] == nil {
@@ -544,13 +512,58 @@ func (s *ProxyService) convertForDisable(ctx context.Context, msg *v1.UpdateProx
 		}
 		portsByModule[mp.ModuleId][mp.PortName] = mp.ProposedHostPort
 	}
-	var recreate []string
-	for moduleID, landing := range portsByModule {
-		module, err := s.store.GetModule(ctx, moduleID)
+	// Routing conversions carry a proposed direct port
+	proposed := make(map[string]int32, len(impact.Servers))
+	for _, sv := range impact.Servers {
+		proposed[sv.ServerId] = sv.ProposedPort
+	}
+	serversByID := make(map[string]*v1.Server)
+	for serverID := range proposed {
+		serversByID[serverID] = nil
+	}
+	for serverID := range serverPortPlan {
+		serversByID[serverID] = nil
+	}
+	for serverID := range serversByID {
+		server, err := s.store.GetServer(ctx, serverID)
+		if err != nil {
+			return nil, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("server %s not found", serverID))
+		}
+		serversByID[serverID] = server
+	}
+	modulesByID := make(map[string]*v1.Module)
+	for moduleID := range portsByModule {
+		mod, err := s.store.GetModule(ctx, moduleID)
 		if err != nil {
 			return nil, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("module %s not found", moduleID))
 		}
-		for _, port := range module.Ports {
+		modulesByID[moduleID] = mod
+	}
+
+	// Persist pass runs every row, errors pool up
+	var errs []error
+	var recreateServers []string
+	for serverID, server := range serversByID {
+		if err := s.flipServerPorts(ctx, server, serverPortPlan[serverID]); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if port, ok := proposed[serverID]; ok {
+			if err := s.applyServerRouting(ctx, server, nil, "", port, true); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+		}
+		if server.ContainerId != "" {
+			recreateServers = append(recreateServers, server.Id)
+		}
+	}
+
+	// Module rows flip to direct binds on their landing ports
+	var recreate []string
+	for moduleID, landing := range portsByModule {
+		mod := modulesByID[moduleID]
+		for _, port := range mod.Ports {
 			if port == nil || !port.ProxyEnabled {
 				continue
 			}
@@ -560,12 +573,13 @@ func (s *ProxyService) convertForDisable(ctx context.Context, msg *v1.UpdateProx
 			port.ProxyEnabled = false
 		}
 
-		if err := s.store.UpdateModule(ctx, module); err != nil {
-			return nil, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update module %s", module.Name))
+		if err := s.store.UpdateModule(ctx, mod); err != nil {
+			errs = append(errs, fmt.Errorf("failed to update module %s", mod.Name))
+			continue
 		}
 
-		if module.ContainerId != "" {
-			recreate = append(recreate, module.Id)
+		if mod.ContainerId != "" {
+			recreate = append(recreate, mod.Id)
 		}
 	}
 
@@ -588,13 +602,17 @@ func (s *ProxyService) convertForDisable(ctx context.Context, msg *v1.UpdateProx
 		}
 	}
 
+	// Survivors still rebind, the pooled error reports the rest
+	if len(errs) > 0 {
+		return recreateServers, recreate, connect.NewError(connect.CodeInternal, errors.Join(errs...))
+	}
 	return recreateServers, recreate, nil
 }
 
 // Flips a server's proxied ports onto their planned numbers
-func (s *ProxyService) flipServerPorts(ctx context.Context, server *v1.Server, landing []int32) {
+func (s *ProxyService) flipServerPorts(ctx context.Context, server *v1.Server, landing []int32) error {
 	if !proxy.HasProxyPorts(server.AdditionalPorts) {
-		return
+		return nil
 	}
 	next := 0
 	for _, port := range server.AdditionalPorts {
@@ -609,7 +627,9 @@ func (s *ProxyService) flipServerPorts(ctx context.Context, server *v1.Server, l
 	}
 	if err := s.store.UpdateServer(ctx, server); err != nil {
 		s.log.Error("Failed to persist converted ports for %s: %v", server.Name, err)
+		return fmt.Errorf("failed to convert ports for server %s", server.Name)
 	}
+	return nil
 }
 
 // Rebinds a converted server's container onto direct ports
@@ -893,7 +913,6 @@ func (s *ProxyService) GetServerRouting(ctx context.Context, req *connect.Reques
 			if entry.Route.OwnerKind == proxy.OwnerServer && entry.Route.OwnerID == server.Id {
 				currentRoute = &v1.ServerRoute{
 					Hostname: entry.Route.Hostname,
-					Active:   true,
 				}
 				break
 			}
@@ -1118,14 +1137,34 @@ func (s *ProxyService) applyServerRouting(ctx context.Context, server *v1.Server
 		"port":              newPort,
 	}
 
-	// Handle container recreation if needed
-	if needsRecreation && server.ContainerId != "" && s.docker != nil {
-		serverConfig, err := s.store.GetServerProperties(ctx, server.Id)
+	// Recreate inputs load before anything commits
+	recreate := needsRecreation && server.ContainerId != "" && s.docker != nil
+	var serverConfig *v1.ServerProperties
+	if recreate {
+		cfg, err := s.store.GetServerProperties(ctx, server.Id)
 		if err != nil {
 			s.log.Error("Failed to get server config: %v", err)
 			return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get server configuration"))
 		}
+		serverConfig = cfg
+	}
 
+	if hostnamesChanged || listenerChanged {
+		msgText := "routing disabled"
+		if len(hostnames) > 0 {
+			msgText = "routed hostnames " + strings.Join(hostnames, ", ")
+		}
+		s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_ROUTING_UPDATE, metrics.Attrs{"hostnames": strings.Join(hostnames, ","), "listener": listenerID}, "%s", msgText)
+	}
+
+	// Routing lands durably before the container is touched
+	if err := s.store.UpdateServerFields(ctx, server.Id, fields); err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update server"))
+	}
+	netClaim.Confirm()
+
+	// Handle container recreation if needed
+	if recreate {
 		result, err := s.docker.RecreateContainer(ctx, server.ContainerId, server, serverConfig, nil)
 		if err != nil {
 			s.log.Error("Failed to recreate container for proxy change: %v", err)
@@ -1145,26 +1184,18 @@ func (s *ProxyService) applyServerRouting(ctx context.Context, server *v1.Server
 			}
 		}
 
-		fields["container_id"] = server.ContainerId
-		fields["status"] = server.Status
+		// New identity persists right after the destructive swap
+		if perr := s.store.UpdateServerFields(ctx, server.Id, map[string]any{
+			"container_id": server.ContainerId,
+			"status":       server.Status,
+		}); perr != nil {
+			s.log.Error("Server %s swapped to container %q but persist failed: %v", server.Id, server.ContainerId, perr)
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update server"))
+		}
 
 		s.log.Info("Container recreated for server %s (proxy: %v -> %v, listener: %s -> %s)",
 			server.Name, oldProxyHostnames, hostnames, oldProxyListenerID, listenerID)
 	}
-
-	if hostnamesChanged || listenerChanged {
-		msgText := "routing disabled"
-		if len(hostnames) > 0 {
-			msgText = "routed hostnames " + strings.Join(hostnames, ", ")
-		}
-		s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_ROUTING_UPDATE, metrics.Attrs{"hostnames": strings.Join(hostnames, ","), "listener": listenerID}, "%s", msgText)
-	}
-
-	// Save only the columns this request owns
-	if err := s.store.UpdateServerFields(ctx, server.Id, fields); err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update server"))
-	}
-	netClaim.Confirm()
 
 	// Reconcile drops stale routes and registers new ones
 	if s.proxyManager != nil {

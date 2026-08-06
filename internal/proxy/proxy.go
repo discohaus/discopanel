@@ -64,10 +64,11 @@ type ServerGate interface {
 
 // Holds proxy configuration
 type Config struct {
-	ListenAddr string // Host and port to listen on
-	Logger     *logger.Logger
-	Gate       ServerGate
-	Certs      *certIndex // File loaded termination material
+	ListenAddr  string // Host and port to listen on
+	Logger      *logger.Logger
+	Gate        ServerGate
+	Certs       *certIndex // File loaded termination material
+	TrustedEdge bool       // Keeps forwarded headers from an upstream edge
 }
 
 const (

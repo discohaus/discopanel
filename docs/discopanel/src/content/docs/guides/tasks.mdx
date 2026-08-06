@@ -24,6 +24,8 @@ Pick one of four schedules when creating the task:
 - **Once** - at a specific date and time.
 - **On event** - the moment something happens: server starts, stops, restarts, becomes healthy, or a player joins, leaves, dies, earns an advancement, or sends a chat message.
 
+Player events (join, leave, death, advancement, chat) are reported by the DiscoPanel runtime that lives inside every server DiscoPanel creates. Servers running a custom image without that runtime still get the server events, but the player ones will not fire - the same goes for the per-player RCON commands in server settings.
+
 Any task can also be fired by hand with **Run Now**. Every run is recorded in the task's history with its output, so you can see what happened and when.
 
 By default most tasks are skipped when the server is offline (there's a **Require Server Online** switch in the task's advanced options). Webhooks are the exception - they always fire, because "the server stopped" is exactly the kind of thing you want to be told about.

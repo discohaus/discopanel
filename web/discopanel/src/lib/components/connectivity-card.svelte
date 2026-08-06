@@ -5,13 +5,12 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Select, SelectContent, SelectItem, SelectTrigger } from '$lib/components/ui/select';
 	import { AddressSelect } from '$lib/components/app';
-	import { panelHost } from '$lib/utils/host';
 	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { Cable, Globe, Network, RefreshCw } from '@lucide/svelte';
 	import type { ProxyListener } from '$lib/proto/discopanel/v1/storage_pb';
 	import type { GetHostnameSuggestionsResponse } from '$lib/proto/discopanel/v1/proxy_pb';
 	import HostnameListInput from '$lib/components/network/hostname-list-input.svelte';
-	import { directAddresses, hostnameSlug, playerAddress } from '$lib/hostname';
+	import { fallbackAddresses, hostnameSlug, playerAddress } from '$lib/hostname';
 
 	let {
 		proxyEnabled = false,
@@ -62,17 +61,7 @@
 	});
 
 	// Direct ports answer on ips and instant domains alike
-	let directAddrs = $derived.by(() => {
-		const list = suggestions
-			? directAddresses(
-					port,
-					suggestions.lanIp,
-					suggestions.publicIp,
-					suggestions.suggestions.map((s) => s.hostname)
-				)
-			: [];
-		return list.length > 0 ? list : [playerAddress(panelHost(), port)];
-	});
+	let directAddrs = $derived(fallbackAddresses(port, suggestions));
 
 	function validatePort(p: number) {
 		if (p < 1 || p > 65535) {

@@ -41,14 +41,13 @@
 	import type { Version } from '$lib/proto/discopanel/v1/modpack_pb';
 	import { enumLabel } from '$lib/proto-meta';
 	import { loadModLoaders } from '$lib/stores/loaders';
-	import AdditionalPortsEditor from '$lib/components/additional-ports-editor.svelte';
 	import ConnectivityCard from '$lib/components/connectivity-card.svelte';
 	import DockerOverridesEditor from '$lib/components/docker-overrides-editor.svelte';
+	import { NetworkPortRowsEditor } from '$lib/components/app';
 	import MemorySlider from '$lib/components/memory-slider.svelte';
 	import { getUniqueDockerImages, getDockerImageDisplayName } from '$lib/utils';
-	import { directAddresses, playerAddress } from '$lib/hostname';
+	import { fallbackAddresses, playerAddress } from '$lib/hostname';
 	import type { GetHostnameSuggestionsResponse } from '$lib/proto/discopanel/v1/proxy_pb';
-	import { panelHost } from '$lib/utils/host';
 	import { uploadFile } from '$lib/utils/chunked-upload';
 
 	let loading = $state(false);
@@ -347,16 +346,7 @@
 			const names = formData.proxyHostnames.length ? formData.proxyHostnames : ['your-hostname'];
 			return names.map((name) => playerAddress(name, selectedListener?.port)).join(', ');
 		}
-		if (suggestions) {
-			const list = directAddresses(
-				formData.port,
-				suggestions.lanIp,
-				suggestions.publicIp,
-				suggestions.suggestions.map((s) => s.hostname)
-			);
-			if (list.length > 0) return list[0];
-		}
-		return `${panelHost()}:${formData.port}`;
+		return fallbackAddresses(formData.port, suggestions)[0];
 	});
 
 	let hostnameMissing = $derived(
@@ -963,13 +953,15 @@
 							</p>
 						</div>
 
-						<AdditionalPortsEditor
+						<NetworkPortRowsEditor
 							bind:ports={formData.additionalPorts}
 							disabled={loading}
 							{usedPorts}
 							proxyAvailable={proxyEnabled && useProxyMode}
-							serverHostnames={formData.proxyHostnames}
-							onchange={(ports) => (formData.additionalPorts = ports)}
+							serverHosts={formData.proxyHostnames}
+							allowAdd
+							title="Additional ports"
+							description="Extra ports for mods, plugins, or services like BlueMap, voice chat, or dynmap"
 						/>
 
 						<DockerOverridesEditor

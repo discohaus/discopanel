@@ -145,7 +145,7 @@ func (c *NetClaim) settle() bool {
 
 var hostnamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`)
 
-// Lowercases and trims a hostname for storage and matching
+// Config side normalizer, wire names use normalizeWireHostname
 func NormalizeHostname(hostname string) string {
 	return strings.ToLower(strings.TrimSpace(hostname))
 }
@@ -191,15 +191,6 @@ func (m *Manager) panelHostnameRequests(hostnames []string) []NetRequest {
 		})
 	}
 	return reqs
-}
-
-// Checks panel names against the registry before persist
-func (m *Manager) ValidatePanelHostnames(ctx context.Context, hostnames []string) error {
-	reqs := m.panelHostnameRequests(hostnames)
-	if len(reqs) == 0 {
-		return nil
-	}
-	return m.ValidateNetwork(ctx, NetOwner{Kind: OwnerPanel, ID: OwnerPanel}, reqs)
 }
 
 // Claims panel names until the caller persists them
@@ -439,7 +430,7 @@ func (m *Manager) reservationsLocked(ctx context.Context) ([]Reservation, error)
 		for _, name := range m.panelNames {
 			claimed[name] = true
 		}
-		for _, name := range m.infraNamesLocked(ctx) {
+		for _, name := range m.infraNamesSnapshotLocked(ctx) {
 			if claimed[name] {
 				continue
 			}

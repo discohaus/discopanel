@@ -86,6 +86,7 @@ type ProxyConfig struct {
 	PublicIp     string         `mapstructure:"public_ip" json:"public_ip"`     // Public address for hostname suggestions
 	ListenPort   int            `mapstructure:"listen_port" json:"listen_port"` // Primary listen port
 	PortRangeMin int            `mapstructure:"port_range_min" json:"port_range_min"`
+	TrustedEdge  bool           `mapstructure:"trusted_edge" json:"trusted_edge"` // Honor forwarded headers from an upstream edge
 	TLS          ProxyTLSConfig `mapstructure:"tls" json:"tls"`
 }
 

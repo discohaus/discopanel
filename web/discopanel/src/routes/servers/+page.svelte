@@ -21,6 +21,7 @@
 		TabRail
 	} from '$lib/components/app';
 	import MetricsSparkline from '$lib/components/metrics-sparkline.svelte';
+	import { routedAddresses } from '$lib/hostname';
 	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { serversStore, sortServersByActivity, claimFullStats } from '$lib/stores/servers';
 	import {
@@ -181,7 +182,7 @@
 	}
 
 	function connectionLabel(server: Server): string {
-		return server.proxyHostnames.join(', ') || `:${server.port}`;
+		return routedAddresses(server).join(', ') || `:${server.port}`;
 	}
 </script>
 

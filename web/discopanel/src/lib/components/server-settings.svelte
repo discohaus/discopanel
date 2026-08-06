@@ -22,7 +22,7 @@
 		ModLoaderInfo
 	} from '$lib/proto/discopanel/v1/minecraft_pb';
 	import { loadModLoaders } from '$lib/stores/loaders';
-	import AdditionalPortsEditor from '$lib/components/additional-ports-editor.svelte';
+	import { NetworkPortRowsEditor } from '$lib/components/app';
 	import DockerOverridesEditor from '$lib/components/docker-overrides-editor.svelte';
 	import MemorySlider from '$lib/components/memory-slider.svelte';
 	import { getUniqueDockerImages } from '$lib/utils';
@@ -548,13 +548,15 @@
 						{/if}
 					</div>
 					<div id="panel-additionalPorts" class="min-w-0 {ring('panel-additionalPorts')}">
-						<AdditionalPortsEditor
+						<NetworkPortRowsEditor
 							bind:ports={formData.additionalPorts}
 							{usedPorts}
 							disabled={saving}
 							proxyAvailable={proxied}
-							serverHostnames={server.proxyHostnames}
-							onchange={(ports) => (formData.additionalPorts = ports)}
+							serverHosts={server.proxyHostnames}
+							allowAdd
+							title="Additional ports"
+							description="Extra ports for mods, plugins, or services like BlueMap, voice chat, or dynmap"
 						/>
 					</div>
 				</div>

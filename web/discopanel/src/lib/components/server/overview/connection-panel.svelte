@@ -5,9 +5,8 @@
 	import { isUp, TONE_BG, type StatusTone } from '$lib/server-status';
 	import { AddressSelect, MotdText } from '$lib/components/app';
 	import { Users, Radio } from '@lucide/svelte';
-	import { panelHost } from '$lib/utils/host';
 	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
-	import { directAddresses, playerAddress } from '$lib/hostname';
+	import { serverAddresses } from '$lib/hostname';
 
 	let { server }: { server: Server } = $props();
 
@@ -22,19 +21,7 @@
 	});
 
 	// Every routed name joins, unrouted lists direct addresses
-	let addresses = $derived.by(() => {
-		if (server.proxyHostnames.length > 0) return server.proxyHostnames;
-		if (suggestions) {
-			const list = directAddresses(
-				server.port,
-				suggestions.lanIp,
-				suggestions.publicIp,
-				suggestions.suggestions.map((s) => s.hostname)
-			);
-			if (list.length > 0) return list;
-		}
-		return [playerAddress(panelHost(), server.port)];
-	});
+	let addresses = $derived(serverAddresses(server, suggestions));
 	let up = $derived(isUp(server.status));
 	let maxPlayers = $derived(server.maxPlayersSlp || server.maxPlayers);
 	let fillPercent = $derived(maxPlayers > 0 ? (server.playersOnline / maxPlayers) * 100 : 0);

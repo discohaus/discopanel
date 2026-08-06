@@ -17,7 +17,6 @@
 	import { Loader2, Folder, Upload, X } from '@lucide/svelte';
 	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { registerRefresh } from '$lib/stores/refresh';
-	import { authStore } from '$lib/stores/auth';
 	import { toast } from 'svelte-sonner';
 	import type { Server } from '$lib/proto/discopanel/v1/storage_pb';
 	import type { FileInfo } from '$lib/proto/discopanel/v1/file_pb';
@@ -480,10 +479,8 @@
 	}
 
 	function triggerStreamDownload(sessionId: string, filename: string) {
-		const token = authStore.getToken();
-		const url = `/api/v1/download/${sessionId}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
 		const a = document.createElement('a');
-		a.href = url;
+		a.href = `/api/v1/download/${sessionId}`;
 		a.download = filename;
 		a.click();
 	}

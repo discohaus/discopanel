@@ -188,7 +188,7 @@ func (s *Server) setupHandler() {
 	mux.Handle("/api/v1/upload/", handlers.NewUploadStreamHandler(s.uploadManager, s.authManager, s.enforcer, s.log))
 
 	// Streaming file download endpoint
-	mux.Handle("/api/v1/download/", handlers.NewDownloadStreamHandler(s.downloadManager, s.authManager, s.enforcer, s.log))
+	mux.Handle("/api/v1/download/", handlers.NewDownloadStreamHandler(s.downloadManager, s.log))
 
 	// Serve dynamic OpenAPI spec
 	mux.HandleFunc("/api/v1/openapi.yaml", handlers.NewOpenAPIHandler(s.log, s.authManager.IsAnyAuthEnabled))

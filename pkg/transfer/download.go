@@ -62,7 +62,8 @@ func (m *DownloadManager) InitSession(filePath, filename string, totalSize int64
 		ExpiresAt:   time.Now().Add(m.sessionTTL),
 	}
 	m.store.put(session.ID, session)
-	m.log.Info("Download session created: %s (file: %s, size: %d)", session.ID, filename, totalSize)
+	// Id is the credential, logs get a stub only
+	m.log.Info("Download session created: %s (file: %s, size: %d)", session.ID[:8], filename, totalSize)
 	return session
 }
 

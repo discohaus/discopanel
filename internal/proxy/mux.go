@@ -46,10 +46,9 @@ type ListenerSocket struct {
 // Creates a listener socket for one port
 func NewListenerSocket(cfg *Config) *ListenerSocket {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &ListenerSocket{
+	s := &ListenerSocket{
 		mcRoutes:   make(map[string]*Route),
 		stats:      make(map[string]*RouteStats),
-		httpLane:   newHTTPLane(cfg.Logger),
 		logger:     cfg.Logger,
 		listenAddr: cfg.ListenAddr,
 		ctx:        ctx,
@@ -57,6 +56,8 @@ func NewListenerSocket(cfg *Config) *ListenerSocket {
 		gate:       cfg.Gate,
 		certs:      cfg.Certs,
 	}
+	s.httpLane = newHTTPLane(cfg.Logger, cfg.TrustedEdge, s.statsFor)
+	return s
 }
 
 // Starts the socket and its http lane server
@@ -592,14 +593,20 @@ func (s *ListenerSocket) serveRelay(raw net.Conn, pending []byte) {
 	}
 	defer backendConn.Close()
 
+	stats := s.statsFor(route.ServerID)
+	stats.TotalConns.Add(1)
+	stats.ActiveConns.Add(1)
+	defer stats.ActiveConns.Add(-1)
+
 	if len(pending) > 0 {
 		if _, err := backendConn.Write(pending); err != nil {
 			return
 		}
+		stats.BytesToBackend.Add(int64(len(pending)))
 	}
 
 	raw.SetDeadline(time.Time{})
-	relay(raw, backendConn)
+	stats.countRelay(raw, backendConn)
 }
 
 // Hands an http connection to the lane server

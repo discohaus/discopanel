@@ -44,9 +44,9 @@ type Manager struct {
 	players  PlayerCounter
 	streamer *logger.LogStreamer
 
-	// Per-server start locks reject concurrent starts of same server
-	startMu sync.Mutex
-	starts  map[string]bool
+	// Per-server transition gate rejects overlapping operations
+	startMu     sync.Mutex
+	transitions map[string]string
 
 	// Last requested stop source per server, cleared on start
 	stopIntentMu sync.Mutex
@@ -79,7 +79,7 @@ func NewManager(store *storage.Store, dockerClient *docker.Client, prov *provisi
 		cfg:          cfg,
 		log:          log,
 		rec:          rec,
-		starts:       make(map[string]bool),
+		transitions:  make(map[string]string),
 		stopIntents:  make(map[string]string),
 		paused:       make(map[string]bool),
 		roster:       make(map[string]map[string]bool),
@@ -106,27 +106,62 @@ func (m *Manager) console(serverID, format string, args ...any) {
 	m.streamer.AddSystemEntry(serverID, fmt.Sprintf(format, args...))
 }
 
-func (m *Manager) tryBeginStart(serverID string) bool {
+// Claims the transition slot for one server
+func (m *Manager) claim(serverID, kind string) error {
 	m.startMu.Lock()
 	defer m.startMu.Unlock()
-	if m.starts[serverID] {
-		return false
+	if current := m.transitions[serverID]; current != "" {
+		return fmt.Errorf("server is busy, %s in progress", current)
 	}
-	m.starts[serverID] = true
-	return true
+	m.transitions[serverID] = kind
+	return nil
 }
 
-func (m *Manager) endStart(serverID string) {
+// Frees a claimed transition slot
+func (m *Manager) release(serverID string) {
 	m.startMu.Lock()
-	delete(m.starts, serverID)
+	delete(m.transitions, serverID)
 	m.startMu.Unlock()
+}
+
+// Runs one transition, rejects overlap on the same server
+func (m *Manager) transition(serverID, kind string, fn func() error) error {
+	if err := m.claim(serverID, kind); err != nil {
+		return err
+	}
+	defer m.release(serverID)
+	return fn()
+}
+
+// Claims the start slot ahead of an async run
+func (m *Manager) BeginStart(serverID string) error {
+	return m.claim(serverID, "start")
+}
+
+// Runs a claimed start on a capped background goroutine
+func (m *Manager) RunStartAsync(ctx context.Context, serverID string) {
+	go func() {
+		runCtx, cancel := context.WithTimeout(ctx, 2*time.Hour)
+		defer cancel()
+		defer m.release(serverID)
+		if err := m.start(runCtx, serverID); err != nil {
+			m.log.Error("lifecycle: start failed for %s: %v", serverID, err)
+		}
+	}()
 }
 
 // Reports whether a start or provision cycle is in flight
 func (m *Manager) IsStarting(serverID string) bool {
 	m.startMu.Lock()
 	defer m.startMu.Unlock()
-	return m.starts[serverID]
+	return m.transitions[serverID] == "start"
+}
+
+// Reports whether any transition is in flight
+func (m *Manager) Busy(serverID string) bool {
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+	return m.transitions[serverID] != ""
 }
 
 func (m *Manager) setStatus(ctx context.Context, server *v1.Server, status v1.ServerStatus) {
@@ -179,10 +214,10 @@ func (m *Manager) SyncProxyRoute(ctx context.Context, serverID string) {
 
 // Provisions and starts container, run from a goroutine in handlers
 func (m *Manager) Start(ctx context.Context, serverID string) error {
-	if !m.tryBeginStart(serverID) {
-		return fmt.Errorf("server is already starting")
-	}
-	defer m.endStart(serverID)
+	return m.transition(serverID, "start", func() error { return m.start(ctx, serverID) })
+}
+
+func (m *Manager) start(ctx context.Context, serverID string) error {
 	m.clearStopIntent(serverID)
 
 	server, err := m.store.GetServer(ctx, serverID)
@@ -198,10 +233,11 @@ func (m *Manager) Start(ctx context.Context, serverID string) error {
 	if server.ContainerId != "" {
 		if status, err := m.docker.GetContainerStatus(ctx, server.ContainerId); err == nil {
 			switch status {
-			case v1.ServerStatus_SERVER_STATUS_RUNNING, v1.ServerStatus_SERVER_STATUS_STARTING:
+			case v1.ServerStatus_SERVER_STATUS_RUNNING, v1.ServerStatus_SERVER_STATUS_STARTING,
+				v1.ServerStatus_SERVER_STATUS_UNHEALTHY:
 				return nil
 			case v1.ServerStatus_SERVER_STATUS_PAUSED:
-				return m.Wake(ctx, serverID)
+				return m.wake(ctx, serverID)
 			}
 		}
 	}
@@ -395,6 +431,10 @@ func shortDigest(digest string) string {
 
 // Gracefully stops server, sends optional announcement before SIGTERM
 func (m *Manager) Stop(ctx context.Context, serverID string) error {
+	return m.transition(serverID, "stop", func() error { return m.stop(ctx, serverID) })
+}
+
+func (m *Manager) stop(ctx context.Context, serverID string) error {
 	m.setStopIntent(serverID, metrics.SourceFrom(ctx))
 	server, err := m.store.GetServer(ctx, serverID)
 	if err != nil {
@@ -470,7 +510,11 @@ func (m *Manager) Stop(ctx context.Context, serverID string) error {
 
 // Stops then fully restarts, reapplying provisioned configuration files
 func (m *Manager) Restart(ctx context.Context, serverID string) error {
-	if err := m.Stop(ctx, serverID); err != nil {
+	return m.transition(serverID, "restart", func() error { return m.restart(ctx, serverID) })
+}
+
+func (m *Manager) restart(ctx context.Context, serverID string) error {
+	if err := m.stop(ctx, serverID); err != nil {
 		return err
 	}
 	// Yields when another actor claimed the server mid restart
@@ -480,7 +524,7 @@ func (m *Manager) Restart(ctx context.Context, serverID string) error {
 		}
 		return fmt.Errorf("restart aborted, %s requested a stop", src)
 	}
-	if err := m.Start(ctx, serverID); err != nil {
+	if err := m.start(ctx, serverID); err != nil {
 		return err
 	}
 	if m.bus != nil {
@@ -494,6 +538,10 @@ func (m *Manager) Restart(ctx context.Context, serverID string) error {
 
 // Destroys container and brings server up from scratch
 func (m *Manager) Recreate(ctx context.Context, serverID string) error {
+	return m.transition(serverID, "recreate", func() error { return m.recreate(ctx, serverID) })
+}
+
+func (m *Manager) recreate(ctx context.Context, serverID string) error {
 	server, err := m.store.GetServer(ctx, serverID)
 	if err != nil {
 		return err
@@ -513,11 +561,15 @@ func (m *Manager) Recreate(ctx context.Context, serverID string) error {
 		}
 	}
 
-	return m.Start(ctx, serverID)
+	return m.start(ctx, serverID)
 }
 
 // Freezes a running server's container for autopause
 func (m *Manager) Pause(ctx context.Context, serverID string) error {
+	return m.transition(serverID, "pause", func() error { return m.pause(ctx, serverID) })
+}
+
+func (m *Manager) pause(ctx context.Context, serverID string) error {
 	server, err := m.store.GetServer(ctx, serverID)
 	if err != nil {
 		return err
@@ -537,6 +589,10 @@ func (m *Manager) Pause(ctx context.Context, serverID string) error {
 
 // Resumes a paused server's container on wake-on-connect
 func (m *Manager) Wake(ctx context.Context, serverID string) error {
+	return m.transition(serverID, "wake", func() error { return m.wake(ctx, serverID) })
+}
+
+func (m *Manager) wake(ctx context.Context, serverID string) error {
 	server, err := m.store.GetServer(ctx, serverID)
 	if err != nil {
 		return err

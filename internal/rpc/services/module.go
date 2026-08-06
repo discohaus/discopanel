@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,7 +15,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/google/uuid"
 	"github.com/discohaus/discopanel/internal/alias"
 	"github.com/discohaus/discopanel/internal/auth"
 	storage "github.com/discohaus/discopanel/internal/db"
@@ -26,6 +26,7 @@ import (
 	"github.com/discohaus/discopanel/pkg/logger"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -545,11 +546,8 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 	// Cert uploads only land where the template mounts them
 	certPem := strings.TrimSpace(msg.CertPem)
 	keyPem := strings.TrimSpace(msg.KeyPem)
-	if (certPem != "" || keyPem != "") && template.CertMountPath == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("this module does not accept certificates"))
-	}
-	if (certPem == "") != (keyPem == "") {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("certificate and key are both required"))
+	if err := validateModuleCert(template, certPem, keyPem); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	// Use ports from request, or fall back to template defaults
@@ -564,20 +562,8 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 
 	moduleID := uuid.New().String()
 
-	// Registry allocates host ports for any entries that need one
-	allocatedInRequest := make(map[int]bool)
-	for _, port := range ports {
-		if port == nil || port.ContainerPort == 0 {
-			continue
-		}
-		if port.HostPort == 0 {
-			allocatedPort, err := s.moduleManager.AllocateModulePortExcluding(ctx, port.Protocol, allocatedInRequest)
-			if err != nil {
-				return nil, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("failed to allocate port: %w", err))
-			}
-			port.HostPort = int32(allocatedPort)
-			allocatedInRequest[allocatedPort] = true
-		}
+	if err := s.allocateModulePorts(ctx, ports); err != nil {
+		return nil, err
 	}
 
 	if err := normalizeModulePorts(ports, server.ProxyHostnames); err != nil {
@@ -585,18 +571,9 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 	}
 
 	// Registry checkout guards every port until the row persists
-	netOwner := proxy.NetOwner{Kind: proxy.OwnerModule, ID: moduleID}
-	netReqs := s.proxyManager.ModuleNetRequests(&v1.Module{Id: moduleID, Ports: ports}, server.ProxyHostnames)
-	if err := s.proxyManager.EnsureListenersFor(ctx, netReqs); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	netClaim, err := s.proxyManager.CheckoutNetwork(ctx, netOwner, netReqs)
+	netClaim, err := s.checkoutModuleNetwork(ctx, moduleID, ports, server.ProxyHostnames)
 	if err != nil {
-		// Reconcile retires any listener row made just above
-		if serr := s.proxyManager.SyncListeners(ctx); serr != nil {
-			s.log.Error("Failed to sync after checkout failure: %v", serr)
-		}
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, err
 	}
 	defer netClaim.Release()
 
@@ -764,18 +741,8 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 			hostnames = server.ProxyHostnames
 		}
 
-		// Registry allocates host ports for any entries that need one
-		allocatedInRequest := make(map[int]bool)
-		for _, port := range msg.Ports {
-			if port == nil || port.ContainerPort == 0 || port.HostPort != 0 {
-				continue
-			}
-			allocatedPort, err := s.moduleManager.AllocateModulePortExcluding(ctx, port.Protocol, allocatedInRequest)
-			if err != nil {
-				return nil, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("failed to allocate port: %w", err))
-			}
-			port.HostPort = int32(allocatedPort)
-			allocatedInRequest[allocatedPort] = true
+		if err := s.allocateModulePorts(ctx, msg.Ports); err != nil {
+			return nil, err
 		}
 
 		if err := normalizeModulePorts(msg.Ports, hostnames); err != nil {
@@ -783,17 +750,9 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 		}
 
 		// Registry checkout guards the new ports until persist
-		netReqs := s.proxyManager.ModuleNetRequests(&v1.Module{Id: module.Id, Ports: msg.Ports}, hostnames)
-		if err := s.proxyManager.EnsureListenersFor(ctx, netReqs); err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
-		}
-		claim, err := s.proxyManager.CheckoutNetwork(ctx, proxy.NetOwner{Kind: proxy.OwnerModule, ID: module.Id}, netReqs)
+		claim, err := s.checkoutModuleNetwork(ctx, module.Id, msg.Ports, hostnames)
 		if err != nil {
-			// Reconcile retires any listener row made just above
-			if serr := s.proxyManager.SyncListeners(ctx); serr != nil {
-				s.log.Error("Failed to sync after checkout failure: %v", serr)
-			}
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			return nil, err
 		}
 		netClaim = claim
 		defer netClaim.Release()
@@ -845,6 +804,17 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 	template, err := s.store.GetModuleTemplate(ctx, module.TemplateId)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("template not found"))
+	}
+
+	// Cert swaps only land where the template mounts them
+	if msg.CertPem != nil || msg.KeyPem != nil {
+		certPem := strings.TrimSpace(msg.GetCertPem())
+		keyPem := strings.TrimSpace(msg.GetKeyPem())
+		if err := validateModuleCert(template, certPem, keyPem); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		module.CertPem = certPem
+		module.KeyPem = keyPem
 	}
 
 	// Deny gate runs on the fully merged state
@@ -1395,4 +1365,55 @@ func (s *ModuleService) AnswerModulePrompt(ctx context.Context, req *connect.Req
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("module rejected answer: %d", resp.StatusCode))
 	}
 	return connect.NewResponse(&v1.AnswerModulePromptResponse{Accepted: true}), nil
+}
+
+// Rejects cert pairs the template or tls loader cannot take
+func validateModuleCert(template *v1.ModuleTemplate, certPem, keyPem string) error {
+	if certPem == "" && keyPem == "" {
+		return nil
+	}
+	if template.CertMountPath == "" {
+		return errors.New("this module does not accept certificates")
+	}
+	if (certPem == "") != (keyPem == "") {
+		return errors.New("certificate and key are both required")
+	}
+	if _, err := tls.X509KeyPair([]byte(certPem), []byte(keyPem)); err != nil {
+		return fmt.Errorf("certificate rejected: %w", err)
+	}
+	return nil
+}
+
+// Zero host ports ask the module registry for one
+func (s *ModuleService) allocateModulePorts(ctx context.Context, ports []*v1.NetworkPort) error {
+	allocated := make(map[int]bool)
+	for _, port := range ports {
+		if port == nil || port.ContainerPort == 0 || port.HostPort > 0 {
+			continue
+		}
+		free, err := s.moduleManager.AllocateModulePortExcluding(ctx, port.Protocol, allocated)
+		if err != nil {
+			return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("failed to allocate port: %w", err))
+		}
+		port.HostPort = int32(free)
+		allocated[free] = true
+	}
+	return nil
+}
+
+// Claims module network, failed checkouts retire stray rows
+func (s *ModuleService) checkoutModuleNetwork(ctx context.Context, moduleID string, ports []*v1.NetworkPort, hostnames []string) (*proxy.NetClaim, error) {
+	netReqs := s.proxyManager.ModuleNetRequests(&v1.Module{Id: moduleID, Ports: ports}, hostnames)
+	if err := s.proxyManager.EnsureListenersFor(ctx, netReqs); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	claim, err := s.proxyManager.CheckoutNetwork(ctx, proxy.NetOwner{Kind: proxy.OwnerModule, ID: moduleID}, netReqs)
+	if err != nil {
+		// Reconcile retires any listener row made just above
+		if serr := s.proxyManager.SyncListeners(ctx); serr != nil {
+			s.log.Error("Failed to sync after checkout failure: %v", serr)
+		}
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return claim, nil
 }

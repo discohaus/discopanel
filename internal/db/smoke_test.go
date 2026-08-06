@@ -2,24 +2,15 @@ package db
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/discohaus/discopanel/pkg/config"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestProtoModelSmoke(t *testing.T) {
-	cfg := &config.Config{}
-	cfg.Database.Path = filepath.Join(t.TempDir(), "smoke.db")
-	cfg.Database.AutoMigrate = true
-	store, err := NewSQLiteStore(cfg)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer store.Close()
+	store := testStore(t)
 
 	ctx := context.Background()
 	server := &v1.Server{
@@ -117,7 +108,7 @@ func TestProtoModelSmoke(t *testing.T) {
 			t.Fatalf("sample: %v", err)
 		}
 	}
-	buckets, err := store.GetMetricsHistory(ctx, "srv-1", base.Add(-time.Minute), base.Add(2*time.Minute), 60)
+	buckets, err := store.GetMetricsHistory(ctx, "srv-1", base.Add(-time.Minute), base.Add(2*time.Minute), 60, 15)
 	if err != nil {
 		t.Fatalf("history: %v", err)
 	}

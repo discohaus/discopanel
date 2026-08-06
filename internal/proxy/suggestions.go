@@ -265,7 +265,7 @@ func (m *Manager) PanelHostnames() []string {
 	return append([]string(nil), m.panelNames...)
 }
 
-// Single url host, any panel name works alike
+// Alias host source, any panel name works alike
 func (m *Manager) PanelHostname() string {
 	m.mu.Lock()
 	names := m.panelNames

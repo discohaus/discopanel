@@ -1446,7 +1446,7 @@ message MetricsSample {
       {
         name: "PruneMetricsSamples"
         kind: QUERY_KIND_DELETE
-        where: "resolution = ? AND datetime(timestamp) < datetime(?)"
+        where: "resolution = ? AND timestamp < ?"
         params: [
           "resolution int",
           "olderThan time.Time"
