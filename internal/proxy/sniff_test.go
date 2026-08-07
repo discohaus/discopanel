@@ -223,6 +223,109 @@ func TestMCLoginSplitHandshake(t *testing.T) {
 	assertRewrittenLogin(t, data, backendLn)
 }
 
+// Unmatched hostnames land on the catch all, exact names win
+func TestMCCatchAllRouting(t *testing.T) {
+	lobbyLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("lobby backend listen failed %v", err)
+	}
+	t.Cleanup(func() { lobbyLn.Close() })
+
+	sock, playLn := mcTestSocket(t, false)
+	sock.SetRoutes([]Route{
+		{
+			ServerID:    "srv-mc",
+			OwnerKind:   OwnerServer,
+			OwnerID:     "srv-mc",
+			Protocol:    v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT,
+			Hostname:    "play.example.com",
+			State:       v1.ProxyRouteState_PROXY_ROUTE_STATE_ONLINE,
+			BackendHost: "127.0.0.1",
+			BackendPort: playLn.Addr().(*net.TCPAddr).Port,
+		},
+		{
+			ServerID:    "srv-lobby",
+			OwnerKind:   OwnerServer,
+			OwnerID:     "srv-lobby",
+			Protocol:    v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT,
+			Hostname:    "",
+			State:       v1.ProxyRouteState_PROXY_ROUTE_STATE_ONLINE,
+			BackendHost: "127.0.0.1",
+			BackendPort: lobbyLn.Addr().(*net.TCPAddr).Port,
+		},
+	})
+
+	send := func(hostname string) []byte {
+		var buf bytes.Buffer
+		err := mcproto.WriteHandshakePacket(&buf, &mcproto.HandshakePacket{
+			ProtocolVersion: 767,
+			ServerAddress:   hostname,
+			ServerPort:      25565,
+			NextState:       mcproto.NextStateLogin,
+		})
+		if err != nil {
+			t.Fatalf("handshake build failed %v", err)
+		}
+		buf.WriteString("login-start-payload")
+		return buf.Bytes()
+	}
+
+	// Two owners exist so the sole route fallback is dead
+	data := roundTripMC(t, sock, lobbyLn, send("unknown.example.com"), false)
+	if len(data) == 0 {
+		t.Fatal("catch all backend saw nothing")
+	}
+
+	// Raw ip joins land on the catch all too
+	data = roundTripMC(t, sock, lobbyLn, send("192.168.1.50"), false)
+	if len(data) == 0 {
+		t.Fatal("raw ip join must reach the catch all")
+	}
+
+	// Exact hostname still outranks the catch all
+	data = roundTripMC(t, sock, playLn, send("play.example.com"), false)
+	assertRewrittenLogin(t, data, playLn)
+}
+
+// Transfer arrivals ride the login path with intent preserved
+func TestMCTransferIntentReachesBackend(t *testing.T) {
+	sock, backendLn := mcTestSocket(t, false)
+
+	var buf bytes.Buffer
+	err := mcproto.WriteHandshakePacket(&buf, &mcproto.HandshakePacket{
+		ProtocolVersion: 767,
+		ServerAddress:   "play.example.com",
+		ServerPort:      25565,
+		NextState:       mcproto.NextStateTransfer,
+	})
+	if err != nil {
+		t.Fatalf("handshake build failed %v", err)
+	}
+	buf.WriteString("login-start-payload")
+
+	data := roundTripMC(t, sock, backendLn, buf.Bytes(), false)
+	r := bytes.NewReader(data)
+	handshake, err := mcproto.ReadHandshakePacket(r)
+	if err != nil {
+		t.Fatalf("backend handshake unreadable %v", err)
+	}
+	if handshake.NextState != mcproto.NextStateTransfer {
+		t.Fatalf("transfer intent must survive, got %d", handshake.NextState)
+	}
+	if handshake.ServerAddress != "localhost" {
+		t.Fatalf("default forward must rewrite the address, got %q", handshake.ServerAddress)
+	}
+	rest, _ := io.ReadAll(r)
+	if string(rest) != "login-start-payload" {
+		t.Fatalf("payload must follow intact, got %q", rest)
+	}
+
+	stats := sock.StatsSnapshots()["srv-mc"]
+	if stats == nil || stats.Logins != 1 {
+		t.Fatalf("transfer must count as a login: %+v", stats)
+	}
+}
+
 // Runs a status query and returns the parsed json
 func statusQuery(t *testing.T, sock *ListenerSocket, hostname string) map[string]any {
 	t.Helper()

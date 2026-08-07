@@ -92,8 +92,9 @@ func (v VarInt) Len() int {
 
 // Handshake next-state values
 const (
-	NextStateStatus = 1
-	NextStateLogin  = 2
+	NextStateStatus   = 1
+	NextStateLogin    = 2
+	NextStateTransfer = 3
 )
 
 // Represents the initial handshake packet from a client
@@ -101,7 +102,7 @@ type HandshakePacket struct {
 	ProtocolVersion VarInt
 	ServerAddress   string
 	ServerPort      uint16
-	NextState       VarInt // 1 for status, 2 for login
+	NextState       VarInt // 1 status, 2 login, 3 transfer
 }
 
 // Reads a handshake packet from the connection

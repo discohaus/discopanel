@@ -20,7 +20,7 @@ import (
 Example w/ one port (one listener):
 
 On its TCP socket:
-unlimited minecraft routes (hostname namespace per protocol),
+unlimited minecraft routes (hostname namespace per protocol) plus at most one minecraft catch all as the default destination for unmatched names,
 unlimited HTTP routes (own namespace, same hostname as an MC route is legal because the protocol sniff disambiguates before any hostname table is consulted),
 the panel claims its own port with the catch all plus a named route per panel hostname, so nothing can take the panel's names while other hostnames still multiplex,
 plus at most one hostname-less TCP relay as the fallback when neither parser matches.
@@ -218,8 +218,11 @@ func routedHostnames(port *v1.NetworkPort, fallback []string) []string {
 		out = append(out, fallback...)
 	}
 	// Catch all rides the flag, never inference
-	if port.CatchAll && port.Protocol == v1.ModuleProtocol_MODULE_PROTOCOL_HTTP {
-		out = append(out, "")
+	switch port.Protocol {
+	case v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT:
+		if port.CatchAll {
+			out = append(out, "")
+		}
 	}
 	return out
 }
@@ -304,16 +307,9 @@ func ValidatePortRouting(port *v1.NetworkPort, fallbackHostnames []string) error
 	}
 	named := len(port.Hostnames) > 0 || len(fallbackHostnames) > 0
 	switch port.Protocol {
-	case v1.ModuleProtocol_MODULE_PROTOCOL_HTTP:
+	case v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT:
 		if !named && !port.CatchAll {
 			return fmt.Errorf("port %s needs a hostname or catch all", port.Name)
-		}
-	case v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT:
-		if port.CatchAll {
-			return fmt.Errorf("catch all only applies to http ports, not %s", port.Name)
-		}
-		if !named {
-			return fmt.Errorf("port %s needs a hostname", port.Name)
 		}
 	default:
 		if port.CatchAll {
@@ -372,7 +368,7 @@ func ServerDirectNetRequests(port int, additional []*v1.NetworkPort, proxyOn boo
 }
 
 // Builds reservation requests for a proxied server
-func ServerProxiedNetRequests(hostnames []string, listenerPort int, additional []*v1.NetworkPort, proxyOn bool) []NetRequest {
+func ServerProxiedNetRequests(hostnames []string, listenerPort int, additional []*v1.NetworkPort, proxyOn bool, catchAll bool) []NetRequest {
 	var reqs []NetRequest
 	for _, hostname := range hostnames {
 		reqs = append(reqs, NetRequest{
@@ -381,6 +377,15 @@ func ServerProxiedNetRequests(hostnames []string, listenerPort int, additional [
 			Routed:   true,
 			Hostname: hostname,
 			Detail:   "proxy route",
+		})
+	}
+	// Empty hostname claims the port's single mc catch all
+	if catchAll {
+		reqs = append(reqs, NetRequest{
+			Port:     listenerPort,
+			Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT,
+			Routed:   true,
+			Detail:   "proxy catch all",
 		})
 	}
 	return append(reqs, PortNetRequests(additional, hostnames, proxyOn)...)
@@ -483,7 +488,7 @@ func (m *Manager) reservationsLocked(ctx context.Context) ([]Reservation, error)
 			if listener == nil {
 				reqs = PortNetRequests(s.AdditionalPorts, s.ProxyHostnames, m.enabled)
 			} else {
-				reqs = ServerProxiedNetRequests(s.ProxyHostnames, int(listener.Port), s.AdditionalPorts, m.enabled)
+				reqs = ServerProxiedNetRequests(s.ProxyHostnames, int(listener.Port), s.AdditionalPorts, m.enabled, s.ProxyCatchAll)
 			}
 		} else if s.Port > 0 {
 			reqs = ServerDirectNetRequests(int(s.Port), s.AdditionalPorts, m.enabled)

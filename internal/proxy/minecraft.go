@@ -142,6 +142,10 @@ func (s *ListenerSocket) lookupMCRoute(hostname string) (Route, bool) {
 	if route, exists := s.mcRoutes[hostname]; exists {
 		return *route, true
 	}
+	// Explicit catch all outranks the sole route fallback
+	if route, exists := s.mcRoutes[""]; exists {
+		return *route, true
+	}
 	return s.soleMCRouteLocked()
 }
 

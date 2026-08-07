@@ -413,7 +413,7 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 	netOwner := proxy.NetOwner{Kind: proxy.OwnerServer, ID: serverUUID}
 	var netReqs []proxy.NetRequest
 	if len(proxyHostnames) > 0 {
-		netReqs = proxy.ServerProxiedNetRequests(proxyHostnames, port, additionalPorts, proxyOn)
+		netReqs = proxy.ServerProxiedNetRequests(proxyHostnames, port, additionalPorts, proxyOn, false)
 	} else {
 		netReqs = proxy.ServerDirectNetRequests(port, additionalPorts, proxyOn)
 	}
@@ -707,7 +707,7 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 	if len(server.ProxyHostnames) > 0 {
 		netReqs = proxy.PortNetRequests(server.AdditionalPorts, server.ProxyHostnames, proxyOn)
 		if listener, lerr := s.store.GetProxyListener(ctx, server.ProxyListenerId); lerr == nil && listener != nil {
-			netReqs = proxy.ServerProxiedNetRequests(server.ProxyHostnames, int(listener.Port), server.AdditionalPorts, proxyOn)
+			netReqs = proxy.ServerProxiedNetRequests(server.ProxyHostnames, int(listener.Port), server.AdditionalPorts, proxyOn, server.ProxyCatchAll)
 		}
 	} else {
 		netReqs = proxy.ServerDirectNetRequests(int(server.Port), server.AdditionalPorts, proxyOn)

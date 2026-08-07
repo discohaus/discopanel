@@ -138,6 +138,15 @@ func (e *Enforcer) SeedDefaultPolicies(anonymousEnabled bool) error {
 			optionsv1.ResourceType_RESOURCE_TYPE_SETTINGS,
 			optionsv1.ResourceType_RESOURCE_TYPE_MODPACKS,
 		), serverOps...),
+		"lobby": append(append(readGrants(
+			optionsv1.ResourceType_RESOURCE_TYPE_SERVERS,
+			optionsv1.ResourceType_RESOURCE_TYPE_SERVER_PROPERTIES,
+			optionsv1.ResourceType_RESOURCE_TYPE_PROXY,
+		), serverOps...),
+			grant{optionsv1.ResourceType_RESOURCE_TYPE_SERVERS, optionsv1.ActionType_ACTION_TYPE_COMMAND},
+			grant{optionsv1.ResourceType_RESOURCE_TYPE_SERVERS, optionsv1.ActionType_ACTION_TYPE_UPDATE},
+			grant{optionsv1.ResourceType_RESOURCE_TYPE_SERVER_PROPERTIES, optionsv1.ActionType_ACTION_TYPE_UPDATE},
+		),
 		"anonymous": readGrants(browse...),
 	}
 

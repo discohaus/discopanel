@@ -358,6 +358,43 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			DefaultMemory:   256,
 		},
 		{
+			Id:             "builtin-lobby",
+			Name:           "Lobby",
+			Description:    "Turns this vanilla server into a hub world with a walk-in portal for every other server on the panel. Players step through a portal and hop straight over, no mods needed.",
+			Type:           v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_BUILTIN,
+			DockerImage:    "ghcr.io/discohaus/discomodule-lobby:latest",
+			Category:       "proxy",
+			SupportsProxy:  false,
+			RequiresServer: true,
+			Icon:           "door-open",
+			Ports: []*v1.NetworkPort{
+				{Name: "Status", ContainerPort: 8202, HostPort: 0, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, ProxyEnabled: false},
+			},
+			DefaultEnv: map[string]string{
+				"POLL_INTERVAL": "15s",
+				"PORT":          "{{module.ports.Status.container_port}}",
+			},
+			ConfigFields: []*v1.ModuleConfigField{
+				{
+					Env:          "TRACK_FLEET_VERSION",
+					Label:        "Follow fleet version",
+					Description:  "Keep the lobby on the newest Minecraft version your other servers run",
+					Type:         v1.ModuleConfigFieldType_MODULE_CONFIG_FIELD_TYPE_BOOL,
+					DefaultValue: "false",
+				},
+			},
+			DefaultVolumes: []*v1.VolumeMount{
+				{Source: "{{server.data_path}}", Target: "/data"},
+			},
+			HealthCheckPath: "/health",
+			HealthCheckPort: 8202,
+			DefaultUid:      "{{host.uid}}",
+			DefaultGid:      "{{host.gid}}",
+			Metadata:        map[string]string{"module_role": "lobby", "status_path": "/status"},
+			Documentation:   "Attach to a fresh vanilla server on Minecraft 1.20.5 or newer. The module builds an enclosed hub world at spawn, lists every other proxied server on portal signs with live status, and sends players through the Minecraft transfer system when they step in. Servers running an older version than the lobby are marked on their sign since players there need a matching game version. The chat menu via /trigger lobby covers servers beyond the portal slots. A world that players have already visited is refused so nothing gets overwritten, while an untouched world is cleared and regenerated for the lobby.",
+			DefaultMemory:   512,
+		},
+		{
 			Id:             doctorTemplateID,
 			Name:           "Doctor",
 			Description:    "Global crash doctor. Watches every DiscoPanel server, diagnoses crashes from structured exit reports, disables or sources mods with a full revert trail, and verifies repairs by restarting through the panel.",

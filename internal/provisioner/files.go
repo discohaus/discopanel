@@ -76,6 +76,11 @@ func (p *Provisioner) writeServerProperties(server *v1.Server, cfg *v1.ServerPro
 		props["server-port"] = fmt.Sprintf("%d", server.Port)
 	}
 
+	// Proxied servers admit transfer joins unless explicitly disabled
+	if _, ok := props["accepts-transfers"]; !ok && len(server.ProxyHostnames) > 0 && server.ProxyListenerId != "" {
+		props["accepts-transfers"] = "true"
+	}
+
 	// Sets management server defaults, loopback only, secret persists
 	agentEnabled := cfg == nil || cfg.EnableAgent == nil || *cfg.EnableAgent
 	if minecraft.SupportsManagementProtocol(mcVersion) {

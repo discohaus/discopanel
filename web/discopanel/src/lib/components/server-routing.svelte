@@ -5,6 +5,7 @@
 	import { rpcClient, rpcErrorMessage, silentCallOptions } from '$lib/api/rpc-client';
 	import { toast } from 'svelte-sonner';
 	import { Button } from '$lib/components/ui/button';
+	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { EmptyState } from '$lib/components/app';
@@ -45,12 +46,14 @@
 	let useProxy = $state(false);
 	let hostnames = $state<string[]>([]);
 	let listenerId = $state('');
+	let catchAll = $state(false);
 	let port = $state(25565);
 	let portError = $state('');
 	let original = $state({
 		useProxy: false,
 		hostnames: '' as string,
 		listenerId: '',
+		catchAll: false,
 		port: 25565
 	});
 
@@ -108,6 +111,7 @@
 
 			hostnames = [...routing.proxyHostnames];
 			useProxy = hostnames.length > 0;
+			catchAll = routing.proxyCatchAll;
 			listenerId = routing.proxyListenerId || '';
 			if (!listenerId && listeners.length > 0) {
 				listenerId = (listeners.find((l) => l.isDefault) ?? listeners[0]).id;
@@ -121,6 +125,7 @@
 				useProxy,
 				hostnames: hostnameKey(hostnames),
 				listenerId,
+				catchAll,
 				port: server.port
 			};
 		} catch {
@@ -204,11 +209,27 @@
 		return '';
 	});
 
+	// The listener holds one catch all across every owner
+	let catchAllError = $derived.by(() => {
+		if (!useProxy || !catchAll) return '';
+		const holder = allRoutes.find(
+			(route) =>
+				route.protocol === ModuleProtocol.MINECRAFT &&
+				route.listenPort === selectedListenerPort &&
+				route.hostname === '' &&
+				!(route.ownerKind === NetworkOwnerKind.SERVER && route.ownerId === server.id)
+		);
+		if (holder) return `port ${holder.listenPort} already has a catch all`;
+		return '';
+	});
+
 	let modeChanged = $derived(useProxy !== original.useProxy);
 	let hasChanges = $derived(
 		modeChanged ||
 			(useProxy &&
-				(hostnameKey(hostnames) !== original.hostnames || listenerId !== original.listenerId)) ||
+				(hostnameKey(hostnames) !== original.hostnames ||
+					listenerId !== original.listenerId ||
+					catchAll !== original.catchAll)) ||
 			(!useProxy && port !== original.port)
 	);
 	// Everything except a pure hostname edit rebuilds the container
@@ -222,6 +243,7 @@
 		hasChanges &&
 			!saving &&
 			!hostnameError &&
+			!catchAllError &&
 			!(useProxy && hostnames.length === 0) &&
 			!(!useProxy && !!portError)
 	);
@@ -233,6 +255,7 @@
 				serverId: server.id,
 				proxyHostnames: useProxy ? hostnames : [],
 				proxyListenerId: useProxy ? listenerId : '',
+				proxyCatchAll: useProxy ? catchAll : false,
 				port: useProxy ? undefined : port
 			});
 			toast.success(useProxy ? 'Routing saved' : 'Direct connection saved');
@@ -248,6 +271,7 @@
 		useProxy = original.useProxy;
 		hostnames = [...(routingInfo?.proxyHostnames ?? [])];
 		listenerId = original.listenerId;
+		catchAll = original.catchAll;
 		port = original.port;
 		portError = '';
 	}
@@ -364,6 +388,21 @@
 				bind:portError
 				onAutoAssignPort={refreshAvailablePort}
 			/>
+
+			{#if useProxy}
+				<div class="space-y-2 border-t px-4 py-3">
+					<label class="flex w-fit cursor-pointer items-center gap-2">
+						<Checkbox bind:checked={catchAll} disabled={saving} />
+						<span class="text-sm">Catch all</span>
+						<span class="text-xs text-muted-foreground"
+							>players land here when their address matches nothing else</span
+						>
+					</label>
+					{#if catchAllError}
+						<p class="text-xs text-destructive">{catchAllError}</p>
+					{/if}
+				</div>
+			{/if}
 
 			{#if useProxy && !hostnameError && dnsHostnames.length > 0}
 				<div class="border-t px-4 py-3">

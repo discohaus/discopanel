@@ -102,10 +102,12 @@ func (s *PropertiesService) UpdateServerProperties(ctx context.Context, req *con
 	}
 
 	// Apply updates w/ reflection
+	before := proto.Clone(config)
 	if err := applyPropertyUpdates(config, msg.Updates); err != nil {
 		s.log.Error("Failed to apply config updates: %v", err)
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("failed to apply property updates"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	changed := !proto.Equal(before, config)
 
 	// Save updated config
 	if err := s.store.UpdateServerProperties(ctx, config); err != nil {
@@ -114,8 +116,8 @@ func (s *PropertiesService) UpdateServerProperties(ctx context.Context, req *con
 	}
 	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_PROPERTIES_UPDATE, metrics.Attrs{"changed": strconv.Itoa(len(msg.Updates))}, "updated server properties (%d changed)", len(msg.Updates))
 
-	// Restarts running servers so new config applies
-	if server.ContainerId != "" && s.lifecycle != nil {
+	// Unchanged values must not bounce a running server
+	if changed && server.ContainerId != "" && s.lifecycle != nil {
 		s.applyPropertiesToRunningServer(ctx, server)
 	}
 
@@ -166,7 +168,7 @@ func (s *PropertiesService) UpdateGlobalSettings(ctx context.Context, req *conne
 
 	if err := applyPropertyUpdates(config, msg.Updates); err != nil {
 		s.log.Error("Failed to apply config updates: %v", err)
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("failed to apply property updates"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	if err := s.store.UpdateGlobalSettings(ctx, config); err != nil {
@@ -206,7 +208,7 @@ func applyPropertyUpdates(config proto.Message, updates map[string]string) error
 	for key, strValue := range updates {
 		fd := fields.ByJSONName(key)
 		if fd == nil {
-			continue
+			return fmt.Errorf("unknown property key %s", key)
 		}
 		if err := protometa.SetScalarString(m, fd, strValue); err != nil {
 			return fmt.Errorf("invalid value for key %s: %v", key, err)

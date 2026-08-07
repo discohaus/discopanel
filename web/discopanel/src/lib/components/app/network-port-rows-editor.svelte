@@ -235,7 +235,7 @@
 					</div>
 				{/if}
 
-				{#if port.proxyEnabled && port.protocol === ModuleProtocol.HTTP}
+				{#if port.proxyEnabled && isHostnamed(port.protocol)}
 					<label class="flex w-fit cursor-pointer items-center gap-2">
 						<Checkbox bind:checked={port.catchAll} disabled={disabled || locked} />
 						<span class="text-sm">Catch all</span>
@@ -243,7 +243,7 @@
 					</label>
 				{/if}
 
-				{#if showRouting && port.proxyEnabled && port.protocol === ModuleProtocol.MINECRAFT && port.hostnames.length === 0 && serverHosts.length === 0}
+				{#if showRouting && port.proxyEnabled && port.protocol === ModuleProtocol.MINECRAFT && !port.catchAll && port.hostnames.length === 0 && serverHosts.length === 0}
 					<div
 						class="flex items-start gap-2 rounded-md border border-status-warn/30 bg-status-warn/10 p-3"
 					>

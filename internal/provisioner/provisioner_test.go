@@ -165,6 +165,44 @@ func TestManagementSecretPersists(t *testing.T) {
 	}
 }
 
+func TestProxiedServersAcceptTransfers(t *testing.T) {
+	p := testProvisioner(t)
+	readProp := func(server *v1.Server) string {
+		props, err := minecraft.LoadPropertiesFile(server.DataPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return props["accepts-transfers"]
+	}
+
+	proxied := &v1.Server{Id: "s1", Name: "s1", DataPath: t.TempDir(), Port: 25565,
+		ProxyHostnames: []string{"play.example.com"}, ProxyListenerId: "l1"}
+	if err := p.writeServerProperties(proxied, &v1.ServerProperties{}, "1.21.1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := readProp(proxied); got != "true" {
+		t.Fatalf("proxied server must accept transfers, got %q", got)
+	}
+
+	direct := &v1.Server{Id: "s2", Name: "s2", DataPath: t.TempDir(), Port: 25565}
+	if err := p.writeServerProperties(direct, &v1.ServerProperties{}, "1.21.1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := readProp(direct); got != "" {
+		t.Fatalf("unproxied server must stay untouched, got %q", got)
+	}
+
+	refused := false
+	optOut := &v1.Server{Id: "s3", Name: "s3", DataPath: t.TempDir(), Port: 25565,
+		ProxyHostnames: []string{"play.example.com"}, ProxyListenerId: "l1"}
+	if err := p.writeServerProperties(optOut, &v1.ServerProperties{AcceptsTransfers: &refused}, "1.21.1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := readProp(optOut); got != "false" {
+		t.Fatalf("explicit opt out must survive, got %q", got)
+	}
+}
+
 func TestModrinthStateRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	state := readModrinthState(dir)

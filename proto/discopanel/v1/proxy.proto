@@ -351,6 +351,8 @@ message GetServerRoutingResponse {
   int32 listen_port = 5;
   optional ServerRoute current_route = 6;
   string proxy_listener_id = 7;
+  // Unknown hostname joins on the listener land here
+  bool proxy_catch_all = 8;
 }
 
 // Hostnames and listener to assign
@@ -361,6 +363,8 @@ message UpdateServerRoutingRequest {
   string proxy_listener_id = 3;
   // Direct mode host port, ignored when hostnames set
   optional int32 port = 4;
+  // Makes this server the listener's default destination
+  bool proxy_catch_all = 5;
 }
 
 // Routing update result

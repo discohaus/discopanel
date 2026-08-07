@@ -15,6 +15,7 @@
 	import {
 		ArrowLeft,
 		Camera,
+		DoorOpen,
 		Loader2,
 		Package,
 		Sparkles,
@@ -75,7 +76,7 @@
 	let iconInput = $state<HTMLInputElement | null>(null);
 
 	// Modpack selection
-	let sourceMode = $state<'blank' | 'modpack'>('blank');
+	let sourceMode = $state<'blank' | 'modpack' | 'lobby'>('blank');
 	let selectedModpack = $state<IndexedModpack | null>(null);
 	// Pack art previews as the icon until upload wins
 	let avatarPreview = $derived(iconPreview || selectedModpack?.logoUrl || '');
@@ -281,10 +282,58 @@
 		formData.memory = 2048;
 	}
 
-	function setSourceMode(mode: 'blank' | 'modpack') {
+	function setSourceMode(mode: 'blank' | 'modpack' | 'lobby') {
+		const leavingLobby = sourceMode === 'lobby' && mode !== 'lobby';
 		sourceMode = mode;
-		if (mode === 'blank' && selectedModpack) {
+		if (mode !== 'modpack' && selectedModpack) {
 			removeModpack();
+		}
+		if (leavingLobby) {
+			formData.modLoader = ModLoader.UNSPECIFIED;
+			formData.mcVersion = latestVersion || '';
+		}
+		if (mode === 'lobby') {
+			enterLobbyMode();
+		}
+	}
+
+	// Oldest version whose clients can be transferred
+	const lobbyFloorVersion = '1.20.5';
+
+	// Newer versions sit earlier in the manifest order
+	function versionRank(version: string): number {
+		const idx = minecraftVersions.indexOf(version);
+		return idx < 0 ? Number.MAX_SAFE_INTEGER : idx;
+	}
+
+	// Newest transfer capable fleet version, else latest release
+	function lobbyAutoVersion(fleet: string[]): string {
+		const floor = versionRank(lobbyFloorVersion);
+		let best = '';
+		for (const version of fleet) {
+			const rank = versionRank(version);
+			if (rank === Number.MAX_SAFE_INTEGER || rank > floor) continue;
+			if (!best || rank < versionRank(best)) best = version;
+		}
+		return best || latestVersion;
+	}
+
+	async function enterLobbyMode() {
+		useProxyMode = true;
+		if (!formData.name.trim()) formData.name = 'Lobby';
+		if (!formData.description.trim()) {
+			formData.description = 'Hub world, walk through a portal to join a server';
+		}
+		formData.modLoader = ModLoader.VANILLA;
+		formData.mcVersion = latestVersion || formData.mcVersion;
+		try {
+			const data = await rpcClient.server.listServers({});
+			const fleet = data.servers
+				.filter((s) => s.proxyHostnames.length > 0)
+				.map((s) => s.mcVersion);
+			formData.mcVersion = lobbyAutoVersion(fleet);
+		} catch {
+			// Empty fleet reads the same as an unreadable one
 		}
 	}
 
@@ -335,6 +384,39 @@
 		}
 	}
 
+	// Attaches the lobby module and claims the catch all
+	async function attachLobby(serverId: string) {
+		try {
+			// Backend keeps no template defaults so send them here
+			const tpl = (await rpcClient.module.getModuleTemplate({ id: 'builtin-lobby' })).template;
+			if (!tpl) throw new Error('lobby template missing');
+			const created = await rpcClient.module.createModule({
+				serverId,
+				templateId: 'builtin-lobby',
+				name: 'Lobby',
+				envOverrides: { ...tpl.defaultEnv, TRACK_FLEET_VERSION: 'true' },
+				volumeOverrides: tpl.defaultVolumes,
+				autoStart: true,
+				startImmediately: true
+			});
+			if (!created.module) throw new Error('module missing from response');
+		} catch (error) {
+			console.error('Failed to attach lobby module:', error);
+			toast.warning('Server created, but the Lobby module needs adding from the Modules tab');
+		}
+		try {
+			await rpcClient.proxy.updateServerRouting({
+				serverId,
+				proxyHostnames: formData.proxyHostnames,
+				proxyListenerId: formData.proxyListenerId,
+				proxyCatchAll: true
+			});
+		} catch (error) {
+			console.error('Failed to claim catch all for lobby:', error);
+			toast.warning('Another server holds the catch all, players need the lobby hostname');
+		}
+	}
+
 	let installableLoaders = $derived(modLoaders.filter((l) => l.provisionable));
 	let selectedLoaderInfo = $derived(modLoaders.find((l) => l.loader === formData.modLoader));
 	let selectedLoaderName = $derived(selectedLoaderInfo?.name ?? '');
@@ -379,6 +461,11 @@
 			return;
 		}
 
+		if (sourceMode === 'lobby' && !useProxyMode) {
+			toast.error('The lobby needs proxy routing to reach your other servers');
+			return;
+		}
+
 		loading = true;
 		try {
 			// Modrinth installs want the version number over the id
@@ -399,6 +486,8 @@
 				modpackId: selectedModpack?.id || '',
 				modpackVersionId: versionToSend || '',
 				worldUploadSessionId: worldSessionId,
+				// The lobby module sets properties then starts it itself
+				startImmediately: sourceMode === 'lobby' ? false : formData.startImmediately,
 				// Port zero routes through the proxy hostnames
 				port: useProxyMode ? 0 : formData.port,
 				// Direct mode keeps any typed hostnames out of the request
@@ -407,6 +496,9 @@
 
 			const response = await rpcClient.server.createServer(createRequest);
 			const created = response.server;
+			if (sourceMode === 'lobby' && created) {
+				await attachLobby(created.id);
+			}
 			if (iconFile && created) {
 				try {
 					const image = new Uint8Array(await iconFile.arrayBuffer());
@@ -472,10 +564,10 @@
 			<section class="overflow-hidden rounded-xl border bg-card">
 				{@render sectionHeader(
 					'Source',
-					'Start from scratch or from one of your favorite modpacks'
+					'Start from scratch, from a favorite modpack, or make a lobby'
 				)}
 				<div class="space-y-4 p-4">
-					<div class="grid grid-cols-2 gap-3">
+					<div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
 						<button
 							type="button"
 							class="rounded-lg border p-4 text-left transition-colors {sourceMode === 'blank'
@@ -506,7 +598,39 @@
 								Version, loader, and memory come preset
 							</p>
 						</button>
+						<button
+							type="button"
+							class="rounded-lg border p-4 text-left transition-colors {sourceMode === 'lobby'
+								? 'border-primary bg-primary/5'
+								: 'hover:bg-accent/40'} disabled:opacity-50"
+							onclick={() => setSourceMode('lobby')}
+							disabled={loading || !proxyEnabled}
+							title={proxyEnabled ? '' : 'The lobby needs the proxy turned on'}
+						>
+							<div class="flex items-center gap-2 text-sm font-medium">
+								<DoorOpen class="size-4 text-primary" />
+								Make a lobby
+							</div>
+							<p class="mt-1 text-xs text-muted-foreground">One hub with portals to every server</p>
+						</button>
 					</div>
+
+					{#if sourceMode === 'lobby'}
+						<div class="rounded-lg border border-primary/30 bg-primary/5 p-4 text-sm">
+							<p class="font-medium">Here is what you get</p>
+							<ul class="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
+								<li>
+									A vanilla Minecraft {formData.mcVersion || '...'} minecraft purgatory portal world
+								</li>
+								<li>A portal for every other server, walk in to hop over</li>
+								<li>Lobby acts like a catch-all minecraft proxy, wip.</li>
+							</ul>
+							<p class="mt-2 text-xs text-muted-foreground">
+								Friends need Minecraft {lobbyFloorVersion} or newer to use portals. The lobby follows
+								your newest server's version automatically.
+							</p>
+						</div>
+					{/if}
 
 					{#if sourceMode === 'modpack'}
 						{#if selectedModpack}
@@ -720,7 +844,11 @@
 			<section class="overflow-hidden rounded-xl border bg-card">
 				{@render sectionHeader(
 					'Version & loader',
-					selectedModpack ? 'Preset by the modpack' : 'What flavor of Minecraft to run'
+					selectedModpack
+						? 'Preset by the modpack'
+						: sourceMode === 'lobby'
+							? 'Preset by the lobby'
+							: 'What flavor of Minecraft to run'
 				)}
 				<div class="grid gap-4 p-4 sm:grid-cols-2">
 					<div class="space-y-2">
@@ -734,7 +862,7 @@
 								type="single"
 								value={formData.mcVersion}
 								onValueChange={(v: string | undefined) => (formData.mcVersion = v ?? '')}
-								disabled={loading || !!selectedModpack}
+								disabled={loading || !!selectedModpack || sourceMode === 'lobby'}
 							>
 								<SelectTrigger id="mcVersion" class="w-full">
 									<span>
@@ -763,7 +891,7 @@
 								formData.modLoader =
 									installableLoaders.find((l) => l.name === v)?.loader ?? ModLoader.VANILLA;
 							}}
-							disabled={loading || !!selectedModpack}
+							disabled={loading || !!selectedModpack || sourceMode === 'lobby'}
 						>
 							<SelectTrigger id="modLoader" class="w-full">
 								<span>{selectedLoaderInfo?.displayName || 'Select a mod loader'}</span>
@@ -778,6 +906,10 @@
 						</Select>
 						{#if selectedModpack}
 							<p class="text-xs text-muted-foreground">Mod loader comes from the modpack</p>
+						{:else if sourceMode === 'lobby'}
+							<p class="text-xs text-muted-foreground">
+								The lobby stays vanilla so every player can join
+							</p>
 						{:else if formData.modLoader === ModLoader.VANILLA}
 							<p class="text-xs text-muted-foreground">Plain Minecraft, no mod support</p>
 						{:else if selectedLoaderInfo?.supportsMods}

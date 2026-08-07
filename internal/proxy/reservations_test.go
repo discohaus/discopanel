@@ -55,6 +55,8 @@ func TestReservationsConflict(t *testing.T) {
 		{"one catch all per protocol per port", routed(8080, httpProto, ""), routed(8080, httpProto, ""), true},
 		{"catch all namespaces split by protocol", routed(8080, httpProto, ""), routed(8080, mc, ""), false},
 		{"catch all coexists with named routes", routed(8080, httpProto, ""), routed(8080, httpProto, "a.example.com"), false},
+		{"one mc catch all per port", routed(25565, mc, ""), routed(25565, mc, ""), true},
+		{"mc catch all coexists with named mc routes", routed(25565, mc, ""), routed(25565, mc, "a.example.com"), false},
 		{"one tcp relay per port", relayRes(25565, overTCP), relayRes(25565, overTCP), true},
 		{"tcp and udp relays coexist", relayRes(25565, overTCP), relayRes(25565, overUDP), false},
 		{"relay coexists with routes", relayRes(25565, overTCP), routed(25565, mc, "a.example.com"), false},
@@ -178,5 +180,20 @@ func TestPortNetRequests(t *testing.T) {
 		if req.Routed || req.Relay {
 			t.Fatalf("proxy off must not produce proxy requests: %+v", req)
 		}
+	}
+}
+
+func TestServerProxiedNetRequestsCatchAll(t *testing.T) {
+	reqs := ServerProxiedNetRequests([]string{"play.example.com"}, 25565, nil, true, true)
+	if len(reqs) != 2 {
+		t.Fatalf("want hostname plus catch all, got %d: %+v", len(reqs), reqs)
+	}
+	if !reqs[1].Routed || reqs[1].Hostname != "" || reqs[1].Protocol != mc {
+		t.Fatalf("catch all must be an empty hostname mc route: %+v", reqs[1])
+	}
+
+	// Flag off keeps the old shape
+	if reqs := ServerProxiedNetRequests([]string{"play.example.com"}, 25565, nil, true, false); len(reqs) != 1 {
+		t.Fatalf("want one request without catch all, got %d", len(reqs))
 	}
 }

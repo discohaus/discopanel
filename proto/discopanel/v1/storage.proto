@@ -970,6 +970,8 @@ message Server {
   string proxy_listener_id = 9;
   // Listener host port, computed at read time
   int32 proxy_port = 10 [(protogorm.v1.db) = {skip: true}];
+  // Unknown hostname joins on the listener land here
+  bool proxy_catch_all = 54 [(protogorm.v1.db) = {tag: "default:false"}];
   int32 max_players = 11 [(protogorm.v1.db) = {tag: "default:20"}];
   int32 memory = 12 [(protogorm.v1.db) = {tag: "default:4096"}]; // Container memory limit in MB
   int32 memory_min = 49 [(protogorm.v1.db) = {tag: "default:0"}]; // JVM initial heap (Xms) in MB
@@ -2466,7 +2468,7 @@ message ServerProperties {
   }];
   optional bool accepts_transfers = 66 [(discopanel.options.v1.prop) = {
     prop: "accepts-transfers"
-    default_value: "false"
+    default_value: "true"
     desc: "Allow player transfers between servers"
     input: "checkbox"
     label: "Accepts Transfers"

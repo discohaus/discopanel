@@ -549,7 +549,7 @@ func (s *ProxyService) convertForDisable(ctx context.Context, msg *v1.UpdateProx
 			continue
 		}
 		if port, ok := proposed[serverID]; ok {
-			if err := s.applyServerRouting(ctx, server, nil, "", port, true); err != nil {
+			if err := s.applyServerRouting(ctx, server, nil, "", port, false, true); err != nil {
 				errs = append(errs, err)
 				continue
 			}
@@ -947,6 +947,7 @@ func (s *ProxyService) GetServerRouting(ctx context.Context, req *connect.Reques
 		ProxyListenerId: server.ProxyListenerId,
 		ListenPort:      listenPort,
 		CurrentRoute:    currentRoute,
+		ProxyCatchAll:   server.ProxyCatchAll,
 	}), nil
 }
 
@@ -1047,7 +1048,9 @@ func (s *ProxyService) UpdateServerRouting(ctx context.Context, req *connect.Req
 	if msg.Port != nil {
 		requestedPort = *msg.Port
 	}
-	if err := s.applyServerRouting(ctx, server, hostnames, listenerID, requestedPort, false); err != nil {
+	// Catch all only means something in proxied mode
+	catchAll := msg.ProxyCatchAll && len(hostnames) > 0
+	if err := s.applyServerRouting(ctx, server, hostnames, listenerID, requestedPort, catchAll, false); err != nil {
 		return nil, err
 	}
 
@@ -1058,7 +1061,7 @@ func (s *ProxyService) UpdateServerRouting(ctx context.Context, req *connect.Req
 }
 
 // Applies a routing shape to one server end to end
-func (s *ProxyService) applyServerRouting(ctx context.Context, server *v1.Server, hostnames []string, listenerID string, requestedPort int32, planned bool) error {
+func (s *ProxyService) applyServerRouting(ctx context.Context, server *v1.Server, hostnames []string, listenerID string, requestedPort int32, catchAll bool, planned bool) error {
 	oldProxyHostnames := server.ProxyHostnames
 	oldProxyListenerID := server.ProxyListenerId
 
@@ -1102,7 +1105,7 @@ func (s *ProxyService) applyServerRouting(ctx context.Context, server *v1.Server
 			if lerr != nil || listener == nil {
 				return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("proxy listener not found"))
 			}
-			netReqs = proxy.ServerProxiedNetRequests(hostnames, int(listener.Port), server.AdditionalPorts, proxyOn)
+			netReqs = proxy.ServerProxiedNetRequests(hostnames, int(listener.Port), server.AdditionalPorts, proxyOn, catchAll)
 		} else {
 			netReqs = proxy.ServerDirectNetRequests(int(newPort), server.AdditionalPorts, proxyOn)
 		}
@@ -1128,12 +1131,14 @@ func (s *ProxyService) applyServerRouting(ctx context.Context, server *v1.Server
 	// Update server fields
 	server.ProxyHostnames = hostnames
 	server.ProxyListenerId = listenerID
+	server.ProxyCatchAll = catchAll
 	server.Port = newPort
 	// Map updates bypass serializers, store json text
 	hostnamesJSON, _ := json.Marshal(hostnames)
 	fields := map[string]any{
 		"proxy_hostnames":   string(hostnamesJSON),
 		"proxy_listener_id": listenerID,
+		"proxy_catch_all":   catchAll,
 		"port":              newPort,
 	}
 

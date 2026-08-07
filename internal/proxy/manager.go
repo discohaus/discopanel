@@ -598,6 +598,12 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 						variant.Hostname = name
 						tcpRoutes[port] = append(tcpRoutes[port], variant)
 					}
+					// Empty hostname is the port's mc catch all
+					if server.ProxyCatchAll {
+						variant := route
+						variant.Hostname = ""
+						tcpRoutes[port] = append(tcpRoutes[port], variant)
+					}
 				}
 			}
 		}
@@ -937,11 +943,19 @@ func (m *Manager) UpdateServerRoute(server *v1.Server) error {
 		for _, name := range server.ProxyHostnames {
 			sock.RemoveRoute(v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT, name)
 		}
+		if server.ProxyCatchAll {
+			sock.RemoveRoute(v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT, "")
+		}
 		return nil
 	}
 	for _, name := range server.ProxyHostnames {
 		variant := route
 		variant.Hostname = name
+		sock.UpsertServerRoute(variant)
+	}
+	if server.ProxyCatchAll {
+		variant := route
+		variant.Hostname = ""
 		sock.UpsertServerRoute(variant)
 	}
 	return nil
