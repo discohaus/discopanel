@@ -3,12 +3,11 @@
 	import { SvelteMap } from 'svelte/reactivity';
 	import { resolve } from '$app/paths';
 	import { rpcClient, rpcErrorMessage, silentCallOptions } from '$lib/api/rpc-client';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { Button } from '$lib/components/ui/button';
-	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Skeleton } from '$lib/components/ui/skeleton';
-	import { EmptyState } from '$lib/components/app';
+	import { CardStack, EmptyState } from '$lib/components/app';
 	import ConnectivityCard from '$lib/components/connectivity-card.svelte';
 	import { serversStore } from '$lib/stores/servers';
 	import { canAccessSettings } from '$lib/stores/auth';
@@ -21,7 +20,12 @@
 		RotateCcw,
 		RefreshCw
 	} from '@lucide/svelte';
-	import type { Module, ProxyListener, Server } from '$lib/proto/discopanel/v1/storage_pb';
+	import type {
+		Module,
+		NetworkPort,
+		ProxyListener,
+		Server
+	} from '$lib/proto/discopanel/v1/storage_pb';
 	import { ModuleProtocol, ServerStatus } from '$lib/proto/discopanel/v1/storage_pb';
 	import {
 		NetworkOwnerKind,
@@ -129,7 +133,7 @@
 				port: server.port
 			};
 		} catch {
-			toast.error('Failed to load routing information');
+			notify.error('Failed to load routing information');
 		} finally {
 			loading = false;
 		}
@@ -258,10 +262,10 @@
 				proxyCatchAll: useProxy ? catchAll : false,
 				port: useProxy ? undefined : port
 			});
-			toast.success(useProxy ? 'Routing saved' : 'Direct connection saved');
+			notify.success(useProxy ? 'Routing saved' : 'Direct connection saved');
 			await loadAll();
 		} catch (error: unknown) {
-			toast.error(rpcErrorMessage(error, 'Failed to save routing configuration'));
+			notify.error(rpcErrorMessage(error, 'Failed to save routing configuration'));
 		} finally {
 			saving = false;
 		}
@@ -381,28 +385,16 @@
 				disabled={saving}
 				{usedPorts}
 				{hostnameError}
+				showCatchAll
+				{catchAllError}
 				bind:useProxy
 				bind:hostnames
 				bind:listenerId
+				bind:catchAll
 				bind:port
 				bind:portError
 				onAutoAssignPort={refreshAvailablePort}
 			/>
-
-			{#if useProxy}
-				<div class="space-y-2 border-t px-4 py-3">
-					<label class="flex w-fit cursor-pointer items-center gap-2">
-						<Checkbox bind:checked={catchAll} disabled={saving} />
-						<span class="text-sm">Catch all</span>
-						<span class="text-xs text-muted-foreground"
-							>players land here when their address matches nothing else</span
-						>
-					</label>
-					{#if catchAllError}
-						<p class="text-xs text-destructive">{catchAllError}</p>
-					{/if}
-				</div>
-			{/if}
 
 			{#if useProxy && !hostnameError && dnsHostnames.length > 0}
 				<div class="border-t px-4 py-3">
@@ -469,19 +461,36 @@
 					</div>
 					<span class="tabular font-mono text-sm">{server.port}</span>
 				</div>
-				{#each server.additionalPorts || [] as extra (extra.name + extra.hostPort)}
-					<div class="flex items-center justify-between px-4 py-2.5">
-						<div class="min-w-0">
-							<p class="truncate text-sm font-medium">{extra.name || 'Additional port'}</p>
-							<p class="text-xs text-muted-foreground">
-								container {extra.containerPort} · {portProtoLabel(extra)}{extra.proxyEnabled
-									? ' · proxied'
-									: ''}
-							</p>
-						</div>
-						<span class="tabular font-mono text-sm">{extra.hostPort}</span>
-					</div>
-				{/each}
+				<div class="px-4 py-2">
+					<CardStack
+						items={server.additionalPorts || []}
+						visible={2}
+						slotHeight="3.25rem"
+						gap="0.25rem"
+						itemKey={(p: NetworkPort) => p.name + ':' + p.hostPort}
+					>
+						{#snippet card(extra: NetworkPort)}
+							<div
+								class="flex h-full items-center justify-between gap-3 rounded-md bg-muted/20 px-3"
+							>
+								<div class="min-w-0">
+									<p class="truncate text-sm font-medium">{extra.name || 'Additional port'}</p>
+									<p class="truncate text-xs text-muted-foreground">
+										container {extra.containerPort} · {portProtoLabel(extra)}{extra.proxyEnabled
+											? ' · proxied'
+											: ''}
+									</p>
+								</div>
+								<span class="tabular font-mono text-sm">{extra.hostPort}</span>
+							</div>
+						{/snippet}
+						{#snippet empty()}
+							<div class="flex h-full items-center justify-center text-xs text-muted-foreground">
+								No additional ports
+							</div>
+						{/snippet}
+					</CardStack>
+				</div>
 			</div>
 		</section>
 
@@ -491,52 +500,60 @@
 					<h3 class="text-sm font-semibold">Active routes</h3>
 					<p class="mt-0.5 text-xs text-muted-foreground">Everything the proxy currently serves</p>
 				</header>
-				<div class="divide-y">
-					{#each routeGroups as group (group.key)}
-						{@const owner = routeOwner(group.first)}
-						{@const stats = routeStatsSummary(group.first)}
-						{@const names = group.hostnames.join(', ')}
-						<div
-							class="flex items-center justify-between gap-3 px-4 py-2.5 {owner.self
-								? 'bg-primary/[0.03]'
-								: ''}"
-						>
-							<div class="min-w-0">
-								<div class="flex items-baseline gap-2">
-									<p class="min-w-0 truncate font-mono text-sm" title={names}>
-										{names || owner.label}
-									</p>
-									<span class="shrink-0 text-xs text-muted-foreground">
-										{laneLabel(group.protocol)} :{group.port}
-									</span>
+				<div class="p-3">
+					<CardStack
+						items={routeGroups}
+						visible={3}
+						slotHeight="4.25rem"
+						gap="0.25rem"
+						itemKey={(g: RouteGroup) => g.key}
+					>
+						{#snippet card(group: RouteGroup)}
+							{@const owner = routeOwner(group.first)}
+							{@const stats = routeStatsSummary(group.first)}
+							{@const names = group.hostnames.join(', ')}
+							<div
+								class="flex h-full items-center justify-between gap-3 rounded-md px-3 {owner.self
+									? 'bg-primary/5'
+									: 'bg-muted/20'}"
+							>
+								<div class="min-w-0">
+									<div class="flex items-baseline gap-2">
+										<p class="min-w-0 truncate font-mono text-sm" title={names}>
+											{names || owner.label}
+										</p>
+										<span class="shrink-0 text-xs text-muted-foreground">
+											{laneLabel(group.protocol)} :{group.port}
+										</span>
+									</div>
+									{#if owner.self && group.first.ownerKind === NetworkOwnerKind.SERVER}
+										<p class="text-xs font-medium text-primary">This server</p>
+									{:else if owner.serverId}
+										<a
+											href={resolve(`/servers/${owner.serverId}`)}
+											class="text-xs text-muted-foreground hover:text-foreground hover:underline"
+										>
+											{owner.label}
+										</a>
+									{:else if owner.label && names}
+										<p
+											class="text-xs {owner.self
+												? 'font-medium text-primary'
+												: 'text-muted-foreground'}"
+										>
+											{owner.label}
+										</p>
+									{/if}
+									{#if stats}
+										<p class="truncate text-xs text-muted-foreground tabular-nums">{stats}</p>
+									{/if}
 								</div>
-								{#if owner.self && group.first.ownerKind === NetworkOwnerKind.SERVER}
-									<p class="text-xs font-medium text-primary">This server</p>
-								{:else if owner.serverId}
-									<a
-										href={resolve(`/servers/${owner.serverId}`)}
-										class="text-xs text-muted-foreground hover:text-foreground hover:underline"
-									>
-										{owner.label}
-									</a>
-								{:else if owner.label && names}
-									<p
-										class="text-xs {owner.self
-											? 'font-medium text-primary'
-											: 'text-muted-foreground'}"
-									>
-										{owner.label}
-									</p>
-								{/if}
-								{#if stats}
-									<p class="text-xs text-muted-foreground tabular-nums">{stats}</p>
-								{/if}
+								<span class="shrink-0 text-xs {routeStateText(group.first)}">
+									{routeStateLabel(group.first)}
+								</span>
 							</div>
-							<span class="shrink-0 text-xs {routeStateText(group.first)}">
-								{routeStateLabel(group.first)}
-							</span>
-						</div>
-					{/each}
+						{/snippet}
+					</CardStack>
 				</div>
 			</section>
 		{/if}

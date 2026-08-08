@@ -5,7 +5,7 @@
 	import { Switch } from '$lib/components/ui/switch';
 	import HostnameListInput from '../hostname-list-input.svelte';
 	import InspectorHeader from './inspector-header.svelte';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import {
 		Globe,
 		Loader2,
@@ -86,11 +86,11 @@
 				hostnames: draftHostnames,
 				catchAll: draftCatchAll
 			});
-			toast.success('Network settings saved');
+			notify.success('Network settings saved');
 			await onChanged();
 			seeded = 'unseeded';
 		} catch (error: unknown) {
-			toast.error(rpcErrorMessage(error, 'Failed to save network settings'));
+			notify.error(rpcErrorMessage(error, 'Failed to save network settings'));
 		} finally {
 			saving = false;
 		}

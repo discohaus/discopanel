@@ -2,7 +2,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Check, Copy } from '@lucide/svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { cn } from '$lib/utils';
 
 	let {
@@ -26,7 +26,7 @@
 		e.stopPropagation();
 		const ok = await copyToClipboard(text);
 		if (!ok) {
-			toast.error('Failed to copy to clipboard');
+			notify.error('Failed to copy to clipboard');
 			return;
 		}
 		copied = true;

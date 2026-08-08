@@ -23,7 +23,7 @@
 		ChevronDown,
 		ChevronUp
 	} from '@lucide/svelte';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { rpcClient } from '$lib/api/rpc-client';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -126,11 +126,11 @@
 					githubUsername = '';
 					issueDescription = '';
 					stepsToReproduce = '';
-					toast.success('Support bundle uploaded successfully!', {
+					notify.success('Support bundle uploaded successfully!', {
 						description: 'Save your reference ID for support requests.'
 					});
 				} else {
-					toast.error('Failed to upload support bundle', {
+					notify.error('Failed to upload support bundle', {
 						description: response.message || 'Unknown error occurred'
 					});
 				}
@@ -144,11 +144,11 @@
 
 				if (response.bundleId) {
 					bundlePath = response.bundleId;
-					toast.success('Support bundle generated!', {
+					notify.success('Support bundle generated!', {
 						description: 'Click the download button to save the bundle.'
 					});
 				} else {
-					toast.error('Failed to generate support bundle', {
+					notify.error('Failed to generate support bundle', {
 						description: response.message
 					});
 				}
@@ -156,7 +156,7 @@
 		} catch (error) {
 			const message = error instanceof Error ? error.message : 'Unknown error occurred';
 			const action = upload ? 'upload' : 'generate';
-			toast.error(`Failed to ${action} support bundle`, {
+			notify.error(`Failed to ${action} support bundle`, {
 				description: message
 			});
 		} finally {
@@ -182,10 +182,10 @@
 			URL.revokeObjectURL(url);
 			// Clears the bundle path after download
 			bundlePath = null;
-			toast.success('Support bundle downloaded!');
+			notify.success('Support bundle downloaded!');
 		} catch (error) {
 			const message = error instanceof Error ? error.message : 'Unknown error occurred';
-			toast.error('Failed to download support bundle', {
+			notify.error('Failed to download support bundle', {
 				description: message
 			});
 		}
@@ -195,9 +195,9 @@
 		if (!referenceId) return;
 		const success = await copyToClipboard(referenceId);
 		if (success) {
-			toast.success('Reference ID copied to clipboard!');
+			notify.success('Reference ID copied to clipboard!');
 		} else {
-			toast.error('Failed to copy to clipboard');
+			notify.error('Failed to copy to clipboard');
 		}
 	}
 </script>

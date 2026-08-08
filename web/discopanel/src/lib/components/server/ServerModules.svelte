@@ -6,7 +6,7 @@
 	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { registerRefresh } from '$lib/stores/refresh';
 	import { moduleUrls } from '$lib/module-urls';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import type { Server, Module, ModuleTemplate } from '$lib/proto/discopanel/v1/storage_pb';
 	import type { PendingModulePrompt } from '$lib/proto/discopanel/v1/module_pb';
 	import {
@@ -153,7 +153,7 @@
 			// Snapshots refresh every poll, values change while running
 			modules.filter((m) => m.status === ModuleStatus.RUNNING).forEach((m) => loadSnapshot(m.id));
 		} catch {
-			if (!silent) toast.error('Failed to load modules');
+			if (!silent) notify.error('Failed to load modules');
 		} finally {
 			if (!silent) loading = false;
 		}
@@ -165,7 +165,7 @@
 			// Global templates never attach to a server
 			templates = response.templates.filter((t) => !t.global);
 		} catch {
-			toast.error('Failed to load module templates');
+			notify.error('Failed to load module templates');
 		}
 	}
 
@@ -202,7 +202,7 @@
 
 	async function copySnapshotValue(value: string) {
 		if (await copyToClipboard(value)) {
-			toast.success('Copied to clipboard');
+			notify.success('Copied to clipboard');
 		}
 	}
 
@@ -210,10 +210,10 @@
 		actionLoading = module.id;
 		try {
 			await rpcClient.module.startModule({ id: module.id });
-			toast.success(`Starting ${module.name}...`);
+			notify.success(`Starting ${module.name}...`);
 			await loadModules();
 		} catch (error) {
-			toast.error(
+			notify.error(
 				`Failed to start module: ${error instanceof Error ? error.message : 'Unknown error'}`
 			);
 		} finally {
@@ -225,10 +225,10 @@
 		actionLoading = module.id;
 		try {
 			await rpcClient.module.stopModule({ id: module.id });
-			toast.success(`Stopping ${module.name}...`);
+			notify.success(`Stopping ${module.name}...`);
 			await loadModules();
 		} catch (error) {
-			toast.error(
+			notify.error(
 				`Failed to stop module: ${error instanceof Error ? error.message : 'Unknown error'}`
 			);
 		} finally {
@@ -240,10 +240,10 @@
 		actionLoading = module.id;
 		try {
 			await rpcClient.module.restartModule({ id: module.id });
-			toast.success(`Restarting ${module.name}...`);
+			notify.success(`Restarting ${module.name}...`);
 			await loadModules();
 		} catch (error) {
-			toast.error(
+			notify.error(
 				`Failed to restart module: ${error instanceof Error ? error.message : 'Unknown error'}`
 			);
 		} finally {
@@ -262,10 +262,10 @@
 		actionLoading = module.id;
 		try {
 			await rpcClient.module.deleteModule({ id: module.id });
-			toast.success(`Module "${module.name}" deleted`);
+			notify.success(`Module "${module.name}" deleted`);
 			await loadModules();
 		} catch (error) {
-			toast.error(
+			notify.error(
 				`Failed to delete module: ${error instanceof Error ? error.message : 'Unknown error'}`
 			);
 		} finally {

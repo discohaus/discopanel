@@ -10,7 +10,7 @@
 	import { ServerAvatar } from '$lib/components/app';
 	import { rpcClient } from '$lib/api/rpc-client';
 	import { create } from '@bufbuild/protobuf';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { Loader2, Save, RotateCcw, Lock, Camera } from '@lucide/svelte';
 	import type { Server } from '$lib/proto/discopanel/v1/storage_pb';
 	import { ServerStatus } from '$lib/proto/discopanel/v1/storage_pb';
@@ -207,7 +207,7 @@
 				memory: a.memory
 			}));
 		} catch {
-			toast.error('Failed to load version options');
+			notify.error('Failed to load version options');
 		} finally {
 			loadingOptions = false;
 		}
@@ -223,12 +223,12 @@
 					clearAdditionalPorts: (formData.additionalPorts?.length ?? 0) === 0
 				})
 			);
-			toast.success(
+			notify.success(
 				stopped ? 'Settings saved' : 'Settings saved. Restart the server to apply changes.'
 			);
 			onUpdate?.();
 		} catch (error) {
-			toast.error('Failed to save settings');
+			notify.error('Failed to save settings');
 			console.error(error);
 		} finally {
 			saving = false;
@@ -245,7 +245,7 @@
 		input.value = '';
 		if (!file) return;
 		if (file.size > 4 * 1024 * 1024) {
-			toast.error('Icon images must be under 4 MB');
+			notify.error('Icon images must be under 4 MB');
 			return;
 		}
 		iconUploading = true;
@@ -253,10 +253,10 @@
 			const image = new Uint8Array(await file.arrayBuffer());
 			const response = await rpcClient.server.uploadServerIcon({ id: server.id, image });
 			uploadedFavicon = response.favicon;
-			toast.success(stopped ? 'Server icon updated' : 'Server icon updated. Shows after restart.');
+			notify.success(stopped ? 'Server icon updated' : 'Server icon updated. Shows after restart.');
 			onUpdate?.();
 		} catch {
-			toast.error('Failed to update the server icon');
+			notify.error('Failed to update the server icon');
 		} finally {
 			iconUploading = false;
 		}
@@ -306,7 +306,7 @@
 
 	function setDetached(checked: boolean) {
 		if (checked && proxied) {
-			toast.error('Proxied servers cannot run detached');
+			notify.error('Proxied servers cannot run detached');
 			formData.detached = false;
 			return;
 		}
@@ -318,7 +318,7 @@
 
 	function setAutoStart(checked: boolean) {
 		if (formData.detached) {
-			toast.error('Detached servers cannot auto start');
+			notify.error('Detached servers cannot auto start');
 			formData.autoStart = false;
 			return;
 		}

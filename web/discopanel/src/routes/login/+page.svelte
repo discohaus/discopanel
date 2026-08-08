@@ -13,7 +13,7 @@
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Tabs, TabsContent, TabsList, TabsTrigger } from '$lib/components/ui/tabs';
 	import { DiscoLogo } from '$lib/components/app';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { Loader2, AlertCircle, TicketCheck, KeyRound } from '@lucide/svelte';
 
 	let mode = $state<'login' | 'register'>('login');
@@ -129,7 +129,7 @@
 
 		try {
 			await authStore.login(username, password);
-			toast.success('Logged in successfully');
+			notify.success('Logged in successfully');
 			setTimeout(() => {
 				goto(resolve('/'));
 			}, 100);
@@ -162,7 +162,7 @@
 				inviteValid ? inviteCode : undefined,
 				inviteValid && inviteRequiresPin ? invitePin : undefined
 			);
-			toast.success(
+			notify.success(
 				authStatus.firstUserSetup
 					? 'Admin account created successfully'
 					: 'Account created successfully'
@@ -192,7 +192,7 @@
 		loading = true;
 		try {
 			await authStore.useRecoveryKey(recoveryKey);
-			toast.success('Panel reset to first-user setup');
+			notify.success('Panel reset to first-user setup');
 			window.location.reload();
 		} catch (err: unknown) {
 			error = err instanceof Error ? err.message : 'Invalid recovery key';

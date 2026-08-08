@@ -19,7 +19,7 @@
 		VolumeMountRowsEditor
 	} from '$lib/components/app';
 	import { rpcClient } from '$lib/api/rpc-client';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import {
 		ModuleConfigFieldSchema,
 		ModuleConfigFieldType,
@@ -357,14 +357,14 @@
 			const validPorts = ports.filter((p) => p.containerPort > 0);
 			const droppedPorts = ports.length - validPorts.length;
 			if (droppedPorts > 0) {
-				toast.warning(
+				notify.warning(
 					`Ignored ${droppedPorts} port row${droppedPorts === 1 ? '' : 's'} without a container port`
 				);
 			}
 			const validFields = configFields.filter((f) => f.env.trim());
 			const droppedFields = configFields.length - validFields.length;
 			if (droppedFields > 0) {
-				toast.warning(
+				notify.warning(
 					`Ignored ${droppedFields} config field${droppedFields === 1 ? '' : 's'} without an env name`
 				);
 			}
@@ -415,16 +415,16 @@
 
 			if (mode === 'edit' && template) {
 				await rpcClient.module.updateModuleTemplate({ id: template.id, ...payload });
-				toast.success(`Template "${name}" updated`);
+				notify.success(`Template "${name}" updated`);
 			} else {
 				await rpcClient.module.createModuleTemplate(payload);
-				toast.success(`Template "${name}" created`);
+				notify.success(`Template "${name}" created`);
 			}
 
 			open = false;
 			onSuccess();
 		} catch (error) {
-			toast.error(
+			notify.error(
 				`Failed to ${mode} template: ${error instanceof Error ? error.message : 'Unknown error'}`
 			);
 		} finally {

@@ -24,7 +24,7 @@
 		DialogHeader,
 		DialogTitle
 	} from '$lib/components/ui/dialog';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import {
 		Users,
 		UserPlus,
@@ -119,7 +119,7 @@
 			users = usersResponse.users;
 			availableRoles = rolesResponse.roles;
 		} catch (error: unknown) {
-			toast.error('Failed to load users');
+			notify.error('Failed to load users');
 			console.error(error);
 		} finally {
 			loading = false;
@@ -149,12 +149,12 @@
 
 	async function createUser() {
 		if (!newUserForm.username || !newUserForm.password) {
-			toast.error('Username and password are required');
+			notify.error('Username and password are required');
 			return;
 		}
 
 		if (newUserForm.password.length < 8) {
-			toast.error('Password must be at least 8 characters');
+			notify.error('Password must be at least 8 characters');
 			return;
 		}
 
@@ -168,7 +168,7 @@
 			});
 			await rpcClient.user.createUser(request);
 
-			toast.success('User created successfully');
+			notify.success('User created successfully');
 			showCreateDialog = false;
 			newUserForm = {
 				username: '',
@@ -178,7 +178,7 @@
 			};
 			await loadUsers();
 		} catch (error: unknown) {
-			toast.error(error instanceof Error ? error.message : 'Failed to create user');
+			notify.error(error instanceof Error ? error.message : 'Failed to create user');
 		} finally {
 			savingUser = false;
 		}
@@ -197,12 +197,12 @@
 			});
 			await rpcClient.user.updateUser(request);
 
-			toast.success('User updated successfully');
+			notify.success('User updated successfully');
 			showEditDialog = false;
 			editingUser = null;
 			await loadUsers();
 		} catch (error: unknown) {
-			toast.error(error instanceof Error ? error.message : 'Failed to update user');
+			notify.error(error instanceof Error ? error.message : 'Failed to update user');
 		} finally {
 			savingUser = false;
 		}
@@ -222,10 +222,10 @@
 			const request = create(DeleteUserRequestSchema, { id: user.id });
 			await rpcClient.user.deleteUser(request);
 
-			toast.success('User deleted successfully');
+			notify.success('User deleted successfully');
 			await loadUsers();
 		} catch (error: unknown) {
-			toast.error(error instanceof Error ? error.message : 'Failed to delete user');
+			notify.error(error instanceof Error ? error.message : 'Failed to delete user');
 		}
 	}
 
@@ -259,14 +259,14 @@
 				expiresUnit: 'hours'
 			};
 		} catch (error: unknown) {
-			toast.error(error instanceof Error ? error.message : 'Failed to create invite');
+			notify.error(error instanceof Error ? error.message : 'Failed to create invite');
 		} finally {
 			creatingInvite = false;
 		}
 		if (!inviteUrl) return;
 		// Invite exists either way, copying is only a bonus
 		const copied = await copyToClipboard(inviteUrl);
-		toast.success(copied ? 'Invite created and URL copied' : 'Invite created, copy this link', {
+		notify.success(copied ? 'Invite created and URL copied' : 'Invite created, copy this link', {
 			description: inviteUrl,
 			duration: 15000
 		});
@@ -276,9 +276,9 @@
 		const url = `${window.location.origin}/login?invite=${code}`;
 		const copied = await copyToClipboard(url);
 		if (copied) {
-			toast.success('Invite URL copied to clipboard');
+			notify.success('Invite URL copied to clipboard');
 		} else {
-			toast.info('Copy this invite link', { description: url, duration: 15000 });
+			notify.info('Copy this invite link', { description: url, duration: 15000 });
 		}
 	}
 
@@ -286,9 +286,9 @@
 		try {
 			await rpcClient.auth.deleteInvite(create(DeleteInviteRequestSchema, { id }), silentCallOptions);
 			invites = invites.filter((i) => i.id !== id);
-			toast.success('Invite revoked');
+			notify.success('Invite revoked');
 		} catch (error: unknown) {
-			toast.error(error instanceof Error ? error.message : 'Failed to revoke invite');
+			notify.error(error instanceof Error ? error.message : 'Failed to revoke invite');
 		}
 	}
 

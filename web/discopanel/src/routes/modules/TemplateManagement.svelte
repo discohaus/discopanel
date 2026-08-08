@@ -5,7 +5,7 @@
 	import { EmptyState, ConfirmDialog } from '$lib/components/app';
 	import DynamicIcon from '$lib/components/ui/DynamicIcon.svelte';
 	import { rpcClient } from '$lib/api/rpc-client';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import type { ModuleTemplate } from '$lib/proto/discopanel/v1/storage_pb';
 	import { ModuleTemplateType } from '$lib/proto/discopanel/v1/storage_pb';
 	import { Plus, Trash2, Settings, Layers, Search } from '@lucide/svelte';
@@ -42,7 +42,7 @@
 			const response = await rpcClient.module.listModuleTemplates({});
 			templates = response.templates;
 		} catch {
-			if (!silent) toast.error('Failed to load module templates');
+			if (!silent) notify.error('Failed to load module templates');
 		} finally {
 			if (!silent) loading = false;
 		}
@@ -58,10 +58,10 @@
 		const template = deleteTarget;
 		try {
 			await rpcClient.module.deleteModuleTemplate({ id: template.id });
-			toast.success(`Template "${template.name}" deleted`);
+			notify.success(`Template "${template.name}" deleted`);
 			await loadTemplates(true);
 		} catch (error) {
-			toast.error(
+			notify.error(
 				`Failed to delete template: ${error instanceof Error ? error.message : 'Unknown error'}`
 			);
 		}

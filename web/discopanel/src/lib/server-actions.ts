@@ -1,6 +1,6 @@
 import { rpcClient } from '$lib/api/rpc-client';
 import { serversStore } from '$lib/stores/servers';
-import { toast } from 'svelte-sonner';
+import { notify } from '$lib/stores/activity.svelte';
 import type { Server } from '$lib/proto/discopanel/v1/storage_pb';
 
 export type ServerOp = 'start' | 'stop' | 'restart' | 'recreate';
@@ -32,7 +32,7 @@ export async function runServerAction(
 				await rpcClient.server.recreateServer({ id: server.id });
 				break;
 		}
-		toast.success(`${ACTION_VERBS[action]} ${server.name}...`);
+		notify.success(`${ACTION_VERBS[action]} ${server.name}...`);
 		await refetch();
 	} catch {
 		// Interceptor already toasts the failure

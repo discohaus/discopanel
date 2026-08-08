@@ -36,7 +36,7 @@
 	import { loaderDisplayName } from '$lib/stores/loaders';
 	import { formatUptime } from '$lib/utils/time';
 	import { runServerAction, type ServerOp } from '$lib/server-actions';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import {
 		Plus,
 		Search,
@@ -173,9 +173,9 @@
 		try {
 			await rpcClient.server.deleteServer({ id: deleteTarget.id }, silentCallOptions);
 			serversStore.removeServer(deleteTarget.id);
-			toast.success(`Deleted ${deleteTarget.name}`);
+			notify.success(`Deleted ${deleteTarget.name}`);
 		} catch (error) {
-			toast.error(error instanceof Error ? error.message : 'Failed to delete server');
+			notify.error(error instanceof Error ? error.message : 'Failed to delete server');
 		} finally {
 			deleteTarget = null;
 		}

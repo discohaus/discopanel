@@ -17,7 +17,7 @@
 	import SettingRow from '$lib/components/app/setting-row.svelte';
 	import { rpcClient } from '$lib/api/rpc-client';
 	import { canUpdateSettings } from '$lib/stores/auth';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { UpdateAuthSettingsRequestSchema } from '$lib/proto/discopanel/v1/auth_pb';
 	import type { GetAuthConfigResponse } from '$lib/proto/discopanel/v1/auth_pb';
 	import {
@@ -100,9 +100,9 @@
 			if (response.config) {
 				applyConfig(response.config);
 			}
-			toast.success('Authentication settings updated');
+			notify.success('Authentication settings updated');
 		} catch (error: unknown) {
-			toast.error(error instanceof Error ? error.message : 'Failed to update settings');
+			notify.error(error instanceof Error ? error.message : 'Failed to update settings');
 		} finally {
 			saving = false;
 		}

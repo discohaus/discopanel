@@ -18,7 +18,7 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { serversStore } from '$lib/stores/servers';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { Loader2, Unplug } from '@lucide/svelte';
 
 	let {
@@ -61,7 +61,7 @@
 				ports = Object.fromEntries(impact.servers.map((s) => [s.serverId, s.proposedPort]));
 			})
 			.catch((error: unknown) => {
-				toast.error(error instanceof Error ? error.message : 'Failed to load disable preview');
+				notify.error(error instanceof Error ? error.message : 'Failed to load disable preview');
 				open = false;
 			})
 			.finally(() => (loading = false));
@@ -98,7 +98,7 @@
 					proposedPort: ports[s.serverId] ?? s.proposedPort
 				}))
 			});
-			toast.success('Proxy disabled, servers converted to direct ports');
+			notify.success('Proxy disabled, servers converted to direct ports');
 			open = false;
 			await onConverted();
 		} catch (error: unknown) {

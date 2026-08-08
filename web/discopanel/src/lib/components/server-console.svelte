@@ -15,7 +15,7 @@
 		UploadToMCLogsRequestSchema
 	} from '$lib/proto/discopanel/v1/server_pb';
 	import { Button } from '$lib/components/ui/button';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import {
 		Send,
 		Loader2,
@@ -263,7 +263,7 @@
 			if (result.serverId === server.id) {
 				clearCommandInFlight();
 				if (!result.success) {
-					toast.error(result.error || 'Failed to execute command');
+					notify.error(result.error || 'Failed to execute command');
 				}
 			}
 		});
@@ -397,7 +397,7 @@
 				});
 				const response = await rpcClient.server.sendCommand(request);
 				if (!response.success) {
-					toast.error(response.error || 'Failed to execute command');
+					notify.error(response.error || 'Failed to execute command');
 				}
 			} catch (error) {
 				console.error(
@@ -417,9 +417,9 @@
 			await rpcClient.server.clearServerLogs(request, silentCallOptions);
 			logEntries = [];
 			unseenLines = 0;
-			toast.success('Console cleared');
+			notify.success('Console cleared');
 		} catch (error) {
-			toast.error(
+			notify.error(
 				'Failed to clear console: ' + (error instanceof Error ? error.message : 'Unknown error')
 			);
 		}
@@ -436,7 +436,7 @@
 			const response = await rpcClient.server.uploadToMCLogs(request, silentCallOptions);
 			url = response.url;
 		} catch (error) {
-			toast.error(
+			notify.error(
 				'Failed to upload to mclo.gs: ' + (error instanceof Error ? error.message : 'Unknown error')
 			);
 		} finally {
@@ -445,7 +445,7 @@
 		if (!url) return;
 		// Upload worked, copying is only a bonus
 		const copied = await copyToClipboard(url);
-		toast.success(copied ? 'mclo.gs link copied' : 'Logs uploaded, copy this link', {
+		notify.success(copied ? 'mclo.gs link copied' : 'Logs uploaded, copy this link', {
 			description: url,
 			duration: 15000
 		});
@@ -462,7 +462,7 @@
 		a.click();
 		document.body.removeChild(a);
 		URL.revokeObjectURL(url);
-		toast.success('Logs downloaded');
+		notify.success('Logs downloaded');
 	}
 
 	function handleTailChange() {

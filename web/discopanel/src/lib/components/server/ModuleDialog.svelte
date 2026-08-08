@@ -24,7 +24,7 @@
 	import DynamicIcon from '$lib/components/ui/DynamicIcon.svelte';
 	import ModuleTemplateMenu from './ModuleTemplateMenu.svelte';
 	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { cn } from '$lib/utils';
 	import { TONE_BADGE } from '$lib/server-status';
 	import { moduleStatusMeta } from '$lib/module-status';
@@ -391,10 +391,10 @@
 		if (!template) return;
 		try {
 			await rpcClient.module.deleteModuleTemplate({ id: template.id });
-			toast.success(`Template "${template.name}" deleted`);
+			notify.success(`Template "${template.name}" deleted`);
 			onTemplateDeleted?.();
 		} catch (error) {
-			toast.error(
+			notify.error(
 				`Failed to delete template: ${error instanceof Error ? error.message : 'Unknown error'}`
 			);
 		}
@@ -561,13 +561,13 @@
 				promptId: pendingPrompt.id,
 				value: promptValue
 			});
-			toast.success('Sent to module');
+			notify.success('Sent to module');
 			pendingPrompt = null;
 			promptValue = '';
 			// Give the module a moment then re-check
 			setTimeout(pollPrompt, 1500);
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Failed to send input');
+			notify.error(err instanceof Error ? err.message : 'Failed to send input');
 		} finally {
 			promptSubmitting = false;
 		}
@@ -576,12 +576,12 @@
 	async function handleSubmit() {
 		if (configDenyCount > 0) {
 			activeSection = 'configuration';
-			toast.error('Fix the highlighted configuration fields first');
+			notify.error('Fix the highlighted configuration fields first');
 			return;
 		}
 		if (certPairIncomplete) {
 			activeSection = 'general';
-			toast.error('Paste both the certificate and the private key');
+			notify.error('Paste both the certificate and the private key');
 			return;
 		}
 		const proceed = await showWarnings();
@@ -592,7 +592,7 @@
 			const portsPayload = ports.filter((p) => p.containerPort > 0);
 			const droppedPorts = ports.length - portsPayload.length;
 			if (droppedPorts > 0) {
-				toast.warning(
+				notify.warning(
 					`Ignored ${droppedPorts} port row${droppedPorts === 1 ? '' : 's'} without a container port`
 				);
 			}
@@ -631,7 +631,7 @@
 					certPem: certPem.trim(),
 					keyPem: keyPem.trim()
 				});
-				toast.success(`Module "${name}" created`);
+				notify.success(`Module "${name}" created`);
 			} else if (module && systemLocked) {
 				// Panel owns everything else on a system module
 				await rpcClient.module.updateModule({
@@ -641,7 +641,7 @@
 					ports: portsPayload,
 					clearPorts: portsPayload.length === 0
 				});
-				toast.success(`Module "${module.name}" updated`);
+				notify.success(`Module "${module.name}" updated`);
 			} else if (module) {
 				await rpcClient.module.updateModule({
 					id: module.id,
@@ -671,12 +671,12 @@
 						? { certPem: certPem.trim(), keyPem: keyPem.trim() }
 						: {})
 				});
-				toast.success(`Module "${name}" updated`);
+				notify.success(`Module "${name}" updated`);
 			}
 			open = false;
 			onSuccess();
 		} catch (error) {
-			toast.error(`Failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+			notify.error(`Failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
 		} finally {
 			submitting = false;
 		}

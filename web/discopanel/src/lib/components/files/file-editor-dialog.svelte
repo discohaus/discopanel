@@ -10,7 +10,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { ConfirmDialog } from '$lib/components/app';
 	import { rpcClient } from '$lib/api/rpc-client';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { Loader2, Save, X, Maximize2, Minimize2 } from '@lucide/svelte';
 	import type { FileInfo } from '$lib/proto/discopanel/v1/file_pb';
 	import * as monaco from 'monaco-editor';
@@ -124,7 +124,7 @@
 			originalContent = text;
 			contentLoaded = true;
 		} catch {
-			toast.error('Failed to load file content');
+			notify.error('Failed to load file content');
 			onClose();
 		} finally {
 			loading = false;
@@ -141,11 +141,11 @@
 				path: file.path,
 				content: new TextEncoder().encode(content)
 			});
-			toast.success('File saved successfully');
+			notify.success('File saved successfully');
 			originalContent = content;
 			onSave?.();
 		} catch {
-			toast.error('Failed to save file');
+			notify.error('Failed to save file');
 		} finally {
 			saving = false;
 		}

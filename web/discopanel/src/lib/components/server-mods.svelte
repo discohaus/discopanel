@@ -8,7 +8,7 @@
 	import { Loader2, Upload, Download, Trash2, Package, Search, X } from '@lucide/svelte';
 	import { rpcClient } from '$lib/api/rpc-client';
 	import { modsDirectoryFor } from '$lib/stores/loaders';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import type { Server, Mod } from '$lib/proto/discopanel/v1/storage_pb';
 	import { formatBytes } from '$lib/utils';
 	import { formatDate } from '$lib/utils/time';
@@ -68,7 +68,7 @@
 			mods = response.mods;
 		} catch {
 			if (canHaveMods()) {
-				toast.error('Failed to load mods');
+				notify.error('Failed to load mods');
 			}
 		} finally {
 			loading = false;
@@ -80,7 +80,7 @@
 			(f) => f.name.endsWith('.jar') || f.name.endsWith('.zip')
 		);
 		if (files.length === 0) {
-			toast.error('Only .jar and .zip files are supported');
+			notify.error('Only .jar and .zip files are supported');
 			return;
 		}
 
@@ -104,13 +104,13 @@
 					uploadSessionId: result.sessionId
 				});
 			}
-			toast.success(`Uploaded ${files.length} ${files.length === 1 ? 'file' : 'files'}`);
+			notify.success(`Uploaded ${files.length} ${files.length === 1 ? 'file' : 'files'}`);
 			await loadMods();
 		} catch (error: unknown) {
 			if (error instanceof Error && error.message === 'Upload cancelled') {
-				toast.info('Upload cancelled');
+				notify.info('Upload cancelled');
 			} else {
-				toast.error('Failed to upload mod');
+				notify.error('Failed to upload mod');
 			}
 		} finally {
 			uploading = false;
@@ -152,10 +152,10 @@
 				modId: mod.id,
 				enabled: !mod.enabled
 			});
-			toast.success(`Mod ${!mod.enabled ? 'enabled' : 'disabled'}`);
+			notify.success(`Mod ${!mod.enabled ? 'enabled' : 'disabled'}`);
 			await loadMods();
 		} catch {
-			toast.error('Failed to toggle mod');
+			notify.error('Failed to toggle mod');
 		}
 	}
 
@@ -171,10 +171,10 @@
 				serverId: server.id,
 				modId: deleteTarget.id
 			});
-			toast.success('Mod deleted');
+			notify.success('Mod deleted');
 			await loadMods();
 		} catch {
-			toast.error('Failed to delete mod');
+			notify.error('Failed to delete mod');
 		}
 	}
 
@@ -192,7 +192,7 @@
 			a.click();
 			URL.revokeObjectURL(url);
 		} catch {
-			toast.error('Failed to download mod');
+			notify.error('Failed to download mod');
 		}
 	}
 

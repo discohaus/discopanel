@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { registerRefresh } from '$lib/stores/refresh';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { Input } from '$lib/components/ui/input';
 	import { Button } from '$lib/components/ui/button';
 	import { Label } from '$lib/components/ui/label';
@@ -381,7 +381,7 @@
 			tasks = response.tasks;
 			await loadSchedulerStatus();
 		} catch (_e) {
-			toast.error('Failed to load tasks');
+			notify.error('Failed to load tasks');
 		} finally {
 			loading = false;
 		}
@@ -481,27 +481,27 @@
 
 	async function saveTask() {
 		if (!taskName.trim()) {
-			toast.error('Task name is required');
+			notify.error('Task name is required');
 			return;
 		}
 		if (taskType === TaskType.COMMAND && !commandConfig.command.trim()) {
-			toast.error('A command is required for command tasks');
+			notify.error('A command is required for command tasks');
 			return;
 		}
 		if (taskType === TaskType.SCRIPT && !scriptConfig.scriptPath.trim()) {
-			toast.error('A script path is required for script tasks');
+			notify.error('A script path is required for script tasks');
 			return;
 		}
 		if (scheduleType === ScheduleType.CRON && !cronExpr.trim()) {
-			toast.error('A cron expression is required');
+			notify.error('A cron expression is required');
 			return;
 		}
 		if (taskType === TaskType.WEBHOOK && !webhookConfig.url.trim()) {
-			toast.error('Webhook URL is required');
+			notify.error('Webhook URL is required');
 			return;
 		}
 		if (scheduleType === ScheduleType.EVENT && eventTriggers.length === 0) {
-			toast.error('At least one event trigger is required');
+			notify.error('At least one event trigger is required');
 			return;
 		}
 
@@ -557,7 +557,7 @@
 					clearEventTriggers: !isEventScheduled
 				});
 				await rpcClient.task.updateTask(request);
-				toast.success('Task updated successfully');
+				notify.success('Task updated successfully');
 			} else {
 				const request = create(CreateTaskRequestSchema, {
 					serverId: server.id,
@@ -577,13 +577,13 @@
 					eventTriggers: isEventScheduled ? eventTriggers : []
 				});
 				await rpcClient.task.createTask(request);
-				toast.success('Task created successfully');
+				notify.success('Task created successfully');
 			}
 			showCreateDialog = false;
 			resetForm();
 			await loadTasks();
 		} catch (error: unknown) {
-			toast.error(error instanceof Error ? error.message : 'Failed to save task');
+			notify.error(error instanceof Error ? error.message : 'Failed to save task');
 		} finally {
 			creating = false;
 		}
@@ -595,10 +595,10 @@
 				task.status === TaskStatus.ENABLED ? TaskStatus.DISABLED : TaskStatus.ENABLED;
 			const request = create(ToggleTaskRequestSchema, { id: task.id, status: newStatus });
 			await rpcClient.task.toggleTask(request);
-			toast.success(`Task ${newStatus === TaskStatus.ENABLED ? 'enabled' : 'disabled'}`);
+			notify.success(`Task ${newStatus === TaskStatus.ENABLED ? 'enabled' : 'disabled'}`);
 			await loadTasks();
 		} catch (_e) {
-			toast.error('Failed to toggle task');
+			notify.error('Failed to toggle task');
 		}
 	}
 
@@ -608,10 +608,10 @@
 		try {
 			const request = create(TriggerTaskRequestSchema, { id: task.id });
 			await rpcClient.task.triggerTask(request);
-			toast.success('Task triggered successfully');
+			notify.success('Task triggered successfully');
 			await loadTasks();
 		} catch (error: unknown) {
-			toast.error(error instanceof Error ? error.message : 'Failed to trigger task');
+			notify.error(error instanceof Error ? error.message : 'Failed to trigger task');
 		} finally {
 			if (runningTaskId === task.id) runningTaskId = null;
 		}
@@ -627,10 +627,10 @@
 		try {
 			const request = create(DeleteTaskRequestSchema, { id: deleteTarget.id });
 			await rpcClient.task.deleteTask(request);
-			toast.success('Task deleted successfully');
+			notify.success('Task deleted successfully');
 			await loadTasks();
 		} catch (_e) {
-			toast.error('Failed to delete task');
+			notify.error('Failed to delete task');
 		}
 	}
 
@@ -643,7 +643,7 @@
 			const response = await rpcClient.task.listTaskExecutions(request);
 			taskHistory = response.executions;
 		} catch (_e) {
-			toast.error('Failed to load task history');
+			notify.error('Failed to load task history');
 		} finally {
 			historyLoading = false;
 		}
@@ -660,7 +660,7 @@
 			});
 			taskHistory = response.executions;
 		} catch (_e) {
-			toast.error('Failed to load run history');
+			notify.error('Failed to load run history');
 		} finally {
 			historyLoading = false;
 		}
@@ -669,11 +669,11 @@
 	async function cancelExecution(executionId: string) {
 		try {
 			await rpcClient.task.cancelExecution({ id: executionId });
-			toast.success('Execution cancelled');
+			notify.success('Execution cancelled');
 			if (selectedTask) await viewHistory(selectedTask);
 			else await viewServerHistory();
 		} catch (_e) {
-			toast.error('Failed to cancel execution');
+			notify.error('Failed to cancel execution');
 		}
 	}
 
@@ -827,8 +827,8 @@
 	// Copies a template variable with named feedback
 	async function copyVariable(variable: string) {
 		const ok = await copyToClipboard(variable);
-		if (ok) toast.success(`Copied ${variable}`);
-		else toast.error('Failed to copy to clipboard');
+		if (ok) notify.success(`Copied ${variable}`);
+		else notify.error('Failed to copy to clipboard');
 	}
 </script>
 

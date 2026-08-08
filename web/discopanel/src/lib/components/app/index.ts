@@ -1,4 +1,5 @@
 export { default as StatusDot } from './status-dot.svelte';
+export { default as StatusBar } from './status-bar.svelte';
 export { default as StatusBadge } from './status-badge.svelte';
 export { default as Equalizer } from './equalizer.svelte';
 export { default as ServerAvatar } from './server-avatar.svelte';
@@ -8,6 +9,7 @@ export { default as EmptyState } from './empty-state.svelte';
 export { default as ConfirmDialog } from './confirm-dialog.svelte';
 export { default as CopyButton } from './copy-button.svelte';
 export { default as AddressSelect } from './address-select.svelte';
+export { default as CardStack } from './card-stack.svelte';
 export { default as StatTile } from './stat-tile.svelte';
 export { default as SectionCard } from './section-card.svelte';
 export { default as MotdText } from './motd-text.svelte';

@@ -15,7 +15,7 @@
 		DropdownMenuTrigger
 	} from '$lib/components/ui/dropdown-menu';
 	import { StatusBadge, ServerAvatar, ConfirmDialog, TabRail, EmptyState } from '$lib/components/app';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import {
 		Play,
 		Square,
@@ -156,7 +156,7 @@
 			}
 		} catch {
 			if (serverId === requestedId && !server) {
-				toast.error('Failed to load server');
+				notify.error('Failed to load server');
 				loading = false;
 			}
 		}
@@ -205,18 +205,18 @@
 				silentCallOptions
 			);
 			serversStore.removeServer(server.id);
-			toast.success('Server deleted');
+			notify.success('Server deleted');
 			goto(resolve('/servers'));
 		} catch (error) {
-			toast.error(error instanceof Error ? error.message : 'Failed to delete server');
+			notify.error(error instanceof Error ? error.message : 'Failed to delete server');
 		}
 	}
 
 	async function copyServerId() {
 		if (!server) return;
 		const ok = await copyToClipboard(server.id);
-		if (ok) toast.success('Server ID copied');
-		else toast.error('Failed to copy server ID');
+		if (ok) notify.success('Server ID copied');
+		else notify.error('Failed to copy server ID');
 	}
 
 	let showStart = $derived(

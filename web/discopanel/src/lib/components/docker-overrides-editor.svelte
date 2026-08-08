@@ -11,7 +11,7 @@
 	import { DockerOverridesSchema, VolumeMountSchema } from '$lib/proto/discopanel/v1/storage_pb';
 	import { create } from '@bufbuild/protobuf';
 	import { Badge } from '$lib/components/ui/badge';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 
 	interface Props {
 		overrides?: DockerOverrides;
@@ -231,7 +231,7 @@
 
 	function commitLabelRows(changedKey?: string) {
 		if (changedKey && changedKey.startsWith('discopanel.')) {
-			toast.error('This namespace is reserved for system use.');
+			notify.error('This namespace is reserved for system use.');
 		}
 		updateOverride('labels', mapFromRows(labelRows));
 	}

@@ -17,7 +17,7 @@
 	import { Loader2, Folder, Upload, X } from '@lucide/svelte';
 	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { registerRefresh } from '$lib/stores/refresh';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import type { Server } from '$lib/proto/discopanel/v1/storage_pb';
 	import type { FileInfo } from '$lib/proto/discopanel/v1/file_pb';
 	import { ExtractionState } from '$lib/proto/discopanel/v1/file_pb';
@@ -198,7 +198,7 @@
 			});
 			files = response.files;
 		} catch {
-			toast.error('Failed to load files');
+			notify.error('Failed to load files');
 		} finally {
 			loading = false;
 		}
@@ -415,7 +415,7 @@
 		// Guards against dropping into self or descendants
 		for (const p of paths) {
 			if (file.path === p || file.path.startsWith(p + '/')) {
-				toast.error('Cannot move a folder into itself');
+				notify.error('Cannot move a folder into itself');
 				return;
 			}
 		}
@@ -440,10 +440,10 @@
 					});
 				}
 			}
-			toast.success(`${isCopy ? 'Copied' : 'Moved'} ${itemsLabel(paths.length)}`);
+			notify.success(`${isCopy ? 'Copied' : 'Moved'} ${itemsLabel(paths.length)}`);
 			await loadFiles();
 		} catch {
-			toast.error(`Failed to ${isCopy ? 'copy' : 'move'} files`);
+			notify.error(`Failed to ${isCopy ? 'copy' : 'move'} files`);
 		}
 	}
 
@@ -466,7 +466,7 @@
 				triggerStreamDownload(response.sessionId, response.filename);
 			}
 		} catch {
-			toast.error('Failed to download');
+			notify.error('Failed to download');
 		}
 	}
 
@@ -497,10 +497,10 @@
 				serverId: server.id,
 				path: deleteTarget.path
 			});
-			toast.success('Deleted');
+			notify.success('Deleted');
 			await loadFiles();
 		} catch {
-			toast.error('Failed to delete');
+			notify.error('Failed to delete');
 		}
 	}
 
@@ -533,12 +533,12 @@
 			}
 			if (focusedPath === oldPath) focusedPath = newPath;
 			if (lastClickedPath === oldPath) lastClickedPath = newPath;
-			toast.success(`Renamed to ${newItemName}`);
+			notify.success(`Renamed to ${newItemName}`);
 			showRenameDialog = false;
 			await loadFiles();
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : 'Failed to rename';
-			toast.error(msg);
+			notify.error(msg);
 		}
 	}
 
@@ -547,7 +547,7 @@
 		const fullPath = dialogTargetPath ? `${dialogTargetPath}/${newItemName}` : newItemName;
 		// Refuses names that would truncate existing files
 		if (pathExists(fullPath)) {
-			toast.error(`"${newItemName}" already exists here`);
+			notify.error(`"${newItemName}" already exists here`);
 			return;
 		}
 		try {
@@ -556,11 +556,11 @@
 				path: fullPath,
 				content: new Uint8Array()
 			});
-			toast.success(`Created file: ${newItemName}`);
+			notify.success(`Created file: ${newItemName}`);
 			showNewFileDialog = false;
 			await loadFiles();
 		} catch {
-			toast.error('Failed to create file');
+			notify.error('Failed to create file');
 		}
 	}
 
@@ -568,7 +568,7 @@
 		if (!newItemName.trim()) return;
 		const fullPath = dialogTargetPath ? `${dialogTargetPath}/${newItemName}` : newItemName;
 		if (pathExists(fullPath)) {
-			toast.error(`"${newItemName}" already exists here`);
+			notify.error(`"${newItemName}" already exists here`);
 			return;
 		}
 		try {
@@ -576,11 +576,11 @@
 				serverId: server.id,
 				path: fullPath
 			});
-			toast.success(`Created folder: ${newItemName}`);
+			notify.success(`Created folder: ${newItemName}`);
 			showNewFolderDialog = false;
 			await loadFiles();
 		} catch {
-			toast.error('Failed to create folder');
+			notify.error('Failed to create folder');
 		}
 	}
 
@@ -600,11 +600,11 @@
 				path: '',
 				paths
 			});
-			toast.success(`Deleted ${itemsLabel(paths.length)}`);
+			notify.success(`Deleted ${itemsLabel(paths.length)}`);
 			selectedPaths = new SvelteSet();
 			await loadFiles();
 		} catch {
-			toast.error('Failed to delete items');
+			notify.error('Failed to delete items');
 		}
 	}
 
@@ -622,7 +622,7 @@
 		try {
 			await downloadArchive(paths);
 		} catch {
-			toast.error('Failed to download');
+			notify.error('Failed to download');
 		}
 	}
 
@@ -641,17 +641,17 @@
 				destinationPath: '',
 				archiveName: ''
 			});
-			toast.success(`Archive created: ${result.filesArchived} files`);
+			notify.success(`Archive created: ${result.filesArchived} files`);
 			await loadFiles();
 		} catch {
-			toast.error('Failed to create archive');
+			notify.error('Failed to create archive');
 		}
 	}
 
 	async function confirmMove(destinationPath: string) {
 		const paths = Array.from(selectedPaths);
 		if (violatesNesting(paths, destinationPath)) {
-			toast.error('Cannot move a folder into itself');
+			notify.error('Cannot move a folder into itself');
 			return;
 		}
 		showMoveDialog = false;
@@ -665,18 +665,18 @@
 					destinationPath: dest
 				});
 			}
-			toast.success(`Moved ${itemsLabel(paths.length)}`);
+			notify.success(`Moved ${itemsLabel(paths.length)}`);
 			selectedPaths = new SvelteSet();
 			await loadFiles();
 		} catch {
-			toast.error('Failed to move items');
+			notify.error('Failed to move items');
 		}
 	}
 
 	async function confirmCopy(destinationPath: string) {
 		const paths = Array.from(selectedPaths);
 		if (violatesNesting(paths, destinationPath)) {
-			toast.error('Cannot copy a folder into itself');
+			notify.error('Cannot copy a folder into itself');
 			return;
 		}
 		showCopyDialog = false;
@@ -690,11 +690,11 @@
 					destinationPath: dest
 				});
 			}
-			toast.success(`Copied ${itemsLabel(paths.length)}`);
+			notify.success(`Copied ${itemsLabel(paths.length)}`);
 			selectedPaths = new SvelteSet();
 			await loadFiles();
 		} catch {
-			toast.error('Failed to copy items');
+			notify.error('Failed to copy items');
 		}
 	}
 
@@ -731,23 +731,23 @@
 					if (status.state === ExtractionState.COMPLETED) {
 						stopExtractionPoll();
 						extracting = false;
-						toast.success(`Extracted ${status.filesExtracted} files`);
+						notify.success(`Extracted ${status.filesExtracted} files`);
 						await loadFiles();
 					} else if (status.state === ExtractionState.FAILED) {
 						stopExtractionPoll();
 						extracting = false;
-						toast.error(status.error || 'Extraction failed');
+						notify.error(status.error || 'Extraction failed');
 					}
 				} catch {
 					stopExtractionPoll();
 					extracting = false;
-					toast.error('Lost connection to extraction');
+					notify.error('Lost connection to extraction');
 				}
 			}, 2000);
 		} catch (error) {
 			extracting = false;
 			const msg = error instanceof Error ? error.message : 'Failed to start extraction';
-			toast.error(msg);
+			notify.error(msg);
 		}
 	}
 
@@ -850,13 +850,13 @@
 					filename: file.name
 				});
 			}
-			toast.success(`Uploaded ${fileList.length} file(s)`);
+			notify.success(`Uploaded ${fileList.length} file(s)`);
 			await loadFiles();
 		} catch (error) {
 			if (error instanceof Error && error.message === 'Upload cancelled') {
-				toast.info('Upload cancelled');
+				notify.info('Upload cancelled');
 			} else {
-				toast.error('Failed to upload files');
+				notify.error('Failed to upload files');
 			}
 		} finally {
 			uploading = false;

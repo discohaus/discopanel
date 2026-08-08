@@ -9,9 +9,9 @@
 	import { Select, SelectContent, SelectItem, SelectTrigger } from '$lib/components/ui/select';
 	import { Switch } from '$lib/components/ui/switch';
 	import { Badge } from '$lib/components/ui/badge';
-	import { PageHeader, ServerAvatar } from '$lib/components/app';
+	import { CardStack, PageHeader, ServerAvatar } from '$lib/components/app';
 	import { rpcClient } from '$lib/api/rpc-client';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import {
 		ArrowLeft,
 		Camera,
@@ -63,6 +63,7 @@
 	let usedPorts = $state<Record<number, boolean>>({});
 	let portError = $state('');
 	let useProxyMode = $state(false);
+	let proxyCatchAll = $state(false);
 	let showAdvanced = $state(false);
 	let hostTotalMb = $state(0);
 	let occupiedMb = $state(0);
@@ -77,6 +78,14 @@
 
 	// Modpack selection
 	let sourceMode = $state<'blank' | 'modpack' | 'lobby'>('blank');
+	const modeFlavor = {
+		blank: { name: 'Survival world', desc: 'Weekend survival with friends' },
+		modpack: { name: 'Modded server', desc: 'Notes about the modpack' },
+		lobby: { name: 'Lobby', desc: 'The hub players land in first' }
+	};
+	let namePlaceholder = $derived(modeFlavor[sourceMode].name);
+	let serverDescPlaceholder = $derived(modeFlavor[sourceMode].desc);
+
 	let selectedModpack = $state<IndexedModpack | null>(null);
 	// Pack art previews as the icon until upload wins
 	let avatarPreview = $derived(iconPreview || selectedModpack?.logoUrl || '');
@@ -108,6 +117,30 @@
 			modpackVersionId: ''
 		})
 	);
+
+	// Last auto filled text, user typed text wins
+	let autoName = '';
+	let autoDesc = '';
+	function fillName(value: string) {
+		const current = formData.name.trim();
+		if (current && current !== autoName) return;
+		formData.name = value;
+		autoName = value;
+	}
+	function fillDesc(value: string) {
+		const current = formData.description.trim();
+		if (current && current !== autoDesc) return;
+		formData.description = value;
+		autoDesc = value;
+	}
+	function clearAutoName() {
+		if (autoName && formData.name.trim() === autoName) formData.name = '';
+		autoName = '';
+	}
+	function clearAutoDesc() {
+		if (autoDesc && formData.description.trim() === autoDesc) formData.description = '';
+		autoDesc = '';
+	}
 
 	onMount(async () => {
 		try {
@@ -208,7 +241,7 @@
 				}
 			}
 		} catch (error) {
-			toast.error('Failed to load server configuration options');
+			notify.error('Failed to load server configuration options');
 			console.error(error);
 		} finally {
 			loadingVersions = false;
@@ -253,12 +286,12 @@
 			const loaderName = (config['mod_loader'] || '').toLowerCase();
 			const loaderInfo = modLoaders.find((l) => l.name === loaderName);
 			if (!loaderInfo) {
-				toast.error(`Unsupported mod loader "${loaderName}"`);
+				notify.error(`Unsupported mod loader "${loaderName}"`);
 				selectedModpack = null;
 				return;
 			}
-			formData.name = modpack.name || '';
-			formData.description = modpack.summary || '';
+			fillName(modpack.name || '');
+			fillDesc(modpack.summary || '');
 			formData.modLoader = loaderInfo.loader;
 			formData.mcVersion = config['mc_version'] || modpack.mcVersion || '';
 			// Backend floors modpack memory at 4 GB
@@ -266,7 +299,7 @@
 			formData.dockerImage = config['docker_image'] || '';
 			await loadModpackVersions(modpack.id);
 		} catch (error) {
-			toast.error('Failed to load modpack configuration');
+			notify.error('Failed to load modpack configuration');
 			console.error(error);
 			selectedModpack = null;
 		}
@@ -276,6 +309,8 @@
 		selectedModpack = null;
 		modpackVersions = [];
 		selectedVersionId = '';
+		clearAutoName();
+		clearAutoDesc();
 		formData.modLoader = ModLoader.UNSPECIFIED;
 		formData.mcVersion = latestVersion || '';
 		formData.dockerImage = '';
@@ -283,14 +318,14 @@
 	}
 
 	function setSourceMode(mode: 'blank' | 'modpack' | 'lobby') {
-		const leavingLobby = sourceMode === 'lobby' && mode !== 'lobby';
+		if (sourceMode === mode) return;
+		const leavingLobby = sourceMode === 'lobby';
 		sourceMode = mode;
 		if (mode !== 'modpack' && selectedModpack) {
 			removeModpack();
 		}
 		if (leavingLobby) {
-			formData.modLoader = ModLoader.UNSPECIFIED;
-			formData.mcVersion = latestVersion || '';
+			exitLobbyMode();
 		}
 		if (mode === 'lobby') {
 			enterLobbyMode();
@@ -318,23 +353,45 @@
 		return best || latestVersion;
 	}
 
+	// Settings the lobby holds while it is the mode
+	let preLobby: {
+		modLoader: ModLoader;
+		mcVersion: string;
+		useProxy: boolean;
+		catchAll: boolean;
+	} | null = null;
+
 	async function enterLobbyMode() {
+		preLobby = {
+			modLoader: formData.modLoader,
+			mcVersion: formData.mcVersion,
+			useProxy: useProxyMode,
+			catchAll: proxyCatchAll
+		};
 		useProxyMode = true;
-		if (!formData.name.trim()) formData.name = 'Lobby';
-		if (!formData.description.trim()) {
-			formData.description = 'Hub world, walk through a portal to join a server';
-		}
+		// Stray joins should land on the lobby
+		proxyCatchAll = true;
+		fillName('Lobby');
 		formData.modLoader = ModLoader.VANILLA;
 		formData.mcVersion = latestVersion || formData.mcVersion;
 		try {
 			const data = await rpcClient.server.listServers({});
-			const fleet = data.servers
-				.filter((s) => s.proxyHostnames.length > 0)
-				.map((s) => s.mcVersion);
-			formData.mcVersion = lobbyAutoVersion(fleet);
+			const fleet = data.servers.filter((s) => s.proxyHostnames.length > 0).map((s) => s.mcVersion);
+			if (sourceMode === 'lobby') formData.mcVersion = lobbyAutoVersion(fleet);
 		} catch {
 			// Empty fleet reads the same as an unreadable one
 		}
+	}
+
+	// Puts back everything lobby mode took over
+	function exitLobbyMode() {
+		clearAutoName();
+		if (!preLobby) return;
+		formData.modLoader = preLobby.modLoader;
+		formData.mcVersion = preLobby.mcVersion || latestVersion || '';
+		useProxyMode = preLobby.useProxy;
+		proxyCatchAll = preLobby.catchAll;
+		preLobby = null;
 	}
 
 	function handleIconSelect(e: Event) {
@@ -343,7 +400,7 @@
 		input.value = '';
 		if (!file) return;
 		if (file.size > 4 * 1024 * 1024) {
-			toast.error('Icon images must be under 4 MB');
+			notify.error('Icon images must be under 4 MB');
 			return;
 		}
 		iconFile = file;
@@ -384,7 +441,7 @@
 		}
 	}
 
-	// Attaches the lobby module and claims the catch all
+	// Attaches the lobby module to the new server
 	async function attachLobby(serverId: string) {
 		try {
 			// Backend keeps no template defaults so send them here
@@ -402,8 +459,12 @@
 			if (!created.module) throw new Error('module missing from response');
 		} catch (error) {
 			console.error('Failed to attach lobby module:', error);
-			toast.warning('Server created, but the Lobby module needs adding from the Modules tab');
+			notify.warning('Server created, but the Lobby module needs adding from the Modules tab');
 		}
+	}
+
+	// Marks the new server as the listener catch all
+	async function claimCatchAll(serverId: string) {
 		try {
 			await rpcClient.proxy.updateServerRouting({
 				serverId,
@@ -412,8 +473,8 @@
 				proxyCatchAll: true
 			});
 		} catch (error) {
-			console.error('Failed to claim catch all for lobby:', error);
-			toast.warning('Another server holds the catch all, players need the lobby hostname');
+			console.error('Failed to claim catch all:', error);
+			notify.warning('Another server already holds the catch all');
 		}
 	}
 
@@ -447,22 +508,22 @@
 		e.preventDefault();
 
 		if (!formData.name.trim()) {
-			toast.error('Server name is required');
+			notify.error('Server name is required');
 			return;
 		}
 
 		if (!useProxyMode && !validatePort(formData.port)) {
-			toast.error('Please select a valid port');
+			notify.error('Please select a valid port');
 			return;
 		}
 
 		if (hostnameMissing) {
-			toast.error('Please add a hostname for the proxy route');
+			notify.error('Please add a hostname for the proxy route');
 			return;
 		}
 
 		if (sourceMode === 'lobby' && !useProxyMode) {
-			toast.error('The lobby needs proxy routing to reach your other servers');
+			notify.error('The lobby needs proxy routing to reach your other servers');
 			return;
 		}
 
@@ -499,18 +560,21 @@
 			if (sourceMode === 'lobby' && created) {
 				await attachLobby(created.id);
 			}
+			if (created && useProxyMode && proxyCatchAll) {
+				await claimCatchAll(created.id);
+			}
 			if (iconFile && created) {
 				try {
 					const image = new Uint8Array(await iconFile.arrayBuffer());
 					await rpcClient.server.uploadServerIcon({ id: created.id, image });
 				} catch {
-					toast.warning('Server created, but the icon upload failed');
+					notify.warning('Server created, but the icon upload failed');
 				}
 			}
-			toast.success(`Server "${created?.name}" created!`);
+			notify.success(`Server "${created?.name}" created!`);
 			goto(resolve(`/servers/${created?.id}`));
 		} catch (error) {
-			toast.error(
+			notify.error(
 				`Failed to create server: ${error instanceof Error ? error.message : 'Unknown error'}`
 			);
 		} finally {
@@ -553,10 +617,7 @@
 			<ArrowLeft class="size-4" />
 			<span class="sr-only">Back to servers</span>
 		</Button>
-		<PageHeader
-			title="Create a server"
-			description="Spin up a new Minecraft server in a couple of minutes"
-		/>
+		<PageHeader title="Create a server" description="Set up a new Minecraft server" />
 	</div>
 
 	<div class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_19rem]">
@@ -611,26 +672,9 @@
 								<DoorOpen class="size-4 text-primary" />
 								Make a lobby
 							</div>
-							<p class="mt-1 text-xs text-muted-foreground">One hub with portals to every server</p>
+							<p class="mt-1 text-xs text-muted-foreground">A bridge world between servers</p>
 						</button>
 					</div>
-
-					{#if sourceMode === 'lobby'}
-						<div class="rounded-lg border border-primary/30 bg-primary/5 p-4 text-sm">
-							<p class="font-medium">Here is what you get</p>
-							<ul class="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
-								<li>
-									A vanilla Minecraft {formData.mcVersion || '...'} minecraft purgatory portal world
-								</li>
-								<li>A portal for every other server, walk in to hop over</li>
-								<li>Lobby acts like a catch-all minecraft proxy, wip.</li>
-							</ul>
-							<p class="mt-2 text-xs text-muted-foreground">
-								Friends need Minecraft {lobbyFloorVersion} or newer to use portals. The lobby follows
-								your newest server's version automatically.
-							</p>
-						</div>
-					{/if}
 
 					{#if sourceMode === 'modpack'}
 						{#if selectedModpack}
@@ -719,11 +763,17 @@
 								</div>
 							</div>
 						{:else if favoriteModpacks.length > 0}
-							<div class="grid gap-2 sm:grid-cols-2">
-								{#each favoriteModpacks as modpack (modpack.id)}
+							<CardStack
+								items={favoriteModpacks}
+								visible={2}
+								columns={2}
+								slotHeight="4rem"
+								itemKey={(m: IndexedModpack) => m.id}
+							>
+								{#snippet card(modpack: IndexedModpack)}
 									<button
 										type="button"
-										class="flex items-start gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-accent/40"
+										class="flex h-full w-full items-center gap-3 rounded-md p-3 text-left transition-colors hover:bg-accent/40"
 										onclick={() => selectModpack(modpack)}
 										disabled={loading}
 									>
@@ -742,11 +792,11 @@
 										{/if}
 										<div class="min-w-0">
 											<p class="truncate text-sm font-medium">{modpack.name}</p>
-											<p class="line-clamp-2 text-xs text-muted-foreground">{modpack.summary}</p>
+											<p class="truncate text-xs text-muted-foreground">{modpack.summary}</p>
 										</div>
 									</button>
-								{/each}
-							</div>
+								{/snippet}
+							</CardStack>
 							<p class="text-xs text-muted-foreground">
 								Only favorites show here. Find more on the
 								<a href={resolve('/modpacks')} class="text-primary hover:underline">Modpacks</a> page.
@@ -763,7 +813,7 @@
 			</section>
 
 			<section class="overflow-hidden rounded-xl border bg-card">
-				{@render sectionHeader('Basics', 'Pick an icon and a name your friends will recognize')}
+				{@render sectionHeader('Basics', 'Name and icon players will see')}
 				<div class="flex flex-col gap-5 p-4 sm:flex-row">
 					<div class="flex shrink-0 flex-col items-center gap-1.5">
 						<button
@@ -805,7 +855,7 @@
 								<Label for="name">Server name <span class="text-destructive">*</span></Label>
 								<Input
 									id="name"
-									placeholder="My Awesome Server"
+									placeholder={namePlaceholder}
 									bind:value={formData.name}
 									required
 									disabled={loading}
@@ -831,7 +881,7 @@
 							</Label>
 							<Textarea
 								id="description"
-								placeholder="A fun server for friends..."
+								placeholder={serverDescPlaceholder}
 								bind:value={formData.description}
 								disabled={loading}
 								class="min-h-20 resize-none"
@@ -848,7 +898,7 @@
 						? 'Preset by the modpack'
 						: sourceMode === 'lobby'
 							? 'Preset by the lobby'
-							: 'What flavor of Minecraft to run'
+							: 'Minecraft version and mod loader'
 				)}
 				<div class="grid gap-4 p-4 sm:grid-cols-2">
 					<div class="space-y-2">
@@ -927,9 +977,11 @@
 					serverName={formData.name}
 					disabled={loading}
 					{usedPorts}
+					showCatchAll
 					bind:useProxy={useProxyMode}
 					bind:hostnames={formData.proxyHostnames}
 					bind:listenerId={formData.proxyListenerId}
+					bind:catchAll={proxyCatchAll}
 					bind:port={formData.port}
 					bind:portError
 					onAutoAssignPort={refreshAvailablePort}
@@ -951,7 +1003,7 @@
 			</section>
 
 			<section class="overflow-hidden rounded-xl border bg-card">
-				{@render sectionHeader('Lifecycle', 'How the server behaves around DiscoPanel')}
+				{@render sectionHeader('Lifecycle', 'When the server starts and stops')}
 				<div class="grid gap-3 p-4 sm:grid-cols-3">
 					<label
 						class="flex cursor-pointer flex-col gap-1.5 rounded-lg border p-3 text-sm transition-colors hover:bg-accent/30"
@@ -975,7 +1027,7 @@
 								disabled={loading || useProxyMode}
 								onCheckedChange={(checked) => {
 									if (checked && useProxyMode) {
-										toast.error('Cannot detach proxied servers');
+										notify.error('Cannot detach proxied servers');
 										formData.detached = false;
 										return;
 									}
@@ -1001,7 +1053,7 @@
 								disabled={loading || formData.detached}
 								onCheckedChange={(checked) => {
 									if (formData.detached) {
-										toast.error('Cannot enable auto-start for detached servers');
+										notify.error('Cannot enable auto-start for detached servers');
 										formData.autoStart = false;
 										return;
 									}
@@ -1119,7 +1171,11 @@
 								{formData.name.trim() || 'Unnamed server'}
 							</p>
 							<p class="truncate text-xs text-muted-foreground">
-								{selectedModpack ? selectedModpack.name : 'Blank server'}
+								{selectedModpack
+									? selectedModpack.name
+									: sourceMode === 'lobby'
+										? 'Lobby server'
+										: 'Disco server'}
 							</p>
 						</div>
 					</div>

@@ -10,7 +10,7 @@
 	} from '$lib/components/ui/dialog';
 	import { Select, SelectContent, SelectItem, SelectTrigger } from '$lib/components/ui/select';
 	import { rpcClient } from '$lib/api/rpc-client';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import type { PendingModulePrompt } from '$lib/proto/discopanel/v1/module_pb';
 	import { ModuleConfigFieldType } from '$lib/proto/discopanel/v1/storage_pb';
 	import { Check, KeyRound, Loader2 } from '@lucide/svelte';
@@ -52,11 +52,11 @@
 				promptId: prompt.id,
 				value
 			});
-			toast.success(`Sent to ${entry.moduleName}`);
+			notify.success(`Sent to ${entry.moduleName}`);
 			delete values[entry.moduleId];
 			onAnswered?.();
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : 'Failed to send input');
+			notify.error(err instanceof Error ? err.message : 'Failed to send input');
 		} finally {
 			submittingId = null;
 		}

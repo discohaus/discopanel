@@ -13,7 +13,7 @@
 	import { Switch } from '$lib/components/ui/switch';
 	import { ConfirmDialog } from '$lib/components/app';
 	import InspectorHeader from './inspector-header.svelte';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { groupServices, laneLabel } from '../topology-data';
 	import { ArrowUpRight, Loader2, Network, Plus, Save, Trash2, Zap } from '@lucide/svelte';
 
@@ -149,7 +149,7 @@
 
 	async function submit() {
 		if (!name.trim()) {
-			toast.error('Listener name is required');
+			notify.error('Listener name is required');
 			return;
 		}
 		if (!editing && !validatePort(port)) return;
@@ -163,7 +163,7 @@
 					enabled,
 					isDefault
 				});
-				toast.success(`Listener "${name}" updated`);
+				notify.success(`Listener "${name}" updated`);
 			} else {
 				await rpcClient.proxy.createProxyListener({
 					port,
@@ -172,11 +172,11 @@
 					enabled,
 					isDefault
 				});
-				toast.success(`Listener "${name}" created`);
+				notify.success(`Listener "${name}" created`);
 			}
 			await onDone();
 		} catch (error: unknown) {
-			toast.error(error instanceof Error ? error.message : 'Failed to save listener');
+			notify.error(error instanceof Error ? error.message : 'Failed to save listener');
 		} finally {
 			saving = false;
 		}
@@ -187,10 +187,10 @@
 		const label = editing.name;
 		try {
 			await rpcClient.proxy.deleteProxyListener({ id: editing.id });
-			toast.success(`Listener "${label}" deleted`);
+			notify.success(`Listener "${label}" deleted`);
 			await onDone();
 		} catch (error: unknown) {
-			toast.error(error instanceof Error ? error.message : 'Failed to delete listener');
+			notify.error(error instanceof Error ? error.message : 'Failed to delete listener');
 		}
 	}
 </script>

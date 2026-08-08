@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { slide } from 'svelte/transition';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
@@ -245,6 +246,7 @@
 
 				{#if showRouting && port.proxyEnabled && port.protocol === ModuleProtocol.MINECRAFT && !port.catchAll && port.hostnames.length === 0 && serverHosts.length === 0}
 					<div
+						transition:slide={{ duration: 150 }}
 						class="flex items-start gap-2 rounded-md border border-status-warn/30 bg-status-warn/10 p-3"
 					>
 						<Info class="mt-0.5 size-4 shrink-0 text-status-warn" />
@@ -267,7 +269,7 @@
 			{/if}
 
 			{#if errors[i]}
-				<div class="flex items-center gap-1.5 text-destructive">
+				<div transition:slide={{ duration: 150 }} class="flex items-center gap-1.5 text-destructive">
 					<AlertCircle class="size-3" />
 					<span class="text-xs">{errors[i]}</span>
 				</div>

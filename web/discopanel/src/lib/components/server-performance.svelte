@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import {
 		Dialog,
@@ -117,7 +117,7 @@
 			findings = res.findings;
 			agentConnected = res.agentConnected;
 		} catch {
-			if (!silent) toast.error('Failed to load performance report');
+			if (!silent) notify.error('Failed to load performance report');
 		} finally {
 			loading = false;
 		}
@@ -133,7 +133,7 @@
 			});
 			await loadReport(true);
 		} catch {
-			toast.error('Failed to update finding');
+			notify.error('Failed to update finding');
 		} finally {
 			dismissing = '';
 		}

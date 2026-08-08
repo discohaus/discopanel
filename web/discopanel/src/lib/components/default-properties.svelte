@@ -3,7 +3,7 @@
 	import { SvelteURL } from 'svelte/reactivity';
 	import { Input } from '$lib/components/ui/input';
 	import { Button } from '$lib/components/ui/button';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { Save, RotateCcw, Loader2, Search, X, FileSliders } from '@lucide/svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import type { PropertyCategory, ServerProperty } from '$lib/proto/discopanel/v1/properties_pb';
@@ -89,7 +89,7 @@
 		const url = new SvelteURL(window.location.href);
 		url.hash = key;
 		const success = await copyToClipboard(url.toString());
-		if (success) toast.success('Link copied to clipboard');
+		if (success) notify.success('Link copied to clipboard');
 	}
 
 	function checkUrlHash() {

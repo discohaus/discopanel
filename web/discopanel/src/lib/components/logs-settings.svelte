@@ -3,7 +3,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { ScrollText, Download, Loader2, AlertCircle, ArrowDown } from '@lucide/svelte';
 	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { registerRefresh } from '$lib/stores/refresh';
 	import { formatBytes } from '$lib/utils';
@@ -34,7 +34,7 @@
 			fileSize = Number(response.size);
 
 			if (showToast) {
-				toast.success('Logs refreshed');
+				notify.success('Logs refreshed');
 			}
 
 			// Keeps view pinned to newest line
@@ -48,7 +48,7 @@
 		} catch (error) {
 			const message = error instanceof Error ? error.message : 'Unknown error occurred';
 			if (showToast) {
-				toast.error('Failed to load logs', { description: message });
+				notify.error('Failed to load logs', { description: message });
 			}
 			console.error('Failed to load logs:', error);
 		} finally {
@@ -80,7 +80,7 @@
 		a.download = filename || 'discopanel.log';
 		a.click();
 		URL.revokeObjectURL(url);
-		toast.success('Logs downloaded');
+		notify.success('Logs downloaded');
 	}
 
 

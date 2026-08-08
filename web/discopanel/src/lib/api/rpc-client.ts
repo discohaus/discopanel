@@ -7,7 +7,7 @@ import {
 } from '@connectrpc/connect';
 import { createConnectTransport } from '@connectrpc/connect-web';
 import { authStore } from '$lib/stores/auth';
-import { toast } from 'svelte-sonner';
+import { notify } from '$lib/stores/activity.svelte';
 import { loadingStore } from '$lib/stores/loading.svelte';
 
 // Rpc state
@@ -74,13 +74,13 @@ const authInterceptor: Interceptor = (next) => async (req) => {
 					loggingOut = false;
 				});
 			}
-			// Never toast auth errors - the auto-logout redirect handles them
+			// Never report auth errors, auto-logout redirect handles them
 			throw error;
 		}
 
 		if (!isSilent && !onLoginPage) {
 			const message = error instanceof Error ? error.message : 'An error occurred';
-			toast.error(message);
+			notify.error(message);
 		}
 		throw error;
 	} finally {

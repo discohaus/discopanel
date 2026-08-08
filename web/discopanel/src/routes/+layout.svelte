@@ -35,9 +35,7 @@
 	import { runPageRefreshers } from '$lib/stores/refresh';
 	import { authStore, currentUser, canAccessSettings, authEnabled } from '$lib/stores/auth';
 	import { onMount } from 'svelte';
-	import { Toaster } from '$lib/components/ui/sonner';
-	import GlobalLoading from '$lib/components/global-loading.svelte';
-	import { CommandPalette, StatusDot, ServerAvatar, DiscoLogo } from '$lib/components/app';
+	import { CommandPalette, StatusDot, ServerAvatar, DiscoLogo, StatusBar } from '$lib/components/app';
 	import {
 		House,
 		Server,
@@ -75,7 +73,7 @@
 			systemModules.refresh();
 			await Promise.all([serversStore.fetchServers(true, true), runPageRefreshers(), spin]);
 		} catch (error) {
-			// Interceptor already toasts, just log
+			// Interceptor already reports, just log
 			console.error('Refresh failed:', error);
 		} finally {
 			refreshing = false;
@@ -199,8 +197,7 @@
 </svelte:head>
 
 <ModeWatcher />
-<Toaster position="bottom-center" expand={true} richColors />
-<GlobalLoading />
+<StatusBar />
 
 {#if page.url.pathname === '/login'}
 	{@render children?.()}
@@ -211,7 +208,7 @@
 {:else}
 	<CommandPalette bind:open={paletteOpen} />
 	<SidebarProvider>
-		<Sidebar collapsible="icon">
+		<Sidebar collapsible="icon" class="inset-y-auto top-0 bottom-7 h-auto">
 			<SidebarHeader>
 				<a
 					href={resolvePath('/')}
@@ -440,7 +437,7 @@
 			</SidebarFooter>
 		</Sidebar>
 
-		<SidebarInset class="flex h-screen flex-col overflow-hidden">
+		<SidebarInset class="flex h-[calc(100svh-1.75rem)] flex-col overflow-hidden">
 			<div class="page-ambient pointer-events-none absolute inset-0" aria-hidden="true"></div>
 			<header
 				class="relative flex h-13 shrink-0 items-center gap-2 border-b bg-background/80 px-4 backdrop-blur-sm"

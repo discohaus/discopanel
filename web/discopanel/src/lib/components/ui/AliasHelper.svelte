@@ -6,7 +6,7 @@
 	import { enumLabel } from '$lib/proto-meta';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { Braces, Server, Box, Sparkles, Loader2, Check, Copy } from '@lucide/svelte';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 
 	interface Props {
@@ -50,12 +50,12 @@
 		const success = await copyToClipboard(alias);
 		if (success) {
 			copiedAlias = alias;
-			toast.success('Copied to clipboard', { description: alias });
+			notify.success('Copied to clipboard', { description: alias });
 			setTimeout(() => {
 				copiedAlias = null;
 			}, 2000);
 		} else {
-			toast.error('Failed to copy to clipboard');
+			notify.error('Failed to copy to clipboard');
 		}
 	}
 

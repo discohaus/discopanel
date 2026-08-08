@@ -4,7 +4,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { rpcClient } from '$lib/api/rpc-client';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { Loader2, Save, RotateCcw, Search, AlertCircle, X, FileSliders } from '@lucide/svelte';
 	import type { Server } from '$lib/proto/discopanel/v1/storage_pb';
 	import { ServerStatus } from '$lib/proto/discopanel/v1/storage_pb';
@@ -64,7 +64,7 @@
 				activeCategory = categorySlug(form.visibleCategories[0].name);
 			}
 		} catch (error) {
-			toast.error('Failed to load server properties');
+			notify.error('Failed to load server properties');
 			console.error(error);
 		} finally {
 			loading = false;
@@ -80,12 +80,12 @@
 				updates: form.buildUpdates()
 			});
 			form.process(response.categories);
-			toast.success(
+			notify.success(
 				stopped ? 'Properties saved' : 'Properties saved. Restart the server to apply.'
 			);
 			onUpdate?.();
 		} catch (error) {
-			toast.error('Failed to save properties');
+			notify.error('Failed to save properties');
 			console.error(error);
 		} finally {
 			saving = false;
@@ -141,7 +141,7 @@
 		const url = new SvelteURL(window.location.href);
 		url.hash = key;
 		const success = await copyToClipboard(url.toString());
-		if (success) toast.success('Link copied to clipboard');
+		if (success) notify.success('Link copied to clipboard');
 	}
 
 	function checkUrlHash() {

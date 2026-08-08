@@ -4,7 +4,7 @@
 	import { formatBytes } from '$lib/utils';
 	import { Button } from '$lib/components/ui/button';
 	import { ConfirmDialog } from '$lib/components/app';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { Archive, RotateCcw } from '@lucide/svelte';
 	import type { Server } from '$lib/proto/discopanel/v1/storage_pb';
 	import type { Backup } from '$lib/proto/discopanel/v1/server_pb';
@@ -50,10 +50,10 @@
 				id: server.id,
 				fileName: restoreTarget.fileName
 			});
-			toast.success(res.message);
+			notify.success(res.message);
 			await loadBackups();
 		} catch (e) {
-			toast.error(e instanceof Error ? e.message : 'Restore failed');
+			notify.error(e instanceof Error ? e.message : 'Restore failed');
 		} finally {
 			restoring = false;
 			restoreOpen = false;

@@ -26,7 +26,7 @@
 		DialogTitle
 	} from '$lib/components/ui/dialog';
 
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import {
 		Plus,
 		Trash2,
@@ -163,7 +163,7 @@
 			}
 			permissionMatrix = matrix;
 		} catch (error: unknown) {
-			toast.error('Failed to load roles');
+			notify.error('Failed to load roles');
 			console.error(error);
 		} finally {
 			loading = false;
@@ -172,7 +172,7 @@
 
 	async function createRole() {
 		if (!newRoleForm.name) {
-			toast.error('Role name is required');
+			notify.error('Role name is required');
 			return;
 		}
 
@@ -184,19 +184,19 @@
 			});
 			await rpcClient.role.createRole(request);
 
-			toast.success('Role created successfully');
+			notify.success('Role created successfully');
 			showCreateDialog = false;
 			newRoleForm = { name: '', description: '', isDefault: false };
 			await loadRoles();
 		} catch (error: unknown) {
-			toast.error(error instanceof Error ? error.message : 'Failed to create role');
+			notify.error(error instanceof Error ? error.message : 'Failed to create role');
 		}
 	}
 
 	// Opens the delete confirmation dialog
 	function requestDelete(role: Role) {
 		if (role.isSystem) {
-			toast.error('Cannot delete system roles');
+			notify.error('Cannot delete system roles');
 			return;
 		}
 		deleteTarget = role;
@@ -211,10 +211,10 @@
 			const request = create(DeleteRoleRequestSchema, { id: role.id });
 			await rpcClient.role.deleteRole(request);
 
-			toast.success('Role deleted successfully');
+			notify.success('Role deleted successfully');
 			await loadRoles();
 		} catch (error: unknown) {
-			toast.error(error instanceof Error ? error.message : 'Failed to delete role');
+			notify.error(error instanceof Error ? error.message : 'Failed to delete role');
 		}
 	}
 
@@ -267,12 +267,12 @@
 			});
 			await rpcClient.role.updatePermissions(request);
 
-			toast.success('Permissions updated');
+			notify.success('Permissions updated');
 			showPermissionsDialog = false;
 			editingRole = null;
 			await loadRoles();
 		} catch (error: unknown) {
-			toast.error(error instanceof Error ? error.message : 'Failed to update permissions');
+			notify.error(error instanceof Error ? error.message : 'Failed to update permissions');
 		} finally {
 			savingPermissions = false;
 		}

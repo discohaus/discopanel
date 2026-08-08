@@ -23,7 +23,7 @@
 	} from '$lib/components/ui/table';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { PageHeader, SectionCard, EmptyState, ConfirmDialog } from '$lib/components/app';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import {
 		Key,
 		Loader2,
@@ -103,7 +103,7 @@
 
 	async function createToken() {
 		if (!newTokenForm.name.trim()) {
-			toast.error('Token name is required');
+			notify.error('Token name is required');
 			return;
 		}
 
@@ -115,10 +115,10 @@
 				expiresInDays: days
 			});
 			createdToken = resp.plaintextToken;
-			toast.success('API token created');
+			notify.success('API token created');
 			await loadTokens();
 		} catch (error: unknown) {
-			toast.error(error instanceof Error ? error.message : 'Failed to create API token');
+			notify.error(error instanceof Error ? error.message : 'Failed to create API token');
 		} finally {
 			creatingToken = false;
 		}
@@ -133,10 +133,10 @@
 		if (!deleteTokenTarget) return;
 		try {
 			await rpcClient.auth.deleteAPIToken({ id: deleteTokenTarget.id });
-			toast.success('API token deleted');
+			notify.success('API token deleted');
 			await loadTokens();
 		} catch (error: unknown) {
-			toast.error(error instanceof Error ? error.message : 'Failed to delete API token');
+			notify.error(error instanceof Error ? error.message : 'Failed to delete API token');
 		} finally {
 			deleteTokenTarget = null;
 		}
@@ -147,12 +147,12 @@
 		const ok = await copyToClipboard(createdToken);
 		if (ok) {
 			copied = true;
-			toast.success('Token copied to clipboard');
+			notify.success('Token copied to clipboard');
 			setTimeout(() => {
 				copied = false;
 			}, 2000);
 		} else {
-			toast.error('Failed to copy token');
+			notify.error('Failed to copy token');
 		}
 	}
 
@@ -170,31 +170,31 @@
 
 	async function changePassword() {
 		if (!passwordForm.oldPassword || !passwordForm.newPassword) {
-			toast.error('Please fill in all fields');
+			notify.error('Please fill in all fields');
 			return;
 		}
 
 		if (passwordForm.newPassword !== passwordForm.confirmPassword) {
-			toast.error('New passwords do not match');
+			notify.error('New passwords do not match');
 			return;
 		}
 
 		if (passwordForm.newPassword.length < 8) {
-			toast.error('New password must be at least 8 characters');
+			notify.error('New password must be at least 8 characters');
 			return;
 		}
 
 		saving = true;
 		try {
 			await authStore.changePassword(passwordForm.oldPassword, passwordForm.newPassword);
-			toast.success('Password changed successfully');
+			notify.success('Password changed successfully');
 			passwordForm = {
 				oldPassword: '',
 				newPassword: '',
 				confirmPassword: ''
 			};
 		} catch (error: unknown) {
-			toast.error(error instanceof Error ? error.message : 'Failed to change password');
+			notify.error(error instanceof Error ? error.message : 'Failed to change password');
 		} finally {
 			saving = false;
 		}

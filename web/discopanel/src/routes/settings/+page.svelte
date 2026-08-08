@@ -12,7 +12,7 @@
 	import { PageHeader, EmptyState, TabRail } from '$lib/components/app';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { registerRefresh } from '$lib/stores/refresh';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { Settings } from '@lucide/svelte';
 	import type { PropertyCategory } from '$lib/proto/discopanel/v1/properties_pb';
 	import { rpcClient } from '$lib/api/rpc-client';
@@ -91,7 +91,7 @@
 			const response = await rpcClient.properties.getGlobalSettings({});
 			globalConfig = response.categories;
 		} catch (error) {
-			toast.error('Failed to load global settings');
+			notify.error('Failed to load global settings');
 			console.error(error);
 		} finally {
 			loading = false;
@@ -106,9 +106,9 @@
 			});
 
 			globalConfig = response.categories;
-			toast.success('Global settings saved successfully');
+			notify.success('Global settings saved successfully');
 		} catch (error) {
-			toast.error('Failed to save global settings');
+			notify.error('Failed to save global settings');
 			console.error(error);
 		} finally {
 			saving = false;

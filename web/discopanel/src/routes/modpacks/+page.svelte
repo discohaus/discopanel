@@ -12,7 +12,7 @@
 	import { PageHeader, EmptyState, ConfirmDialog, TabRail } from '$lib/components/app';
 	import { registerRefresh } from '$lib/stores/refresh';
 	import ScrollToTop from '$lib/components/scroll-to-top.svelte';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import {
 		Star,
 		Download,
@@ -156,9 +156,9 @@
 				goto(resolve(`/servers/new?modpack=${resp.modpack.id}`));
 				return;
 			}
-			toast.error('No indexed modpack matches that link');
+			notify.error('No indexed modpack matches that link');
 		} catch {
-			toast.error('Modpack lookup failed');
+			notify.error('Modpack lookup failed');
 		}
 	}
 
@@ -179,7 +179,7 @@
 			});
 			searchResults = response;
 		} catch (error) {
-			toast.error('Failed to search modpacks');
+			notify.error('Failed to search modpacks');
 			console.error(error);
 		} finally {
 			loading = false;
@@ -195,10 +195,10 @@
 				modLoader: searchParams.modLoader || '',
 				indexer: selectedIndexer
 			});
-			toast.success(`Synced ${result.syncedCount} modpacks from ${indexerName}`);
+			notify.success(`Synced ${result.syncedCount} modpacks from ${indexerName}`);
 			await searchModpacks();
 		} catch (error) {
-			toast.error(error instanceof Error ? error.message : 'Failed to sync modpacks');
+			notify.error(error instanceof Error ? error.message : 'Failed to sync modpacks');
 			console.error(error);
 		} finally {
 			syncing = false;
@@ -236,13 +236,13 @@
 				if (!favorites.find((f) => f.id === modpack.id)) {
 					favorites = [...favorites, { ...modpack, isFavorited: true }];
 				}
-				toast.success('Added to favorites');
+				notify.success('Added to favorites');
 			} else {
 				favorites = favorites.filter((f) => f.id !== modpack.id);
-				toast.success('Removed from favorites');
+				notify.success('Removed from favorites');
 			}
 		} catch (error) {
-			toast.error('Failed to toggle favorite');
+			notify.error('Failed to toggle favorite');
 			console.error(error);
 		}
 	}
@@ -252,7 +252,7 @@
 			const result = await rpcClient.modpack.listFavorites({});
 			favorites = result.modpacks;
 		} catch (error) {
-			toast.error('Failed to load favorites');
+			notify.error('Failed to load favorites');
 			console.error(error);
 		}
 	}
@@ -290,7 +290,7 @@
 
 		const file = files[0];
 		if (!file.name.endsWith('.zip')) {
-			toast.error('Please select a valid modpack ZIP file');
+			notify.error('Please select a valid modpack ZIP file');
 			return;
 		}
 
@@ -315,14 +315,14 @@
 				description: ''
 			});
 
-			toast.success(`Modpack "${result.modpack?.name}" uploaded successfully`);
+			notify.success(`Modpack "${result.modpack?.name}" uploaded successfully`);
 
 			await Promise.all([searchModpacks(), loadUploadedPacks()]);
 		} catch (error: unknown) {
 			if (error instanceof Error && error.message === 'Upload cancelled') {
-				toast.info('Upload cancelled');
+				notify.info('Upload cancelled');
 			} else {
-				toast.error(error instanceof Error ? error.message : 'Failed to upload modpack');
+				notify.error(error instanceof Error ? error.message : 'Failed to upload modpack');
 				console.error(error);
 			}
 		} finally {
@@ -353,7 +353,7 @@
 		try {
 			await rpcClient.modpack.deleteModpack({ id: modpack.id });
 
-			toast.success(`Modpack "${modpack.name}" deleted successfully`);
+			notify.success(`Modpack "${modpack.name}" deleted successfully`);
 
 			uploadedPacks = uploadedPacks.filter((m) => m.id !== modpack.id);
 			favorites = favorites.filter((m) => m.id !== modpack.id);
@@ -362,7 +362,7 @@
 				await searchModpacks();
 			}
 		} catch (error) {
-			toast.error(error instanceof Error ? error.message : 'Failed to delete modpack');
+			notify.error(error instanceof Error ? error.message : 'Failed to delete modpack');
 		}
 	}
 

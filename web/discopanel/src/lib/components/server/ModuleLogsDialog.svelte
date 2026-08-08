@@ -12,7 +12,7 @@
 	import { Download, Trash2, RefreshCw, Loader2, X, ArrowDown } from '@lucide/svelte';
 	import { mode } from 'mode-watcher';
 	import { themedAnsiConverter } from '$lib/ansi-console';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 
 	// Renders ansi escape codes as colored html
 	let ansiConverter = $derived(themedAnsiConverter(mode.current));
@@ -122,7 +122,7 @@
 
 	function clearLogs() {
 		logEntries = [];
-		toast.success('Logs cleared (local only)');
+		notify.success('Logs cleared (local only)');
 	}
 
 	function downloadLogs() {
@@ -136,7 +136,7 @@
 		a.click();
 		document.body.removeChild(a);
 		URL.revokeObjectURL(url);
-		toast.success('Logs downloaded');
+		notify.success('Logs downloaded');
 	}
 </script>
 

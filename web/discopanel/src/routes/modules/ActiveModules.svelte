@@ -5,7 +5,7 @@
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { EmptyState, ConfirmDialog, AddressSelect } from '$lib/components/app';
 	import { rpcClient, rpcErrorMessage, silentCallOptions } from '$lib/api/rpc-client';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import type { Module } from '$lib/proto/discopanel/v1/storage_pb';
 	import { ModuleStatus } from '$lib/proto/discopanel/v1/storage_pb';
 	import { TONE_BADGE, TONE_BG } from '$lib/server-status';
@@ -62,13 +62,13 @@
 			await rpcClient.module.updateModule({ id: module.id, autoStart: enabled });
 			if (enabled) {
 				if (!running) await rpcClient.module.startModule({ id: module.id });
-				toast.success(`Enabling ${module.name}...`);
+				notify.success(`Enabling ${module.name}...`);
 			} else {
 				if (running) await rpcClient.module.stopModule({ id: module.id });
-				toast.success(`${module.name} disabled`);
+				notify.success(`${module.name} disabled`);
 			}
 		} catch (error) {
-			toast.error(rpcErrorMessage(error, `Failed to ${enabled ? 'enable' : 'disable'} module`));
+			notify.error(rpcErrorMessage(error, `Failed to ${enabled ? 'enable' : 'disable'} module`));
 		} finally {
 			await loadModules(true);
 			actionLoading = null;
@@ -112,7 +112,7 @@
 				modules.forEach((m) => loadAliases(m));
 			}
 		} catch {
-			if (!silent) toast.error('Failed to load modules');
+			if (!silent) notify.error('Failed to load modules');
 		} finally {
 			if (!silent) loading = false;
 		}
@@ -134,10 +134,10 @@
 		actionLoading = module.id;
 		try {
 			await rpcClient.module.startModule({ id: module.id });
-			toast.success(`Starting ${module.name}...`);
+			notify.success(`Starting ${module.name}...`);
 			await loadModules(true);
 		} catch (error) {
-			toast.error(
+			notify.error(
 				`Failed to start module: ${error instanceof Error ? error.message : 'Unknown error'}`
 			);
 		} finally {
@@ -149,10 +149,10 @@
 		actionLoading = module.id;
 		try {
 			await rpcClient.module.stopModule({ id: module.id });
-			toast.success(`Stopping ${module.name}...`);
+			notify.success(`Stopping ${module.name}...`);
 			await loadModules(true);
 		} catch (error) {
-			toast.error(
+			notify.error(
 				`Failed to stop module: ${error instanceof Error ? error.message : 'Unknown error'}`
 			);
 		} finally {
@@ -164,10 +164,10 @@
 		actionLoading = module.id;
 		try {
 			await rpcClient.module.restartModule({ id: module.id });
-			toast.success(`Restarting ${module.name}...`);
+			notify.success(`Restarting ${module.name}...`);
 			await loadModules(true);
 		} catch (error) {
-			toast.error(
+			notify.error(
 				`Failed to restart module: ${error instanceof Error ? error.message : 'Unknown error'}`
 			);
 		} finally {
@@ -186,10 +186,10 @@
 		actionLoading = module.id;
 		try {
 			await rpcClient.module.deleteModule({ id: module.id });
-			toast.success(`Module "${module.name}" deleted`);
+			notify.success(`Module "${module.name}" deleted`);
 			await loadModules(true);
 		} catch (error) {
-			toast.error(rpcErrorMessage(error, 'Failed to delete module'));
+			notify.error(rpcErrorMessage(error, 'Failed to delete module'));
 		} finally {
 			actionLoading = null;
 		}
