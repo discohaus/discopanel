@@ -32,6 +32,9 @@ type ListenerSocket struct {
 	stats   map[string]*RouteStats
 	statsMu sync.Mutex
 
+	intents *IntentTable
+	shim    *ShimRuntime
+
 	gate   ServerGate
 	gateMu sync.RWMutex
 
@@ -55,6 +58,8 @@ func NewListenerSocket(cfg *Config) *ListenerSocket {
 		cancel:     cancel,
 		gate:       cfg.Gate,
 		certs:      cfg.Certs,
+		intents:    cfg.Intents,
+		shim:       cfg.Shim,
 	}
 	s.httpLane = newHTTPLane(cfg.Logger, cfg.TrustedEdge, s.statsFor)
 	return s

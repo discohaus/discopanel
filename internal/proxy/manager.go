@@ -14,8 +14,13 @@ import (
 	"github.com/discohaus/discopanel/internal/docker"
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/logger"
+	"github.com/discohaus/discopanel/pkg/mcproto"
+	"github.com/discohaus/discopanel/pkg/mcproto/family"
+	"github.com/discohaus/discopanel/pkg/mcproto/hub"
+	"github.com/discohaus/discopanel/pkg/mcproto/puppet"
 	"github.com/discohaus/discopanel/pkg/minecraft"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/runtimespec"
 )
 
 // Handles proxy lifecycle and manages routes
@@ -75,6 +80,15 @@ type Manager struct {
 
 	// Encoded server icons cached by file identity
 	favicons minecraft.FaviconCache
+
+	// Pending reroutes shared by every socket
+	intents *IntentTable
+
+	// Hub mediation runtime shared by every socket
+	shim *ShimRuntime
+
+	// Hub grid cached off the lobby data dir
+	hubGrid hubGridCache
 }
 
 // One cached container address with its inspect time
@@ -111,8 +125,82 @@ func NewManager(store *db.Store, dockerClient *docker.Client, cfg *config.Config
 		panelCatchAll: true,
 		certs:         LoadTLSCertificates(cfg.Proxy.TLS.Certificates, logger),
 		ipCache:       make(map[string]ipEntry),
+		intents:       NewIntentTable(),
+	}
+	shim, err := NewShimRuntime(true, logger, m.intents)
+	if err != nil {
+		logger.Error("Shim runtime unavailable: %v", err)
+	} else {
+		m.shim = shim
+		shim.SetPuppetDialer(dialLobbyPuppet)
+		shim.SetGridSource(m.lobbyGrid)
 	}
 	return m
+}
+
+// Dials one headless puppet into the lobby
+func dialLobbyPuppet(ctx context.Context, addr, name string, protocol int32) (HubPuppet, error) {
+	client, err := puppet.Dial(ctx, puppet.Config{
+		Addr:       addr,
+		Name:       name,
+		Protocol:   protocol,
+		StateNames: family.ModernStateNames(protocol),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return client, nil
+}
+
+// Grid source callback handed to the shim
+func (m *Manager) lobbyGrid() *hub.Grid {
+	return m.hubGrid.Grid(m.logger)
+}
+
+// Reports whether a lobby module rides this server
+func (m *Manager) serverHasLobby(ctx context.Context, serverID string) bool {
+	mods, err := m.store.ListModulesByTemplate(ctx, runtimespec.LobbyTemplateID)
+	if err != nil {
+		return false
+	}
+	for _, mod := range mods {
+		if mod.ServerId == serverID {
+			return true
+		}
+	}
+	return false
+}
+
+// Lobby server set, also points the grid cache
+func (m *Manager) applyLobbyStateLocked(servers []*v1.Server, modules []*v1.Module) map[string]bool {
+	lobbies := make(map[string]bool)
+	for _, mod := range modules {
+		if mod.TemplateId == runtimespec.LobbyTemplateID && mod.ServerId != "" {
+			lobbies[mod.ServerId] = true
+		}
+	}
+	gridOwner, gridPath := "", ""
+	for _, server := range servers {
+		if !lobbies[server.Id] || server.DataPath == "" {
+			continue
+		}
+		// Lowest id wins when several lobbies exist
+		if gridOwner == "" || server.Id < gridOwner {
+			gridOwner, gridPath = server.Id, server.DataPath
+		}
+	}
+	m.hubGrid.SetDataPath(gridPath)
+	return lobbies
+}
+
+// Hub mediation runtime for lobby wiring
+func (m *Manager) Shim() *ShimRuntime {
+	return m.shim
+}
+
+// Shared reroute claims for shim and lobby flows
+func (m *Manager) Intents() *IntentTable {
+	return m.intents
 }
 
 // Panel http backend target, must precede Start
@@ -281,6 +369,8 @@ func (m *Manager) ensurePanelSocketLocked() error {
 		Gate:        m.gate,
 		Certs:       m.certs,
 		TrustedEdge: m.config.TrustedEdge,
+		Intents:     m.intents,
+		Shim:        m.shim,
 	})
 	if err := sock.Start(); err != nil {
 		return fmt.Errorf("panel socket failed on port %d: %w", port, err)
@@ -498,6 +588,8 @@ func (m *Manager) syncListenersLocked(ctx context.Context) error {
 				Gate:        m.gate,
 				Certs:       m.certs,
 				TrustedEdge: m.config.TrustedEdge,
+				Intents:     m.intents,
+				Shim:        m.shim,
 			})
 			if err := sock.Start(); err != nil {
 				m.logger.Error("Failed to start listener %s on port %d: %v", listener.Name, port, err)
@@ -583,6 +675,12 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 		serversByID[server.Id] = server
 	}
 
+	modules, modErr := m.store.ListModules(ctx)
+	if modErr != nil {
+		m.logger.Error("Failed to load modules for route sync: %v", modErr)
+	}
+	lobbyServers := m.applyLobbyStateLocked(servers, modules)
+
 	for _, server := range servers {
 		// Game routes register even for stopped wakeable servers
 		if len(server.ProxyHostnames) > 0 {
@@ -591,6 +689,7 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 				if err != nil {
 					m.logger.Error("Failed to build route for server %s: %v", server.Name, err)
 				} else if want {
+					route.LobbyShim = lobbyServers[server.Id]
 					// Every hostname relays to the same backend
 					port := int(listener.Port)
 					for _, name := range server.ProxyHostnames {
@@ -626,9 +725,7 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 			OwnerServer, server.Id, ip, func(p *v1.NetworkPort) int { return int(p.ContainerPort) })
 	}
 
-	modules, err := m.store.ListModules(ctx)
-	if err != nil {
-		m.logger.Error("Failed to load modules for route sync: %v", err)
+	if modErr != nil {
 		return tcpRoutes, udpRoutes
 	}
 	for _, mod := range modules {
@@ -939,6 +1036,7 @@ func (m *Manager) UpdateServerRoute(server *v1.Server) error {
 	if err != nil {
 		return err
 	}
+	route.LobbyShim = m.serverHasLobby(ctx, server.Id)
 	if !want {
 		for _, name := range server.ProxyHostnames {
 			sock.RemoveRoute(v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT, name)
@@ -993,6 +1091,10 @@ func (m *Manager) desiredRoute(ctx context.Context, server *v1.Server) (route Ro
 		PreserveHost:  propEnabled(cfg, func(c *v1.ServerProperties) *bool { return c.ProxyPreserveHostname }),
 		MaxPlayers:    int(server.MaxPlayers),
 		Favicon:       m.routeFavicon(server),
+		McVersion:     server.McVersion,
+	}
+	if proto, ok := mcproto.ProtocolForVersion(server.McVersion); ok {
+		route.McProtocol = proto
 	}
 	wakeable := propEnabled(cfg, func(c *v1.ServerProperties) *bool { return c.EnableWakeOnConnect })
 

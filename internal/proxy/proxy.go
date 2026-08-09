@@ -41,6 +41,12 @@ type Route struct {
 	MaxPlayers int
 	// Icon for synthesized status replies
 	Favicon string
+	// Version the backend speaks, empty when unknown
+	McVersion string
+	// Protocol number for the version, zero when unknown
+	McProtocol int32
+	// Marks the hub route the shim mediates
+	LobbyShim bool
 }
 
 // Dial address for the route's backend
@@ -69,8 +75,10 @@ type Config struct {
 	ListenAddr  string // Host and port to listen on
 	Logger      *logger.Logger
 	Gate        ServerGate
-	Certs       *certIndex // File loaded termination material
-	TrustedEdge bool       // Keeps forwarded headers from an upstream edge
+	Certs       *certIndex   // File loaded termination material
+	TrustedEdge bool         // Keeps forwarded headers from an upstream edge
+	Intents     *IntentTable // Shared reroute claims across sockets
+	Shim        *ShimRuntime // Hub mediation shared across sockets
 }
 
 const (

@@ -257,6 +257,36 @@ func kickUnreachable() minecraft.Text {
 	)
 }
 
+// Kick screen when identity checks fall through
+func kickAuthFailed() minecraft.Text {
+	return poster(
+		headline("we couldn't verify your account", inkAlarm),
+		minecraft.Plain("\n"),
+		minecraft.Solid("restart your game and join again", inkGray),
+	)
+}
+
+// Kick screen naming the version the lobby speaks
+func kickLobbyVersion(version string) minecraft.Text {
+	if version == "" {
+		version = "a newer version"
+	}
+	return poster(
+		headline("the lobby can't host your version yet", inkEmber),
+		minecraft.Plain("\n"),
+		minecraft.Solid("join with minecraft "+version+" instead", inkGray),
+	)
+}
+
+// Kick screen when the world speaks another version
+func kickVersionMismatch(version string) minecraft.Text {
+	return poster(
+		headline("this world runs minecraft "+version, inkEmber),
+		minecraft.Plain("\n"),
+		minecraft.Solid("switch your game to "+version+" and join again", inkGray),
+	)
+}
+
 // Kick screen while the backend ignores our dial
 func kickNotAccepting() minecraft.Text {
 	return poster(

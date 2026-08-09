@@ -6,6 +6,7 @@ import (
 	storage "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/pkg/config"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/runtimespec"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -358,7 +359,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			DefaultMemory:   256,
 		},
 		{
-			Id:             "builtin-lobby",
+			Id:             runtimespec.LobbyTemplateID,
 			Name:           "Lobby",
 			Description:    "Turns this vanilla server into a hub world with a walk-in portal for every other server on the panel. Players step through a portal and hop straight over, no mods needed.",
 			Type:           v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_BUILTIN,

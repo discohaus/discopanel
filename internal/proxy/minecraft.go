@@ -178,6 +178,24 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 		return
 	}
 
+	// Hub joins reveal the name so claims can reroute
+	var login *mcproto.LoginStart
+	if route.LobbyShim && handshake.NextState != mcproto.NextStateStatus {
+		ls, err := mcproto.ReadLoginStart(br)
+		if err != nil {
+			s.logger.Debug("Bad login start from %s: %v", clientConn.RemoteAddr(), err)
+			return
+		}
+		login = ls
+		if targetID, ok := s.claimIntent(ls.Name); ok {
+			if target, found := s.routeByServerID(targetID); found {
+				route = target
+			} else {
+				s.logger.Debug("Intent target %s has no route, keeping hub", targetID)
+			}
+		}
+	}
+
 	stats := s.statsFor(route.ServerID)
 	stats.TotalConns.Add(1)
 	stats.LastProtocol.Store(int32(handshake.ProtocolVersion))
@@ -185,6 +203,13 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 		stats.StatusPings.Add(1)
 	} else {
 		stats.Logins.Add(1)
+	}
+
+	// Rerouted joins need a version the target speaks
+	if login != nil && !route.LobbyShim && route.McProtocol != 0 &&
+		route.McProtocol != int32(handshake.ProtocolVersion) && route.McVersion != "" {
+		s.kick(clientConn, handshake, kickVersionMismatch(route.McVersion))
+		return
 	}
 
 	// Paused servers answer status pings without waking, wake on login
@@ -248,9 +273,15 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 
 	if route.BackendHost == "" {
 		s.logger.Error("Route %s has no backend address", hostname)
-		if handshake.NextState == mcproto.NextStateLogin {
+		if handshake.NextState != mcproto.NextStateStatus {
 			s.kick(clientConn, handshake, kickUnreachable())
 		}
+		return
+	}
+
+	// Hub joins hand over to the shim runtime
+	if route.LobbyShim && login != nil && s.shim != nil {
+		s.shim.serve(s, clientConn, br, handshake, route, login, stats)
 		return
 	}
 
@@ -258,7 +289,7 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 	backendConn, err := dialBackendWithRetry(s.ctx, backendAddr, 10*time.Second)
 	if err != nil {
 		s.logger.Error("Failed to connect to backend %s for %s: %v", backendAddr, hostname, err)
-		if handshake.NextState == mcproto.NextStateLogin {
+		if handshake.NextState != mcproto.NextStateStatus {
 			s.kick(clientConn, handshake, kickNotAccepting())
 		}
 		return
@@ -282,6 +313,14 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 		return
 	}
 
+	// Consumed login start rides ahead of buffered bytes
+	if login != nil {
+		if err := login.Replay(backendConn); err != nil {
+			s.logger.Error("Failed to replay login start to backend %s: %v", backendAddr, err)
+			return
+		}
+	}
+
 	// Flushes client bytes already buffered before relay handoff
 	if buffered := br.Buffered(); buffered > 0 {
 		pending, _ := br.Peek(buffered)
@@ -298,6 +337,26 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 	stats.ActiveConns.Add(1)
 	stats.countRelay(clientConn, backendConn)
 	stats.ActiveConns.Add(-1)
+}
+
+// Burns a pending reroute when a table exists
+func (s *ListenerSocket) claimIntent(player string) (string, bool) {
+	if s.intents == nil {
+		return "", false
+	}
+	return s.intents.Claim(player)
+}
+
+// Finds this socket's route for a server id
+func (s *ListenerSocket) routeByServerID(serverID string) (Route, bool) {
+	s.routesMu.RLock()
+	defer s.routesMu.RUnlock()
+	for _, route := range s.mcRoutes {
+		if route.ServerID == serverID {
+			return *route, true
+		}
+	}
+	return Route{}, false
 }
 
 // Points handshake at backend, optionally preserving client hostname
