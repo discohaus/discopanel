@@ -104,9 +104,9 @@ func (sh *ShimRuntime) bundleFor(codec family.Codec, protocol int32) ([][]byte, 
 	return baked, nil
 }
 
-// Mirrors one legacy client through a lobby puppet
+// Mirrors one hub client through a lobby puppet
 // Reports false when this client can't be hosted
-func (sh *ShimRuntime) serveCrossFamily(s *ListenerSocket, clientConn net.Conn, br *bufio.Reader, handshake *mcproto.HandshakePacket, route Route, login *mcproto.LoginStart, stats *RouteStats) bool {
+func (sh *ShimRuntime) mediateHub(s *ListenerSocket, clientConn net.Conn, br *bufio.Reader, handshake *mcproto.HandshakePacket, route Route, login *mcproto.LoginStart, stats *RouteStats) bool {
 	protocol := int32(handshake.ProtocolVersion)
 	codec := family.Lookup(protocol)
 	if codec == nil {
@@ -173,6 +173,7 @@ func (sh *ShimRuntime) serveCrossFamily(s *ListenerSocket, clientConn net.Conn, 
 	sess, err := codec.NewSession(result.R, result.W, protocol, join)
 	if err != nil {
 		sh.logger.Info("Hub join failed for %s: %v", result.Name, err)
+		family.WriteConfigDisconnect(result.W, protocol, "the lobby couldn't finish your join\nplease try again")
 		return true
 	}
 

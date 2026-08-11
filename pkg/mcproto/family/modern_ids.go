@@ -1,5 +1,7 @@
 package family
 
+import "github.com/discohaus/discopanel/pkg/mcproto"
+
 // Play state ids for one modern protocol group
 type ModernIDs struct {
 	// Clientbound
@@ -49,6 +51,10 @@ type ModernIDs struct {
 	CfgFeatureFlags int32
 	CfgKnownPacks   int32
 	CfgFinishAckSB  int32
+	CfgKnownPacksSB int32
+	CfgPluginMsgCB  int32
+	CfgPluginMsgSB  int32
+	CfgDisconnect   int32
 
 	// Registry facts riding along with the group
 	PlayerTypeID int32
@@ -119,11 +125,15 @@ type ModernIDs struct {
 // Stamps the config ids shared by 766 and up
 func init() {
 	for _, ids := range []*ModernIDs{&modern766, &modern768, &modern770, &modern773, &modern775} {
-		ids.CfgFinishCB = 0x03
-		ids.CfgRegistryData = 0x07
-		ids.CfgFeatureFlags = 0x0c
-		ids.CfgKnownPacks = 0x0e
-		ids.CfgFinishAckSB = 0x03
+		ids.CfgFinishCB = mcproto.CfgCBFinish
+		ids.CfgRegistryData = mcproto.CfgCBRegistryData
+		ids.CfgFeatureFlags = mcproto.CfgCBFeatureFlags
+		ids.CfgKnownPacks = mcproto.CfgCBKnownPacks
+		ids.CfgFinishAckSB = mcproto.CfgSBFinishAck
+		ids.CfgKnownPacksSB = mcproto.CfgSBKnownPacks
+		ids.CfgPluginMsgCB = mcproto.CfgCBPluginMessage
+		ids.CfgPluginMsgSB = mcproto.CfgSBPluginMessage
+		ids.CfgDisconnect = mcproto.CfgCBDisconnect
 	}
 }
 
@@ -141,7 +151,8 @@ var legacy754 = ModernIDs{
 	PlayerStatus: 0x15, ChatSB: 0x03, ClientInfoSB: 0x05, PluginMessageSB: 0x0b,
 	TeleportConfirm: 0x00, ClientCommand: 0x04,
 	CfgFinishCB: -1, CfgRegistryData: -1, CfgFeatureFlags: -1,
-	CfgKnownPacks: -1, CfgFinishAckSB: -1,
+	CfgKnownPacks: -1, CfgFinishAckSB: -1, CfgKnownPacksSB: -1,
+	CfgPluginMsgCB: -1, CfgPluginMsgSB: -1, CfgDisconnect: -1,
 	NoConfigPhase: true, NamedNBT: true, JSONText: true, SignTextRows: true,
 	OldPlayerInfo: true, TrustEdges: true, LegacyChatPacket: true, LoginNoProps: true,
 	BiomeIntArray: true, VarIntMask: true, SpawnPosNoAngle: true,
@@ -162,7 +173,8 @@ var legacy755 = ModernIDs{
 	PlayerStatus: 0x14, ChatSB: 0x03, ClientInfoSB: 0x05, PluginMessageSB: 0x0a,
 	TeleportConfirm: 0x00, ClientCommand: 0x04,
 	CfgFinishCB: -1, CfgRegistryData: -1, CfgFeatureFlags: -1,
-	CfgKnownPacks: -1, CfgFinishAckSB: -1,
+	CfgKnownPacks: -1, CfgFinishAckSB: -1, CfgKnownPacksSB: -1,
+	CfgPluginMsgCB: -1, CfgPluginMsgSB: -1, CfgDisconnect: -1,
 	NoConfigPhase: true, NamedNBT: true, JSONText: true, SignTextRows: true,
 	SyncDismount: true, OldPlayerInfo: true, TrustEdges: true, LegacyChatPacket: true,
 	LoginNoProps: true, BiomeIntArray: true, DimensionInline: true, NoSimDistance: true,
@@ -182,7 +194,8 @@ var legacy757 = ModernIDs{
 	PlayerStatus: 0x14, ChatSB: 0x03, ClientInfoSB: 0x05, PluginMessageSB: 0x0a,
 	TeleportConfirm: 0x00, ClientCommand: 0x04,
 	CfgFinishCB: -1, CfgRegistryData: -1, CfgFeatureFlags: -1,
-	CfgKnownPacks: -1, CfgFinishAckSB: -1,
+	CfgKnownPacks: -1, CfgFinishAckSB: -1, CfgKnownPacksSB: -1,
+	CfgPluginMsgCB: -1, CfgPluginMsgSB: -1, CfgDisconnect: -1,
 	BeaconEntity:  13,
 	NoConfigPhase: true, NamedNBT: true, JSONText: true, SignTextRows: true,
 	SyncDismount: true, OldPlayerInfo: true, TrustEdges: true, LegacyChatPacket: true,
@@ -203,7 +216,8 @@ var legacy759 = ModernIDs{
 	PlayerStatus: 0x16, ChatSB: 0x04, ClientInfoSB: 0x07, PluginMessageSB: 0x0c,
 	TeleportConfirm: 0x00, ClientCommand: 0x06,
 	CfgFinishCB: -1, CfgRegistryData: -1, CfgFeatureFlags: -1,
-	CfgKnownPacks: -1, CfgFinishAckSB: -1,
+	CfgKnownPacks: -1, CfgFinishAckSB: -1, CfgKnownPacksSB: -1,
+	CfgPluginMsgCB: -1, CfgPluginMsgSB: -1, CfgDisconnect: -1,
 	BeaconEntity:  13,
 	NoConfigPhase: true, NamedNBT: true, JSONText: true, SignTextRows: true,
 	SyncDismount: true, OldPlayerInfo: true, TrustEdges: true, ChatTypeVarInt: true,
@@ -223,7 +237,8 @@ var legacy760 = ModernIDs{
 	PlayerStatus: 0x17, ChatSB: 0x05, ClientInfoSB: 0x08, PluginMessageSB: 0x0d,
 	TeleportConfirm: 0x00, ClientCommand: 0x07,
 	CfgFinishCB: -1, CfgRegistryData: -1, CfgFeatureFlags: -1,
-	CfgKnownPacks: -1, CfgFinishAckSB: -1,
+	CfgKnownPacks: -1, CfgFinishAckSB: -1, CfgKnownPacksSB: -1,
+	CfgPluginMsgCB: -1, CfgPluginMsgSB: -1, CfgDisconnect: -1,
 	BeaconEntity:  13,
 	NoConfigPhase: true, NamedNBT: true, JSONText: true, SignTextRows: true,
 	SyncDismount: true, OldPlayerInfo: true, TrustEdges: true, ChatTypeVarInt: true,
@@ -243,7 +258,8 @@ var legacy761 = ModernIDs{
 	PlayerStatus: 0x16, ChatSB: 0x05, ClientInfoSB: 0x07, PluginMessageSB: 0x0c,
 	TeleportConfirm: 0x00, ClientCommand: 0x06,
 	CfgFinishCB: -1, CfgRegistryData: -1, CfgFeatureFlags: -1,
-	CfgKnownPacks: -1, CfgFinishAckSB: -1,
+	CfgKnownPacks: -1, CfgFinishAckSB: -1, CfgKnownPacksSB: -1,
+	CfgPluginMsgCB: -1, CfgPluginMsgSB: -1, CfgDisconnect: -1,
 	BeaconEntity:  14,
 	NoConfigPhase: true, NamedNBT: true, JSONText: true,
 	SyncDismount: true, SignTextRows: true,
@@ -263,7 +279,8 @@ var legacy762 = ModernIDs{
 	PlayerStatus: 0x17, ChatSB: 0x05, ClientInfoSB: 0x08, PluginMessageSB: 0x0d,
 	TeleportConfirm: 0x00, ClientCommand: 0x07,
 	CfgFinishCB: -1, CfgRegistryData: -1, CfgFeatureFlags: -1,
-	CfgKnownPacks: -1, CfgFinishAckSB: -1,
+	CfgKnownPacks: -1, CfgFinishAckSB: -1, CfgKnownPacksSB: -1,
+	CfgPluginMsgCB: -1, CfgPluginMsgSB: -1, CfgDisconnect: -1,
 	BeaconEntity:  14,
 	NoConfigPhase: true, NamedNBT: true, JSONText: true,
 }
@@ -282,7 +299,8 @@ var legacy764 = ModernIDs{
 	PlayerStatus: 0x19, ChatSB: 0x05, ClientInfoSB: 0x09, PluginMessageSB: 0x0f,
 	TeleportConfirm: 0x00, ClientCommand: 0x08,
 	CfgFinishCB: 0x02, CfgRegistryData: 0x05, CfgFeatureFlags: 0x07,
-	CfgKnownPacks: -1, CfgFinishAckSB: 0x02,
+	CfgKnownPacks: -1, CfgFinishAckSB: 0x02, CfgKnownPacksSB: -1,
+	CfgPluginMsgCB: 0x00, CfgPluginMsgSB: 0x01, CfgDisconnect: 0x01,
 	PlayerTypeID: 122, BeaconEntity: 14,
 	RegistryCompound: true, DimTypeString: true, JSONText: true,
 }
@@ -301,7 +319,8 @@ var legacy765 = ModernIDs{
 	PlayerStatus: 0x1a, ChatSB: 0x05, ClientInfoSB: 0x09, PluginMessageSB: 0x10,
 	TeleportConfirm: 0x00, ClientCommand: 0x08,
 	CfgFinishCB: 0x02, CfgRegistryData: 0x05, CfgFeatureFlags: 0x07,
-	CfgKnownPacks: -1, CfgFinishAckSB: 0x02,
+	CfgKnownPacks: -1, CfgFinishAckSB: 0x02, CfgKnownPacksSB: -1,
+	CfgPluginMsgCB: 0x00, CfgPluginMsgSB: 0x01, CfgDisconnect: 0x01,
 	PlayerTypeID: 124, BeaconEntity: 14,
 	RegistryCompound: true, DimTypeString: true,
 }

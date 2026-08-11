@@ -86,9 +86,7 @@ func (s *ListenerSocket) StatsSnapshots() map[string]*v1.ProxyRoute {
 
 // Wire side normalizer, config names use NormalizeHostname
 func normalizeWireHostname(hostname string) string {
-	if idx := strings.IndexByte(hostname, 0); idx != -1 {
-		hostname = hostname[:idx]
-	}
+	hostname, _ = mcproto.SplitHostMarkers(hostname)
 	hostname, _, _ = strings.Cut(hostname, ":")
 	return strings.ToLower(strings.TrimSuffix(hostname, "."))
 }
@@ -359,12 +357,11 @@ func (s *ListenerSocket) routeByServerID(serverID string) (Route, bool) {
 	return Route{}, false
 }
 
-// Points handshake at backend, optionally preserving client hostname
+// Points handshake at backend, loader markers ride along
 func rewriteHandshakeAddress(handshake *mcproto.HandshakePacket, backendPort int, preserveHost bool) {
 	if !preserveHost {
-		addressParts := strings.Split(handshake.ServerAddress, "\x00")
-		addressParts[0] = "localhost"
-		handshake.ServerAddress = strings.Join(addressParts, "\x00")
+		_, markers := mcproto.SplitHostMarkers(handshake.ServerAddress)
+		handshake.ServerAddress = "localhost" + markers
 	}
 	handshake.ServerPort = uint16(backendPort)
 }

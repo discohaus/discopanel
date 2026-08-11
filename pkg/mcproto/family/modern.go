@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"sync"
 
 	"github.com/discohaus/discopanel/pkg/mcproto"
@@ -149,6 +150,10 @@ func (s *modernSession) finishLogin(profile PlayerEntry) error {
 
 // Feeds registries then waits for the finish ack
 func (s *modernSession) runConfig() error {
+	if regs, ok := syncedRegistrySet(s.protocol); ok && s.ids.CfgKnownPacks >= 0 {
+		return s.runMirrorConfig(regs)
+	}
+
 	if s.ids.CfgKnownPacks >= 0 {
 		var packs bytes.Buffer
 		mcproto.WriteVarInt(&packs, mcproto.VarInt(s.ids.CfgKnownPacks))
@@ -192,22 +197,210 @@ func (s *modernSession) runConfig() error {
 	if err := s.send(fin.Bytes()); err != nil {
 		return err
 	}
+	return s.awaitFinishAck()
+}
 
-	// Client info and pack answers pass silently
+// Mirrors the client's own core pack through config
+func (s *modernSession) runMirrorConfig(regs []syncedRegistry) error {
+	var flags bytes.Buffer
+	mcproto.WriteVarInt(&flags, mcproto.VarInt(s.ids.CfgFeatureFlags))
+	mcproto.WriteVarInt(&flags, 1)
+	packet.WriteString(&flags, "minecraft:vanilla")
+	if err := s.send(flags.Bytes()); err != nil {
+		return err
+	}
+
+	versions := mcproto.VersionNamesForProtocol(s.protocol)
+	var packs bytes.Buffer
+	mcproto.WriteVarInt(&packs, mcproto.VarInt(s.ids.CfgKnownPacks))
+	mcproto.WriteVarInt(&packs, mcproto.VarInt(len(versions)))
+	for _, v := range versions {
+		packet.WriteString(&packs, "minecraft")
+		packet.WriteString(&packs, "core")
+		packet.WriteString(&packs, v)
+	}
+	if err := s.send(packs.Bytes()); err != nil {
+		return err
+	}
+
+	confirmed, err := s.awaitKnownPacks(versions)
+	if err != nil {
+		return err
+	}
+
+	for _, reg := range regs {
+		body, err := s.mirrorRegistryBody(reg, confirmed)
+		if err != nil {
+			return err
+		}
+		if body == nil {
+			continue
+		}
+		if err := s.send(body); err != nil {
+			return err
+		}
+	}
+
+	var fin bytes.Buffer
+	mcproto.WriteVarInt(&fin, mcproto.VarInt(s.ids.CfgFinishCB))
+	if err := s.send(fin.Bytes()); err != nil {
+		return err
+	}
+	return s.awaitFinishAck()
+}
+
+// Builds one registry frame, names only when confirmed
+func (s *modernSession) mirrorRegistryBody(reg syncedRegistry, confirmed bool) ([]byte, error) {
+	var data func(string) packet.Tag
+	if !confirmed {
+		var err error
+		data, err = s.fallbackRegistryData(reg.Name)
+		if err != nil {
+			return nil, err
+		}
+		if data == nil {
+			return nil, nil
+		}
+	}
+
+	var body bytes.Buffer
+	mcproto.WriteVarInt(&body, mcproto.VarInt(s.ids.CfgRegistryData))
+	packet.WriteString(&body, reg.Name)
+	mcproto.WriteVarInt(&body, mcproto.VarInt(len(reg.Entries)))
+	for _, entry := range reg.Entries {
+		packet.WriteString(&body, "minecraft:"+entry)
+		if data == nil {
+			packet.WriteBool(&body, false)
+			continue
+		}
+		packet.WriteBool(&body, true)
+		if err := packet.WriteNetworkNBT(&body, data(entry)); err != nil {
+			return nil, err
+		}
+	}
+	return body.Bytes(), nil
+}
+
+// Inline element source for pack refusing clients
+func (s *modernSession) fallbackRegistryData(registry string) (func(string) packet.Tag, error) {
+	switch registry {
+	case "minecraft:dimension_type":
+		tag := hubDimensionNBT()
+		if s.ids.AttribRegistries {
+			var err error
+			if tag, err = packet.JSONToNBT([]byte(attribDimensionJSON)); err != nil {
+				return nil, err
+			}
+		}
+		return func(string) packet.Tag { return tag }, nil
+	case "minecraft:worldgen/biome":
+		tag := hubBiomeNBT()
+		if s.ids.AttribRegistries {
+			var err error
+			if tag, err = packet.JSONToNBT([]byte(attribBiomeJSON)); err != nil {
+				return nil, err
+			}
+		}
+		return func(string) packet.Tag { return tag }, nil
+	case "minecraft:chat_type":
+		return func(string) packet.Tag { return chatTypeNBT() }, nil
+	case "minecraft:damage_type":
+		return damageTypeNBT, nil
+	case "minecraft:world_clock":
+		return func(string) packet.Tag { return packet.NBTCompound{} }, nil
+	}
+	return nil, nil
+}
+
+// Waits for the pack answer, echoing mirrorable traffic
+func (s *modernSession) awaitKnownPacks(versions []string) (bool, error) {
+	for range maxConfigFrames {
+		frame, err := packet.ReadFrame(s.r)
+		if err != nil {
+			return false, fmt.Errorf("known packs read failed: %w", err)
+		}
+		rd := bytes.NewReader(frame)
+		pid, err := mcproto.ReadVarInt(rd)
+		if err != nil {
+			return false, err
+		}
+		if int32(pid) == s.ids.CfgKnownPacksSB {
+			count, err := mcproto.ReadVarInt(rd)
+			if err != nil {
+				return false, err
+			}
+			confirmed := false
+			for range count {
+				ns, err := packet.ReadString(rd)
+				if err != nil {
+					return false, err
+				}
+				id, err := packet.ReadString(rd)
+				if err != nil {
+					return false, err
+				}
+				ver, err := packet.ReadString(rd)
+				if err != nil {
+					return false, err
+				}
+				if ns == "minecraft" && id == "core" && slices.Contains(versions, ver) {
+					confirmed = true
+				}
+			}
+			return confirmed, nil
+		}
+		if err := s.mirrorConfigFrame(int32(pid), rd); err != nil {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+// Client info and pack answers pass silently
+func (s *modernSession) awaitFinishAck() error {
 	for range maxConfigFrames {
 		frame, err := packet.ReadFrame(s.r)
 		if err != nil {
 			return fmt.Errorf("config read failed: %w", err)
 		}
-		pid, err := mcproto.ReadVarInt(bytes.NewReader(frame))
+		rd := bytes.NewReader(frame)
+		pid, err := mcproto.ReadVarInt(rd)
 		if err != nil {
 			return err
 		}
 		if int32(pid) == s.ids.CfgFinishAckSB {
 			return nil
 		}
+		if err := s.mirrorConfigFrame(int32(pid), rd); err != nil {
+			return err
+		}
 	}
 	return fmt.Errorf("client never acknowledged config")
+}
+
+// Echoes the client's own channels straight back
+func (s *modernSession) mirrorConfigFrame(pid int32, rd *bytes.Reader) error {
+	if pid != s.ids.CfgPluginMsgSB || s.ids.CfgPluginMsgCB < 0 {
+		return nil
+	}
+	channel, err := packet.ReadString(rd)
+	if err != nil {
+		return nil
+	}
+	switch channel {
+	case "minecraft:brand", "minecraft:register", "minecraft:unregister":
+	default:
+		return nil
+	}
+	rest, err := io.ReadAll(rd)
+	if err != nil {
+		return nil
+	}
+	var echo bytes.Buffer
+	mcproto.WriteVarInt(&echo, mcproto.VarInt(s.ids.CfgPluginMsgCB))
+	packet.WriteString(&echo, channel)
+	echo.Write(rest)
+	return s.send(echo.Bytes())
 }
 
 // Sends the full join burst around baked chunks
@@ -319,7 +512,8 @@ func (s *modernSession) sendModernJoin(join JoinData) error {
 	if s.ids.DimTypeString {
 		packet.WriteString(&body, "minecraft:overworld")
 	} else {
-		mcproto.WriteVarInt(&body, 0)
+		id, _ := syncedEntryID(s.protocol, "minecraft:dimension_type", "overworld")
+		mcproto.WriteVarInt(&body, mcproto.VarInt(id))
 	}
 	packet.WriteString(&body, "minecraft:overworld")
 	packet.WriteNum(&body, int64(0))
@@ -742,4 +936,24 @@ func (s *modernSession) writeText(w *bytes.Buffer, text string) error {
 		return packet.WriteString(w, string(raw))
 	}
 	return packet.WriteNetworkNBT(w, packet.NBTString(text))
+}
+
+// Sends a config phase disconnect screen
+func WriteConfigDisconnect(w io.Writer, protocol int32, reason string) error {
+	ids := ModernIDsFor(protocol)
+	if ids == nil || ids.CfgDisconnect < 0 {
+		return nil
+	}
+	var body bytes.Buffer
+	mcproto.WriteVarInt(&body, mcproto.VarInt(ids.CfgDisconnect))
+	if ids.JSONText {
+		raw, err := json.Marshal(map[string]string{"text": reason})
+		if err != nil {
+			return err
+		}
+		packet.WriteString(&body, string(raw))
+	} else if err := packet.WriteNetworkNBT(&body, packet.NBTString(reason)); err != nil {
+		return err
+	}
+	return packet.WriteFrame(w, body.Bytes())
 }

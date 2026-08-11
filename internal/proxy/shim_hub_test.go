@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -25,13 +26,42 @@ const hubTestGrid = `{
 
 // Login and config ids the fake lobby speaks
 const (
-	lobbyLoginStartID   = 0x00
-	lobbyLoginSuccessID = 0x02
-	lobbyLoginAckID     = 0x03
-	lobbyCfgClientInfo  = 0x00
-	lobbyCfgFinish      = 0x03
-	lobbyCfgFinishAck   = 0x03
+	lobbyLoginStartID    = 0x00
+	lobbyLoginSuccessID  = 0x02
+	lobbyLoginAckID      = 0x03
+	lobbyCfgClientInfo   = 0x00
+	lobbyCfgFinish       = 0x03
+	lobbyCfgFinishAck    = 0x03
+	lobbyCfgKnownPacks   = 0x0e
+	lobbyCfgKnownPacksSB = 0x07
 )
+
+// Confirms the first offered pack like a real client
+func confirmFirstPack(w io.Writer, buf *bytes.Reader) error {
+	count, err := mcproto.ReadVarInt(buf)
+	if err != nil || count < 1 {
+		return fmt.Errorf("bad known packs offer: %v", err)
+	}
+	ns, err := packet.ReadString(buf)
+	if err != nil {
+		return err
+	}
+	id, err := packet.ReadString(buf)
+	if err != nil {
+		return err
+	}
+	ver, err := packet.ReadString(buf)
+	if err != nil {
+		return err
+	}
+	var resp bytes.Buffer
+	mcproto.WriteVarInt(&resp, lobbyCfgKnownPacksSB)
+	mcproto.WriteVarInt(&resp, 1)
+	packet.WriteString(&resp, ns)
+	packet.WriteString(&resp, id)
+	packet.WriteString(&resp, ver)
+	return packet.WriteFrame(w, resp.Bytes())
+}
 
 // Fake vanilla lobby hosting exactly one puppet
 func fakeModernLobby(t *testing.T, ln net.Listener, protocol int32) chan error {
@@ -154,10 +184,69 @@ func fakeModernLobby(t *testing.T, ln net.Listener, protocol int32) chan error {
 	return done
 }
 
-// Old client walking the shim rendered hub join
-func hubShimClient(t *testing.T, addr string, protocol int32) (int, error) {
-	t.Helper()
+// Walks the shim join from login success onward
+func hubShimWalk(r io.Reader, w io.Writer, protocol int32, hook func(pid int32, buf *bytes.Reader) error) (int, error) {
 	ids := family.ModernIDsFor(protocol)
+
+	frame, err := packet.ReadFrame(r)
+	if err != nil {
+		return 0, fmt.Errorf("login success read: %w", err)
+	}
+	if pid, _ := mcproto.ReadVarInt(bytes.NewReader(frame)); int32(pid) != lobbyLoginSuccessID {
+		return 0, fmt.Errorf("login success id %d", pid)
+	}
+	var ack bytes.Buffer
+	mcproto.WriteVarInt(&ack, lobbyLoginAckID)
+	if err := packet.WriteFrame(w, ack.Bytes()); err != nil {
+		return 0, err
+	}
+
+	for {
+		frame, err = packet.ReadFrame(r)
+		if err != nil {
+			return 0, fmt.Errorf("config read: %w", err)
+		}
+		buf := bytes.NewReader(frame)
+		pid, _ := mcproto.ReadVarInt(buf)
+		if hook != nil {
+			if err := hook(int32(pid), buf); err != nil {
+				return 0, err
+			}
+		}
+		if int32(pid) == lobbyCfgKnownPacks {
+			if err := confirmFirstPack(w, buf); err != nil {
+				return 0, err
+			}
+		}
+		if int32(pid) == lobbyCfgFinish {
+			break
+		}
+	}
+	var fin bytes.Buffer
+	mcproto.WriteVarInt(&fin, lobbyCfgFinishAck)
+	if err := packet.WriteFrame(w, fin.Bytes()); err != nil {
+		return 0, err
+	}
+
+	chunks := 0
+	for {
+		frame, err = packet.ReadFrame(r)
+		if err != nil {
+			return chunks, fmt.Errorf("play read: %w", err)
+		}
+		pid, _ := mcproto.ReadVarInt(bytes.NewReader(frame))
+		if int32(pid) == ids.ChunkData {
+			chunks++
+		}
+		if int32(pid) == ids.SyncPlayerPos {
+			return chunks, nil
+		}
+	}
+}
+
+// Plain client walking the shim rendered hub join
+func hubShimClient(t *testing.T, addr string, protocol int32, hook func(pid int32, buf *bytes.Reader) error) (int, error) {
+	t.Helper()
 
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -182,54 +271,13 @@ func hubShimClient(t *testing.T, addr string, protocol int32) (int, error) {
 		return 0, err
 	}
 
-	frame, err := packet.ReadFrame(conn)
-	if err != nil {
-		return 0, fmt.Errorf("login success read: %w", err)
-	}
-	if pid, _ := mcproto.ReadVarInt(bytes.NewReader(frame)); int32(pid) != lobbyLoginSuccessID {
-		return 0, fmt.Errorf("login success id %d", pid)
-	}
-	var ack bytes.Buffer
-	mcproto.WriteVarInt(&ack, lobbyLoginAckID)
-	if err := packet.WriteFrame(conn, ack.Bytes()); err != nil {
-		return 0, err
-	}
-
-	for {
-		frame, err = packet.ReadFrame(conn)
-		if err != nil {
-			return 0, fmt.Errorf("config read: %w", err)
-		}
-		pid, _ := mcproto.ReadVarInt(bytes.NewReader(frame))
-		if int32(pid) == lobbyCfgFinish {
-			break
-		}
-	}
-	var fin bytes.Buffer
-	mcproto.WriteVarInt(&fin, lobbyCfgFinishAck)
-	if err := packet.WriteFrame(conn, fin.Bytes()); err != nil {
-		return 0, err
-	}
-
-	chunks := 0
-	for {
-		frame, err = packet.ReadFrame(conn)
-		if err != nil {
-			return chunks, fmt.Errorf("play read: %w", err)
-		}
-		pid, _ := mcproto.ReadVarInt(bytes.NewReader(frame))
-		if int32(pid) == ids.ChunkData {
-			chunks++
-		}
-		if int32(pid) == ids.SyncPlayerPos {
-			return chunks, nil
-		}
-	}
+	return hubShimWalk(conn, conn, protocol, hook)
 }
 
-// Version mismatched client rides a puppet into the hub
-func TestShimCrossFamilyHubJoin(t *testing.T) {
-	sock, lobbyLn, sh := mediationSocket(t, false)
+// Installs the hub world and puppet dialer
+func hubbedSocket(t *testing.T, online bool) (*ListenerSocket, net.Listener) {
+	t.Helper()
+	sock, lobbyLn, sh := mediationSocket(t, online)
 
 	grid, err := hub.Parse([]byte(hubTestGrid))
 	if err != nil {
@@ -237,22 +285,47 @@ func TestShimCrossFamilyHubJoin(t *testing.T) {
 	}
 	sh.SetGridSource(func() *hub.Grid { return grid })
 	sh.SetPuppetDialer(dialLobbyPuppet)
+	return sock, lobbyLn
+}
 
+// Drains the lobby side failing on any error
+func expectLobbyClean(t *testing.T, done chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("lobby saw %v", err)
+		}
+	default:
+	}
+}
+
+// Version mismatched client rides a puppet into the hub
+func TestShimHubJoinOlderClient(t *testing.T) {
+	sock, lobbyLn := hubbedSocket(t, false)
 	lobbyDone := fakeModernLobby(t, lobbyLn, 772)
 
-	chunks, err := hubShimClient(t, sock.listener.Addr().String(), 766)
+	chunks, err := hubShimClient(t, sock.listener.Addr().String(), 766, nil)
 	if err != nil {
 		t.Fatalf("shim client failed %v", err)
 	}
 	if chunks != 16 {
 		t.Fatalf("client saw %d chunks, want 16", chunks)
 	}
+	expectLobbyClean(t, lobbyDone)
+}
 
-	select {
-	case err := <-lobbyDone:
-		if err != nil {
-			t.Fatalf("lobby saw %v", err)
-		}
-	default:
+// Matched version clients mirror too, never splicing
+func TestShimHubJoinMatchedProtocol(t *testing.T) {
+	sock, lobbyLn := hubbedSocket(t, false)
+	lobbyDone := fakeModernLobby(t, lobbyLn, 772)
+
+	chunks, err := hubShimClient(t, sock.listener.Addr().String(), 772, nil)
+	if err != nil {
+		t.Fatalf("shim client failed %v", err)
 	}
+	if chunks != 16 {
+		t.Fatalf("client saw %d chunks, want 16", chunks)
+	}
+	expectLobbyClean(t, lobbyDone)
 }

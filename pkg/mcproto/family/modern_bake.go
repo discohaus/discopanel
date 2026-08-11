@@ -383,7 +383,7 @@ func writeModernSection(w *bytes.Buffer, grid *hub.Grid, protocol int32, ids *Mo
 
 	// One plains biome fills the whole section
 	w.WriteByte(0)
-	mcproto.WriteVarInt(w, 0)
+	mcproto.WriteVarInt(w, mcproto.VarInt(plainsBiomeID(protocol)))
 	if !ids.UnprefixedSections {
 		mcproto.WriteVarInt(w, 0)
 	}

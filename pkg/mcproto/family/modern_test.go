@@ -356,13 +356,16 @@ func awaitPacket(r io.Reader, want int32) (*bytes.Reader, error) {
 }
 
 // Config exchange half of the fake client
-func walkFakeConfig(conn net.Conn, ids *ModernIDs) error {
+func walkFakeConfig(conn net.Conn, protocol int32, ids *ModernIDs) error {
 	wantRegs := 3
 	if ids.ClockTime {
 		wantRegs = 4
 	}
 	if ids.RegistryCompound {
 		wantRegs = 1
+	}
+	if synced, ok := syncedRegistrySet(protocol); ok && ids.CfgKnownPacks >= 0 {
+		wantRegs = len(synced)
 	}
 	regs := 0
 	for {
@@ -372,6 +375,11 @@ func walkFakeConfig(conn net.Conn, ids *ModernIDs) error {
 		}
 		buf := bytes.NewReader(frame)
 		pid, _ := mcproto.ReadVarInt(buf)
+		if int32(pid) == ids.CfgKnownPacks {
+			if err := answerKnownPacks(conn, ids, buf); err != nil {
+				return err
+			}
+		}
 		if int32(pid) == ids.CfgRegistryData {
 			regs++
 		}
@@ -385,6 +393,33 @@ func walkFakeConfig(conn net.Conn, ids *ModernIDs) error {
 	var fin bytes.Buffer
 	mcproto.WriteVarInt(&fin, mcproto.VarInt(ids.CfgFinishAckSB))
 	return packet.WriteFrame(conn, fin.Bytes())
+}
+
+// Confirms the first offered pack like a real client
+func answerKnownPacks(conn net.Conn, ids *ModernIDs, buf *bytes.Reader) error {
+	count, err := mcproto.ReadVarInt(buf)
+	if err != nil || count < 1 {
+		return fmt.Errorf("bad known packs offer: %v", err)
+	}
+	ns, err := packet.ReadString(buf)
+	if err != nil {
+		return err
+	}
+	id, err := packet.ReadString(buf)
+	if err != nil {
+		return err
+	}
+	ver, err := packet.ReadString(buf)
+	if err != nil {
+		return err
+	}
+	var resp bytes.Buffer
+	mcproto.WriteVarInt(&resp, mcproto.VarInt(ids.CfgKnownPacksSB))
+	mcproto.WriteVarInt(&resp, 1)
+	packet.WriteString(&resp, ns)
+	packet.WriteString(&resp, id)
+	packet.WriteString(&resp, ver)
+	return packet.WriteFrame(conn, resp.Bytes())
 }
 
 // Fake vanilla client walking login config and join
@@ -411,7 +446,7 @@ func runFakeClient(conn net.Conn, protocol int32, done chan<- error) {
 			fail(err)
 			return
 		}
-		if err := walkFakeConfig(conn, ids); err != nil {
+		if err := walkFakeConfig(conn, protocol, ids); err != nil {
 			fail(err)
 			return
 		}

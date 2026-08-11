@@ -82,38 +82,6 @@ func mediationSocket(t *testing.T, online bool) (*ListenerSocket, net.Listener, 
 	return sock, lobbyLn, sh
 }
 
-// Fake lobby reading the join then echoing one line
-func fakeLobby(t *testing.T, ln net.Listener, reply string) chan string {
-	t.Helper()
-	got := make(chan string, 1)
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			got <- "accept failed"
-			return
-		}
-		defer conn.Close()
-		conn.SetDeadline(time.Now().Add(10 * time.Second))
-		if _, err := mcproto.ReadHandshakePacket(conn); err != nil {
-			got <- "handshake failed"
-			return
-		}
-		ls, err := mcproto.ReadLoginStart(conn)
-		if err != nil {
-			got <- "login start failed"
-			return
-		}
-		probe := make([]byte, 5)
-		if _, err := io.ReadFull(conn, probe); err != nil {
-			got <- "probe read failed"
-			return
-		}
-		conn.Write([]byte(reply))
-		got <- ls.Name + ":" + string(probe)
-	}()
-	return got
-}
-
 // Client half of the encryption dance for tests
 func shimClientDance(t *testing.T, conn net.Conn) (io.Reader, io.Writer) {
 	t.Helper()
@@ -166,10 +134,10 @@ func shimClientDance(t *testing.T, conn net.Conn) (io.Reader, io.Writer) {
 	return cr, cw
 }
 
-// Online mediation carries cipher to plaintext both ways
-func TestShimMediatedRelayOnline(t *testing.T) {
-	sock, lobbyLn, _ := mediationSocket(t, true)
-	lobbySaw := fakeLobby(t, lobbyLn, "PONG!")
+// Online hub join rides the mirror through the cipher
+func TestShimHubJoinOnline(t *testing.T) {
+	sock, lobbyLn := hubbedSocket(t, true)
+	lobbyDone := fakeModernLobby(t, lobbyLn, 772)
 
 	client, err := net.Dial("tcp", sock.listener.Addr().String())
 	if err != nil {
@@ -188,78 +156,22 @@ func TestShimMediatedRelayOnline(t *testing.T) {
 	}
 	var body bytes.Buffer
 	mcproto.WriteVarInt(&body, 0x00)
-	mcproto.WriteVarInt(&body, mcproto.VarInt(len("Steve")))
-	body.WriteString("Steve")
-	if err := mcproto.WriteFramed(client, body.Bytes()); err != nil {
+	packet.WriteString(&body, "Steve")
+	packet.WriteUUID(&body, [16]byte{9})
+	if err := packet.WriteFrame(client, body.Bytes()); err != nil {
 		t.Fatalf("login start failed %v", err)
 	}
 
 	cr, cw := shimClientDance(t, client)
 
-	if _, err := cw.Write([]byte("PING!")); err != nil {
-		t.Fatalf("cipher write failed %v", err)
-	}
-
-	select {
-	case saw := <-lobbySaw:
-		if saw != "Steve:PING!" {
-			t.Fatalf("lobby saw %q", saw)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("lobby never saw the join")
-	}
-
-	echo := make([]byte, 5)
-	if _, err := io.ReadFull(cr, echo); err != nil {
-		t.Fatalf("cipher read failed %v", err)
-	}
-	if string(echo) != "PONG!" {
-		t.Fatalf("echo = %q", echo)
-	}
-}
-
-// Offline mediation splices without any cipher
-func TestShimMediatedRelayOffline(t *testing.T) {
-	sock, lobbyLn, _ := mediationSocket(t, false)
-	lobbySaw := fakeLobby(t, lobbyLn, "PONG!")
-
-	client, err := net.Dial("tcp", sock.listener.Addr().String())
+	chunks, err := hubShimWalk(cr, cw, 772, nil)
 	if err != nil {
-		t.Fatalf("dial failed %v", err)
+		t.Fatalf("shim client failed %v", err)
 	}
-	defer client.Close()
-	client.SetDeadline(time.Now().Add(10 * time.Second))
-
-	mcproto.WriteHandshakePacket(client, &mcproto.HandshakePacket{
-		ProtocolVersion: 772,
-		ServerAddress:   "hub.example.com",
-		ServerPort:      25565,
-		NextState:       mcproto.NextStateLogin,
-	})
-	var body bytes.Buffer
-	mcproto.WriteVarInt(&body, 0x00)
-	mcproto.WriteVarInt(&body, mcproto.VarInt(len("Steve")))
-	body.WriteString("Steve")
-	mcproto.WriteFramed(client, body.Bytes())
-
-	client.Write([]byte("PING!"))
-
-	select {
-	case saw := <-lobbySaw:
-		if saw != "Steve:PING!" {
-			t.Fatalf("lobby saw %q", saw)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("lobby never saw the join")
+	if chunks != 16 {
+		t.Fatalf("client saw %d chunks, want 16", chunks)
 	}
-
-	echo := make([]byte, 5)
-	if _, err := io.ReadFull(client, echo); err != nil {
-		t.Fatalf("read failed %v", err)
-	}
-	if string(echo) != "PONG!" {
-		t.Fatalf("echo = %q", echo)
-	}
+	expectLobbyClean(t, lobbyDone)
 }
 
 // Unsupported versions get the lobby version kick
