@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
-	import { Container, PanelsTopLeft } from '@lucide/svelte';
+	import { Container, DoorOpen, PanelsTopLeft } from '@lucide/svelte';
 	import { ServerAvatar, StatusDot } from '$lib/components/app';
 	import type { BackendNodeData } from '../topology-data';
 
@@ -37,7 +37,16 @@
 				<span class="truncate text-[11px] text-muted-foreground">{d.parentName}</span>
 			{/if}
 		{:else if d.kind === 'panel'}
-			<span class="text-[11px] text-muted-foreground">web ui</span>
+			<span class="text-[11px] text-muted-foreground">panel</span>
+			{#if d?.lobby}
+				<span class="flex items-center gap-1 text-[11px] text-muted-foreground">
+					<DoorOpen class="size-3 shrink-0 text-primary" />
+					lobby
+					{#if d?.lobbyMembers}
+						<span class="font-medium text-status-ok tabular-nums">{d.lobbyMembers}</span>
+					{/if}
+				</span>
+			{/if}
 		{:else}
 			<span class="text-[11px] text-muted-foreground">server</span>
 		{/if}

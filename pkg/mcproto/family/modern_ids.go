@@ -55,6 +55,8 @@ type ModernIDs struct {
 	CfgPluginMsgCB  int32
 	CfgPluginMsgSB  int32
 	CfgDisconnect   int32
+	CfgPingCB       int32
+	CfgPongSB       int32
 
 	// Registry facts riding along with the group
 	PlayerTypeID int32
@@ -68,6 +70,8 @@ type ModernIDs struct {
 	VarIntHeightmaps bool
 	// Chunk data arrays drop their length prefix when true
 	UnprefixedSections bool
+	// Sections carry a fluid count when true
+	FluidCounts bool
 	// Serverbound chat carries the checksum byte when true
 	ChatChecksum bool
 	// Login success carries the strict handling flag when true
@@ -134,6 +138,8 @@ func init() {
 		ids.CfgPluginMsgCB = mcproto.CfgCBPluginMessage
 		ids.CfgPluginMsgSB = mcproto.CfgSBPluginMessage
 		ids.CfgDisconnect = mcproto.CfgCBDisconnect
+		ids.CfgPingCB = mcproto.CfgCBPing
+		ids.CfgPongSB = mcproto.CfgSBPong
 	}
 }
 
@@ -153,6 +159,7 @@ var legacy754 = ModernIDs{
 	CfgFinishCB: -1, CfgRegistryData: -1, CfgFeatureFlags: -1,
 	CfgKnownPacks: -1, CfgFinishAckSB: -1, CfgKnownPacksSB: -1,
 	CfgPluginMsgCB: -1, CfgPluginMsgSB: -1, CfgDisconnect: -1,
+	CfgPingCB: -1, CfgPongSB: -1,
 	NoConfigPhase: true, NamedNBT: true, JSONText: true, SignTextRows: true,
 	OldPlayerInfo: true, TrustEdges: true, LegacyChatPacket: true, LoginNoProps: true,
 	BiomeIntArray: true, VarIntMask: true, SpawnPosNoAngle: true,
@@ -175,6 +182,7 @@ var legacy755 = ModernIDs{
 	CfgFinishCB: -1, CfgRegistryData: -1, CfgFeatureFlags: -1,
 	CfgKnownPacks: -1, CfgFinishAckSB: -1, CfgKnownPacksSB: -1,
 	CfgPluginMsgCB: -1, CfgPluginMsgSB: -1, CfgDisconnect: -1,
+	CfgPingCB: -1, CfgPongSB: -1,
 	NoConfigPhase: true, NamedNBT: true, JSONText: true, SignTextRows: true,
 	SyncDismount: true, OldPlayerInfo: true, TrustEdges: true, LegacyChatPacket: true,
 	LoginNoProps: true, BiomeIntArray: true, DimensionInline: true, NoSimDistance: true,
@@ -196,6 +204,7 @@ var legacy757 = ModernIDs{
 	CfgFinishCB: -1, CfgRegistryData: -1, CfgFeatureFlags: -1,
 	CfgKnownPacks: -1, CfgFinishAckSB: -1, CfgKnownPacksSB: -1,
 	CfgPluginMsgCB: -1, CfgPluginMsgSB: -1, CfgDisconnect: -1,
+	CfgPingCB: -1, CfgPongSB: -1,
 	BeaconEntity:  13,
 	NoConfigPhase: true, NamedNBT: true, JSONText: true, SignTextRows: true,
 	SyncDismount: true, OldPlayerInfo: true, TrustEdges: true, LegacyChatPacket: true,
@@ -218,6 +227,7 @@ var legacy759 = ModernIDs{
 	CfgFinishCB: -1, CfgRegistryData: -1, CfgFeatureFlags: -1,
 	CfgKnownPacks: -1, CfgFinishAckSB: -1, CfgKnownPacksSB: -1,
 	CfgPluginMsgCB: -1, CfgPluginMsgSB: -1, CfgDisconnect: -1,
+	CfgPingCB: -1, CfgPongSB: -1,
 	BeaconEntity:  13,
 	NoConfigPhase: true, NamedNBT: true, JSONText: true, SignTextRows: true,
 	SyncDismount: true, OldPlayerInfo: true, TrustEdges: true, ChatTypeVarInt: true,
@@ -239,6 +249,7 @@ var legacy760 = ModernIDs{
 	CfgFinishCB: -1, CfgRegistryData: -1, CfgFeatureFlags: -1,
 	CfgKnownPacks: -1, CfgFinishAckSB: -1, CfgKnownPacksSB: -1,
 	CfgPluginMsgCB: -1, CfgPluginMsgSB: -1, CfgDisconnect: -1,
+	CfgPingCB: -1, CfgPongSB: -1,
 	BeaconEntity:  13,
 	NoConfigPhase: true, NamedNBT: true, JSONText: true, SignTextRows: true,
 	SyncDismount: true, OldPlayerInfo: true, TrustEdges: true, ChatTypeVarInt: true,
@@ -260,6 +271,7 @@ var legacy761 = ModernIDs{
 	CfgFinishCB: -1, CfgRegistryData: -1, CfgFeatureFlags: -1,
 	CfgKnownPacks: -1, CfgFinishAckSB: -1, CfgKnownPacksSB: -1,
 	CfgPluginMsgCB: -1, CfgPluginMsgSB: -1, CfgDisconnect: -1,
+	CfgPingCB: -1, CfgPongSB: -1,
 	BeaconEntity:  14,
 	NoConfigPhase: true, NamedNBT: true, JSONText: true,
 	SyncDismount: true, SignTextRows: true,
@@ -281,6 +293,7 @@ var legacy762 = ModernIDs{
 	CfgFinishCB: -1, CfgRegistryData: -1, CfgFeatureFlags: -1,
 	CfgKnownPacks: -1, CfgFinishAckSB: -1, CfgKnownPacksSB: -1,
 	CfgPluginMsgCB: -1, CfgPluginMsgSB: -1, CfgDisconnect: -1,
+	CfgPingCB: -1, CfgPongSB: -1,
 	BeaconEntity:  14,
 	NoConfigPhase: true, NamedNBT: true, JSONText: true,
 }
@@ -301,6 +314,7 @@ var legacy764 = ModernIDs{
 	CfgFinishCB: 0x02, CfgRegistryData: 0x05, CfgFeatureFlags: 0x07,
 	CfgKnownPacks: -1, CfgFinishAckSB: 0x02, CfgKnownPacksSB: -1,
 	CfgPluginMsgCB: 0x00, CfgPluginMsgSB: 0x01, CfgDisconnect: 0x01,
+	CfgPingCB: 0x04, CfgPongSB: 0x04,
 	PlayerTypeID: 122, BeaconEntity: 14,
 	RegistryCompound: true, DimTypeString: true, JSONText: true,
 }
@@ -321,6 +335,7 @@ var legacy765 = ModernIDs{
 	CfgFinishCB: 0x02, CfgRegistryData: 0x05, CfgFeatureFlags: 0x07,
 	CfgKnownPacks: -1, CfgFinishAckSB: 0x02, CfgKnownPacksSB: -1,
 	CfgPluginMsgCB: 0x00, CfgPluginMsgSB: 0x01, CfgDisconnect: 0x01,
+	CfgPingCB: 0x04, CfgPongSB: 0x04,
 	PlayerTypeID: 124, BeaconEntity: 14,
 	RegistryCompound: true, DimTypeString: true,
 }
@@ -406,7 +421,7 @@ var modern775 = ModernIDs{
 	TeleportConfirm: 0x00, ClientCommand: 0x0c,
 	PlayerTypeID: 155, BeaconEntity: 15, WideTeleport: true, VarIntHeightmaps: true,
 	UnprefixedSections: true, ChatChecksum: true, LpVelocity: true, GlobalRespawn: true,
-	ClockTime: true, AttribRegistries: true,
+	ClockTime: true, AttribRegistries: true, FluidCounts: true,
 }
 
 // Group table for one modern protocol
@@ -480,6 +495,3 @@ const ModernFloor = 754
 
 // Newest protocol the modern family speaks
 const ModernCeiling = 776
-
-// Puppets must speak the transfer era themselves
-const PuppetFloor = 766

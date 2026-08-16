@@ -39,7 +39,7 @@ const (
 // First protocol carrying the authenticate flag
 const authenticateFlagProtocol = 766
 
-// Shared keypair and settings for shim logins
+// Shared keypair and settings for lobby logins
 type ServerAuth struct {
 	Key         *rsa.PrivateKey
 	PublicDER   []byte

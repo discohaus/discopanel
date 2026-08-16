@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/discohaus/discopanel/pkg/mcproto"
-	"github.com/discohaus/discopanel/pkg/mcproto/hub"
 	"github.com/discohaus/discopanel/pkg/mcproto/packet"
 )
 
@@ -20,7 +19,6 @@ const (
 const modernLightSections = modernSections + 2
 
 // Sign block entity type id, stable in the group
-// Exported so the puppet spots sign updates
 const ModernSignEntity = 7
 
 // Heightmap entries fit this world in nine bits
@@ -30,7 +28,7 @@ const modernHeightBits = 9
 const modernSNBTFloor = 770
 
 // Bakes framed modern chunk packets for the hub
-func bakeModern(grid *hub.Grid, protocol int32) ([][]byte, error) {
+func bakeModern(grid *Grid, protocol int32) ([][]byte, error) {
 	ids := ModernIDsFor(protocol)
 	if ids == nil {
 		return nil, fmt.Errorf("no modern ids for protocol %d", protocol)
@@ -61,7 +59,7 @@ func bakeModern(grid *hub.Grid, protocol int32) ([][]byte, error) {
 }
 
 // Bakes one chunk with light and block entities
-func bakeModernChunk(grid *hub.Grid, protocol int32, ids *ModernIDs, cx, cz int) ([]byte, error) {
+func bakeModernChunk(grid *Grid, protocol int32, ids *ModernIDs, cx, cz int) ([]byte, error) {
 	var body bytes.Buffer
 	mcproto.WriteVarInt(&body, mcproto.VarInt(ids.ChunkData))
 	packet.WriteNum(&body, int32(cx))
@@ -117,7 +115,7 @@ const (
 )
 
 // Bakes one shallow chunk and its light frame
-func bakeLegacyChunk(grid *hub.Grid, protocol int32, ids *ModernIDs, cx, cz int) ([]byte, []byte, error) {
+func bakeLegacyChunk(grid *Grid, protocol int32, ids *ModernIDs, cx, cz int) ([]byte, []byte, error) {
 	var body bytes.Buffer
 	mcproto.WriteVarInt(&body, mcproto.VarInt(ids.ChunkData))
 	packet.WriteNum(&body, int32(cx))
@@ -155,13 +153,7 @@ func bakeLegacyChunk(grid *hub.Grid, protocol int32, ids *ModernIDs, cx, cz int)
 	beacons := chunkBeacons(grid, cx, cz)
 	mcproto.WriteVarInt(&body, mcproto.VarInt(len(signs)+len(beacons)))
 	for _, sg := range signs {
-		entity := packet.NBTCompound{
-			{Name: "x", Tag: packet.NBTInt(int32(sg.X))},
-			{Name: "y", Tag: packet.NBTInt(int32(sg.Y + legacyYOffset))},
-			{Name: "z", Tag: packet.NBTInt(int32(sg.Z))},
-			{Name: "id", Tag: packet.NBTString("minecraft:sign")},
-		}
-		entity = append(entity, signTextNBT(sg.Lines, ids).(packet.NBTCompound)...)
+		entity := signEntityNBT(sg.X, sg.Y+legacyYOffset, sg.Z, sg.Lines, ids)
 		if err := packet.WriteNBT(&body, "", entity); err != nil {
 			return nil, nil, err
 		}
@@ -210,7 +202,7 @@ func bakeLegacyChunk(grid *hub.Grid, protocol int32, ids *ModernIDs, cx, cz int)
 }
 
 // Writes one block only section for shallow worlds
-func writeLegacySection(w *bytes.Buffer, grid *hub.Grid, protocol int32, cx, cz, yBase int) error {
+func writeLegacySection(w *bytes.Buffer, grid *Grid, protocol int32, cx, cz, yBase int) error {
 	var states [4096]int32
 	var palette []int32
 	index := map[int32]int{}
@@ -268,7 +260,7 @@ func writeLegacySection(w *bytes.Buffer, grid *hub.Grid, protocol int32, cx, cz,
 }
 
 // Heightmap values for every column in one chunk
-func columnHeights(grid *hub.Grid, cx, cz int) [256]uint32 {
+func columnHeights(grid *Grid, cx, cz int) [256]uint32 {
 	var heights [256]uint32
 	min, max := grid.Bounds()
 	for lz := range 16 {
@@ -322,7 +314,7 @@ func writeEraNBT(w *bytes.Buffer, ids *ModernIDs, tag packet.Tag) error {
 }
 
 // Writes one section with its block and biome containers
-func writeModernSection(w *bytes.Buffer, grid *hub.Grid, protocol int32, ids *ModernIDs, cx, cz, yBase int) error {
+func writeModernSection(w *bytes.Buffer, grid *Grid, protocol int32, ids *ModernIDs, cx, cz, yBase int) error {
 	var states [4096]int32
 	var palette []int32
 	index := map[int32]int{}
@@ -351,6 +343,10 @@ func writeModernSection(w *bytes.Buffer, grid *hub.Grid, protocol int32, ids *Mo
 	}
 
 	packet.WriteNum(w, count)
+	// Fluid eras count wet blocks, the plaza stays dry
+	if ids.FluidCounts {
+		packet.WriteNum(w, int16(0))
+	}
 
 	if len(palette) == 1 {
 		w.WriteByte(0)
@@ -391,8 +387,8 @@ func writeModernSection(w *bytes.Buffer, grid *hub.Grid, protocol int32, ids *Mo
 }
 
 // Signs standing inside one chunk column
-func chunkSigns(grid *hub.Grid, cx, cz int) []hub.Sign {
-	var out []hub.Sign
+func chunkSigns(grid *Grid, cx, cz int) []Sign {
+	var out []Sign
 	for _, s := range grid.Signs {
 		if s.X>>4 == cx && s.Z>>4 == cz {
 			out = append(out, s)
@@ -403,23 +399,29 @@ func chunkSigns(grid *hub.Grid, cx, cz int) []hub.Sign {
 
 // Beacon positions inside one chunk column
 // Their block entities make the beams render
-func chunkBeacons(grid *hub.Grid, cx, cz int) [][3]int {
+func chunkBeacons(grid *Grid, cx, cz int) [][3]int {
 	var out [][3]int
 	for pos, name := range grid.Blocks() {
 		if pos[0]>>4 != cx || pos[2]>>4 != cz {
 			continue
 		}
-		if base, _ := hub.SplitState(name); base == "beacon" {
+		if base, _ := SplitState(name); base == "beacon" {
 			out = append(out, pos)
 		}
 	}
 	return out
 }
 
+// Glowing ink keeps plaques readable on dark wood
+const signInk = "yellow"
+
 // Sign text as a waxed block entity
 func signTextNBT(lines [4]string, ids *ModernIDs) packet.Tag {
 	if ids.SignTextRows {
-		out := packet.NBTCompound{}
+		out := packet.NBTCompound{
+			{Name: "Color", Tag: packet.NBTString(signInk)},
+			{Name: "GlowingText", Tag: packet.NBTByte(1)},
+		}
 		for i, line := range lines {
 			raw, _ := json.Marshal(map[string]string{"text": line})
 			out = append(out, packet.NBTField{
@@ -431,13 +433,24 @@ func signTextNBT(lines [4]string, ids *ModernIDs) packet.Tag {
 	}
 	return packet.NBTCompound{
 		{Name: "is_waxed", Tag: packet.NBTByte(1)},
-		{Name: "front_text", Tag: signFace(lines, ids)},
-		{Name: "back_text", Tag: signFace([4]string{}, ids)},
+		{Name: "front_text", Tag: signFace(lines, ids, true)},
+		{Name: "back_text", Tag: signFace([4]string{}, ids, false)},
 	}
 }
 
+// Sign entity nbt carrying coords for old eras
+func signEntityNBT(x, y, z int, lines [4]string, ids *ModernIDs) packet.NBTCompound {
+	entity := packet.NBTCompound{
+		{Name: "x", Tag: packet.NBTInt(int32(x))},
+		{Name: "y", Tag: packet.NBTInt(int32(y))},
+		{Name: "z", Tag: packet.NBTInt(int32(z))},
+		{Name: "id", Tag: packet.NBTString("minecraft:sign")},
+	}
+	return append(entity, signTextNBT(lines, ids).(packet.NBTCompound)...)
+}
+
 // One sign side with its four message lines
-func signFace(lines [4]string, ids *ModernIDs) packet.Tag {
+func signFace(lines [4]string, ids *ModernIDs, glow bool) packet.Tag {
 	messages := packet.NBTList{}
 	for _, line := range lines {
 		text := line
@@ -448,9 +461,13 @@ func signFace(lines [4]string, ids *ModernIDs) packet.Tag {
 		}
 		messages.Elem = append(messages.Elem, packet.NBTString(text))
 	}
+	ink, lit := "black", packet.NBTByte(0)
+	if glow {
+		ink, lit = signInk, packet.NBTByte(1)
+	}
 	return packet.NBTCompound{
-		{Name: "has_glowing_text", Tag: packet.NBTByte(0)},
-		{Name: "color", Tag: packet.NBTString("black")},
+		{Name: "has_glowing_text", Tag: lit},
+		{Name: "color", Tag: packet.NBTString(ink)},
 		{Name: "messages", Tag: messages},
 	}
 }

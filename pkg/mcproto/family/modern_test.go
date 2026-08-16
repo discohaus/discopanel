@@ -11,34 +11,28 @@ import (
 	"time"
 
 	"github.com/discohaus/discopanel/pkg/mcproto"
-	"github.com/discohaus/discopanel/pkg/mcproto/hub"
 	"github.com/discohaus/discopanel/pkg/mcproto/packet"
 )
 
 // Small hub crossing one chunk border
-const testGridJSON = `{
-	"version": 1,
-	"spawn_x": 8.5, "spawn_y": -59, "spawn_z": 8.5,
-	"min_y": -64,
-	"fills": [
-		{"x1": 0, "y1": -60, "z1": 0, "x2": 18, "y2": -60, "z2": 18, "block": "minecraft:polished_diorite"},
-		{"x1": 2, "y1": -59, "z1": 2, "x2": 4, "y2": -59, "z2": 4, "block": "lime_stained_glass"},
-		{"x1": 3, "y1": -58, "z1": 3, "x2": 3, "y2": -58, "z2": 3, "block": "oak_wall_sign[facing=north]"},
-		{"x1": 6, "y1": -59, "z1": 6, "x2": 6, "y2": -59, "z2": 6, "block": "beacon"},
-		{"x1": 7, "y1": -59, "z1": 7, "x2": 7, "y2": -59, "z2": 7, "block": "polished_blackstone_brick_wall"},
-		{"x1": 8, "y1": -59, "z1": 8, "x2": 8, "y2": -59, "z2": 8, "block": "amethyst_cluster"}
-	],
-	"signs": [
-		{"x": 3, "y": -58, "z": 3, "facing": "north", "wall": true, "lines": ["Hub", "", "", ""]}
-	]
-}`
-
-func testGrid(t *testing.T) *hub.Grid {
+func testGrid(t *testing.T) *Grid {
 	t.Helper()
-	grid, err := hub.Parse([]byte(testGridJSON))
-	if err != nil {
-		t.Fatalf("grid parse failed %v", err)
+	grid := &Grid{
+		SpawnX: 8.5, SpawnY: -59, SpawnZ: 8.5,
+		MinY: -64,
+		Fills: []Fill{
+			{X1: 0, Y1: -60, Z1: 0, X2: 18, Y2: -60, Z2: 18, Block: "minecraft:polished_diorite"},
+			{X1: 2, Y1: -59, Z1: 2, X2: 4, Y2: -59, Z2: 4, Block: "lime_stained_glass"},
+			{X1: 3, Y1: -58, Z1: 3, X2: 3, Y2: -58, Z2: 3, Block: "warped_wall_sign[facing=north]"},
+			{X1: 6, Y1: -59, Z1: 6, X2: 6, Y2: -59, Z2: 6, Block: "beacon"},
+			{X1: 7, Y1: -59, Z1: 7, X2: 7, Y2: -59, Z2: 7, Block: "polished_blackstone_brick_wall"},
+			{X1: 8, Y1: -59, Z1: 8, X2: 8, Y2: -59, Z2: 8, Block: "amethyst_cluster"},
+		},
+		Signs: []Sign{
+			{X: 3, Y: -58, Z: 3, Facing: "north", Wall: true, Lines: [4]string{"Hub", "", "", ""}},
+		},
 	}
+	grid.Rasterize()
 	return grid
 }
 
@@ -159,6 +153,9 @@ func walkChunkFrame(t *testing.T, frame []byte, ids *ModernIDs) int {
 	sections := bytes.NewReader(readN(t, r, size))
 	for range modernSections {
 		readN(t, sections, 2)
+		if ids.FluidCounts {
+			readN(t, sections, 2)
+		}
 		walkContainer(t, sections, ids, 4096, 4)
 		walkContainer(t, sections, ids, 64, 1)
 	}
@@ -324,13 +321,10 @@ func TestBakeModernChunkStructure(t *testing.T) {
 
 // Unknown palette blocks refuse the whole bake
 func TestBakeModernRejectsUnknownBlock(t *testing.T) {
-	grid, err := hub.Parse([]byte(`{
-		"version": 1,
-		"fills": [{"x1":0,"y1":0,"z1":0,"x2":0,"y2":0,"z2":0,"block":"command_block"}]
-	}`))
-	if err != nil {
-		t.Fatalf("grid parse failed %v", err)
+	grid := &Grid{
+		Fills: []Fill{{X1: 0, Y1: 0, Z1: 0, X2: 0, Y2: 0, Z2: 0, Block: "command_block"}},
 	}
+	grid.Rasterize()
 	if _, err := bakeModern(grid, 766); err == nil {
 		t.Fatal("unknown block must fail the bake")
 	}
@@ -375,6 +369,11 @@ func walkFakeConfig(conn net.Conn, protocol int32, ids *ModernIDs) error {
 		}
 		buf := bytes.NewReader(frame)
 		pid, _ := mcproto.ReadVarInt(buf)
+		if ids.CfgPingCB >= 0 && int32(pid) == ids.CfgPingCB {
+			if err := answerPing(conn, ids, buf); err != nil {
+				return err
+			}
+		}
 		if int32(pid) == ids.CfgKnownPacks {
 			if err := answerKnownPacks(conn, ids, buf); err != nil {
 				return err
@@ -393,6 +392,18 @@ func walkFakeConfig(conn net.Conn, protocol int32, ids *ModernIDs) error {
 	var fin bytes.Buffer
 	mcproto.WriteVarInt(&fin, mcproto.VarInt(ids.CfgFinishAckSB))
 	return packet.WriteFrame(conn, fin.Bytes())
+}
+
+// Pongs a config ping like a real client
+func answerPing(conn net.Conn, ids *ModernIDs, buf *bytes.Reader) error {
+	var id int32
+	if err := packet.ReadNum(buf, &id); err != nil {
+		return err
+	}
+	var pong bytes.Buffer
+	mcproto.WriteVarInt(&pong, mcproto.VarInt(ids.CfgPongSB))
+	packet.WriteNum(&pong, id)
+	return packet.WriteFrame(conn, pong.Bytes())
 }
 
 // Confirms the first offered pack like a real client
@@ -420,6 +431,247 @@ func answerKnownPacks(conn net.Conn, ids *ModernIDs, buf *bytes.Reader) error {
 	packet.WriteString(&resp, id)
 	packet.WriteString(&resp, ver)
 	return packet.WriteFrame(conn, resp.Bytes())
+}
+
+// Hand built declaration and expected answer per era
+func dialectSample(protocol int32) (decl, want []byte) {
+	var d, w bytes.Buffer
+	if protocol == 765 {
+		mcproto.WriteVarInt(&d, 1)
+		packet.WriteString(&d, "test:chan")
+		packet.WriteBool(&d, true)
+		packet.WriteString(&d, "1")
+		packet.WriteBool(&d, true)
+		mcproto.WriteVarInt(&d, 1)
+		packet.WriteBool(&d, false)
+		mcproto.WriteVarInt(&d, 0)
+
+		mcproto.WriteVarInt(&w, 1)
+		packet.WriteString(&w, "test:chan")
+		packet.WriteBool(&w, true)
+		packet.WriteString(&w, "1")
+		mcproto.WriteVarInt(&w, 0)
+		return d.Bytes(), w.Bytes()
+	}
+	mcproto.WriteVarInt(&d, 1)
+	mcproto.WriteVarInt(&d, 4)
+	mcproto.WriteVarInt(&d, 1)
+	packet.WriteString(&d, "test:chan")
+	packet.WriteString(&d, "1")
+	packet.WriteBool(&d, true)
+	mcproto.WriteVarInt(&d, 0)
+	packet.WriteBool(&d, false)
+
+	mcproto.WriteVarInt(&w, 1)
+	mcproto.WriteVarInt(&w, 4)
+	mcproto.WriteVarInt(&w, 1)
+	packet.WriteString(&w, "test:chan")
+	packet.WriteString(&w, "test:chan")
+	packet.WriteString(&w, "1")
+	return d.Bytes(), w.Bytes()
+}
+
+// Probe table keys eras to query shapes
+func TestDialectProbeTable(t *testing.T) {
+	if p := dialectProbes(764); p != nil {
+		t.Fatalf("probe exists for 764")
+	}
+	if p := dialectProbes(765); len(p) != 1 || !bytes.Equal(p[0].body, []byte{0, 0}) {
+		t.Fatalf("bad 765 probe %v", p)
+	}
+	for _, protocol := range []int32{766, 772, 776} {
+		if p := dialectProbes(protocol); len(p) != 1 || !bytes.Equal(p[0].body, []byte{0}) {
+			t.Fatalf("bad %d probe %v", protocol, p)
+		}
+	}
+}
+
+// Reshapes must replay declarations byte for byte
+func TestDialectReshapes(t *testing.T) {
+	for _, protocol := range []int32{765, 766} {
+		decl, want := dialectSample(protocol)
+		probe := dialectProbes(protocol)[0]
+		got, err := probe.reshape(decl)
+		if err != nil {
+			t.Fatalf("reshape %d failed %v", protocol, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("reshape %d = %x, want %x", protocol, got, want)
+		}
+		if _, err := probe.reshape(append(decl, 0xff)); err == nil {
+			t.Fatalf("reshape %d took trailing junk", protocol)
+		}
+	}
+}
+
+// Declared fake client walking fence config and join
+func runDialectClient(conn net.Conn, protocol int32, done chan<- error) {
+	defer close(done)
+	fail := func(err error) { done <- err }
+	ids := ModernIDsFor(protocol)
+	decl, want := dialectSample(protocol)
+	probe := dialectProbes(protocol)[0]
+
+	frame, err := packet.ReadFrame(conn)
+	if err != nil {
+		fail(fmt.Errorf("login success read: %w", err))
+		return
+	}
+	if pid, _ := mcproto.ReadVarInt(bytes.NewReader(frame)); int32(pid) != modernLoginSuccess {
+		fail(fmt.Errorf("login success id %d", pid))
+		return
+	}
+	var ack bytes.Buffer
+	mcproto.WriteVarInt(&ack, modernLoginAck)
+	if err := packet.WriteFrame(conn, ack.Bytes()); err != nil {
+		fail(err)
+		return
+	}
+
+	// Probe must land before anything else clientbound
+	frame, err = packet.ReadFrame(conn)
+	if err != nil {
+		fail(fmt.Errorf("probe read: %w", err))
+		return
+	}
+	buf := bytes.NewReader(frame)
+	if pid, _ := mcproto.ReadVarInt(buf); int32(pid) != ids.CfgPluginMsgCB {
+		fail(fmt.Errorf("fence probe not first, got %d", pid))
+		return
+	}
+	channel, err := packet.ReadString(buf)
+	if err != nil || channel != probe.query {
+		fail(fmt.Errorf("probe channel %q err %v", channel, err))
+		return
+	}
+	rest, _ := io.ReadAll(buf)
+	if !bytes.Equal(rest, probe.body) {
+		fail(fmt.Errorf("probe body %x, want %x", rest, probe.body))
+		return
+	}
+
+	frame, err = packet.ReadFrame(conn)
+	if err != nil {
+		fail(fmt.Errorf("fence ping read: %w", err))
+		return
+	}
+	buf = bytes.NewReader(frame)
+	if pid, _ := mcproto.ReadVarInt(buf); int32(pid) != ids.CfgPingCB {
+		fail(fmt.Errorf("fence ping id %d", pid))
+		return
+	}
+	var pingID int32
+	if err := packet.ReadNum(buf, &pingID); err != nil {
+		fail(err)
+		return
+	}
+
+	var reply bytes.Buffer
+	mcproto.WriteVarInt(&reply, mcproto.VarInt(ids.CfgPluginMsgSB))
+	packet.WriteString(&reply, probe.query)
+	reply.Write(decl)
+	if err := packet.WriteFrame(conn, reply.Bytes()); err != nil {
+		fail(err)
+		return
+	}
+
+	frame, err = packet.ReadFrame(conn)
+	if err != nil {
+		fail(fmt.Errorf("answer read: %w", err))
+		return
+	}
+	buf = bytes.NewReader(frame)
+	if pid, _ := mcproto.ReadVarInt(buf); int32(pid) != ids.CfgPluginMsgCB {
+		fail(fmt.Errorf("answer id %d", pid))
+		return
+	}
+	if channel, err = packet.ReadString(buf); err != nil || channel != probe.answer {
+		fail(fmt.Errorf("answer channel %q err %v", channel, err))
+		return
+	}
+	if rest, _ = io.ReadAll(buf); !bytes.Equal(rest, want) {
+		fail(fmt.Errorf("answer body %x, want %x", rest, want))
+		return
+	}
+
+	var pong bytes.Buffer
+	mcproto.WriteVarInt(&pong, mcproto.VarInt(ids.CfgPongSB))
+	packet.WriteNum(&pong, pingID)
+	if err := packet.WriteFrame(conn, pong.Bytes()); err != nil {
+		fail(err)
+		return
+	}
+
+	for {
+		frame, err = packet.ReadFrame(conn)
+		if err != nil {
+			fail(fmt.Errorf("config read: %w", err))
+			return
+		}
+		buf = bytes.NewReader(frame)
+		pid, _ := mcproto.ReadVarInt(buf)
+		if int32(pid) == ids.CfgKnownPacks {
+			if err := answerKnownPacks(conn, ids, buf); err != nil {
+				fail(err)
+				return
+			}
+		}
+		if int32(pid) == ids.CfgFinishCB {
+			break
+		}
+	}
+	var fin bytes.Buffer
+	mcproto.WriteVarInt(&fin, mcproto.VarInt(ids.CfgFinishAckSB))
+	if err := packet.WriteFrame(conn, fin.Bytes()); err != nil {
+		fail(err)
+		return
+	}
+
+	for {
+		frame, err = packet.ReadFrame(conn)
+		if err != nil {
+			fail(fmt.Errorf("play read: %w", err))
+			return
+		}
+		if pid, _ := mcproto.ReadVarInt(bytes.NewReader(frame)); int32(pid) == ids.SyncPlayerPos {
+			return
+		}
+	}
+}
+
+// Full declared join must pass every fence era
+func TestDialectFenceJoin(t *testing.T) {
+	for _, protocol := range []int32{765, 766, 772, 776} {
+		server, client := net.Pipe()
+		deadline := time.Now().Add(10 * time.Second)
+		server.SetDeadline(deadline)
+		client.SetDeadline(deadline)
+
+		done := make(chan error, 8)
+		go runDialectClient(client, protocol, done)
+
+		grid := testGrid(t)
+		codec := Lookup(protocol)
+		frames, err := codec.BakeChunks(grid, protocol)
+		if err != nil {
+			t.Fatalf("bake failed %v", err)
+		}
+		join := JoinData{
+			Profile:    PlayerEntry{Name: "Steve", UUID: [16]byte{1}},
+			EntityID:   42,
+			Spawn:      Pos{X: 8.5, Y: -59, Z: 8.5},
+			ViewChunks: frames,
+			SpawnBlock: [3]int{8, -59, 8},
+		}
+		if _, err := codec.NewSession(server, server, protocol, join); err != nil {
+			t.Fatalf("session %d failed %v", protocol, err)
+		}
+		if err := <-done; err != nil {
+			t.Fatalf("client %d saw %v", protocol, err)
+		}
+		server.Close()
+		client.Close()
+	}
 }
 
 // Fake vanilla client walking login config and join
@@ -654,6 +906,185 @@ func TestModernSessionDecode(t *testing.T) {
 		}
 		if _, ok := act.(ActNone); !ok {
 			t.Fatalf("junk action %+v", act)
+		}
+	}
+}
+
+// Reads one tag block off the update tags body
+func readTagBlock(t *testing.T, buf *bytes.Reader) (string, map[string][]int32) {
+	t.Helper()
+	name, err := packet.ReadString(buf)
+	if err != nil {
+		t.Fatalf("registry name unreadable %v", err)
+	}
+	count, err := mcproto.ReadVarInt(buf)
+	if err != nil {
+		t.Fatalf("tag count unreadable %v", err)
+	}
+	tags := make(map[string][]int32, int(count))
+	for range int(count) {
+		tagName, err := packet.ReadString(buf)
+		if err != nil {
+			t.Fatalf("tag name unreadable %v", err)
+		}
+		n, err := mcproto.ReadVarInt(buf)
+		if err != nil {
+			t.Fatalf("tag size unreadable %v", err)
+		}
+		ids := make([]int32, 0, int(n))
+		for range int(n) {
+			id, err := mcproto.ReadVarInt(buf)
+			if err != nil {
+				t.Fatalf("tag id unreadable %v", err)
+			}
+			ids = append(ids, int32(id))
+		}
+		tags[tagName] = ids
+	}
+	return name, tags
+}
+
+// Reads a whole update tags frame into registries
+func readTagsFrame(t *testing.T, out *bytes.Buffer) map[string]map[string][]int32 {
+	t.Helper()
+	frame, err := packet.ReadFrame(out)
+	if err != nil {
+		t.Fatalf("tags frame unreadable %v", err)
+	}
+	buf := bytes.NewReader(frame)
+	if pid, _ := mcproto.ReadVarInt(buf); int32(pid) != mcproto.CfgCBUpdateTags {
+		t.Fatalf("tags id = %d, want %d", pid, mcproto.CfgCBUpdateTags)
+	}
+	count, err := mcproto.ReadVarInt(buf)
+	if err != nil {
+		t.Fatalf("registry count unreadable %v", err)
+	}
+	regs := make(map[string]map[string][]int32, int(count))
+	for range int(count) {
+		name, tags := readTagBlock(t, buf)
+		regs[name] = tags
+	}
+	return regs
+}
+
+// Tag payloads bind what each era requires
+func TestConfigTagsPayload(t *testing.T) {
+	var out bytes.Buffer
+	s := &modernSession{w: &out, protocol: 776, ids: ModernIDsFor(776)}
+	if err := s.sendConfigTags(); err != nil {
+		t.Fatalf("tags send failed %v", err)
+	}
+	regs := readTagsFrame(t, &out)
+	if len(regs) != 5 {
+		t.Fatalf("776 registries = %d, want 5", len(regs))
+	}
+	dialog := regs["minecraft:dialog"]
+	if len(dialog) != 2 {
+		t.Fatalf("dialog tags = %d, want 2", len(dialog))
+	}
+	for name, ids := range dialog {
+		if len(ids) != 0 {
+			t.Fatalf("dialog tag %s must stay empty, got %v", name, ids)
+		}
+	}
+	timeline := regs["minecraft:timeline"]
+	if len(timeline["minecraft:in_overworld"]) != 4 {
+		t.Fatalf("in_overworld ids = %v, want 4 members", timeline["minecraft:in_overworld"])
+	}
+	damage := regs["minecraft:damage_type"]
+	if len(damage["minecraft:is_fire"]) == 0 {
+		t.Fatal("is_fire must carry members, item components need it")
+	}
+	if len(regs["minecraft:banner_pattern"]) == 0 {
+		t.Fatal("banner pattern tags missing")
+	}
+	blocks := regs["minecraft:block"]
+	if len(blocks) == 0 {
+		t.Fatal("block tag names missing")
+	}
+	for name, ids := range blocks {
+		if len(ids) != 0 {
+			t.Fatalf("block tag %s must bind empty, got %v", name, ids)
+		}
+	}
+
+	out.Reset()
+	s = &modernSession{w: &out, protocol: 775, ids: ModernIDsFor(775)}
+	if err := s.sendConfigTags(); err != nil {
+		t.Fatalf("775 tags send failed %v", err)
+	}
+	regs = readTagsFrame(t, &out)
+	if len(regs) != 4 {
+		t.Fatalf("775 registries = %d, want 4 without block", len(regs))
+	}
+	if len(regs["minecraft:damage_type"]["minecraft:is_fire"]) == 0 {
+		t.Fatal("775 is_fire must carry members")
+	}
+
+	out.Reset()
+	s = &modernSession{w: &out, protocol: 772, ids: ModernIDsFor(772)}
+	if err := s.sendConfigTags(); err != nil {
+		t.Fatalf("772 tags send failed %v", err)
+	}
+	regs = readTagsFrame(t, &out)
+	if len(regs) != 1 || regs["minecraft:dialog"] == nil {
+		t.Fatalf("772 must send dialog only, got %d registries", len(regs))
+	}
+
+	out.Reset()
+	s = &modernSession{w: &out, protocol: 766, ids: ModernIDsFor(766)}
+	if err := s.sendConfigTags(); err != nil {
+		t.Fatalf("766 tags send failed %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatal("pre dialog eras must send no tags")
+	}
+}
+
+// Pack parsed traps stay out of the synced sets
+func TestSyncedSetsSkipPackParsedTraps(t *testing.T) {
+	for proto, regs := range syncedByProtocol {
+		for _, reg := range regs {
+			switch reg.Name {
+			case "minecraft:enchantment", "minecraft:sulfur_cube_archetype":
+				t.Fatalf("protocol %d syncs %s, clients can't pack parse it", proto, reg.Name)
+			}
+		}
+	}
+}
+
+// Dimension refs need clocks and timelines already loaded
+func TestSyncedSetsOrderDimensionDeps(t *testing.T) {
+	for proto, regs := range syncedByProtocol {
+		position := map[string]int{}
+		for i, reg := range regs {
+			position[reg.Name] = i
+		}
+		dim, ok := position["minecraft:dimension_type"]
+		if !ok {
+			t.Fatalf("protocol %d misses dimension_type", proto)
+		}
+		for _, dep := range []string{"minecraft:timeline", "minecraft:world_clock"} {
+			if at, present := position[dep]; present && at > dim {
+				t.Fatalf("protocol %d sends %s after dimension_type", proto, dep)
+			}
+		}
+	}
+}
+
+// Empty section bytes match each era's wire shape
+func TestModernSectionEraShape(t *testing.T) {
+	grid := testGrid(t)
+	// Prefixed, unprefixed, and fluid count eras
+	shapes := map[int32]int{769: 8, 772: 6, 776: 8}
+	for protocol, want := range shapes {
+		var w bytes.Buffer
+		ids := ModernIDsFor(protocol)
+		if err := writeModernSection(&w, grid, protocol, ids, 100, 100, 0); err != nil {
+			t.Fatalf("section write failed for %d: %v", protocol, err)
+		}
+		if w.Len() != want {
+			t.Fatalf("protocol %d empty section = %d bytes, want %d", protocol, w.Len(), want)
 		}
 	}
 }

@@ -11,7 +11,6 @@ import (
 	"sync"
 
 	"github.com/discohaus/discopanel/pkg/mcproto"
-	"github.com/discohaus/discopanel/pkg/mcproto/hub"
 	"github.com/discohaus/discopanel/pkg/mcproto/packet"
 )
 
@@ -22,7 +21,7 @@ const (
 )
 
 // Client config frames tolerated before the ack
-const maxConfigFrames = 32
+const maxConfigFrames = 64
 
 // Game event id starting the chunk wait
 const gameEventStartChunks = 13
@@ -53,7 +52,7 @@ func (modernCodec) YOffset(protocol int32) int {
 }
 
 // Bakes framed chunk packets for one grid
-func (modernCodec) BakeChunks(grid *hub.Grid, protocol int32) ([][]byte, error) {
+func (modernCodec) BakeChunks(grid *Grid, protocol int32) ([][]byte, error) {
 	return bakeModern(grid, protocol)
 }
 
@@ -68,7 +67,7 @@ func (modernCodec) NewSession(r io.Reader, w io.Writer, protocol int32, join Joi
 		return nil, err
 	}
 	if !ids.NoConfigPhase {
-		if err := s.runConfig(); err != nil {
+		if err := s.runConfig(join); err != nil {
 			return nil, err
 		}
 	}
@@ -84,6 +83,8 @@ type modernSession struct {
 	w        io.Writer
 	protocol int32
 	ids      *ModernIDs
+	probes   []dialectProbe
+	declared bool
 
 	teleportID int32
 
@@ -148,10 +149,36 @@ func (s *modernSession) finishLogin(profile PlayerEntry) error {
 	return nil
 }
 
+// Declared clients get the refusal screen instead
+// Config refusals ride config, later ones ride play
+func (s *modernSession) refuseDeclared(join JoinData, config bool) error {
+	if !s.declared || join.RefuseNote == "" {
+		return nil
+	}
+	if config {
+		if err := WriteConfigDisconnect(s.w, s.protocol, join.RefuseNote); err != nil {
+			return err
+		}
+	} else if err := s.Disconnect(join.RefuseNote); err != nil {
+		return err
+	}
+	return ErrHandedOff
+}
+
 // Feeds registries then waits for the finish ack
-func (s *modernSession) runConfig() error {
+func (s *modernSession) runConfig(join JoinData) error {
+	if err := s.runDialectFence(); err != nil {
+		return err
+	}
+	if err := s.refuseDeclared(join, true); err != nil {
+		return err
+	}
 	if regs, ok := syncedRegistrySet(s.protocol); ok && s.ids.CfgKnownPacks >= 0 {
-		return s.runMirrorConfig(regs)
+		if err := s.runMirrorConfig(join, regs); err != nil {
+			return err
+		}
+		// Late declarations past the ack refuse in play
+		return s.refuseDeclared(join, false)
 	}
 
 	if s.ids.CfgKnownPacks >= 0 {
@@ -192,16 +219,24 @@ func (s *modernSession) runConfig() error {
 		}
 	}
 
+	if err := s.sendConfigTags(); err != nil {
+		return err
+	}
+
 	var fin bytes.Buffer
 	mcproto.WriteVarInt(&fin, mcproto.VarInt(s.ids.CfgFinishCB))
 	if err := s.send(fin.Bytes()); err != nil {
 		return err
 	}
-	return s.awaitFinishAck()
+	if err := s.awaitFinishAck(); err != nil {
+		return err
+	}
+	// Late declarations past the ack refuse in play
+	return s.refuseDeclared(join, false)
 }
 
 // Mirrors the client's own core pack through config
-func (s *modernSession) runMirrorConfig(regs []syncedRegistry) error {
+func (s *modernSession) runMirrorConfig(join JoinData, regs []syncedRegistry) error {
 	var flags bytes.Buffer
 	mcproto.WriteVarInt(&flags, mcproto.VarInt(s.ids.CfgFeatureFlags))
 	mcproto.WriteVarInt(&flags, 1)
@@ -227,6 +262,10 @@ func (s *modernSession) runMirrorConfig(regs []syncedRegistry) error {
 	if err != nil {
 		return err
 	}
+	// Declarations landing with the packs still refuse
+	if err := s.refuseDeclared(join, true); err != nil {
+		return err
+	}
 
 	for _, reg := range regs {
 		body, err := s.mirrorRegistryBody(reg, confirmed)
@@ -241,12 +280,46 @@ func (s *modernSession) runMirrorConfig(regs []syncedRegistry) error {
 		}
 	}
 
+	if err := s.sendConfigTags(); err != nil {
+		return err
+	}
+
 	var fin bytes.Buffer
 	mcproto.WriteVarInt(&fin, mcproto.VarInt(s.ids.CfgFinishCB))
 	if err := s.send(fin.Bytes()); err != nil {
 		return err
 	}
 	return s.awaitFinishAck()
+}
+
+// Binds the tag names modern clients require
+// Shared config ids cover every tagged era
+func (s *modernSession) sendConfigTags() error {
+	set := syncedTagSet(s.protocol)
+	if len(set) == 0 {
+		return nil
+	}
+	var body bytes.Buffer
+	mcproto.WriteVarInt(&body, mcproto.VarInt(mcproto.CfgCBUpdateTags))
+	mcproto.WriteVarInt(&body, mcproto.VarInt(len(set)))
+	for _, reg := range set {
+		packet.WriteString(&body, reg.name)
+		mcproto.WriteVarInt(&body, mcproto.VarInt(len(reg.tags)))
+		for _, tag := range reg.tags {
+			packet.WriteString(&body, tag.name)
+			ids := make([]int32, 0, len(tag.entries))
+			for _, entry := range tag.entries {
+				if id, ok := syncedEntryID(s.protocol, reg.name, entry); ok {
+					ids = append(ids, id)
+				}
+			}
+			mcproto.WriteVarInt(&body, mcproto.VarInt(len(ids)))
+			for _, id := range ids {
+				mcproto.WriteVarInt(&body, mcproto.VarInt(id))
+			}
+		}
+	}
+	return s.send(body.Bytes())
 }
 
 // Builds one registry frame, names only when confirmed
@@ -378,7 +451,49 @@ func (s *modernSession) awaitFinishAck() error {
 	return fmt.Errorf("client never acknowledged config")
 }
 
-// Echoes the client's own channels straight back
+// Sends dialect queries then fences on a ping
+func (s *modernSession) runDialectFence() error {
+	probes := dialectProbes(s.protocol)
+	if len(probes) == 0 || s.ids.CfgPingCB < 0 || s.ids.CfgPluginMsgCB < 0 {
+		return nil
+	}
+	s.probes = probes
+	for _, p := range probes {
+		var msg bytes.Buffer
+		mcproto.WriteVarInt(&msg, mcproto.VarInt(s.ids.CfgPluginMsgCB))
+		packet.WriteString(&msg, p.query)
+		msg.Write(p.body)
+		if err := s.send(msg.Bytes()); err != nil {
+			return err
+		}
+	}
+	var ping bytes.Buffer
+	mcproto.WriteVarInt(&ping, mcproto.VarInt(s.ids.CfgPingCB))
+	packet.WriteNum(&ping, int32(0))
+	if err := s.send(ping.Bytes()); err != nil {
+		return err
+	}
+	for range maxConfigFrames {
+		frame, err := packet.ReadFrame(s.r)
+		if err != nil {
+			return fmt.Errorf("dialect fence read failed: %w", err)
+		}
+		rd := bytes.NewReader(frame)
+		pid, err := mcproto.ReadVarInt(rd)
+		if err != nil {
+			return err
+		}
+		if int32(pid) == s.ids.CfgPongSB {
+			return nil
+		}
+		if err := s.mirrorConfigFrame(int32(pid), rd); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("client never answered the fence ping")
+}
+
+// Answers dialect replies and echoes the brand
 func (s *modernSession) mirrorConfigFrame(pid int32, rd *bytes.Reader) error {
 	if pid != s.ids.CfgPluginMsgSB || s.ids.CfgPluginMsgCB < 0 {
 		return nil
@@ -387,13 +502,27 @@ func (s *modernSession) mirrorConfigFrame(pid int32, rd *bytes.Reader) error {
 	if err != nil {
 		return nil
 	}
-	switch channel {
-	case "minecraft:brand", "minecraft:register", "minecraft:unregister":
-	default:
-		return nil
-	}
 	rest, err := io.ReadAll(rd)
 	if err != nil {
+		return nil
+	}
+	for i, p := range s.probes {
+		if p.query != channel {
+			continue
+		}
+		s.probes = slices.Delete(s.probes, i, i+1)
+		body, err := p.reshape(rest)
+		if err != nil {
+			return fmt.Errorf("dialect reply reshape failed: %w", err)
+		}
+		s.declared = true
+		var ans bytes.Buffer
+		mcproto.WriteVarInt(&ans, mcproto.VarInt(s.ids.CfgPluginMsgCB))
+		packet.WriteString(&ans, p.answer)
+		ans.Write(body)
+		return s.send(ans.Bytes())
+	}
+	if channel != "minecraft:brand" {
 		return nil
 	}
 	var echo bytes.Buffer
@@ -778,14 +907,43 @@ func (s *modernSession) Encode(ev Event) error {
 		var body bytes.Buffer
 		mcproto.WriteVarInt(&body, mcproto.VarInt(s.ids.BlockEntityData))
 		packet.WriteNum(&body, packet.PositionNew(e.X, e.Y, e.Z))
+		// Mask eras take the sign action byte with coords inside
+		if s.ids.BiomeIntArray {
+			body.WriteByte(9)
+			if err := packet.WriteNBT(&body, "", signEntityNBT(e.X, e.Y, e.Z, e.Lines, s.ids)); err != nil {
+				return err
+			}
+			return s.send(body.Bytes())
+		}
 		mcproto.WriteVarInt(&body, ModernSignEntity)
 		if err := writeEraNBT(&body, s.ids, signTextNBT(e.Lines, s.ids)); err != nil {
 			return err
 		}
 		return s.send(body.Bytes())
 
-	case EvDisconnect:
-		return s.Disconnect(e.Reason)
+	case EvBeaconInit:
+		var body bytes.Buffer
+		mcproto.WriteVarInt(&body, mcproto.VarInt(s.ids.BlockEntityData))
+		packet.WriteNum(&body, packet.PositionNew(e.X, e.Y, e.Z))
+		// Mask eras take the beacon action byte with coords inside
+		if s.ids.BiomeIntArray {
+			body.WriteByte(3)
+			entity := packet.NBTCompound{
+				{Name: "x", Tag: packet.NBTInt(int32(e.X))},
+				{Name: "y", Tag: packet.NBTInt(int32(e.Y))},
+				{Name: "z", Tag: packet.NBTInt(int32(e.Z))},
+				{Name: "id", Tag: packet.NBTString("minecraft:beacon")},
+			}
+			if err := packet.WriteNBT(&body, "", entity); err != nil {
+				return err
+			}
+			return s.send(body.Bytes())
+		}
+		mcproto.WriteVarInt(&body, mcproto.VarInt(s.ids.BeaconEntity))
+		if err := writeEraNBT(&body, s.ids, packet.NBTCompound{}); err != nil {
+			return err
+		}
+		return s.send(body.Bytes())
 	}
 	return nil
 }
@@ -916,6 +1074,21 @@ func (s *modernSession) KeepAlive(id int64) error {
 	return s.send(body.Bytes())
 }
 
+// Sends the client to another address
+func (s *modernSession) Transfer(host string, port int) (bool, error) {
+	if s.ids.Transfer < 0 {
+		return false, nil
+	}
+	var body bytes.Buffer
+	mcproto.WriteVarInt(&body, mcproto.VarInt(s.ids.Transfer))
+	packet.WriteString(&body, host)
+	mcproto.WriteVarInt(&body, mcproto.VarInt(port))
+	if err := s.send(body.Bytes()); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
 // Sends a play state disconnect
 func (s *modernSession) Disconnect(reason string) error {
 	var body bytes.Buffer
@@ -939,13 +1112,21 @@ func (s *modernSession) writeText(w *bytes.Buffer, text string) error {
 }
 
 // Sends a config phase disconnect screen
+// Codec eras fall back to the play screen
 func WriteConfigDisconnect(w io.Writer, protocol int32, reason string) error {
 	ids := ModernIDsFor(protocol)
-	if ids == nil || ids.CfgDisconnect < 0 {
+	if ids == nil {
+		return nil
+	}
+	id := ids.CfgDisconnect
+	if id < 0 {
+		id = ids.DisconnectCB
+	}
+	if id < 0 {
 		return nil
 	}
 	var body bytes.Buffer
-	mcproto.WriteVarInt(&body, mcproto.VarInt(ids.CfgDisconnect))
+	mcproto.WriteVarInt(&body, mcproto.VarInt(id))
 	if ids.JSONText {
 		raw, err := json.Marshal(map[string]string{"text": reason})
 		if err != nil {

@@ -4,6 +4,8 @@ import (
 	"math/rand/v2"
 	"time"
 
+	"github.com/discohaus/discopanel/pkg/mcproto"
+	"github.com/discohaus/discopanel/pkg/mcproto/family"
 	"github.com/discohaus/discopanel/pkg/minecraft"
 )
 
@@ -101,6 +103,7 @@ type synthStatus struct {
 	desc       any
 	version    string
 	maxPlayers int
+	online     int
 	favicon    string
 	sample     []string
 }
@@ -266,15 +269,25 @@ func kickAuthFailed() minecraft.Text {
 	)
 }
 
-// Kick screen naming the version the lobby speaks
-func kickLobbyVersion(version string) minecraft.Text {
-	if version == "" {
-		version = "a newer version"
+// Kick screen naming the versions the lobby speaks
+func kickHubVersion() minecraft.Text {
+	floor := "1.16.4"
+	if names := mcproto.VersionNamesForProtocol(family.ModernFloor); len(names) > 0 {
+		floor = names[0]
 	}
 	return poster(
 		headline("the lobby can't host your version yet", inkEmber),
 		minecraft.Plain("\n"),
-		minecraft.Solid("join with minecraft "+version+" instead", inkGray),
+		minecraft.Solid("join with minecraft "+floor+" or newer", inkGray),
+	)
+}
+
+// Kick screen when the lobby is at capacity
+func kickHubFull() minecraft.Text {
+	return poster(
+		headline("the lobby is full right now", inkEmber),
+		minecraft.Plain("\n"),
+		minecraft.Solid("try again in a moment", inkGray),
 	)
 }
 

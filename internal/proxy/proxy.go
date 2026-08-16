@@ -45,8 +45,6 @@ type Route struct {
 	McVersion string
 	// Protocol number for the version, zero when unknown
 	McProtocol int32
-	// Marks the hub route the shim mediates
-	LobbyShim bool
 }
 
 // Dial address for the route's backend
@@ -78,7 +76,7 @@ type Config struct {
 	Certs       *certIndex   // File loaded termination material
 	TrustedEdge bool         // Keeps forwarded headers from an upstream edge
 	Intents     *IntentTable // Shared reroute claims across sockets
-	Shim        *ShimRuntime // Hub mediation shared across sockets
+	Hub         *HubRuntime  // Panel hosted lobby shared across sockets
 }
 
 const (

@@ -16,11 +16,8 @@ import (
 	"github.com/discohaus/discopanel/pkg/logger"
 	"github.com/discohaus/discopanel/pkg/mcproto"
 	"github.com/discohaus/discopanel/pkg/mcproto/family"
-	"github.com/discohaus/discopanel/pkg/mcproto/hub"
-	"github.com/discohaus/discopanel/pkg/mcproto/puppet"
 	"github.com/discohaus/discopanel/pkg/minecraft"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
-	"github.com/discohaus/discopanel/pkg/runtimespec"
 )
 
 // Handles proxy lifecycle and manages routes
@@ -84,11 +81,8 @@ type Manager struct {
 	// Pending reroutes shared by every socket
 	intents *IntentTable
 
-	// Hub mediation runtime shared by every socket
-	shim *ShimRuntime
-
-	// Hub grid cached off the lobby data dir
-	hubGrid hubGridCache
+	// Panel hosted lobby shared by every socket
+	hub *HubRuntime
 }
 
 // One cached container address with its inspect time
@@ -105,10 +99,13 @@ func (m *Manager) SetServerGate(gate ServerGate) {
 	for _, sock := range m.tcpSockets {
 		sock.SetGate(gate)
 	}
+	if m.hub != nil {
+		m.hub.SetGate(gate)
+	}
 }
 
 // Creates a new proxy manager
-func NewManager(store *db.Store, dockerClient *docker.Client, cfg *config.Config, logger *logger.Logger) *Manager {
+func NewManager(store *db.Store, dockerClient *docker.Client, cfg *config.Config, logger *logger.Logger) (*Manager, error) {
 	m := &Manager{
 		tcpSockets:    make(map[int]*ListenerSocket),
 		udpSockets:    make(map[int]*UDPProxy),
@@ -127,78 +124,96 @@ func NewManager(store *db.Store, dockerClient *docker.Client, cfg *config.Config
 		ipCache:       make(map[string]ipEntry),
 		intents:       NewIntentTable(),
 	}
-	shim, err := NewShimRuntime(true, logger, m.intents)
+	hubRT, err := NewHubRuntime(true, logger, m.intents)
 	if err != nil {
-		logger.Error("Shim runtime unavailable: %v", err)
-	} else {
-		m.shim = shim
-		shim.SetPuppetDialer(dialLobbyPuppet)
-		shim.SetGridSource(m.lobbyGrid)
+		return nil, fmt.Errorf("hub runtime failed: %w", err)
 	}
-	return m
+	m.hub = hubRT
+	hubRT.SetCounts(m.activeConnsByServer)
+	return m, nil
 }
 
-// Dials one headless puppet into the lobby
-func dialLobbyPuppet(ctx context.Context, addr, name string, protocol int32) (HubPuppet, error) {
-	client, err := puppet.Dial(ctx, puppet.Config{
-		Addr:       addr,
-		Name:       name,
-		Protocol:   protocol,
-		StateNames: family.ModernStateNames(protocol),
-	})
-	if err != nil {
-		return nil, err
-	}
-	return client, nil
-}
-
-// Grid source callback handed to the shim
-func (m *Manager) lobbyGrid() *hub.Grid {
-	return m.hubGrid.Grid(m.logger)
-}
-
-// Reports whether a lobby module rides this server
-func (m *Manager) serverHasLobby(ctx context.Context, serverID string) bool {
-	mods, err := m.store.ListModulesByTemplate(ctx, runtimespec.LobbyTemplateID)
-	if err != nil {
-		return false
-	}
-	for _, mod := range mods {
-		if mod.ServerId == serverID {
-			return true
+// Active relay conns per server for lobby signs
+func (m *Manager) activeConnsByServer() map[string]int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[string]int64)
+	for _, sock := range m.tcpSockets {
+		for id, st := range sock.StatsSnapshots() {
+			out[id] += st.ActiveConnections
 		}
 	}
-	return false
+	return out
 }
 
-// Lobby server set, also points the grid cache
-func (m *Manager) applyLobbyStateLocked(servers []*v1.Server, modules []*v1.Module) map[string]bool {
-	lobbies := make(map[string]bool)
-	for _, mod := range modules {
-		if mod.TemplateId == runtimespec.LobbyTemplateID && mod.ServerId != "" {
-			lobbies[mod.ServerId] = true
-		}
+// Panel hosted lobby runtime
+func (m *Manager) Hub() *HubRuntime {
+	return m.hub
+}
+
+// Rebuilds the lobby fleet from servers and listeners
+func (m *Manager) syncHubTargets(ctx context.Context, servers []*v1.Server, listenersByID map[string]*v1.ProxyListener) {
+	if m.hub == nil {
+		return
 	}
-	gridOwner, gridPath := "", ""
+	targets := make([]family.Target, 0, len(servers))
 	for _, server := range servers {
-		if !lobbies[server.Id] || server.DataPath == "" {
+		if len(server.ProxyHostnames) == 0 || server.ProxyListenerId == "" {
 			continue
 		}
-		// Lowest id wins when several lobbies exist
-		if gridOwner == "" || server.Id < gridOwner {
-			gridOwner, gridPath = server.Id, server.DataPath
+		listener := listenersByID[server.ProxyListenerId]
+		if listener == nil || !listener.Enabled {
+			continue
 		}
+		t := family.Target{
+			ID:       server.Id,
+			Name:     server.Name,
+			Hostname: server.ProxyHostnames[0],
+			Port:     int(listener.Port),
+			Version:  server.McVersion,
+		}
+		if proto, ok := mcproto.ProtocolForVersion(server.McVersion); ok {
+			t.Protocol = proto
+		}
+		switch server.Status {
+		case v1.ServerStatus_SERVER_STATUS_RUNNING, v1.ServerStatus_SERVER_STATUS_PAUSED, v1.ServerStatus_SERVER_STATUS_UNHEALTHY:
+			t.Running = server.ContainerId != ""
+		case v1.ServerStatus_SERVER_STATUS_PROVISIONING, v1.ServerStatus_SERVER_STATUS_CREATING, v1.ServerStatus_SERVER_STATUS_STARTING:
+			t.Waking = true
+		}
+		if t.Running {
+			if ip, err := m.containerIP(ctx, server.ContainerId); err == nil {
+				t.Addr = net.JoinHostPort(ip, strconv.Itoa(docker.DefaultMinecraftPort))
+			}
+		} else if cfg, err := m.store.GetServerProperties(ctx, server.Id); err == nil {
+			t.Wakeable = propEnabled(cfg, func(c *v1.ServerProperties) *bool { return c.EnableWakeOnConnect })
+		}
+		targets = append(targets, t)
 	}
-	m.hubGrid.SetDataPath(gridPath)
-	return lobbies
+	m.hub.SetTargets(targets)
 }
 
-// Hub mediation runtime for lobby wiring
-func (m *Manager) Shim() *ShimRuntime {
-	return m.shim
+// Refreshes the lobby fleet off fresh store reads
+func (m *Manager) refreshHubTargets(ctx context.Context) {
+	if m.hub == nil {
+		return
+	}
+	servers, err := m.store.ListServers(ctx)
+	if err != nil {
+		return
+	}
+	listeners, err := m.store.ListProxyListeners(ctx)
+	if err != nil {
+		return
+	}
+	byID := make(map[string]*v1.ProxyListener, len(listeners))
+	for _, l := range listeners {
+		byID[l.Id] = l
+	}
+	m.syncHubTargets(ctx, servers, byID)
 }
 
-// Shared reroute claims for shim and lobby flows
+// Shared reroute claims across every socket
 func (m *Manager) Intents() *IntentTable {
 	return m.intents
 }
@@ -370,7 +385,7 @@ func (m *Manager) ensurePanelSocketLocked() error {
 		Certs:       m.certs,
 		TrustedEdge: m.config.TrustedEdge,
 		Intents:     m.intents,
-		Shim:        m.shim,
+		Hub:         m.hub,
 	})
 	if err := sock.Start(); err != nil {
 		return fmt.Errorf("panel socket failed on port %d: %w", port, err)
@@ -394,6 +409,38 @@ func (m *Manager) PanelCatchAll() bool {
 	return m.panelCatchAll
 }
 
+// Reports the panel lobby state
+func (m *Manager) LobbyEnabled() bool {
+	if m.hub == nil {
+		return false
+	}
+	return m.hub.Enabled()
+}
+
+// Reports the lobby online auth state
+func (m *Manager) LobbyOnline() bool {
+	if m.hub == nil {
+		return false
+	}
+	return m.hub.OnlineMode()
+}
+
+// Members standing in the lobby right now
+func (m *Manager) LobbyMembers() int32 {
+	if m.hub == nil {
+		return 0
+	}
+	return int32(m.hub.Population())
+}
+
+// Lobby members waiting per waking server id
+func (m *Manager) LobbyWaiting() map[string]int32 {
+	if m.hub == nil {
+		return nil
+	}
+	return m.hub.WaitingByServer()
+}
+
 // Applies a config change and reconciles running sockets
 func (m *Manager) ApplyConfig(ctx context.Context, cfg *v1.ProxyConfig) error {
 	m.warmContainerIPs(ctx)
@@ -401,6 +448,10 @@ func (m *Manager) ApplyConfig(ctx context.Context, cfg *v1.ProxyConfig) error {
 	m.enabled = cfg.Enabled
 	m.panelNames = cfg.Hostnames
 	m.panelCatchAll = cfg.CatchAll
+	if m.hub != nil {
+		m.hub.SetEnabled(cfg.Lobby)
+		m.hub.SetOnline(cfg.LobbyOnline)
+	}
 	// Panel names gate the lan alias, recompute
 	m.infraNames = nil
 	err := m.syncListenersLocked(ctx)
@@ -498,10 +549,12 @@ func (m *Manager) Start() error {
 
 	// Panel hostnames live on the config row
 	var names []string
-	catchAll := true
+	catchAll, lobby, lobbyOnline := true, true, true
 	if cfg, _, err := m.store.GetProxyConfig(context.Background()); err == nil && cfg != nil {
 		names = cfg.Hostnames
 		catchAll = cfg.CatchAll
+		lobby = cfg.Lobby
+		lobbyOnline = cfg.LobbyOnline
 	}
 
 	m.warmContainerIPs(context.Background())
@@ -509,6 +562,10 @@ func (m *Manager) Start() error {
 	defer m.mu.Unlock()
 	m.panelNames = names
 	m.panelCatchAll = catchAll
+	if m.hub != nil {
+		m.hub.SetEnabled(lobby)
+		m.hub.SetOnline(lobbyOnline)
+	}
 
 	if err := m.syncListenersLocked(context.Background()); err != nil {
 		return err
@@ -589,7 +646,7 @@ func (m *Manager) syncListenersLocked(ctx context.Context) error {
 				Certs:       m.certs,
 				TrustedEdge: m.config.TrustedEdge,
 				Intents:     m.intents,
-				Shim:        m.shim,
+				Hub:         m.hub,
 			})
 			if err := sock.Start(); err != nil {
 				m.logger.Error("Failed to start listener %s on port %d: %v", listener.Name, port, err)
@@ -679,7 +736,7 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 	if modErr != nil {
 		m.logger.Error("Failed to load modules for route sync: %v", modErr)
 	}
-	lobbyServers := m.applyLobbyStateLocked(servers, modules)
+	m.syncHubTargets(ctx, servers, listenersByID)
 
 	for _, server := range servers {
 		// Game routes register even for stopped wakeable servers
@@ -689,7 +746,6 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 				if err != nil {
 					m.logger.Error("Failed to build route for server %s: %v", server.Name, err)
 				} else if want {
-					route.LobbyShim = lobbyServers[server.Id]
 					// Every hostname relays to the same backend
 					port := int(listener.Port)
 					for _, name := range server.ProxyHostnames {
@@ -975,6 +1031,9 @@ func (m *Manager) ensureListenerInvariantsLocked(ctx context.Context) error {
 func (m *Manager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.hub != nil {
+		m.hub.Stop()
+	}
 	return m.stopAllLocked()
 }
 
@@ -1011,6 +1070,9 @@ func (m *Manager) UpdateServerRoute(server *v1.Server) error {
 		}
 	}
 
+	// Lobby fleet syncs before the lock, inspects stay off it
+	m.refreshHubTargets(context.Background())
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -1036,7 +1098,6 @@ func (m *Manager) UpdateServerRoute(server *v1.Server) error {
 	if err != nil {
 		return err
 	}
-	route.LobbyShim = m.serverHasLobby(ctx, server.Id)
 	if !want {
 		for _, name := range server.ProxyHostnames {
 			sock.RemoveRoute(v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT, name)

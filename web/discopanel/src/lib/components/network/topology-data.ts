@@ -134,6 +134,8 @@ export interface BackendNodeData extends Record<string, unknown>, ActiveFlag {
 	extraPorts: ExposedPort[];
 	nested: boolean;
 	parentName: string;
+	lobby?: boolean;
+	lobbyMembers?: number;
 	selection: Selection;
 }
 
@@ -321,7 +323,8 @@ export function buildGraph(
 	modules: Module[],
 	selection: Selection,
 	moved: Record<string, { x: number; y: number }>,
-	onSelect: (sel: Selection) => void
+	onSelect: (sel: Selection) => void,
+	lobby: { enabled: boolean; members: number }
 ): TopologyGraph {
 	const nodes: Node[] = [];
 	const edges: Edge[] = [];
@@ -409,6 +412,8 @@ export function buildGraph(
 			extraPorts: [],
 			nested: false,
 			parentName: '',
+			lobby: lobby.enabled,
+			lobbyMembers: lobby.members,
 			selection: { kind: 'panel' }
 		} satisfies BackendNodeData,
 		{ group: 'panel' }

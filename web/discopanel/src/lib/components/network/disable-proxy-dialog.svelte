@@ -24,6 +24,9 @@
 	let {
 		open = $bindable(false),
 		hostnames,
+		catchAll,
+		lobby,
+		lobbyOnline,
 		modules,
 		usedPorts,
 		onConverted
@@ -31,6 +34,10 @@
 		open?: boolean;
 		// Saved panel hostnames the disable keeps intact
 		hostnames: string[];
+		// Saved toggles the disable keeps intact
+		catchAll: boolean;
+		lobby: boolean;
+		lobbyOnline: boolean;
 		modules: Module[];
 		usedPorts: number[];
 		onConverted: () => Promise<void>;
@@ -91,6 +98,9 @@
 			await rpcClient.proxy.updateProxyConfig({
 				enabled: false,
 				hostnames,
+				catchAll,
+				lobby,
+				lobbyOnline,
 				convertToDirect: true,
 				assignments: servers.map((s) => ({
 					serverId: s.serverId,

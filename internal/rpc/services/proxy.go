@@ -104,9 +104,11 @@ func (s *ProxyService) GetProxyStatus(ctx context.Context, req *connect.Request[
 	if err != nil {
 		s.log.Error("Failed to load proxy configuration: %v", err)
 		proxyConfig = &v1.ProxyConfig{
-			Enabled:   s.proxyManager.Enabled(),
-			Hostnames: s.proxyManager.PanelHostnames(),
-			CatchAll:  s.proxyManager.PanelCatchAll(),
+			Enabled:     s.proxyManager.Enabled(),
+			Hostnames:   s.proxyManager.PanelHostnames(),
+			CatchAll:    s.proxyManager.PanelCatchAll(),
+			Lobby:       s.proxyManager.LobbyEnabled(),
+			LobbyOnline: s.proxyManager.LobbyOnline(),
 		}
 	}
 
@@ -142,7 +144,7 @@ func (s *ProxyService) GetProxyStatus(ctx context.Context, req *connect.Request[
 		activeRoutes = int32(len(s.proxyManager.RouteEntries()))
 	}
 
-	return connect.NewResponse(&v1.GetProxyStatusResponse{
+	resp := &v1.GetProxyStatusResponse{
 		Enabled:      proxyConfig.Enabled,
 		Hostnames:    proxyConfig.Hostnames,
 		ListenPorts:  listenPorts,
@@ -151,7 +153,14 @@ func (s *ProxyService) GetProxyStatus(ctx context.Context, req *connect.Request[
 		Running:      running,
 		ActiveRoutes: activeRoutes,
 		CatchAll:     proxyConfig.CatchAll,
-	}), nil
+		Lobby:        proxyConfig.Lobby,
+		LobbyOnline:  proxyConfig.LobbyOnline,
+	}
+	if s.proxyManager != nil {
+		resp.LobbyMembers = s.proxyManager.LobbyMembers()
+		resp.LobbyWaiting = s.proxyManager.LobbyWaiting()
+	}
+	return connect.NewResponse(resp), nil
 }
 
 // Computes hostname suggestions for any hostname input
@@ -199,12 +208,26 @@ func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Reque
 	// Old row comes back if the runtime apply fails
 	prevConfig, _, prevErr := s.store.GetProxyConfig(ctx)
 
+	// Absent lobby flags keep their saved values
+	lobby, lobbyOnline := true, true
+	if prevConfig != nil {
+		lobby, lobbyOnline = prevConfig.Lobby, prevConfig.LobbyOnline
+	}
+	if msg.Lobby != nil {
+		lobby = *msg.Lobby
+	}
+	if msg.LobbyOnline != nil {
+		lobbyOnline = *msg.LobbyOnline
+	}
+
 	// Save to database
 	proxyConfig := &v1.ProxyConfig{
-		Id:        "default",
-		Enabled:   msg.Enabled,
-		Hostnames: hostnames,
-		CatchAll:  msg.CatchAll,
+		Id:          "default",
+		Enabled:     msg.Enabled,
+		Hostnames:   hostnames,
+		CatchAll:    msg.CatchAll,
+		Lobby:       lobby,
+		LobbyOnline: lobbyOnline,
 	}
 
 	if err := s.store.SaveProxyConfig(ctx, proxyConfig); err != nil {

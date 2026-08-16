@@ -75,6 +75,9 @@
 	let modules = $state<Module[]>([]);
 	let configHostnames = $state<string[]>([]);
 	let configCatchAll = $state(true);
+	let configLobby = $state(true);
+	let configLobbyOnline = $state(true);
+	let lobbyMembers = $state(0);
 	let suggestions = $state<GetHostnameSuggestionsResponse | null>(null);
 	let selection = $state<Selection>({ kind: 'overview' });
 	let disableOpen = $state(false);
@@ -95,7 +98,8 @@
 			moved,
 			(sel) => {
 				selection = sel;
-			}
+			},
+			{ enabled: configLobby, members: lobbyMembers }
 		);
 		nodes = graph.nodes;
 		edges = graph.edges;
@@ -166,6 +170,9 @@
 			modules = mods.modules;
 			configHostnames = status.hostnames;
 			configCatchAll = status.catchAll;
+			configLobby = status.lobby;
+			configLobbyOnline = status.lobbyOnline;
+			lobbyMembers = status.lobbyMembers;
 			suggestions = sugg;
 			loadError = false;
 		} catch {
@@ -189,6 +196,9 @@
 			modules = mods.modules;
 			configHostnames = status.hostnames;
 			configCatchAll = status.catchAll;
+			configLobby = status.lobby;
+			configLobbyOnline = status.lobbyOnline;
+			lobbyMembers = status.lobbyMembers;
 			suggestions = sugg;
 			loadError = false;
 		} catch {
@@ -561,6 +571,8 @@
 							running={topology.proxyRunning}
 							hostnames={configHostnames}
 							catchAll={configCatchAll}
+							lobby={configLobby}
+							lobbyOnline={configLobbyOnline}
 							listenerCount={listeners.length}
 							{routeCount}
 							{hasProxiedWorkloads}
@@ -577,6 +589,9 @@
 <DisableProxyDialog
 	bind:open={disableOpen}
 	hostnames={configHostnames}
+	catchAll={configCatchAll}
+	lobby={configLobby}
+	lobbyOnline={configLobbyOnline}
 	{modules}
 	{usedPorts}
 	{onConverted}

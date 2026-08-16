@@ -1853,6 +1853,10 @@ message ProxyConfig {
   google.protobuf.Timestamp updated_at = 4 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
   // Panel also answers unmatched hostnames
   bool catch_all = 5 [(protogorm.v1.db) = {tag: "not null;default:true"}];
+  // Panel lobby answers unrouted game joins
+  bool lobby = 6 [(protogorm.v1.db) = {tag: "not null;default:true"}];
+  // Lobby verifies joins against mojang
+  bool lobby_online = 7 [(protogorm.v1.db) = {tag: "not null;default:true"}];
 }
 
 // All tunable server properties for one server

@@ -543,9 +543,11 @@ func (s *Store) GetProxyConfig(ctx context.Context) (*v1.ProxyConfig, bool, erro
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Missing row mirrors the file config defaults
 			return &v1.ProxyConfig{
-				Id:       "default",
-				Enabled:  s.cfg.Proxy.Enabled,
-				CatchAll: true,
+				Id:          "default",
+				Enabled:     s.cfg.Proxy.Enabled,
+				CatchAll:    true,
+				Lobby:       true,
+				LobbyOnline: true,
 			}, true, nil
 		}
 		return nil, false, err

@@ -85,7 +85,10 @@ func testManager(t *testing.T) (*Manager, *db.Store) {
 		t.Fatalf("store open failed %v", err)
 	}
 	t.Cleanup(func() { store.Close() })
-	m := NewManager(store, nil, cfg, logger.New())
+	m, err := NewManager(store, nil, cfg, logger.New())
+	if err != nil {
+		t.Fatalf("manager create failed %v", err)
+	}
 	m.SetPanelBackend(freePort(t))
 	t.Cleanup(func() { _ = m.Stop() })
 	return m, store

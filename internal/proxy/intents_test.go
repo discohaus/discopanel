@@ -57,39 +57,22 @@ func TestIntentTableIgnoresBlanks(t *testing.T) {
 	}
 }
 
-// Socket with a shim hub route and a plain target route
-func shimTestSocket(t *testing.T, targetProto int32, targetVersion string) (*ListenerSocket, net.Listener, net.Listener, *IntentTable) {
+// Lobby enabled socket with a second plain target route
+// Also a sole route decoy so unmatched names reach the lobby
+func hubIntentSocket(t *testing.T, targetProto int32, targetVersion string) (*ListenerSocket, net.Listener, *IntentTable) {
 	t.Helper()
-	hubLn, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("hub listen failed %v", err)
-	}
-	t.Cleanup(func() { hubLn.Close() })
 	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("target listen failed %v", err)
 	}
 	t.Cleanup(func() { targetLn.Close() })
-
-	intents := NewIntentTable()
-	sock := NewListenerSocket(&Config{ListenAddr: "127.0.0.1:0", Logger: logger.New(), Intents: intents})
-	if err := sock.Start(); err != nil {
-		t.Fatalf("socket start failed %v", err)
+	decoyLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("decoy listen failed %v", err)
 	}
-	t.Cleanup(func() { sock.Stop() })
+	t.Cleanup(func() { decoyLn.Close() })
 
-	sock.SetRoutes([]Route{
-		{
-			ServerID:    "srv-hub",
-			OwnerKind:   OwnerServer,
-			OwnerID:     "srv-hub",
-			Protocol:    v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT,
-			Hostname:    "hub.example.com",
-			State:       v1.ProxyRouteState_PROXY_ROUTE_STATE_ONLINE,
-			BackendHost: "127.0.0.1",
-			BackendPort: hubLn.Addr().(*net.TCPAddr).Port,
-			LobbyShim:   true,
-		},
+	sock, _, intents := hubSocket(t, false, nil, []Route{
 		{
 			ServerID:    "srv-target",
 			OwnerKind:   OwnerServer,
@@ -102,17 +85,27 @@ func shimTestSocket(t *testing.T, targetProto int32, targetVersion string) (*Lis
 			McVersion:   targetVersion,
 			McProtocol:  targetProto,
 		},
+		{
+			ServerID:    "srv-decoy",
+			OwnerKind:   OwnerServer,
+			OwnerID:     "srv-decoy",
+			Protocol:    v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT,
+			Hostname:    "decoy.example.com",
+			State:       v1.ProxyRouteState_PROXY_ROUTE_STATE_ONLINE,
+			BackendHost: "127.0.0.1",
+			BackendPort: decoyLn.Addr().(*net.TCPAddr).Port,
+		},
 	})
-	return sock, hubLn, targetLn, intents
+	return sock, targetLn, intents
 }
 
 // Handshake plus a real login start for the hub
-func hubJoinBytes(t *testing.T, protocol int32, name string) []byte {
+func hubJoinBytes(t *testing.T, hostname string, protocol int32, name string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	err := mcproto.WriteHandshakePacket(&buf, &mcproto.HandshakePacket{
 		ProtocolVersion: mcproto.VarInt(protocol),
-		ServerAddress:   "hub.example.com",
+		ServerAddress:   hostname,
 		ServerPort:      25565,
 		NextState:       mcproto.NextStateLogin,
 	})
@@ -131,10 +124,10 @@ func hubJoinBytes(t *testing.T, protocol int32, name string) []byte {
 
 // Claimed joins land on the target with login intact
 func TestIntentRerouteReachesTarget(t *testing.T) {
-	sock, _, targetLn, intents := shimTestSocket(t, 772, "1.21.8")
+	sock, targetLn, intents := hubIntentSocket(t, 772, "1.21.8")
 	intents.Put("Steve", "srv-target", time.Minute)
 
-	data := roundTripMC(t, sock, targetLn, hubJoinBytes(t, 772, "Steve"), false)
+	data := roundTripMC(t, sock, targetLn, hubJoinBytes(t, "hub.example.com", 772, "Steve"), false)
 
 	r := bytes.NewReader(data)
 	handshake, err := mcproto.ReadHandshakePacket(r)
@@ -161,22 +154,64 @@ func TestIntentRerouteReachesTarget(t *testing.T) {
 	}
 }
 
-// Unclaimed joins stay on the hub untouched
-func TestNoIntentStaysOnHub(t *testing.T) {
-	sock, hubLn, _, _ := shimTestSocket(t, 772, "1.21.8")
+// Routed joins toward the claimed server burn the claim
+func TestRoutedJoinBurnsClaim(t *testing.T) {
+	sock, targetLn, intents := hubIntentSocket(t, 772, "1.21.8")
+	intents.Put("Steve", "srv-target", time.Minute)
 
-	data := roundTripMC(t, sock, hubLn, hubJoinBytes(t, 772, "Steve"), false)
+	data := roundTripMC(t, sock, targetLn, hubJoinBytes(t, "target.example.com", 772, "Steve"), false)
 
 	r := bytes.NewReader(data)
 	if _, err := mcproto.ReadHandshakePacket(r); err != nil {
-		t.Fatalf("hub handshake unreadable %v", err)
+		t.Fatalf("target handshake unreadable %v", err)
 	}
 	ls, err := mcproto.ReadLoginStart(r)
 	if err != nil {
-		t.Fatalf("login start missing on hub %v", err)
+		t.Fatalf("login start missing after relay %v", err)
 	}
 	if ls.Name != "Steve" {
 		t.Fatalf("login name = %q, want Steve", ls.Name)
+	}
+	if _, ok := intents.Claim("steve"); ok {
+		t.Fatal("claim must burn on the routed join")
+	}
+}
+
+// Routed joins elsewhere still honor the claim
+func TestRoutedJoinHonorsClaimElsewhere(t *testing.T) {
+	sock, targetLn, intents := hubIntentSocket(t, 772, "1.21.8")
+	intents.Put("Steve", "srv-target", time.Minute)
+
+	// Split writes prove the peek waits out fragments
+	data := roundTripMC(t, sock, targetLn, hubJoinBytes(t, "decoy.example.com", 772, "Steve"), true)
+
+	r := bytes.NewReader(data)
+	handshake, err := mcproto.ReadHandshakePacket(r)
+	if err != nil {
+		t.Fatalf("target handshake unreadable %v", err)
+	}
+	if int(handshake.ServerPort) != targetLn.Addr().(*net.TCPAddr).Port {
+		t.Fatalf("handshake port = %d, want target", handshake.ServerPort)
+	}
+	ls, err := mcproto.ReadLoginStart(r)
+	if err != nil {
+		t.Fatalf("login start missing after reroute %v", err)
+	}
+	if ls.Name != "Steve" {
+		t.Fatalf("login name = %q, want Steve", ls.Name)
+	}
+	if _, ok := intents.Claim("steve"); ok {
+		t.Fatal("claim must burn on use")
+	}
+}
+
+// Unclaimed joins enter the native lobby instead
+func TestNoIntentEntersLobby(t *testing.T) {
+	sock, _, _ := hubIntentSocket(t, 772, "1.21.8")
+
+	_, chunks := hubClient(t, sock.listener.Addr().String(), "hub.example.com", "Steve", 772)
+	if chunks != 36 {
+		t.Fatalf("lobby join saw %d chunks, want 36", chunks)
 	}
 }
 
@@ -217,10 +252,10 @@ func readKickReason(t *testing.T, reply []byte) string {
 
 // Wrong versions kick instead of dialing the target
 func TestIntentVersionMismatchKicks(t *testing.T) {
-	sock, _, _, intents := shimTestSocket(t, 772, "1.21.8")
+	sock, _, intents := hubIntentSocket(t, 772, "1.21.8")
 	intents.Put("Steve", "srv-target", time.Minute)
 
-	reply := clientExchange(t, sock, hubJoinBytes(t, 340, "Steve"))
+	reply := clientExchange(t, sock, hubJoinBytes(t, "hub.example.com", 340, "Steve"))
 	reason := readKickReason(t, reply)
 	if !strings.Contains(reason, "1.21.8") {
 		t.Fatalf("kick reason misses version, got %q", reason)

@@ -228,6 +228,14 @@ message GetProxyStatusResponse {
   int32 active_routes = 7;
   // Panel also answers unmatched hostnames
   bool catch_all = 8;
+  // Panel lobby answers unrouted game joins
+  bool lobby = 9;
+  // Lobby verifies joins against mojang
+  bool lobby_online = 10;
+  // Players standing in the lobby right now
+  int32 lobby_members = 11;
+  // Lobby members waiting per waking server id
+  map<string, int32> lobby_waiting = 12;
 }
 
 // Proxy settings to update
@@ -241,6 +249,12 @@ message UpdateProxyConfigRequest {
   repeated ProxiedServerImpact assignments = 4;
   // Panel also answers unmatched hostnames
   bool catch_all = 5;
+  // Panel lobby answers unrouted game joins
+  // Absent keeps the saved value
+  optional bool lobby = 6;
+  // Lobby verifies joins against mojang
+  // Absent keeps the saved value
+  optional bool lobby_online = 7;
 }
 
 // Empty impact request

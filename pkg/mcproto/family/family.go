@@ -2,9 +2,9 @@
 package family
 
 import (
+	"errors"
 	"io"
 
-	"github.com/discohaus/discopanel/pkg/mcproto/hub"
 	"github.com/discohaus/discopanel/pkg/mcproto/mojang"
 )
 
@@ -29,7 +29,12 @@ type JoinData struct {
 	Spawn      Pos
 	ViewChunks [][]byte
 	SpawnBlock [3]int
+	// Screen shown to clients answering the fence
+	RefuseNote string
 }
+
+// Session ended inside config on purpose
+var ErrHandedOff = errors.New("client handed off during config")
 
 // One normalized lobby happening for the client
 type Event interface{ isEvent() }
@@ -74,14 +79,10 @@ type EvSignText struct {
 	Lines   [4]string
 }
 
-// Lobby wants this client somewhere else
-type EvTransfer struct {
-	Host string
-	Port int
+// Beacon appeared and needs its entity to beam
+type EvBeaconInit struct {
+	X, Y, Z int
 }
-
-// Lobby dropped the puppet with a reason
-type EvDisconnect struct{ Reason string }
 
 func (EvPlayerAdd) isEvent()    {}
 func (EvPlayerRemove) isEvent() {}
@@ -92,8 +93,7 @@ func (EvChat) isEvent()         {}
 func (EvTeleportSelf) isEvent() {}
 func (EvBlockChange) isEvent()  {}
 func (EvSignText) isEvent()     {}
-func (EvTransfer) isEvent()     {}
-func (EvDisconnect) isEvent()   {}
+func (EvBeaconInit) isEvent()   {}
 
 // One normalized client wish for the lobby
 type Action interface{ isAction() }
@@ -123,12 +123,12 @@ type Codec interface {
 	// Returns the live session holding per client state
 	NewSession(r io.Reader, w io.Writer, protocol int32, join JoinData) (Session, error)
 	// Bakes framed chunk packets for one grid
-	BakeChunks(grid *hub.Grid, protocol int32) ([][]byte, error)
+	BakeChunks(grid *Grid, protocol int32) ([][]byte, error)
 	// World height shift for shallow legacy worlds
 	YOffset(protocol int32) int
 }
 
-// One joined client the shim renders into
+// One joined client the lobby renders into
 type Session interface {
 	// Renders one event as client packets
 	Encode(ev Event) error
@@ -139,6 +139,9 @@ type Session interface {
 	KeepAlive(id int64) error
 	// Sends a play state disconnect
 	Disconnect(reason string) error
+	// Sends the client to another address
+	// Reports false when the era lacks transfer
+	Transfer(host string, port int) (bool, error)
 }
 
 var registry = map[int32]Codec{}

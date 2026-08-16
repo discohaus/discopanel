@@ -1,6 +1,7 @@
 package mcproto
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -56,6 +57,39 @@ func ReadLoginStart(r io.Reader) (*LoginStart, error) {
 // Replays the original frame toward a backend
 func (l *LoginStart) Replay(w io.Writer) error {
 	return WriteFramed(w, l.body)
+}
+
+// Reads the player name without consuming bytes
+// Failed peeks leave the stream intact for relaying
+func PeekLoginName(br *bufio.Reader) (string, bool) {
+	head, err := br.Peek(3)
+	if err != nil {
+		return "", false
+	}
+	hr := bytes.NewReader(head)
+	length, err := ReadVarInt(hr)
+	if err != nil || length < 2 || length > maxLoginStartLength {
+		return "", false
+	}
+	lenSize := len(head) - hr.Len()
+	// Name always sits inside the leading bytes
+	need := int(length)
+	if limit := 4 + maxNameBytes; need > limit {
+		need = limit
+	}
+	frame, err := br.Peek(lenSize + need)
+	if err != nil {
+		return "", false
+	}
+	buf := bytes.NewReader(frame[lenSize:])
+	if id, err := ReadVarInt(buf); err != nil || id != 0x00 {
+		return "", false
+	}
+	name, err := ReadString(buf, maxNameBytes)
+	if err != nil || name == "" {
+		return "", false
+	}
+	return name, true
 }
 
 // Reads a varint prefixed utf8 string

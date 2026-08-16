@@ -81,6 +81,17 @@
 	let deleteTarget = $state<Server | null>(null);
 	let deleteOpen = $state(false);
 	let now = $state(new Date());
+	let lobbyWaiting = $state<Record<string, number>>({});
+
+	// Lobby holds per server show while worlds wake
+	async function pollLobbyWaiting() {
+		try {
+			const status = await rpcClient.proxy.getProxyStatus({}, silentCallOptions);
+			lobbyWaiting = status.lobbyWaiting;
+		} catch {
+			// Silent polls swallow transient failures
+		}
+	}
 
 	onMount(() => {
 		const release = claimFullStats();
@@ -89,9 +100,12 @@
 			.catch(() => {})
 			.finally(() => (initialLoading = false));
 		const clock = setInterval(() => (now = new Date()), 30000);
+		pollLobbyWaiting();
+		const lobbyPoll = setInterval(pollLobbyWaiting, 10000);
 		return () => {
 			release();
 			clearInterval(clock);
+			clearInterval(lobbyPoll);
 		};
 	});
 
@@ -304,6 +318,12 @@
 										{#if server.status === ServerStatus.RUNNING && server.lastStarted}
 											<span>·</span>
 											<span>up {formatUptime(server.lastStarted, now)}</span>
+										{/if}
+										{#if (lobbyWaiting[server.id] ?? 0) > 0}
+											<span>·</span>
+											<span class="text-primary"
+												>{lobbyWaiting[server.id]} waiting in the lobby</span
+											>
 										{/if}
 									</div>
 								</div>

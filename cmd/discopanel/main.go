@@ -134,7 +134,10 @@ func main() {
 	}
 
 	// Initialize proxy manager
-	proxyManager := proxy.NewManager(store, dockerClient, cfg, log)
+	proxyManager, err := proxy.NewManager(store, dockerClient, cfg, log)
+	if err != nil {
+		log.Fatal("Failed to create proxy manager: %v", err)
+	}
 
 	// Aliases resolve host.hostname through the proxy manager
 	alias.SetHostnameSource(proxyManager.PanelHostname)

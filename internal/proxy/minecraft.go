@@ -167,6 +167,50 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 	hostname := normalizeWireHostname(handshake.ServerAddress)
 	route, ok := s.lookupMCRoute(hostname)
 	if !ok {
+		s.serveHubless(clientConn, br, handshake, hostname)
+		return
+	}
+	// Claims from the lobby outrank the matched route
+	if handshake.NextState != mcproto.NextStateStatus {
+		if target, ok := s.claimRoutedIntent(br, route); ok {
+			login, err := mcproto.ReadLoginStart(br)
+			if err != nil {
+				s.logger.Debug("Bad login start from %s: %v", clientConn.RemoteAddr(), err)
+				return
+			}
+			s.serveRoute(clientConn, br, handshake, hostname, target, login)
+			return
+		}
+	}
+	s.serveRoute(clientConn, br, handshake, hostname, route, nil)
+}
+
+// Peeks the login name and burns any pending claim
+// True reroutes toward a different claimed server
+func (s *ListenerSocket) claimRoutedIntent(br *bufio.Reader, route Route) (Route, bool) {
+	if s.intents == nil {
+		return Route{}, false
+	}
+	name, ok := mcproto.PeekLoginName(br)
+	if !ok {
+		return Route{}, false
+	}
+	targetID, ok := s.claimIntent(name)
+	if !ok || targetID == route.ServerID {
+		return Route{}, false
+	}
+	target, found := s.routeByServerID(targetID)
+	if !found {
+		s.logger.Debug("Intent target %s has no route, keeping %s", targetID, route.ServerID)
+		return Route{}, false
+	}
+	return target, true
+}
+
+// Answers hostnames nothing routes, lobby first
+func (s *ListenerSocket) serveHubless(clientConn net.Conn, br *bufio.Reader, handshake *mcproto.HandshakePacket, hostname string) {
+	hubRT := s.hub
+	if hubRT == nil || !hubRT.Enabled() {
 		s.logger.Debug("No active route for hostname %q from %s", hostname, clientConn.RemoteAddr())
 		if handshake.NextState == mcproto.NextStateStatus {
 			s.serveSyntheticStatus(clientConn, br, handshake, statusUnknownHost(hostname, int(handshake.ProtocolVersion)))
@@ -175,25 +219,51 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 		s.kick(clientConn, handshake, kickUnknownHost(hostname))
 		return
 	}
+	if handshake.NextState == mcproto.NextStateStatus {
+		s.serveSyntheticStatus(clientConn, br, handshake, hubRT.statusCard())
+		return
+	}
+	login, err := mcproto.ReadLoginStart(br)
+	if err != nil {
+		s.logger.Debug("Bad login start from %s: %v", clientConn.RemoteAddr(), err)
+		return
+	}
+	// Claimed rejoins hop to their promised world
+	if targetID, ok := s.claimIntent(login.Name); ok {
+		if target, found := s.routeByServerID(targetID); found {
+			s.serveRoute(clientConn, br, handshake, hostname, target, login)
+			return
+		}
+		s.logger.Debug("Intent target %s has no route, keeping hub", targetID)
+	}
+	if !hubRT.serve(s, clientConn, br, handshake, login, nil) {
+		s.kick(clientConn, handshake, kickHubVersion())
+	}
+}
 
-	// Hub joins reveal the name so claims can reroute
-	var login *mcproto.LoginStart
-	if route.LobbyShim && handshake.NextState != mcproto.NextStateStatus {
+// Holds one login in the lobby while its world boots
+func (s *ListenerSocket) holdInHub(clientConn net.Conn, br *bufio.Reader, handshake *mcproto.HandshakePacket, route Route, login *mcproto.LoginStart, fallback minecraft.Text) {
+	hubRT := s.hub
+	if hubRT == nil || !hubRT.Enabled() {
+		s.kick(clientConn, handshake, fallback)
+		return
+	}
+	if login == nil {
 		ls, err := mcproto.ReadLoginStart(br)
 		if err != nil {
 			s.logger.Debug("Bad login start from %s: %v", clientConn.RemoteAddr(), err)
 			return
 		}
 		login = ls
-		if targetID, ok := s.claimIntent(ls.Name); ok {
-			if target, found := s.routeByServerID(targetID); found {
-				route = target
-			} else {
-				s.logger.Debug("Intent target %s has no route, keeping hub", targetID)
-			}
-		}
 	}
+	hold := hubRT.targetByID(route.ServerID)
+	if hold == nil || !hubRT.serve(s, clientConn, br, handshake, login, hold) {
+		s.kick(clientConn, handshake, fallback)
+	}
+}
 
+// Wakes sleepers and relays one routed connection
+func (s *ListenerSocket) serveRoute(clientConn net.Conn, br *bufio.Reader, handshake *mcproto.HandshakePacket, hostname string, route Route, login *mcproto.LoginStart) {
 	stats := s.statsFor(route.ServerID)
 	stats.TotalConns.Add(1)
 	stats.LastProtocol.Store(int32(handshake.ProtocolVersion))
@@ -204,7 +274,7 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 	}
 
 	// Rerouted joins need a version the target speaks
-	if login != nil && !route.LobbyShim && route.McProtocol != 0 &&
+	if login != nil && route.McProtocol != 0 &&
 		route.McProtocol != int32(handshake.ProtocolVersion) && route.McVersion != "" {
 		s.kick(clientConn, handshake, kickVersionMismatch(route.McVersion))
 		return
@@ -253,7 +323,7 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 			s.kick(clientConn, handshake, kickStartFailed())
 			return
 		}
-		s.kick(clientConn, handshake, kickStarted())
+		s.holdInHub(clientConn, br, handshake, route, login, kickStarted())
 		return
 
 	case v1.ProxyRouteState_PROXY_ROUTE_STATE_STARTING:
@@ -261,9 +331,9 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 			s.serveSyntheticStatus(clientConn, br, handshake, statusStarting(route))
 			return
 		}
-		// No backend yet, container isn't up, tell client
+		// No backend yet, lobby holds the login instead
 		if route.BackendHost == "" {
-			s.kick(clientConn, handshake, kickStillStarting())
+			s.holdInHub(clientConn, br, handshake, route, login, kickStillStarting())
 			return
 		}
 		// Backend exists, let dial retry ride out the boot
@@ -274,12 +344,6 @@ func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, h
 		if handshake.NextState != mcproto.NextStateStatus {
 			s.kick(clientConn, handshake, kickUnreachable())
 		}
-		return
-	}
-
-	// Hub joins hand over to the shim runtime
-	if route.LobbyShim && login != nil && s.shim != nil {
-		s.shim.serve(s, clientConn, br, handshake, route, login, stats)
 		return
 	}
 
@@ -396,7 +460,7 @@ func (s *ListenerSocket) serveSyntheticStatus(conn net.Conn, r io.Reader, handsh
 		},
 		"players": map[string]any{
 			"max":    card.maxPlayers,
-			"online": 0,
+			"online": card.online,
 			"sample": sample,
 		},
 		"description": desc,

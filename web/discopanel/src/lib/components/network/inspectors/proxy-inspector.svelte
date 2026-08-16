@@ -7,6 +7,8 @@
 	import InspectorHeader from './inspector-header.svelte';
 	import { notify } from '$lib/stores/activity.svelte';
 	import {
+		BadgeCheck,
+		DoorOpen,
 		Globe,
 		Loader2,
 		MousePointerClick,
@@ -23,6 +25,8 @@
 		running,
 		hostnames,
 		catchAll,
+		lobby,
+		lobbyOnline,
 		listenerCount,
 		routeCount,
 		hasProxiedWorkloads,
@@ -33,6 +37,8 @@
 		running: boolean;
 		hostnames: string[];
 		catchAll: boolean;
+		lobby: boolean;
+		lobbyOnline: boolean;
 		listenerCount: number;
 		routeCount: number;
 		hasProxiedWorkloads: boolean;
@@ -43,22 +49,28 @@
 	let draftEnabled = $state(true);
 	let draftHostnames = $state<string[]>([]);
 	let draftCatchAll = $state(true);
+	let draftLobby = $state(true);
+	let draftLobbyOnline = $state(true);
 	let saving = $state(false);
 
 	// Draft reseeds whenever the saved config changes
 	let seeded = $state('unseeded');
 	$effect(() => {
-		const snapshot = `${enabled}|${catchAll}|${hostnames.join(',')}`;
+		const snapshot = `${enabled}|${catchAll}|${lobby}|${lobbyOnline}|${hostnames.join(',')}`;
 		if (seeded === snapshot) return;
 		seeded = snapshot;
 		draftEnabled = enabled;
 		draftCatchAll = catchAll;
+		draftLobby = lobby;
+		draftLobbyOnline = lobbyOnline;
 		draftHostnames = [...hostnames];
 	});
 
 	let dirty = $derived(
 		draftEnabled !== enabled ||
 			draftCatchAll !== catchAll ||
+			draftLobby !== lobby ||
+			draftLobbyOnline !== lobbyOnline ||
 			draftHostnames.join(',') !== hostnames.join(',')
 	);
 
@@ -84,7 +96,9 @@
 			await rpcClient.proxy.updateProxyConfig({
 				enabled: draftEnabled,
 				hostnames: draftHostnames,
-				catchAll: draftCatchAll
+				catchAll: draftCatchAll,
+				lobby: draftLobby,
+				lobbyOnline: draftLobbyOnline
 			});
 			notify.success('Network settings saved');
 			await onChanged();
@@ -152,6 +166,44 @@
 					disabled={saving || catchAllLocked}
 				/>
 			</label>
+
+			<label class="flex cursor-pointer items-center justify-between gap-3 rounded-lg border p-3.5">
+				<span class="text-sm">
+					<span class="flex items-center gap-2 font-medium">
+						<DoorOpen class="size-4 text-primary" />
+						The lobby
+					</span>
+					<span class="mt-0.5 block text-xs font-normal text-muted-foreground">
+						Game joins on unlisted addresses land in a lobby with a portal for every server
+					</span>
+				</span>
+				<Switch
+					checked={draftLobby}
+					onCheckedChange={(next) => (draftLobby = next)}
+					disabled={saving}
+				/>
+			</label>
+
+			{#if draftLobby}
+				<label
+					class="flex cursor-pointer items-center justify-between gap-3 rounded-lg border p-3.5"
+				>
+					<span class="text-sm">
+						<span class="flex items-center gap-2 font-medium">
+							<BadgeCheck class="size-4 text-primary" />
+							Verified accounts
+						</span>
+						<span class="mt-0.5 block text-xs font-normal text-muted-foreground">
+							Lobby visitors must be signed in to a real Minecraft account
+						</span>
+					</span>
+					<Switch
+						checked={draftLobbyOnline}
+						onCheckedChange={(next) => (draftLobbyOnline = next)}
+						disabled={saving}
+					/>
+				</label>
+			{/if}
 		{/if}
 
 		<div class="space-y-2 text-sm">
