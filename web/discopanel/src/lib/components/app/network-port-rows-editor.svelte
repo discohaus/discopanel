@@ -1,5 +1,7 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { slide } from 'svelte/transition';
+	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
@@ -49,6 +51,18 @@
 	} = $props();
 
 	const uid = $props.id();
+
+	// Base domain hostname suggestions derive from
+	let suggestionBase = $state('');
+	onMount(async () => {
+		if (!showRouting) return;
+		try {
+			const status = await rpcClient.proxy.getProxyStatus({}, silentCallOptions);
+			suggestionBase = status.effectiveBaseUrl;
+		} catch {
+			// No base just means no suggestion chips
+		}
+	});
 
 	// Keeps a row's current protocol selectable with proxy off
 	function rowProtocolOptions(current: ModuleProtocol): ModuleProtocol[] {
@@ -220,6 +234,7 @@
 						<HostnameListInput
 							bind:hostnames={port.hostnames}
 							label={hostnameSlug(port.name)}
+							{suggestionBase}
 							disabled={disabled || locked}
 							requireLabel
 							placeholder={serverHosts.length > 0

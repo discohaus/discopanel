@@ -155,22 +155,15 @@ func (s *ProxyService) GetProxyStatus(ctx context.Context, req *connect.Request[
 		CatchAll:     proxyConfig.CatchAll,
 		Lobby:        proxyConfig.Lobby,
 		LobbyOnline:  proxyConfig.LobbyOnline,
+		BaseUrl:      proxyConfig.BaseUrl,
 	}
 	if s.proxyManager != nil {
 		resp.LobbyMembers = s.proxyManager.LobbyMembers()
 		resp.LobbyWaiting = s.proxyManager.LobbyWaiting()
+		resp.EffectiveBaseUrl = s.proxyManager.EffectiveBaseURL()
+		resp.LanIp, resp.PublicIp, _ = s.proxyManager.NetworkAddresses()
 	}
 	return connect.NewResponse(resp), nil
-}
-
-// Computes hostname suggestions for any hostname input
-func (s *ProxyService) GetHostnameSuggestions(ctx context.Context, req *connect.Request[v1.GetHostnameSuggestionsRequest]) (*connect.Response[v1.GetHostnameSuggestionsResponse], error) {
-	lanIP, publicIP, _ := s.proxyManager.NetworkAddresses()
-	return connect.NewResponse(&v1.GetHostnameSuggestionsResponse{
-		Suggestions: s.proxyManager.HostnameSuggestions(req.Msg.Label),
-		LanIp:       lanIP,
-		PublicIp:    publicIP,
-	}), nil
 }
 
 // Updates proxy configuration
@@ -209,15 +202,23 @@ func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Reque
 	prevConfig, _, prevErr := s.store.GetProxyConfig(ctx)
 
 	// Absent lobby flags keep their saved values
-	lobby, lobbyOnline := true, true
+	lobby, lobbyOnline := false, true
+	baseURL := ""
 	if prevConfig != nil {
 		lobby, lobbyOnline = prevConfig.Lobby, prevConfig.LobbyOnline
+		baseURL = prevConfig.BaseUrl
 	}
 	if msg.Lobby != nil {
 		lobby = *msg.Lobby
 	}
 	if msg.LobbyOnline != nil {
 		lobbyOnline = *msg.LobbyOnline
+	}
+	if msg.BaseUrl != nil {
+		baseURL = proxy.NormalizeHostname(*msg.BaseUrl)
+		if baseURL != "" && !proxy.ValidHostname(baseURL) {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("base domain %q is not a valid hostname", baseURL))
+		}
 	}
 
 	// Save to database
@@ -228,6 +229,7 @@ func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Reque
 		CatchAll:    msg.CatchAll,
 		Lobby:       lobby,
 		LobbyOnline: lobbyOnline,
+		BaseUrl:     baseURL,
 	}
 
 	if err := s.store.SaveProxyConfig(ctx, proxyConfig); err != nil {

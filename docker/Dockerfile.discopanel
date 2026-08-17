@@ -16,7 +16,7 @@ COPY proto/ ./proto/
 RUN mkdir -p web/discopanel/static pkg/proto web/discopanel/src/lib/proto \
     && go tool protogorm -options proto \
     && buf generate --exclude-path proto/protogorm \
-    && buf build -o - | go tool protogorm -support pkg/proto -store internal/db/store.gen.go:db -inject pkg/proto
+    && buf build -o - | go tool protogorm -support pkg/proto -store internal/db/store.gen.go:db -inject pkg/proto -spec internal/db/migrations/head.snapshot.json
 
 FROM --platform=$BUILDPLATFORM node:alpine AS frontend-builder
 
@@ -50,6 +50,7 @@ RUN go mod download
 COPY . .
 COPY --from=proto-builder /app/pkg/proto ./pkg/proto/
 COPY --from=proto-builder /app/internal/db/store.gen.go ./internal/db/store.gen.go
+COPY --from=proto-builder /app/internal/db/migrations/head.snapshot.json ./internal/db/migrations/head.snapshot.json
 COPY --from=frontend-builder /app/web/discopanel/build ./web/discopanel/build
 
 RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o discopanel ./cmd/discopanel

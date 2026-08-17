@@ -50,7 +50,7 @@
 		Moon
 	} from '@lucide/svelte';
 	import { type Server, ServerStatus } from '$lib/proto/discopanel/v1/storage_pb';
-	import type { GetHostnameSuggestionsResponse } from '$lib/proto/discopanel/v1/proxy_pb';
+	import type { GetProxyStatusResponse } from '$lib/proto/discopanel/v1/proxy_pb';
 
 	let servers = $derived($serversStore);
 	let user = $derived($currentUser);
@@ -59,7 +59,7 @@
 	let actioningId = $state('');
 	let now = $state(new Date());
 	let hostTotalMb = $state(0);
-	let suggestions = $state<GetHostnameSuggestionsResponse | null>(null);
+	let proxyStatus = $state<GetProxyStatusResponse | null>(null);
 
 	onMount(() => {
 		const release = claimFullStats();
@@ -72,8 +72,8 @@
 			.then((r) => (hostTotalMb = Number(r.totalMb)))
 			.catch(() => {});
 		rpcClient.proxy
-			.getHostnameSuggestions({ label: '' }, silentCallOptions)
-			.then((r) => (suggestions = r))
+			.getProxyStatus({}, silentCallOptions)
+			.then((r) => (proxyStatus = r))
 			.catch(() => {});
 		const clock = setInterval(() => (now = new Date()), 30000);
 		return () => {
@@ -411,7 +411,7 @@
 									</div>
 
 									<div class="relative z-10 mt-3">
-										<AddressSelect addresses={serverAddresses(server, suggestions)} />
+										<AddressSelect addresses={serverAddresses(server, proxyStatus)} />
 									</div>
 
 									<div class="mt-3 flex items-end justify-between gap-3">

@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
 // Detection cache lifetime, addresses move on dhcp
@@ -22,8 +20,8 @@ const publicIPTTL = 30 * time.Minute
 // Throttles failed public detection retries
 const publicRetryDelay = time.Minute
 
-// Wildcard dns providers resolving ip-shaped names
-var instantSuffixes = []string{"sslip.io"}
+// Wildcard dns suffix backing the auto base domain
+const defaultBaseSuffix = "sslip.io"
 
 // Echo services answering with the caller's address
 var publicIPEndpoints = []string{
@@ -64,41 +62,6 @@ func instantBase(suffix, ip string) string {
 		return ""
 	}
 	return strings.ReplaceAll(ip, ".", "-") + "." + suffix
-}
-
-// Ip embedded in one label, dash prefixes tolerated
-func embeddedIP(label string) net.IP {
-	if ip := net.ParseIP(strings.ReplaceAll(label, "-", ".")); ip != nil {
-		return ip
-	}
-	parts := strings.Split(label, "-")
-	if len(parts) < 4 {
-		return nil
-	}
-	tail := parts[len(parts)-4:]
-	return net.ParseIP(strings.Join(tail, "."))
-}
-
-// Reachability a base name implies for players
-func hostnameScope(name string) v1.HostnameScope {
-	for _, suffix := range instantSuffixes {
-		if !strings.HasSuffix(name, "."+suffix) {
-			continue
-		}
-		trimmed := strings.TrimSuffix(name, "."+suffix)
-		if i := strings.LastIndexByte(trimmed, '.'); i >= 0 {
-			trimmed = trimmed[i+1:]
-		}
-		ip := embeddedIP(trimmed)
-		if ip == nil {
-			continue
-		}
-		if ip.IsPrivate() || ip.IsLoopback() {
-			return v1.HostnameScope_HOSTNAME_SCOPE_LAN
-		}
-		return v1.HostnameScope_HOSTNAME_SCOPE_PUBLIC
-	}
-	return v1.HostnameScope_HOSTNAME_SCOPE_PUBLIC
 }
 
 // Reads the default gateway from the kernel route table
@@ -153,52 +116,25 @@ func detectOutboundIPv4() (string, bool) {
 	return "", false
 }
 
-// Computes hostname suggestions for one optional label
-func (m *Manager) HostnameSuggestions(label string) []*v1.HostnameSuggestion {
-	label = NormalizeHostname(label)
+// Saved base domain snapshot
+func (m *Manager) BaseURL() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.baseURL
+}
 
-	var out []*v1.HostnameSuggestion
-	seen := make(map[string]bool)
-	push := func(name string, scope v1.HostnameScope) {
-		if name == "" || seen[name] || !ValidHostname(name) {
-			return
-		}
-		seen[name] = true
-		out = append(out, &v1.HostnameSuggestion{Hostname: name, Scope: scope})
-	}
-	add := func(base string, scope v1.HostnameScope) {
-		name := base
-		if label != "" {
-			name = label + "." + base
-		}
-		push(name, scope)
-	}
-	// Dash join keeps instant names one wildcard label
-	addInstant := func(base string, scope v1.HostnameScope) {
-		name := base
-		if label != "" {
-			name = label + "-" + base
-		}
-		push(name, scope)
-	}
-
-	// Configured names first, they are deliberate
-	for _, name := range m.panelNames {
-		add(name, hostnameScope(name))
+// Saved base domain else a wildcard dns fallback
+// Fallback derives live so address changes never stale
+func (m *Manager) EffectiveBaseURL() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.baseURL != "" {
+		return m.baseURL
 	}
 	if ip, ok := m.lanIPLocked(); ok {
-		for _, suffix := range instantSuffixes {
-			addInstant(instantBase(suffix, ip), v1.HostnameScope_HOSTNAME_SCOPE_LAN)
-		}
+		return instantBase(defaultBaseSuffix, ip)
 	}
-	if ip := m.publicIPLocked(); ip != "" {
-		for _, suffix := range instantSuffixes {
-			addInstant(instantBase(suffix, ip), v1.HostnameScope_HOSTNAME_SCOPE_PUBLIC)
-		}
-	}
-	return out
+	return ""
 }
 
 // Configured override else the cached detected address

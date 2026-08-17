@@ -67,6 +67,9 @@ type Manager struct {
 	// Panel also answers unmatched hostnames
 	panelCatchAll bool
 
+	// Base domain hostname suggestions derive under
+	baseURL string
+
 	// Cached agent reachability names for panel routes
 	infraNames   []string
 	infraNamesAt time.Time
@@ -119,7 +122,7 @@ func NewManager(store *db.Store, dockerClient *docker.Client, cfg *config.Config
 		logger:        logger,
 		enabled:       cfg.Proxy.Enabled,
 		pendingClaims: make(map[uint64]pendingClaim),
-		panelCatchAll: true,
+		panelCatchAll: false,
 		certs:         LoadTLSCertificates(cfg.Proxy.TLS.Certificates, logger),
 		ipCache:       make(map[string]ipEntry),
 		intents:       NewIntentTable(),
@@ -448,6 +451,7 @@ func (m *Manager) ApplyConfig(ctx context.Context, cfg *v1.ProxyConfig) error {
 	m.enabled = cfg.Enabled
 	m.panelNames = cfg.Hostnames
 	m.panelCatchAll = cfg.CatchAll
+	m.baseURL = NormalizeHostname(cfg.BaseUrl)
 	if m.hub != nil {
 		m.hub.SetEnabled(cfg.Lobby)
 		m.hub.SetOnline(cfg.LobbyOnline)
@@ -549,12 +553,14 @@ func (m *Manager) Start() error {
 
 	// Panel hostnames live on the config row
 	var names []string
-	catchAll, lobby, lobbyOnline := true, true, true
+	var baseURL string
+	catchAll, lobby, lobbyOnline := false, false, true
 	if cfg, _, err := m.store.GetProxyConfig(context.Background()); err == nil && cfg != nil {
 		names = cfg.Hostnames
 		catchAll = cfg.CatchAll
 		lobby = cfg.Lobby
 		lobbyOnline = cfg.LobbyOnline
+		baseURL = NormalizeHostname(cfg.BaseUrl)
 	}
 
 	m.warmContainerIPs(context.Background())
@@ -562,6 +568,7 @@ func (m *Manager) Start() error {
 	defer m.mu.Unlock()
 	m.panelNames = names
 	m.panelCatchAll = catchAll
+	m.baseURL = baseURL
 	if m.hub != nil {
 		m.hub.SetEnabled(lobby)
 		m.hub.SetOnline(lobbyOnline)

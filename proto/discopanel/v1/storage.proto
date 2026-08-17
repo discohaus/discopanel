@@ -1270,6 +1270,31 @@ message SystemSetting {
   string value = 2 [(protogorm.v1.db) = {tag: "not null"}];
 }
 
+// Casbin policy row, schema declaration only
+// The casbin gorm adapter owns reads and writes
+message CasbinRule {
+  option (protogorm.v1.model) = {
+    table: "casbin_rule"
+    skip: [
+      "create",
+      "get",
+      "list",
+      "update",
+      "update_fields",
+      "delete",
+      "count"
+    ]
+  };
+  uint64 id = 1 [(protogorm.v1.db) = {tag: "primaryKey;autoIncrement"}];
+  string ptype = 2 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_casbin_rule,priority:1"}];
+  string v0 = 3 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_casbin_rule,priority:2"}];
+  string v1 = 4 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_casbin_rule,priority:3"}];
+  string v2 = 5 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_casbin_rule,priority:4"}];
+  string v3 = 6 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_casbin_rule,priority:5"}];
+  string v4 = 7 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_casbin_rule,priority:6"}];
+  string v5 = 8 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_casbin_rule,priority:7"}];
+}
+
 // Server mod metadata
 message Mod {
   option (protogorm.v1.model) = {
@@ -1852,11 +1877,13 @@ message ProxyConfig {
   repeated string hostnames = 3;
   google.protobuf.Timestamp updated_at = 4 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
   // Panel also answers unmatched hostnames
-  bool catch_all = 5 [(protogorm.v1.db) = {tag: "not null;default:true"}];
+  bool catch_all = 5 [(protogorm.v1.db) = {tag: "not null;default:false"}];
   // Panel lobby answers unrouted game joins
-  bool lobby = 6 [(protogorm.v1.db) = {tag: "not null;default:true"}];
+  bool lobby = 6 [(protogorm.v1.db) = {tag: "not null;default:false"}];
   // Lobby verifies joins against mojang
   bool lobby_online = 7 [(protogorm.v1.db) = {tag: "not null;default:true"}];
+  // Base domain hostname suggestions derive under
+  string base_url = 8;
 }
 
 // All tunable server properties for one server

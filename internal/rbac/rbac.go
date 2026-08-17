@@ -49,8 +49,11 @@ type Enforcer struct {
 }
 
 // Creates Casbin RBAC enforcer backed by GORM database
+// Migration engine owns the casbin_rule table shape
 func NewEnforcer(db *gorm.DB) (*Enforcer, error) {
-	adapter, err := gormadapter.NewAdapterByDB(db)
+	session := db.Session(&gorm.Session{})
+	gormadapter.TurnOffAutoMigrate(session)
+	adapter, err := gormadapter.NewAdapterByDB(session)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create casbin adapter: %w", err)
 	}

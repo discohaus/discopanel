@@ -10,7 +10,7 @@
 	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { Cable, Globe, Network, RefreshCw } from '@lucide/svelte';
 	import type { ProxyListener } from '$lib/proto/discopanel/v1/storage_pb';
-	import type { GetHostnameSuggestionsResponse } from '$lib/proto/discopanel/v1/proxy_pb';
+	import type { GetProxyStatusResponse } from '$lib/proto/discopanel/v1/proxy_pb';
 	import HostnameListInput from '$lib/components/network/hostname-list-input.svelte';
 	import { fallbackAddresses, hostnameSlug, playerAddress } from '$lib/hostname';
 
@@ -58,17 +58,17 @@
 	}
 
 	// Detected host addresses feed the direct port list
-	let suggestions = $state<GetHostnameSuggestionsResponse | null>(null);
+	let proxyStatus = $state<GetProxyStatusResponse | null>(null);
 	onMount(async () => {
 		try {
-			suggestions = await rpcClient.proxy.getHostnameSuggestions({ label: '' }, silentCallOptions);
+			proxyStatus = await rpcClient.proxy.getProxyStatus({}, silentCallOptions);
 		} catch {
 			// Detection failures keep the browser host fallback
 		}
 	});
 
 	// Direct ports answer on ips and instant domains alike
-	let directAddrs = $derived(fallbackAddresses(port, suggestions));
+	let directAddrs = $derived(fallbackAddresses(port, proxyStatus));
 
 	function validatePort(p: number) {
 		if (p < 1 || p > 65535) {
@@ -178,6 +178,7 @@
 					inputId="proxy_hostnames"
 					bind:hostnames
 					label={hostnameSlug(serverName)}
+					suggestionBase={proxyStatus?.effectiveBaseUrl ?? ''}
 					placeholder="survival.example.com"
 					{disabled}
 					error={hostnameError}

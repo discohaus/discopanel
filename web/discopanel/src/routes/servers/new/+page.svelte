@@ -47,7 +47,7 @@
 	import MemorySlider from '$lib/components/memory-slider.svelte';
 	import { getUniqueDockerImages, getDockerImageDisplayName } from '$lib/utils';
 	import { fallbackAddresses, playerAddress } from '$lib/hostname';
-	import type { GetHostnameSuggestionsResponse } from '$lib/proto/discopanel/v1/proxy_pb';
+	import type { GetProxyStatusResponse } from '$lib/proto/discopanel/v1/proxy_pb';
 	import { uploadFile } from '$lib/utils/chunked-upload';
 
 	let loading = $state(false);
@@ -57,7 +57,7 @@
 	let dockerImages = $state<DockerImage[]>([]);
 	let latestVersion = $state('');
 	let proxyEnabled = $state(false);
-	let suggestions = $state<GetHostnameSuggestionsResponse | null>(null);
+	let status = $state<GetProxyStatusResponse | null>(null);
 	let proxyListeners = $state<ProxyListener[]>([]);
 	let usedPorts = $state<Record<number, boolean>>({});
 	let portError = $state('');
@@ -143,26 +143,17 @@
 	onMount(async () => {
 		try {
 			// Settle independently so one permission rejection cannot fail all
-			const [
-				versionsData,
-				loadersData,
-				imagesData,
-				proxyStatus,
-				portData,
-				listeners,
-				hostMemory,
-				sugg
-			] = await Promise.allSettled([
-				rpcClient.minecraft.getMinecraftVersions({}),
-				loadModLoaders(),
-				rpcClient.minecraft.getDockerImages({}),
-				rpcClient.proxy.getProxyStatus({}),
-				rpcClient.server.getNextAvailablePort({}),
-				rpcClient.proxy.getProxyListeners({}),
-				rpcClient.server.getHostMemory({}),
-				rpcClient.proxy.getHostnameSuggestions({ label: '' })
-			]);
-			if (sugg.status === 'fulfilled') suggestions = sugg.value;
+			const [versionsData, loadersData, imagesData, proxyStatus, portData, listeners, hostMemory] =
+				await Promise.allSettled([
+					rpcClient.minecraft.getMinecraftVersions({}),
+					loadModLoaders(),
+					rpcClient.minecraft.getDockerImages({}),
+					rpcClient.proxy.getProxyStatus({}),
+					rpcClient.server.getNextAvailablePort({}),
+					rpcClient.proxy.getProxyListeners({}),
+					rpcClient.server.getHostMemory({})
+				]);
+			if (proxyStatus.status === 'fulfilled') status = proxyStatus.value;
 
 			if (versionsData.status === 'fulfilled') {
 				minecraftVersions = versionsData.value.versions.map((v) => v.id);
@@ -396,7 +387,7 @@
 			const names = formData.proxyHostnames.length ? formData.proxyHostnames : ['your-hostname'];
 			return names.map((name) => playerAddress(name, selectedListener?.port)).join(', ');
 		}
-		return fallbackAddresses(formData.port, suggestions)[0];
+		return fallbackAddresses(formData.port, status)[0];
 	});
 
 	let hostnameMissing = $derived(

@@ -16,7 +16,7 @@
 	import {
 		NetworkOwnerKind,
 		NetworkReservationKind,
-		type GetHostnameSuggestionsResponse,
+		type GetProxyStatusResponse,
 		type GetNetworkTopologyResponse,
 		type ProxyListenerWithCount
 	} from '$lib/proto/discopanel/v1/proxy_pb';
@@ -74,11 +74,11 @@
 	let listeners = $state<ProxyListenerWithCount[]>([]);
 	let modules = $state<Module[]>([]);
 	let configHostnames = $state<string[]>([]);
-	let configCatchAll = $state(true);
-	let configLobby = $state(true);
+	let configCatchAll = $state(false);
+	let configLobby = $state(false);
 	let configLobbyOnline = $state(true);
 	let lobbyMembers = $state(0);
-	let suggestions = $state<GetHostnameSuggestionsResponse | null>(null);
+	let proxyStatus = $state<GetProxyStatusResponse | null>(null);
 	let selection = $state<Selection>({ kind: 'overview' });
 	let disableOpen = $state(false);
 	let moved = $state<Record<string, { x: number; y: number }>>({});
@@ -158,12 +158,11 @@
 
 	async function loadAll() {
 		try {
-			const [topo, lst, mods, status, sugg] = await Promise.all([
+			const [topo, lst, mods, status] = await Promise.all([
 				rpcClient.proxy.getNetworkTopology({}),
 				rpcClient.proxy.getProxyListeners({}),
 				rpcClient.module.listModules({}),
-				rpcClient.proxy.getProxyStatus({}),
-				rpcClient.proxy.getHostnameSuggestions({ label: '' })
+				rpcClient.proxy.getProxyStatus({})
 			]);
 			topology = topo;
 			listeners = lst.listeners;
@@ -173,7 +172,7 @@
 			configLobby = status.lobby;
 			configLobbyOnline = status.lobbyOnline;
 			lobbyMembers = status.lobbyMembers;
-			suggestions = sugg;
+			proxyStatus = status;
 			loadError = false;
 		} catch {
 			loadError = true;
@@ -184,12 +183,11 @@
 
 	async function pollSilently() {
 		try {
-			const [topo, lst, mods, status, sugg] = await Promise.all([
+			const [topo, lst, mods, status] = await Promise.all([
 				rpcClient.proxy.getNetworkTopology({}, silentCallOptions),
 				rpcClient.proxy.getProxyListeners({}, silentCallOptions),
 				rpcClient.module.listModules({}, silentCallOptions),
-				rpcClient.proxy.getProxyStatus({}, silentCallOptions),
-				rpcClient.proxy.getHostnameSuggestions({ label: '' }, silentCallOptions)
+				rpcClient.proxy.getProxyStatus({}, silentCallOptions)
 			]);
 			topology = topo;
 			listeners = lst.listeners;
@@ -199,7 +197,7 @@
 			configLobby = status.lobby;
 			configLobbyOnline = status.lobbyOnline;
 			lobbyMembers = status.lobbyMembers;
-			suggestions = sugg;
+			proxyStatus = status;
 			loadError = false;
 		} catch {
 			// Silent polls swallow transient failures
@@ -240,14 +238,10 @@
 	// Hosts reaching the panel ui, configured else detected
 	let panelHosts = $derived.by(() => {
 		if (panelHostnames.length > 0) return panelHostnames;
-		if (!suggestions) return [];
+		if (!proxyStatus) return [];
 		const out: string[] = [];
 		const seen = new Set<string>();
-		const hosts = [
-			suggestions.lanIp,
-			suggestions.publicIp,
-			...suggestions.suggestions.map((s) => s.hostname)
-		];
+		const hosts = [proxyStatus.lanIp, proxyStatus.publicIp, proxyStatus.effectiveBaseUrl];
 		for (const host of hosts) {
 			if (!host || seen.has(host)) continue;
 			seen.add(host);
@@ -355,13 +349,10 @@
 	});
 	// Joinable addresses for the focused direct port
 	let entryAddresses = $derived.by(() => {
-		if (selection.kind !== 'entry' || !suggestions) return [];
-		return directAddresses(
-			selection.port,
-			suggestions.lanIp,
-			suggestions.publicIp,
-			suggestions.suggestions.map((s) => s.hostname)
-		);
+		if (selection.kind !== 'entry' || !proxyStatus) return [];
+		return directAddresses(selection.port, proxyStatus.lanIp, proxyStatus.publicIp, [
+			proxyStatus.effectiveBaseUrl
+		]);
 	});
 
 	let selectedServer = $derived.by(() => {
@@ -573,6 +564,8 @@
 							catchAll={configCatchAll}
 							lobby={configLobby}
 							lobbyOnline={configLobbyOnline}
+							baseUrl={proxyStatus?.baseUrl ?? ''}
+							effectiveBaseUrl={proxyStatus?.effectiveBaseUrl ?? ''}
 							listenerCount={listeners.length}
 							{routeCount}
 							{hasProxiedWorkloads}

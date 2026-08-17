@@ -90,13 +90,6 @@ service ProxyService {
       action: ACTION_TYPE_READ
     };
   }
-  // Suggest hostnames for any hostname input
-  rpc GetHostnameSuggestions(GetHostnameSuggestionsRequest) returns (GetHostnameSuggestionsResponse) {
-    option (discopanel.options.v1.perm) = {
-      resource: RESOURCE_TYPE_PROXY
-      action: ACTION_TYPE_READ
-    };
-  }
 }
 
 // Route serving state
@@ -109,14 +102,6 @@ enum ProxyRouteState {
   PROXY_ROUTE_STATE_STARTING = 2 [(discopanel.options.v1.value) = {label: "Starting"}];
   // Server is stopped, logins may wake it when wakeable
   PROXY_ROUTE_STATE_OFFLINE = 3 [(discopanel.options.v1.value) = {label: "Offline"}];
-}
-
-// Network a suggested hostname resolves on
-enum HostnameScope {
-  option (discopanel.options.v1.enum_type) = {label: "Reachability"};
-  HOSTNAME_SCOPE_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
-  HOSTNAME_SCOPE_LAN = 1 [(discopanel.options.v1.value) = {label: "LAN"}];
-  HOSTNAME_SCOPE_PUBLIC = 2 [(discopanel.options.v1.value) = {label: "Public"}];
 }
 
 // How a reservation occupies its port
@@ -236,6 +221,14 @@ message GetProxyStatusResponse {
   int32 lobby_members = 11;
   // Lobby members waiting per waking server id
   map<string, int32> lobby_waiting = 12;
+  // Saved base domain, empty means auto
+  string base_url = 13;
+  // Base domain in effect right now
+  string effective_base_url = 14;
+  // Host address on the local network
+  string lan_ip = 15;
+  // Router wan address seen from the internet
+  string public_ip = 16;
 }
 
 // Proxy settings to update
@@ -255,6 +248,8 @@ message UpdateProxyConfigRequest {
   // Lobby verifies joins against mojang
   // Absent keeps the saved value
   optional bool lobby_online = 7;
+  // Base domain, absent keeps the saved value
+  optional string base_url = 8;
 }
 
 // Empty impact request
@@ -387,23 +382,3 @@ message UpdateServerRoutingResponse {
   string proxy_listener_id = 2;
 }
 
-// Suggestion context, label prefixes every base name
-message GetHostnameSuggestionsRequest {
-  // Subdomain label, empty suggests bare base names
-  string label = 1;
-}
-
-// One suggested hostname with its reachability
-message HostnameSuggestion {
-  string hostname = 1;
-  HostnameScope scope = 2;
-}
-
-// Computed hostname suggestions
-message GetHostnameSuggestionsResponse {
-  repeated HostnameSuggestion suggestions = 1;
-  // Host address on the local network
-  string lan_ip = 2;
-  // Router wan address seen from the internet
-  string public_ip = 3;
-}

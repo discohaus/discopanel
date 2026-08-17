@@ -18,7 +18,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.1
 	github.com/mholt/archives v0.1.5
-	github.com/nickheyer/protogorm v0.0.3
+	github.com/nickheyer/protogorm v0.0.6
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/spf13/viper v1.20.1
 	github.com/tidwall/gjson v1.18.0

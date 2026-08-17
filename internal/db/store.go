@@ -136,10 +136,9 @@ func NewSQLiteStore(cfg *config.Config) (*Store, error) {
 
 	store := &Store{db: db, cfg: cfg}
 
-	if cfg.Database.AutoMigrate {
-		if err := store.Migrate(); err != nil {
-			return nil, fmt.Errorf("failed to migrate database: %w", err)
-		}
+	// Verification always runs, auto migrate gates applying
+	if err := store.Migrate(); err != nil {
+		return nil, fmt.Errorf("failed to migrate database: %w", err)
 	}
 
 	return store, nil
@@ -545,8 +544,8 @@ func (s *Store) GetProxyConfig(ctx context.Context) (*v1.ProxyConfig, bool, erro
 			return &v1.ProxyConfig{
 				Id:          "default",
 				Enabled:     s.cfg.Proxy.Enabled,
-				CatchAll:    true,
-				Lobby:       true,
+				CatchAll:    false,
+				Lobby:       false,
 				LobbyOnline: true,
 			}, true, nil
 		}

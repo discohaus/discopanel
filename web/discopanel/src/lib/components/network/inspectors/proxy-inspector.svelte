@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { rpcClient, rpcErrorMessage } from '$lib/api/rpc-client';
 	import { Label } from '$lib/components/ui/label';
+	import { Input } from '$lib/components/ui/input';
 	import { Button } from '$lib/components/ui/button';
 	import { Switch } from '$lib/components/ui/switch';
 	import HostnameListInput from '../hostname-list-input.svelte';
@@ -27,6 +28,8 @@
 		catchAll,
 		lobby,
 		lobbyOnline,
+		baseUrl,
+		effectiveBaseUrl,
 		listenerCount,
 		routeCount,
 		hasProxiedWorkloads,
@@ -39,6 +42,8 @@
 		catchAll: boolean;
 		lobby: boolean;
 		lobbyOnline: boolean;
+		baseUrl: string;
+		effectiveBaseUrl: string;
 		listenerCount: number;
 		routeCount: number;
 		hasProxiedWorkloads: boolean;
@@ -46,23 +51,25 @@
 		onChanged: () => Promise<void>;
 	} = $props();
 
-	let draftEnabled = $state(true);
+	let draftEnabled = $state(false);
 	let draftHostnames = $state<string[]>([]);
-	let draftCatchAll = $state(true);
-	let draftLobby = $state(true);
+	let draftCatchAll = $state(false);
+	let draftLobby = $state(false);
 	let draftLobbyOnline = $state(true);
+	let draftBaseUrl = $state('');
 	let saving = $state(false);
 
 	// Draft reseeds whenever the saved config changes
 	let seeded = $state('unseeded');
 	$effect(() => {
-		const snapshot = `${enabled}|${catchAll}|${lobby}|${lobbyOnline}|${hostnames.join(',')}`;
+		const snapshot = `${enabled}|${catchAll}|${lobby}|${lobbyOnline}|${baseUrl}|${hostnames.join(',')}`;
 		if (seeded === snapshot) return;
 		seeded = snapshot;
 		draftEnabled = enabled;
 		draftCatchAll = catchAll;
 		draftLobby = lobby;
 		draftLobbyOnline = lobbyOnline;
+		draftBaseUrl = baseUrl;
 		draftHostnames = [...hostnames];
 	});
 
@@ -71,8 +78,12 @@
 			draftCatchAll !== catchAll ||
 			draftLobby !== lobby ||
 			draftLobbyOnline !== lobbyOnline ||
+			draftBaseUrl.trim().toLowerCase() !== baseUrl ||
 			draftHostnames.join(',') !== hostnames.join(',')
 	);
+
+	// Typed base wins else the live effective one
+	let suggestionBase = $derived(draftBaseUrl.trim().toLowerCase() || effectiveBaseUrl);
 
 	// Catch all only turns off once a name exists
 	let catchAllLocked = $derived(draftCatchAll && draftHostnames.length === 0);
@@ -98,7 +109,8 @@
 				hostnames: draftHostnames,
 				catchAll: draftCatchAll,
 				lobby: draftLobby,
-				lobbyOnline: draftLobbyOnline
+				lobbyOnline: draftLobbyOnline,
+				baseUrl: draftBaseUrl.trim().toLowerCase()
 			});
 			notify.success('Network settings saved');
 			await onChanged();
@@ -141,10 +153,26 @@
 
 		{#if draftEnabled}
 			<div class="space-y-2">
+				<Label for="base-domain">Base domain</Label>
+				<Input
+					id="base-domain"
+					bind:value={draftBaseUrl}
+					disabled={saving}
+					placeholder={effectiveBaseUrl || 'mc.example.com'}
+					autocomplete="off"
+					class="h-9 font-mono text-xs"
+				/>
+				<p class="text-xs text-muted-foreground">
+					Suggested addresses end with this domain, blank picks one from your address
+				</p>
+			</div>
+
+			<div class="space-y-2">
 				<Label for="panel-hostnames">Panel hostnames</Label>
 				<HostnameListInput
 					inputId="panel-hostnames"
 					bind:hostnames={draftHostnames}
+					{suggestionBase}
 					disabled={saving}
 				/>
 			</div>

@@ -143,7 +143,8 @@ proto:
 	@echo "Generating protocol buffer code (using Docker)..."
 	$(BUF_RUN) generate --exclude-path proto/protogorm
 	@echo "Injecting gorm tags and generating db wrappers..."
-	$(BUF_RUN) build -o - | go tool protogorm -support pkg/proto -store internal/db/store.gen.go:db -inject pkg/proto
+	$(BUF_RUN) build -o - | go tool protogorm -support pkg/proto -store internal/db/store.gen.go:db -inject pkg/proto -spec internal/db/migrations/head.snapshot.json
+	@test -f internal/db/migrations/0001_v2_intake.snapshot.json || cp internal/db/migrations/head.snapshot.json internal/db/migrations/0001_v2_intake.snapshot.json
 	@echo "Proto generation complete!"
 
 proto-clean:

@@ -21,14 +21,14 @@ proxy:
   listen_port: 25565
 ```
 
-Hostnames live in the panel, not the config file. Every hostname field in DiscoPanel suggests ready-to-use names when you focus it:
+Hostnames live in the panel, not the config file. Every hostname field in DiscoPanel suggests ready-to-use names derived from one **base domain**, set on the Network page:
 
-- **Instant domains** like `192-168-1-5.sslip.io` embed your machine's address and resolve with zero DNS setup. Great for LAN play or trying things out.
-- **Your own domain**: add it as a panel hostname on the Network page, then every server suggests subdomains under it. Point a wildcard DNS record (`*.mc.example.com`) at your public IP and forward the listen port on your router - one record, one port, unlimited servers.
+- **Leave it blank** and DiscoPanel picks a base from your machine's address that resolves with zero DNS setup. Great for LAN play or trying things out.
+- **Set your own domain** like `mc.example.com` and every suggestion becomes a subdomain of it. Point a wildcard DNS record (`*.mc.example.com`) at your public IP and forward the listen port on your router - one record, one port, unlimited servers.
 
 ## Server addresses
 
-A server called "Epic Survival" gets suggestions like `epic-survival.mc.example.com` and `epic-survival.203-0-113-5.sslip.io` in its **Routing** tab. Pick any of them, type your own, or add several - a server can answer on as many hostnames as you like.
+A server called "Epic Survival" gets a suggestion like `epic-survival.mc.example.com` in its **Routing** tab. Pick it, type your own, or add several - a server can answer on as many hostnames as you like.
 
 ## What the proxy gets you
 

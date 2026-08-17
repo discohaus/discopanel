@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import type { Server } from '$lib/proto/discopanel/v1/storage_pb';
-	import type { GetHostnameSuggestionsResponse } from '$lib/proto/discopanel/v1/proxy_pb';
+	import type { GetProxyStatusResponse } from '$lib/proto/discopanel/v1/proxy_pb';
 	import { isUp, TONE_BG, type StatusTone } from '$lib/server-status';
 	import { AddressSelect, MotdText } from '$lib/components/app';
 	import { Users, Radio } from '@lucide/svelte';
@@ -11,17 +11,17 @@
 	let { server }: { server: Server } = $props();
 
 	// Detected host addresses feed unrouted servers
-	let suggestions = $state<GetHostnameSuggestionsResponse | null>(null);
+	let proxyStatus = $state<GetProxyStatusResponse | null>(null);
 	onMount(async () => {
 		try {
-			suggestions = await rpcClient.proxy.getHostnameSuggestions({ label: '' }, silentCallOptions);
+			proxyStatus = await rpcClient.proxy.getProxyStatus({}, silentCallOptions);
 		} catch {
 			// Detection failures keep the browser host fallback
 		}
 	});
 
 	// Every routed name joins, unrouted lists direct addresses
-	let addresses = $derived(serverAddresses(server, suggestions));
+	let addresses = $derived(serverAddresses(server, proxyStatus));
 	let up = $derived(isUp(server.status));
 	let maxPlayers = $derived(server.maxPlayersSlp || server.maxPlayers);
 	let fillPercent = $derived(maxPlayers > 0 ? (server.playersOnline / maxPlayers) * 100 : 0);

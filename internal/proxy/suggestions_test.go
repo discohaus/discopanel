@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/discohaus/discopanel/pkg/config"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
@@ -18,28 +17,6 @@ func TestInstantBase(t *testing.T) {
 	}
 	if got := instantBase("sslip.io", ""); got != "" {
 		t.Fatalf("empty ip must derive nothing, got %q", got)
-	}
-}
-
-func TestHostnameScope(t *testing.T) {
-	lan := v1.HostnameScope_HOSTNAME_SCOPE_LAN
-	public := v1.HostnameScope_HOSTNAME_SCOPE_PUBLIC
-	cases := map[string]v1.HostnameScope{
-		"192-168-1-5.sslip.io":      lan,
-		"smp.10-0-0-2.sslip.io":     lan,
-		"127-0-0-1.sslip.io":        lan,
-		"198-51-100-4.sslip.io":     public,
-		"mc.198-51-100-4.sslip.io":  public,
-		"mc.example.com":            public,
-		"smp-10-0-0-2.sslip.io":     lan,
-		"smp-192-168-1-5.sslip.io":  lan,
-		"smp-198-51-100-4.sslip.io": public,
-		"10-0-0-2.nip.io":           public,
-	}
-	for name, want := range cases {
-		if got := hostnameScope(name); got != want {
-			t.Fatalf("scope of %s = %v, want %v", name, got, want)
-		}
 	}
 }
 
@@ -84,48 +61,23 @@ func TestRoutedHostnames(t *testing.T) {
 	}
 }
 
-func TestHostnameSuggestions(t *testing.T) {
+func TestEffectiveBaseURL(t *testing.T) {
 	m := &Manager{
-		appCfg:     &config.Config{Proxy: config.ProxyConfig{PublicIp: "198.51.100.4"}},
-		panelNames: []string{"mc.example.com"},
+		baseURL:    "mc.example.com",
 		detectedIP: "192.168.1.5",
 		detectedAt: time.Now(),
 	}
-
-	names := func(label string) []string {
-		var out []string
-		for _, s := range m.HostnameSuggestions(label) {
-			out = append(out, s.Hostname)
-		}
-		return out
+	if got := m.EffectiveBaseURL(); got != "mc.example.com" {
+		t.Fatalf("saved base must win, got %q", got)
 	}
 
-	bare := names("")
-	if bare[0] != "mc.example.com" {
-		t.Fatalf("configured name must lead, got %v", bare)
+	// Unset base falls back to the detected wildcard name
+	m.baseURL = ""
+	if got := m.EffectiveBaseURL(); got != "192-168-1-5.sslip.io" {
+		t.Fatalf("fallback base wrong, got %q", got)
 	}
-	if !slices.Contains(bare, "192-168-1-5.sslip.io") || !slices.Contains(bare, "198-51-100-4.sslip.io") {
-		t.Fatalf("instant bases missing, got %v", bare)
-	}
-
-	// Instant names dash join so wildcards still cover them
-	labeled := names("smp")
-	if labeled[0] != "smp.mc.example.com" || !slices.Contains(labeled, "smp-192-168-1-5.sslip.io") {
-		t.Fatalf("label not prefixed, got %v", labeled)
-	}
-	if !slices.Contains(labeled, "smp-198-51-100-4.sslip.io") {
-		t.Fatalf("labeled public name missing, got %v", labeled)
-	}
-
-	// Scopes tag lan and public addresses apart
-	for _, s := range m.HostnameSuggestions("") {
-		want := v1.HostnameScope_HOSTNAME_SCOPE_PUBLIC
-		if s.Hostname == "192-168-1-5.sslip.io" {
-			want = v1.HostnameScope_HOSTNAME_SCOPE_LAN
-		}
-		if s.Scope != want {
-			t.Fatalf("scope of %s = %v, want %v", s.Hostname, s.Scope, want)
-		}
+	if !hostnamePattern.MatchString(m.EffectiveBaseURL()) {
+		t.Fatal("fallback base must pass the hostname pattern")
 	}
 }
 

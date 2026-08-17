@@ -1,16 +1,15 @@
 <script lang="ts">
 	import { slide } from 'svelte/transition';
-	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { Input } from '$lib/components/ui/input';
 	import { Button } from '$lib/components/ui/button';
-	import { HostnameScope, type HostnameSuggestion } from '$lib/proto/discopanel/v1/proxy_pb';
-	import { validHostname } from '$lib/hostname';
+	import { addressScope, suggestionsFor, validHostname } from '$lib/hostname';
 	import { CardStack, CopyButton } from '$lib/components/app';
 	import { Globe, Plus, Wifi, X } from '@lucide/svelte';
 
 	let {
 		hostnames = $bindable([]),
 		label = '',
+		suggestionBase = '',
 		disabled = false,
 		placeholder = 'mc.example.com',
 		inputId = undefined,
@@ -23,6 +22,8 @@
 		hostnames?: string[];
 		// Subdomain label suggestions derive under
 		label?: string;
+		// Base domain suggested names derive from
+		suggestionBase?: string;
 		disabled?: boolean;
 		placeholder?: string;
 		inputId?: string;
@@ -38,49 +39,22 @@
 	let draft = $state('');
 	let draftError = $state('');
 	let draftInput = $state<HTMLInputElement | null>(null);
-	let suggestions = $state<HostnameSuggestion[]>([]);
-
-	// Display filter waits for the same debounce as fetches
-	let debouncedTyped = $state('');
 
 	const shown = (name: string) => (addressFor ? addressFor(name) : name);
 
 	// Typed labels without a dot suggest full names live
-	let fetchLabel = $derived.by(() => {
+	let suggestLabel = $derived.by(() => {
 		const typed = draft.trim().toLowerCase();
 		if (typed && !typed.includes('.')) return typed;
 		return label.trim().toLowerCase();
 	});
 
-	// One debounce gates fetching and refiltering alike
-	$effect(() => {
-		const current = fetchLabel;
-		const typed = draft.trim().toLowerCase();
-		// Server inputs never offer unlabeled base names
-		if (requireLabel && !current) {
-			suggestions = [];
-			debouncedTyped = '';
-			return;
-		}
-		const timer = setTimeout(async () => {
-			debouncedTyped = typed;
-			try {
-				const res = await rpcClient.proxy.getHostnameSuggestions(
-					{ label: current },
-					silentCallOptions
-				);
-				suggestions = res.suggestions;
-			} catch {
-				suggestions = [];
-			}
-		}, 300);
-		return () => clearTimeout(timer);
-	});
-
 	let matches = $derived.by(() => {
-		const typed = debouncedTyped;
-		return suggestions.filter(
-			(s) => !hostnames.includes(s.hostname) && (!typed || s.hostname.includes(typed))
+		// Server inputs never offer unlabeled base names
+		if (requireLabel && !suggestLabel) return [];
+		const typed = draft.trim().toLowerCase();
+		return suggestionsFor(suggestLabel, suggestionBase).filter(
+			(name) => !hostnames.includes(name) && (!typed || name.includes(typed))
 		);
 	});
 
@@ -101,22 +75,17 @@
 		return true;
 	}
 
-	// Bare labels take a suggestion actually carrying them
+	// Bare labels take the suggestion carrying them
 	function commit() {
 		const typed = draft.trim().toLowerCase();
 		if (!typed) return;
 		draftError = '';
 		const tokens = typed.split(/[\s,]+/).filter(Boolean);
-		if (tokens.length === 1 && !typed.includes('.')) {
-			const match = suggestions.find(
-				(s) => !hostnames.includes(s.hostname) && s.hostname.startsWith(typed + '.')
-			);
-			if (match) {
-				addName(match.hostname);
-				draft = '';
-				draftInput?.focus();
-				return;
-			}
+		if (tokens.length === 1 && !typed.includes('.') && matches.length > 0) {
+			addName(matches[0]);
+			draft = '';
+			draftInput?.focus();
+			return;
 		}
 		// Rejected pieces stay in the field for fixing
 		const kept = tokens.filter((t) => !addName(t));
@@ -211,19 +180,19 @@
 				<p class="truncate text-xs text-destructive">{draftError || error}</p>
 			{:else}
 				<span class="shrink-0 pr-1 text-[10px] text-muted-foreground">Suggested</span>
-				{#each matches as suggestion (suggestion.hostname)}
+				{#each matches as name (name)}
 					<button
 						type="button"
-						onclick={() => addSuggestion(suggestion.hostname)}
+						onclick={() => addSuggestion(name)}
 						{disabled}
 						class="flex shrink-0 items-center gap-1 rounded-md border bg-background px-1.5 py-px font-mono text-[11px] transition-colors hover:border-primary/50 hover:bg-accent/60"
 					>
-						{#if suggestion.scope === HostnameScope.LAN}
+						{#if addressScope(name) === 'LAN'}
 							<Wifi class="size-2.5 shrink-0 text-muted-foreground" />
-						{:else if suggestion.scope === HostnameScope.PUBLIC}
+						{:else if addressScope(name) === 'Public'}
 							<Globe class="size-2.5 shrink-0 text-muted-foreground" />
 						{/if}
-						{suggestion.hostname}
+						{name}
 					</button>
 				{/each}
 			{/if}
