@@ -37,6 +37,10 @@
 	let uploadAbortController = $state<AbortController | null>(null);
 	let fileInput = $state<HTMLInputElement | null>(null);
 
+	// Drag-and-drop state
+	let isDragging = $state(false);
+	let dragCounter = $state(0);
+
 	let hasLoaded = false;
 	let previousServerId = $state(server.id);
 
@@ -49,6 +53,8 @@
 			loading = true;
 			uploading = false;
 			hasLoaded = false;
+			isDragging = false;
+			dragCounter = 0;
 		}
 	});
 
@@ -73,16 +79,33 @@
 		}
 	}
 
-	async function handleFileSelect(event: Event) {
-		const input = event.target as HTMLInputElement;
-		const fileList = input.files;
-		if (!fileList || fileList.length === 0) return;
+	async function processUploadFiles(fileList: FileList | File[]) {
+		const files = Array.from(fileList);
+		if (files.length === 0) return;
+
+		// Filter for valid mod extensions
+		const validModExtensions = ['.jar', '.zip', '.litemod', '.disabled'];
+		const validFiles = files.filter((f) => {
+			const lower = f.name.toLowerCase();
+			return validModExtensions.some((ext) => lower.endsWith(ext));
+		});
+
+		if (validFiles.length === 0) {
+			toast.error('Only .jar, .zip, or .litemod files are supported as mods');
+			return;
+		}
+
+		if (validFiles.length < files.length) {
+			toast.info(
+				`Uploading ${validFiles.length} mod(s) (skipped ${files.length - validFiles.length} unsupported file(s))`
+			);
+		}
 
 		uploading = true;
 		uploadAbortController = new AbortController();
 
 		try {
-			for (const file of Array.from(fileList)) {
+			for (const file of validFiles) {
 				currentUploadFilename = file.name;
 				uploadProgress = null;
 
@@ -102,7 +125,7 @@
 					description: ''
 				});
 			}
-			toast.success(`Uploaded ${fileList.length} mod(s)`);
+			toast.success(`Successfully uploaded ${validFiles.length} mod(s)`);
 			await loadMods();
 		} catch (error: unknown) {
 			if (error instanceof Error && error.message === 'Upload cancelled') {
@@ -115,8 +138,57 @@
 			uploadProgress = null;
 			currentUploadFilename = '';
 			uploadAbortController = null;
-			input.value = '';
+			if (fileInput) fileInput.value = '';
 		}
+	}
+
+	async function handleFileSelect(event: Event) {
+		const input = event.target as HTMLInputElement;
+		const fileList = input.files;
+		if (!fileList || fileList.length === 0) return;
+		await processUploadFiles(fileList);
+	}
+
+	function handleDragEnter(event: DragEvent) {
+		if (!canHaveMods()) return;
+		if (event.dataTransfer?.types?.includes('Files')) {
+			event.preventDefault();
+			event.stopPropagation();
+			dragCounter++;
+			isDragging = true;
+		}
+	}
+
+	function handleDragOver(event: DragEvent) {
+		if (!canHaveMods()) return;
+		if (event.dataTransfer?.types?.includes('Files')) {
+			event.preventDefault();
+			event.stopPropagation();
+			event.dataTransfer.dropEffect = 'copy';
+		}
+	}
+
+	function handleDragLeave(event: DragEvent) {
+		if (!canHaveMods()) return;
+		event.preventDefault();
+		event.stopPropagation();
+		dragCounter--;
+		if (dragCounter <= 0) {
+			dragCounter = 0;
+			isDragging = false;
+		}
+	}
+
+	async function handleDrop(event: DragEvent) {
+		if (!canHaveMods()) return;
+		event.preventDefault();
+		event.stopPropagation();
+		dragCounter = 0;
+		isDragging = false;
+
+		const dt = event.dataTransfer;
+		if (!dt || !dt.files || dt.files.length === 0) return;
+		await processUploadFiles(dt.files);
 	}
 
 	function cancelCurrentUpload() {
@@ -211,8 +283,27 @@
 
 <ResizablePaneGroup
 	direction="vertical"
-	class="h-full max-h-[800px] min-h-[400px] rounded-lg border"
+	class="relative h-full max-h-[800px] min-h-[400px] overflow-hidden rounded-lg border"
+	ondragenter={handleDragEnter}
+	ondragover={handleDragOver}
+	ondragleave={handleDragLeave}
+	ondrop={handleDrop}
 >
+	<!-- Simple minimalist drag and drop overlay -->
+	{#if isDragging && canHaveMods()}
+		<div
+			class="absolute inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-sm bg-background/80 dark:bg-zinc-950/80 pointer-events-none select-none transition-opacity duration-150"
+		>
+			<div
+				class="flex h-full w-full flex-col items-center justify-center rounded-xl border-2 border-dashed border-primary/60 bg-muted/20 p-6"
+			>
+				<Upload class="h-8 w-8 text-primary" />
+				<p class="mt-3 text-base font-semibold text-foreground">Drop mods to upload</p>
+				<p class="mt-1 text-xs text-muted-foreground">.jar or .zip files</p>
+			</div>
+		</div>
+	{/if}
+
 	<ResizablePane defaultSize={100}>
 		<Card class="flex h-full flex-col">
 			<CardHeader>
@@ -240,7 +331,7 @@
 							bind:this={fileInput}
 							type="file"
 							multiple
-							accept=".jar,.zip"
+							accept=".jar,.zip,.litemod"
 							onchange={handleFileSelect}
 							class="hidden"
 						/>
@@ -285,10 +376,20 @@
 						<Loader2 class="h-8 w-8 animate-spin text-muted-foreground" />
 					</div>
 				{:else if mods.length === 0}
-					<div class="flex flex-col items-center justify-center py-12 text-muted-foreground">
-						<Package class="mb-4 h-12 w-12" />
-						<p>No mods installed</p>
-						<p class="mt-2 text-sm">Upload mods to get started</p>
+					<div
+						class="group m-2 flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-border/60 p-12 text-muted-foreground transition-colors hover:border-primary/50 hover:bg-muted/10"
+						onclick={() => fileInput?.click()}
+						role="button"
+						tabindex="0"
+						onkeydown={(e) => {
+							if (e.key === 'Enter' || e.key === ' ') fileInput?.click();
+						}}
+					>
+						<Package class="mb-3 h-8 w-8 text-muted-foreground/60" />
+						<p class="font-medium text-foreground">No mods installed</p>
+						<p class="mt-1 text-sm text-muted-foreground">
+							Drop mods here or click to upload
+						</p>
 					</div>
 				{:else}
 					<div class="space-y-2">

@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nickheyer/discopanel/internal/config"
 	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
-	"gorm.io/driver/sqlite"
+	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
