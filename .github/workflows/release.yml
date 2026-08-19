@@ -213,7 +213,7 @@ jobs:
           CC: ${{ matrix.cc || '' }}
           CXX: ${{ matrix.cxx || '' }}
         run: |
-          go build -o discopanel-${{ matrix.suffix }} ./cmd/discopanel
+          go build -ldflags "-X github.com/discohaus/discopanel/pkg/config.Version=${{ github.ref_name }}" -o discopanel-${{ matrix.suffix }} ./cmd/discopanel
 
       - name: Compress binary (non-Windows)
         if: matrix.goos != 'windows'
@@ -327,8 +327,8 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME}"
           
-          # Get the previous tag
-          PREV_TAG=$(git describe --tags --abbrev=0 ${VERSION}^ 2>/dev/null || echo "")
+          # Get the previous app tag, other tag families stay out
+          PREV_TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*' ${VERSION}^ 2>/dev/null || echo "")
           
           if [ -z "$PREV_TAG" ]; then
             echo "No previous tag found"

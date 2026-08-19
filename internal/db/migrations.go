@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/discohaus/discopanel/internal/db/migrations"
+	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/nickheyer/protogorm/migrate"
 )
 
@@ -16,24 +17,38 @@ func (s *Store) Migrate() error {
 	backup := ""
 	if s.cfg.Database.Path != "" && s.cfg.Database.Path != ":memory:" {
 		backup = s.cfg.Database.Path + ".pre-migrate.bak"
-		os.Remove(backup)
 	}
 
-	report, err := (&migrate.Engine{
+	engine := &migrate.Engine{
 		DB:         s.db,
 		Registry:   migrations.Registry,
 		Head:       migrations.Head(),
 		Baseline:   migrations.V2Baseline{},
-		AppVersion: os.Getenv("APP_VERSION"),
+		AppVersion: config.AppVersion(),
 		BackupPath: backup,
-		Apply:      s.cfg.Database.AutoMigrate,
 		Log:        log.Printf,
-	}).Run(context.Background())
+	}
+
+	report, err := engine.Run(context.Background())
 	if err != nil {
 		return fmt.Errorf("schema migration failed: %w", err)
 	}
 	if len(report.Pending) > 0 {
-		return fmt.Errorf("database needs migrations %v, enable database.auto_migrate", report.Pending)
+		if !s.cfg.Database.AutoMigrate {
+			return fmt.Errorf("database needs migrations %v, enable database.auto_migrate", report.Pending)
+		}
+		fresh := len(report.Pending) == 1 && report.Pending[0] == "fresh install"
+		if backup != "" && !fresh {
+			os.Remove(backup)
+		}
+		engine.Apply = true
+		report, err = engine.Run(context.Background())
+		if err != nil {
+			return fmt.Errorf("schema migration failed: %w", err)
+		}
+		if len(report.Applied) > 0 && backup != "" {
+			log.Printf("[migrate] Pre migration backup kept at %s", backup)
+		}
 	}
 	if report.Fresh {
 		log.Println("[migrate] Fresh schema created at head")

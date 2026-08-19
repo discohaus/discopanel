@@ -12,6 +12,17 @@ import (
 	"github.com/spf13/viper"
 )
 
+// Version stamped into release binaries through ldflags
+var Version = ""
+
+// Panel version from env or the stamped build
+func AppVersion() string {
+	if v := os.Getenv("APP_VERSION"); v != "" {
+		return v
+	}
+	return Version
+}
+
 type Config struct {
 	Server    ServerConfig    `mapstructure:"server" json:"server"`
 	Database  DatabaseConfig  `mapstructure:"database" json:"database"`

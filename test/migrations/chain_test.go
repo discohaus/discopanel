@@ -177,8 +177,8 @@ func TestIntakeCarriesV2Data(t *testing.T) {
 
 	// Config row moved with its odd v2 column names
 	assertString(t, db, "SELECT cf_api_key FROM server_properties WHERE id = 'c1'", "cf-key")
-	assertString(t, db, "SELECT jvm_opts FROM server_properties WHERE id = 'c1'", "-XX:+UseZGC")
-	assertInt(t, db, "SELECT spawn_npcs FROM server_properties WHERE id = 'c1'", 1)
+	assertString(t, db, "SELECT j_vm_opts FROM server_properties WHERE id = 'c1'", "-XX:+UseZGC")
+	assertInt(t, db, "SELECT spawn_np_cs FROM server_properties WHERE id = 'c1'", 1)
 	assertString(t, db, "SELECT init_memory FROM server_properties WHERE id = 'c1'", "2048M")
 	assertString(t, db, "SELECT motd FROM server_properties WHERE id = 'global-settings'", "hello")
 

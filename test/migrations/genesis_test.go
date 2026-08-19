@@ -50,24 +50,24 @@ func TestGenesisMatchesV2Replica(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	committed, readErr := os.ReadFile(genesisPath)
-
-	// Empty placeholder means first materialization
-	empty := false
-	if readErr == nil {
-		parsed, err := migrate.ParseSpec(committed)
-		if err != nil {
-			t.Fatalf("parse committed genesis: %v", err)
-		}
-		empty = len(parsed.Tables) == 0
-	}
-
-	if *update || readErr != nil || empty {
+	if *update {
 		if err := os.WriteFile(genesisPath, derived, 0644); err != nil {
 			t.Fatalf("write genesis: %v", err)
 		}
 		t.Log("genesis snapshot written from the v2 replica, commit it")
 		return
+	}
+
+	committed, readErr := os.ReadFile(genesisPath)
+	if readErr != nil {
+		t.Fatalf("read genesis snapshot: %v, rerun with -update", readErr)
+	}
+	parsed, err := migrate.ParseSpec(committed)
+	if err != nil {
+		t.Fatalf("parse committed genesis: %v", err)
+	}
+	if len(parsed.Tables) == 0 {
+		t.Fatal("genesis snapshot is an empty placeholder, capture it with -update or seedgen")
 	}
 
 	if !bytes.Equal(bytes.TrimSpace(committed), bytes.TrimSpace(derived)) {

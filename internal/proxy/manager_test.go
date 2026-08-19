@@ -155,15 +155,23 @@ func TestSyncListenersBootstrap(t *testing.T) {
 		t.Fatal("default socket must run")
 	}
 
-	// Panel catch all rides the panel socket
-	catchAll := false
+	// Named panel routes ride, catch all defaults off
+	named, catchAll := false, false
 	for _, route := range panelSock.Routes() {
-		if route.OwnerKind == OwnerPanel && route.Hostname == "" {
+		if route.OwnerKind != OwnerPanel {
+			continue
+		}
+		if route.Hostname == "" {
 			catchAll = true
+		} else {
+			named = true
 		}
 	}
-	if !catchAll {
-		t.Fatal("panel catch all route missing")
+	if !named {
+		t.Fatal("named panel routes missing")
+	}
+	if catchAll {
+		t.Fatal("catch all must stay off by default")
 	}
 
 	mustSync(t, m)

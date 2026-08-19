@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -26,7 +27,7 @@ const maxConfigFrames = 64
 // Game event id starting the chunk wait
 const gameEventStartChunks = 13
 
-// Modern family codec covering 766 through 772
+// Modern family codec covering 754 through 776
 type modernCodec struct{}
 
 // Codec registers itself at package load
@@ -57,6 +58,7 @@ func (modernCodec) BakeChunks(grid *Grid, protocol int32) ([][]byte, error) {
 }
 
 // Runs login tail then config then the join burst
+// Failures send the fail note in the phase they died in
 func (modernCodec) NewSession(r io.Reader, w io.Writer, protocol int32, join JoinData) (Session, error) {
 	ids := ModernIDsFor(protocol)
 	if ids == nil {
@@ -64,17 +66,36 @@ func (modernCodec) NewSession(r io.Reader, w io.Writer, protocol int32, join Joi
 	}
 	s := &modernSession{r: r, w: w, protocol: protocol, ids: ids, pos: join.Spawn}
 	if err := s.finishLogin(join.Profile); err != nil {
+		s.failLogin(join.FailNote)
 		return nil, err
 	}
 	if !ids.NoConfigPhase {
 		if err := s.runConfig(join); err != nil {
+			if !errors.Is(err, ErrHandedOff) && join.FailNote != "" {
+				WriteConfigDisconnect(s.w, protocol, join.FailNote)
+			}
 			return nil, err
 		}
 	}
 	if err := s.joinWorld(join); err != nil {
+		if join.FailNote != "" {
+			s.Disconnect(join.FailNote)
+		}
 		return nil, err
 	}
 	return s, nil
+}
+
+// Login phase failure screen, best effort
+func (s *modernSession) failLogin(note string) {
+	if note == "" {
+		return
+	}
+	raw, err := json.Marshal(map[string]string{"text": note})
+	if err != nil {
+		return
+	}
+	mcproto.WriteLoginDisconnectJSON(s.w, raw)
 }
 
 // One modern client joined into the hub

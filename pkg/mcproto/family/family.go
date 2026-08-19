@@ -31,6 +31,8 @@ type JoinData struct {
 	SpawnBlock [3]int
 	// Screen shown to clients answering the fence
 	RefuseNote string
+	// Screen shown when the join dies partway
+	FailNote string
 }
 
 // Session ended inside config on purpose

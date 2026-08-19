@@ -47,8 +47,8 @@ const hubMaxMembers = 20
 // Chat header matching the lobby wordmark
 const hubChatHeader = "§f§lDisco§a§lPanel §8· §7lobby"
 
-// Trigger boxes cached in slot order
-var hubGateBoxes = family.GateBoxes()
+// Status hover lines the card lists at most
+const hubSampleLines = 8
 
 // Active relay conns per server for gate signs
 type HubCounts func() map[string]int64
@@ -74,6 +74,7 @@ type HubRuntime struct {
 	gen        int64
 	joining    int
 	targets    []family.Target
+	gateBoxes  []family.GateBox
 	online     map[string]int64
 	grids      map[int32]*family.Grid
 	bundles    map[int32][][]byte
@@ -103,6 +104,7 @@ type hubMember struct {
 	pending     string
 	pendingName string
 	signals     chan memberSignal
+	fate        chan memberSignal
 }
 
 // Builds the hub runtime with one shared keypair
@@ -117,6 +119,7 @@ func NewHubRuntime(online bool, log *logger.Logger, intents *IntentTable) (*HubR
 		intents:    intents,
 		done:       make(chan struct{}),
 		onlineMode: online,
+		gateBoxes:  family.GateBoxes(0),
 		online:     make(map[string]int64),
 		grids:      make(map[int32]*family.Grid),
 		bundles:    make(map[int32][][]byte),
@@ -231,6 +234,7 @@ func (h *HubRuntime) applyTargetsLocked(targets []family.Target) {
 		return
 	}
 	h.targets = targets
+	h.gateBoxes = family.GateBoxes(len(targets))
 	h.refreshLooksLocked()
 }
 
@@ -317,7 +321,15 @@ func (h *HubRuntime) bundleFor(codec family.Codec, protocol int32) ([][]byte, *f
 }
 
 // Hands one signal over without ever blocking
+// Session ending signals ride their own reserved lane
 func (h *HubRuntime) signal(m *hubMember, sig memberSignal) {
+	if sig.hop != nil || sig.drop != "" {
+		select {
+		case m.fate <- sig:
+		default:
+		}
+		return
+	}
 	select {
 	case m.signals <- sig:
 	default:
@@ -396,7 +408,7 @@ func (h *HubRuntime) move(m *hubMember, pos family.Pos) *family.Target {
 		h.signal(o, memberSignal{evs: []family.Event{family.EvEntityMove{EntityID: m.entityID, Pos: pos}}})
 	}
 	slot := -1
-	for i, box := range hubGateBoxes {
+	for i, box := range h.gateBoxes {
 		if box.Contains(pos.X, pos.Y, pos.Z) {
 			slot = i
 			break
@@ -612,12 +624,15 @@ func (h *HubRuntime) statusCard() synthStatus {
 	targets := slices.Clone(h.targets)
 	h.mu.Unlock()
 
-	sample := make([]string, 0, family.GateCount)
+	sample := make([]string, 0, hubSampleLines+1)
 	for _, t := range targets {
-		if len(sample) == family.GateCount {
+		if len(sample) == hubSampleLines {
 			break
 		}
 		sample = append(sample, fmt.Sprintf("§b%s §8· %s", t.Name, family.ChatStatus(&t, 0)))
+	}
+	if extra := len(targets) - hubSampleLines; extra > 0 {
+		sample = append(sample, fmt.Sprintf("§7and %d more", extra))
 	}
 	if len(sample) == 0 {
 		sample = []string{"§7no worlds yet", "§7create one in §fdisco§apanel"}
@@ -719,6 +734,7 @@ func (h *HubRuntime) serve(s *ListenerSocket, clientConn net.Conn, br *bufio.Rea
 		pos:      family.Pos{X: grid.SpawnX, Y: grid.SpawnY, Z: grid.SpawnZ, Yaw: grid.SpawnYaw, OnGround: true},
 		inGate:   -1,
 		signals:  make(chan memberSignal, 256),
+		fate:     make(chan memberSignal, 1),
 	}
 	h.mu.Unlock()
 
@@ -731,6 +747,7 @@ func (h *HubRuntime) serve(s *ListenerSocket, clientConn net.Conn, br *bufio.Rea
 		SpawnBlock: [3]int{int(spawn.X), int(spawn.Y), int(spawn.Z)},
 	}
 	join.RefuseNote = h.plazaRefusalNote()
+	join.FailNote = "the lobby couldn't finish your join\nplease try again"
 	sess, err := codec.NewSession(result.R, result.W, protocol, join)
 	if errors.Is(err, family.ErrHandedOff) {
 		h.logger.Info("Hub handed off %s during config", result.Name)
@@ -738,7 +755,6 @@ func (h *HubRuntime) serve(s *ListenerSocket, clientConn net.Conn, br *bufio.Rea
 	}
 	if err != nil {
 		h.logger.Info("Hub join failed for %s: %v", result.Name, err)
-		family.WriteConfigDisconnect(result.W, protocol, "the lobby couldn't finish your join\nplease try again")
 		return true
 	}
 
@@ -764,10 +780,7 @@ func (h *HubRuntime) plazaRefusalNote() string {
 		return lines[0]
 	}
 	lines = append(lines, "§7Connect directly:")
-	for i, t := range targets {
-		if i == family.GateCount {
-			break
-		}
+	for _, t := range targets {
 		addr := t.Hostname
 		if t.Port != 0 && t.Port != 25565 {
 			addr = fmt.Sprintf("%s:%d", t.Hostname, t.Port)
@@ -791,6 +804,9 @@ func (h *HubRuntime) greeting(m *hubMember) []string {
 
 // Pumps actions and room signals until either side ends
 func (h *HubRuntime) runMember(s *ListenerSocket, sess family.Session, m *hubMember, clientR io.Reader, world []family.Event) {
+	// Close of gone frees a reader parked on a full lane
+	gone := make(chan struct{})
+	defer close(gone)
 	actions := make(chan family.Action, 64)
 	readErr := make(chan error, 1)
 	go func() {
@@ -807,7 +823,7 @@ func (h *HubRuntime) runMember(s *ListenerSocket, sess family.Session, m *hubMem
 			}
 			select {
 			case actions <- act:
-			case <-s.ctx.Done():
+			case <-gone:
 				return
 			}
 		}
@@ -864,6 +880,11 @@ func (h *HubRuntime) runMember(s *ListenerSocket, sess family.Session, m *hubMem
 				return
 			}
 
+		case sig := <-m.fate:
+			if done := h.deliver(sess, m, sig); done {
+				return
+			}
+
 		case sig := <-m.signals:
 			if done := h.deliver(sess, m, sig); done {
 				return
@@ -889,7 +910,9 @@ func (h *HubRuntime) deliver(sess family.Session, m *hubMember, sig memberSignal
 			host, port = t.Hostname, t.Port
 		}
 		if ok, err := sess.Transfer(host, port); ok {
-			if err == nil {
+			if err != nil {
+				h.logger.Error("Hub transfer failed for %s: %v", m.entry.Name, err)
+			} else {
 				h.logger.Info("Hub sent %s to %s", m.entry.Name, t.Name)
 			}
 			return true

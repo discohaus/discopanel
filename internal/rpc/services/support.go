@@ -837,8 +837,8 @@ func fileExists(path string) bool {
 
 // Gets version information for the application
 func getVersionInfo() string {
-	// Check env var first
-	if appV := os.Getenv("APP_VERSION"); appV != "" {
+	// Env then stamped build version win first
+	if appV := config.AppVersion(); appV != "" {
 		return appV
 	}
 

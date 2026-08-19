@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net"
 	"strings"
@@ -247,7 +248,34 @@ func readKickReason(t *testing.T, reply []byte) string {
 	if err != nil {
 		t.Fatalf("kick reason unreadable %v", err)
 	}
-	return reason
+	return flattenComponent(t, reason)
+}
+
+// Concatenates component text so gradients read whole
+func flattenComponent(t *testing.T, reason string) string {
+	t.Helper()
+	var root map[string]any
+	if err := json.Unmarshal([]byte(reason), &root); err != nil {
+		return reason
+	}
+	var b strings.Builder
+	var walk func(node map[string]any)
+	walk = func(node map[string]any) {
+		if s, ok := node["text"].(string); ok {
+			b.WriteString(s)
+		}
+		extras, ok := node["extra"].([]any)
+		if !ok {
+			return
+		}
+		for _, e := range extras {
+			if child, ok := e.(map[string]any); ok {
+				walk(child)
+			}
+		}
+	}
+	walk(root)
+	return b.String()
 }
 
 // Wrong versions kick instead of dialing the target

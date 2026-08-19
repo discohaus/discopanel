@@ -1,3 +1,2876 @@
 {
-  "tables": []
+  "tables": [
+    {
+      "name": "api_tokens",
+      "columns": [
+        {
+          "name": "created_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "expires_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "is_module_token",
+          "types": {
+            "sqlite": "numeric"
+          },
+          "default": "false"
+        },
+        {
+          "name": "last_used_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "name",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "token_hash",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "user_id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_api_tokens_token_hash",
+          "columns": [
+            "token_hash"
+          ],
+          "unique": true
+        },
+        {
+          "name": "idx_api_tokens_user_id",
+          "columns": [
+            "user_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "casbin_rule",
+      "columns": [
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "integer"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "ptype",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "v0",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "v1",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "v2",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "v3",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "v4",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "v5",
+          "types": {
+            "sqlite": "text"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_casbin_rule",
+          "columns": [
+            "ptype",
+            "v0",
+            "v1",
+            "v2",
+            "v3",
+            "v4",
+            "v5"
+          ],
+          "unique": true
+        }
+      ]
+    },
+    {
+      "name": "indexed_modpack_files",
+      "columns": [
+        {
+          "name": "display_name",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "download_url",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "file_date",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "file_length",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "file_name",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "game_versions",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "mod_loader",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modpack_id",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "release_type",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "server_pack_file_id",
+          "types": {
+            "sqlite": "text"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_indexed_modpack_files_modpack_id",
+          "columns": [
+            "modpack_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "indexed_modpacks",
+      "columns": [
+        {
+          "name": "categories",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "date_created",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "date_modified",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "date_released",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "description",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "docker_image",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "download_count",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "game_versions",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "indexed_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "indexer",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "indexer_id",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "java_version",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "latest_file_id",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "logo_url",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "mc_version",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "mod_loaders",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "name",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "recommended_ram",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "slug",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "summary",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "website_url",
+          "types": {
+            "sqlite": "text"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_indexed_modpacks_indexer",
+          "columns": [
+            "indexer"
+          ]
+        },
+        {
+          "name": "idx_indexed_modpacks_indexer_id",
+          "columns": [
+            "indexer_id"
+          ]
+        },
+        {
+          "name": "idx_indexed_modpacks_name",
+          "columns": [
+            "name"
+          ]
+        },
+        {
+          "name": "idx_indexed_modpacks_slug",
+          "columns": [
+            "slug"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "migrations",
+      "columns": [
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        }
+      ]
+    },
+    {
+      "name": "modpack_favorites",
+      "columns": [
+        {
+          "name": "created_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "modpack_id",
+          "types": {
+            "sqlite": "text"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_modpack_favorites_modpack_id",
+          "columns": [
+            "modpack_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "mods",
+      "columns": [
+        {
+          "name": "description",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "enabled",
+          "types": {
+            "sqlite": "numeric"
+          },
+          "default": "true"
+        },
+        {
+          "name": "file_name",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "file_size",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "mod_id",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "name",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "server_id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "uploaded_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "version",
+          "types": {
+            "sqlite": "text"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_mods_server_id",
+          "columns": [
+            "server_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "module_templates",
+      "columns": [
+        {
+          "name": "category",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "created_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "default_access_urls",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "default_cmd",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "default_env",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "default_gid",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "default_hooks",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "default_init_command",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "default_init_command_delay",
+          "types": {
+            "sqlite": "integer"
+          },
+          "default": "0"
+        },
+        {
+          "name": "default_memory",
+          "types": {
+            "sqlite": "integer"
+          },
+          "default": "512"
+        },
+        {
+          "name": "default_restart_after_init",
+          "types": {
+            "sqlite": "numeric"
+          },
+          "default": "false"
+        },
+        {
+          "name": "default_uid",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "default_volumes",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "description",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "docker_image",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "documentation",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "health_check_path",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "health_check_port",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "icon",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "metadata",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "name",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "ports",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "requires_server",
+          "types": {
+            "sqlite": "numeric"
+          },
+          "default": "true"
+        },
+        {
+          "name": "suggested_dependencies",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "supports_proxy",
+          "types": {
+            "sqlite": "numeric"
+          },
+          "default": "true"
+        },
+        {
+          "name": "type",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "default": "custom"
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_module_templates_name",
+          "columns": [
+            "name"
+          ],
+          "unique": true
+        }
+      ]
+    },
+    {
+      "name": "modules",
+      "columns": [
+        {
+          "name": "access_urls",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "auto_start",
+          "types": {
+            "sqlite": "numeric"
+          },
+          "default": "false"
+        },
+        {
+          "name": "cmd_override",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "config",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "container_id",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cpu_limit",
+          "types": {
+            "sqlite": "real"
+          }
+        },
+        {
+          "name": "created_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "created_by",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "data_path",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "dependencies",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "detached",
+          "types": {
+            "sqlite": "numeric"
+          },
+          "default": "false"
+        },
+        {
+          "name": "env_overrides",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "event_hooks",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "follow_server_lifecycle",
+          "types": {
+            "sqlite": "numeric"
+          },
+          "default": "true"
+        },
+        {
+          "name": "gid",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "health_check_interval",
+          "types": {
+            "sqlite": "integer"
+          },
+          "default": "30"
+        },
+        {
+          "name": "health_check_retries",
+          "types": {
+            "sqlite": "integer"
+          },
+          "default": "3"
+        },
+        {
+          "name": "health_check_timeout",
+          "types": {
+            "sqlite": "integer"
+          },
+          "default": "5"
+        },
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "init_command",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "init_command_delay",
+          "types": {
+            "sqlite": "integer"
+          },
+          "default": "0"
+        },
+        {
+          "name": "last_started",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "memory",
+          "types": {
+            "sqlite": "integer"
+          },
+          "default": "512"
+        },
+        {
+          "name": "metadata",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "name",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "ports",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "restart_after_init",
+          "types": {
+            "sqlite": "numeric"
+          },
+          "default": "false"
+        },
+        {
+          "name": "server_id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "status",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "default": "stopped"
+        },
+        {
+          "name": "template_id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "token_id",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "token_plaintext",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "uid",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "volume_overrides",
+          "types": {
+            "sqlite": "text"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_modules_server_id",
+          "columns": [
+            "server_id"
+          ]
+        },
+        {
+          "name": "idx_modules_template_id",
+          "columns": [
+            "template_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "proxy_configs",
+      "columns": [
+        {
+          "name": "base_url",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "enabled",
+          "types": {
+            "sqlite": "numeric"
+          },
+          "not_null": true,
+          "default": "false"
+        },
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        }
+      ]
+    },
+    {
+      "name": "proxy_listeners",
+      "columns": [
+        {
+          "name": "created_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "description",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "enabled",
+          "types": {
+            "sqlite": "numeric"
+          },
+          "not_null": true,
+          "default": "true"
+        },
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "is_default",
+          "types": {
+            "sqlite": "numeric"
+          },
+          "not_null": true,
+          "default": "false"
+        },
+        {
+          "name": "name",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "port",
+          "types": {
+            "sqlite": "integer"
+          },
+          "not_null": true
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_proxy_listeners_port",
+          "columns": [
+            "port"
+          ],
+          "unique": true
+        }
+      ]
+    },
+    {
+      "name": "registration_invites",
+      "columns": [
+        {
+          "name": "code",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "created_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "created_by",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "description",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "expires_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "max_uses",
+          "types": {
+            "sqlite": "integer"
+          },
+          "default": "0"
+        },
+        {
+          "name": "pin_hash",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "roles",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "use_count",
+          "types": {
+            "sqlite": "integer"
+          },
+          "default": "0"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_registration_invites_code",
+          "columns": [
+            "code"
+          ],
+          "unique": true
+        }
+      ]
+    },
+    {
+      "name": "roles",
+      "columns": [
+        {
+          "name": "created_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "description",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "is_default",
+          "types": {
+            "sqlite": "numeric"
+          },
+          "not_null": true,
+          "default": "false"
+        },
+        {
+          "name": "is_system",
+          "types": {
+            "sqlite": "numeric"
+          },
+          "not_null": true,
+          "default": "false"
+        },
+        {
+          "name": "name",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_roles_name",
+          "columns": [
+            "name"
+          ],
+          "unique": true
+        }
+      ]
+    },
+    {
+      "name": "scheduled_tasks",
+      "columns": [
+        {
+          "name": "config",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "created_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "cron_expr",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "description",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "event_triggers",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "failure_notify",
+          "types": {
+            "sqlite": "numeric"
+          },
+          "default": "false"
+        },
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "interval_secs",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "last_run",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "name",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "next_run",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "require_online",
+          "types": {
+            "sqlite": "numeric"
+          },
+          "default": "true"
+        },
+        {
+          "name": "retry_count",
+          "types": {
+            "sqlite": "integer"
+          },
+          "default": "0"
+        },
+        {
+          "name": "retry_delay",
+          "types": {
+            "sqlite": "integer"
+          },
+          "default": "60"
+        },
+        {
+          "name": "run_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "schedule",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "server_id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "status",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "default": "enabled"
+        },
+        {
+          "name": "task_type",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "timeout",
+          "types": {
+            "sqlite": "integer"
+          },
+          "default": "300"
+        },
+        {
+          "name": "timezone",
+          "types": {
+            "sqlite": "text"
+          },
+          "default": "UTC"
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_scheduled_tasks_next_run",
+          "columns": [
+            "next_run"
+          ]
+        },
+        {
+          "name": "idx_scheduled_tasks_server_id",
+          "columns": [
+            "server_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "server_configs",
+      "columns": [
+        {
+          "name": "accepts_transfers",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "allow_flight",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "allow_nether",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "announce_player_achievements",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "autopause_knock_interface",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "autopause_period",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "autopause_timeout_est",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "autopause_timeout_init",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "autopause_timeout_kn",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "autostop_period",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "autostop_timeout_est",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "autostop_timeout_init",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "broadcast_console_to_ops",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "broadcast_rcon_to_ops",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "bug_report_link",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cf_api_key",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cf_api_key_file",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cf_exclude_include_file",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cf_exclude_mods",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cf_file_id",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cf_filename_matcher",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cf_force_include_mods",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cf_force_reinstall_modloader",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "cf_force_synchronize",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "cf_modpack_zip",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cf_overrides_skip_existing",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "cf_page_url",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cf_parallel_downloads",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "cf_set_level_from",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cf_slug",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "console",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "custom_jar_exec",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "custom_server",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "custom_server_properties",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "debug_autopause",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "debug_autostop",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "difficulty",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "enable_autopause",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enable_autostop",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enable_command_block",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enable_jmx",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enable_query",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enable_rcon",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enable_rolling_logs",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enable_status",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enable_whitelist",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enforce_secure_profile",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enforce_whitelist",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "entity_broadcast_range_percentage",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "eula",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "exec_directly",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "existing_ops_file",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "existing_whitelist_file",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "extra_args",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "force_gamemode",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "forge_installer",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "forge_installer_url",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "forge_version",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "function_permission_level",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "g_id",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "g_ui",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "generate_structures",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "generator_settings",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "hardcore",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "hide_online_players",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "icon",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "init_memory",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "j_vm_dd_opts",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "j_vm_opts",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "j_vm_xx_opts",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "jmx_host",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "level",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "level_type",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "log_ips",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "log_timestamp",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "management_server_allowed_origins",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "management_server_enabled",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "management_server_host",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "management_server_port",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "management_server_secret",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "management_server_tls_enabled",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "management_server_tls_keystore",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "management_server_tls_keystore_password",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "max_build_height",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "max_chained_neighbor_updates",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "max_memory",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "max_players",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "max_world_size",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "memory",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "mode",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_default_exclude_includes",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_download_dependencies",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_exclude_files",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_force_include_files",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_force_synchronize",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "modrinth_ignore_missing_files",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_loader",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_modpack",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_modpack_version_type",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_overrides_exclusions",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_projects",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_projects_default_version_type",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_version",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "motd",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "network_compression_threshold",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "online_mode",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "op_permission_level",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "ops",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "ops_file",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "override_icon",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "override_whitelist",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "pause_when_empty_seconds",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "player_idle_timeout",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "prevent_proxy_connections",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "proxy",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "pvp",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "query_port",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "rate_limit",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "rcon_cmds_first_connect",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "rcon_cmds_last_disconnect",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "rcon_cmds_on_connect",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "rcon_cmds_on_disconnect",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "rcon_cmds_startup",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "rcon_password",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "rcon_port",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "region_file_compression",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "resource_pack",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "resource_pack_enforce",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "resource_pack_id",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "resource_pack_prompt",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "resource_pack_sha1",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "seed",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "server_id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "server_name",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "server_port",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "server_properties_escape_unicode",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "setup_only",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "simulation_distance",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "snooper_enabled",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "spawn_animals",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "spawn_monsters",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "spawn_np_cs",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "spawn_protection",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "status_heartbeat_interval",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "stop_duration",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "stop_server_announce_delay",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "sync_chunk_writes",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "type",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "tz",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "uid",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "use_aikar_flags",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "use_flare_flags",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "use_meowice_flags",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "use_meowice_graal_vm_flags",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "use_native_transport",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "use_simd_flags",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "user_api_provider",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "version",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "version_from_modrinth_projects",
+          "types": {
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "view_distance",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "whitelist",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "whitelist_file",
+          "types": {
+            "sqlite": "text"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_server_configs_server_id",
+          "columns": [
+            "server_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "servers",
+      "columns": [
+        {
+          "name": "additional_ports",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "auto_start",
+          "types": {
+            "sqlite": "numeric"
+          },
+          "default": "false"
+        },
+        {
+          "name": "container_id",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "created_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "data_path",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "description",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "detached",
+          "types": {
+            "sqlite": "numeric"
+          },
+          "default": "false"
+        },
+        {
+          "name": "docker_image",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "docker_overrides",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "java_version",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "last_started",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "max_players",
+          "types": {
+            "sqlite": "integer"
+          },
+          "default": "20"
+        },
+        {
+          "name": "mc_version",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "memory",
+          "types": {
+            "sqlite": "integer"
+          },
+          "default": "4096"
+        },
+        {
+          "name": "mod_loader",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "name",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "port",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "proxy_hostname",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "proxy_listener_id",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "proxy_port",
+          "types": {
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "status",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "tps_command",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_proxy_hostname_listener",
+          "columns": [
+            "proxy_hostname",
+            "proxy_listener_id"
+          ],
+          "unique": true
+        }
+      ]
+    },
+    {
+      "name": "sessions",
+      "columns": [
+        {
+          "name": "created_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "expires_at",
+          "types": {
+            "sqlite": "datetime"
+          },
+          "not_null": true
+        },
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "token",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "user_id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_sessions_expires_at",
+          "columns": [
+            "expires_at"
+          ]
+        },
+        {
+          "name": "idx_sessions_token",
+          "columns": [
+            "token"
+          ],
+          "unique": true
+        },
+        {
+          "name": "idx_sessions_user_id",
+          "columns": [
+            "user_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "system_settings",
+      "columns": [
+        {
+          "name": "key",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "value",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        }
+      ]
+    },
+    {
+      "name": "task_executions",
+      "columns": [
+        {
+          "name": "duration",
+          "types": {
+            "sqlite": "integer"
+          },
+          "default": "0"
+        },
+        {
+          "name": "ended_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "error",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "output",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "retry_num",
+          "types": {
+            "sqlite": "integer"
+          },
+          "default": "0"
+        },
+        {
+          "name": "server_id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "started_at",
+          "types": {
+            "sqlite": "datetime"
+          },
+          "not_null": true
+        },
+        {
+          "name": "status",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "task_id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "trigger",
+          "types": {
+            "sqlite": "text"
+          },
+          "default": "scheduled"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_task_executions_server_id",
+          "columns": [
+            "server_id"
+          ]
+        },
+        {
+          "name": "idx_task_executions_task_id",
+          "columns": [
+            "task_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "user_roles",
+      "columns": [
+        {
+          "name": "created_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "role_name",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "source",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "default": "local"
+        },
+        {
+          "name": "user_id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_user_roles_role_name",
+          "columns": [
+            "role_name"
+          ]
+        },
+        {
+          "name": "idx_user_roles_user_id",
+          "columns": [
+            "user_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "users",
+      "columns": [
+        {
+          "name": "auth_provider",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "default": "local"
+        },
+        {
+          "name": "created_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "email",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "is_active",
+          "types": {
+            "sqlite": "numeric"
+          },
+          "not_null": true,
+          "default": "true"
+        },
+        {
+          "name": "last_login",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "oidc_issuer",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "oidc_subject",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "password_hash",
+          "types": {
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "username",
+          "types": {
+            "sqlite": "text"
+          },
+          "not_null": true
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_oidc_identity",
+          "columns": [
+            "oidc_subject",
+            "oidc_issuer"
+          ],
+          "unique": true
+        },
+        {
+          "name": "idx_user_provider",
+          "columns": [
+            "username",
+            "auth_provider"
+          ],
+          "unique": true
+        },
+        {
+          "name": "idx_users_email",
+          "columns": [
+            "email"
+          ]
+        }
+      ]
+    }
+  ]
 }

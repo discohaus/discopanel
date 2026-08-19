@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// Portal gate slots the plaza can hold
-const GateCount = 8
+// Ground margin past the gate ring
+const groundMargin = 17
 
 // Heights stack on the superflat layers
 const (
@@ -21,9 +21,6 @@ const (
 	finialY  = -56 // end rods on the gate pillars
 	ballY    = -47 // mirror ball centre
 )
-
-// Superflat ground baked around the plaza
-const groundEdge = 32
 
 // Spawn contract every hub session shares
 const (
@@ -186,19 +183,75 @@ func hubGates() []gate {
 }
 
 // Slot spread keeps small fleets facing each other
-var slotSpread = [GateCount]int{0, 4, 2, 6, 1, 5, 3, 7}
+var slotSpread = [...]int{0, 4, 2, 6, 1, 5, 3, 7}
+
+// Plaza half size fitting one fleet
+func ringHalf(n int) int {
+	perWall := (n + 3) / 4
+	s := 4*(perWall-1) + 9
+	if s < 15 {
+		s = 15
+	}
+	return s
+}
+
+// Gate ring layout sized for one fleet
+func layoutGates(n int) []gate {
+	if n <= len(slotSpread) {
+		return hubGates()
+	}
+	return grownGates(n)
+}
+
+// Clockwise walls packed for fleets past eight
+func grownGates(n int) []gate {
+	s := ringHalf(n)
+	counts := [4]int{}
+	for i := range counts {
+		counts[i] = n / 4
+		if i < n%4 {
+			counts[i]++
+		}
+	}
+	out := make([]gate, 0, n)
+	for w, c := range counts {
+		for k := 0; k < c; k++ {
+			off := (2*k - c + 1) * 4
+			switch w {
+			case 0:
+				out = append(out, gate{X: off, Z: -s, UX: 1, UZ: 0, NX: 0, NZ: 1, Facing: "south"})
+			case 1:
+				out = append(out, gate{X: s, Z: off, UX: 0, UZ: 1, NX: -1, NZ: 0, Facing: "west"})
+			case 2:
+				out = append(out, gate{X: -off, Z: s, UX: 1, UZ: 0, NX: 0, NZ: -1, Facing: "north"})
+			case 3:
+				out = append(out, gate{X: -s, Z: -off, UX: 0, UZ: 1, NX: 1, NZ: 0, Facing: "east"})
+			}
+		}
+	}
+	return out
+}
 
 // Gate slot holding one sorted target index
-func SlotForTarget(i int) int {
-	if i < 0 || i >= GateCount {
+func SlotForTarget(i, targets int) int {
+	if i < 0 || i >= targets {
 		return -1
+	}
+	if targets > len(slotSpread) {
+		return i
 	}
 	return slotSpread[i]
 }
 
 // Sorted target index standing in one slot
 func TargetForSlot(slot, targets int) int {
-	for i := 0; i < targets && i < GateCount; i++ {
+	if targets > len(slotSpread) {
+		if slot < 0 || slot >= targets {
+			return -1
+		}
+		return slot
+	}
+	for i := 0; i < targets; i++ {
 		if slotSpread[i] == slot {
 			return i
 		}
@@ -217,9 +270,9 @@ func (b GateBox) Contains(x, y, z float64) bool {
 	return x >= b.X1 && x < b.X2 && y >= b.Y1 && y < b.Y2 && z >= b.Z1 && z < b.Z2
 }
 
-// Trigger boxes in gate slot order
-func GateBoxes() []GateBox {
-	gates := hubGates()
+// Trigger boxes in gate slot order for one fleet
+func GateBoxes(targets int) []GateBox {
+	gates := layoutGates(targets)
 	out := make([]GateBox, len(gates))
 	for i, g := range gates {
 		x1 := float64(min(g.X-g.UX, g.X+g.UX))
@@ -301,7 +354,8 @@ func danceFloorFills() []Fill {
 }
 
 // Paved rings from the dance floor out to the rim
-func plazaBandFills() []Fill {
+func plazaBandFills(s int) []Fill {
+	sf := float64(s)
 	bands := []struct {
 		rIn, rOut float64
 		block     string
@@ -310,9 +364,9 @@ func plazaBandFills() []Fill {
 		{5.7, 10.7, "minecraft:polished_blackstone"},
 		{10.7, 11.7, "minecraft:polished_blackstone_bricks"},
 		{11.7, 14.3, "minecraft:polished_andesite"},
-		{14.3, 16.7, "minecraft:polished_blackstone"},
-		{16.7, 19.7, "minecraft:smooth_basalt"},
-		{19.7, 20.7, "minecraft:polished_blackstone_bricks"},
+		{14.3, sf + 1.7, "minecraft:polished_blackstone"},
+		{sf + 1.7, sf + 4.7, "minecraft:smooth_basalt"},
+		{sf + 4.7, sf + 5.7, "minecraft:polished_blackstone_bricks"},
 	}
 	var out []Fill
 	for _, b := range bands {
@@ -358,11 +412,11 @@ func lampFills(x, z int) []Fill {
 }
 
 // Amethyst shrines mark the diagonals
-func shrineFills() []Fill {
+func shrineFills(s int) []Fill {
 	var out []Fill
 	for _, sx := range []int{-1, 1} {
 		for _, sz := range []int{-1, 1} {
-			cx, cz := 13*sx, 13*sz
+			cx, cz := (s-2)*sx, (s-2)*sz
 			out = append(out, set(9*sx, floorY, 9*sz, "minecraft:pearlescent_froglight"))
 			out = append(out, lampFills(cx, cz)...)
 			out = append(out,
@@ -376,12 +430,17 @@ func shrineFills() []Fill {
 	return out
 }
 
-// Static plaza standing under every fleet
-func plazaFills() []Fill {
+// Plaza sized to one gate ring half size
+func plazaFills(s int) []Fill {
 	out := danceFloorFills()
-	out = append(out, plazaBandFills()...)
-	out = append(out, shrineFills()...)
-	for _, p := range [][2]int{{0, -18}, {0, 18}, {-18, 0}, {18, 0}} {
+	// Grown plazas pave wall to wall under the rings
+	if s > 15 {
+		out = append(out, fill(-(s+6), floorY, -(s+6), s+6, floorY, s+6, "minecraft:smooth_basalt"))
+	}
+	out = append(out, plazaBandFills(s)...)
+	out = append(out, shrineFills(s)...)
+	edge := s + 3
+	for _, p := range [][2]int{{0, -edge}, {0, edge}, {-edge, 0}, {edge, 0}} {
 		out = append(out, lampFills(p[0], p[1])...)
 	}
 	return append(out, mirrorBallFills()...)
@@ -426,11 +485,11 @@ func gateFills(g gate, t *Target, protocol int32) []Fill {
 }
 
 // Superflat layers under and around the plaza
-func groundFills() []Fill {
+func groundFills(edge int) []Fill {
 	return []Fill{
-		fill(-groundEdge, bedrockY, -groundEdge, groundEdge-1, bedrockY, groundEdge-1, "minecraft:bedrock"),
-		fill(-groundEdge, pyramidY, -groundEdge, groundEdge-1, underY, groundEdge-1, "minecraft:dirt"),
-		fill(-groundEdge, floorY, -groundEdge, groundEdge-1, floorY, groundEdge-1, "minecraft:grass_block"),
+		fill(-edge, bedrockY, -edge, edge-1, bedrockY, edge-1, "minecraft:bedrock"),
+		fill(-edge, pyramidY, -edge, edge-1, underY, edge-1, "minecraft:dirt"),
+		fill(-edge, floorY, -edge, edge-1, floorY, edge-1, "minecraft:grass_block"),
 	}
 }
 
@@ -444,10 +503,11 @@ func BuildHub(targets []Target, protocol int32) *Grid {
 		SpawnYaw: SpawnYaw,
 		MinY:     bedrockY,
 	}
-	grid.Fills = append(groundFills(), plazaFills()...)
-	gates := hubGates()
+	s := ringHalf(len(targets))
+	grid.Fills = append(groundFills(s+groundMargin), plazaFills(s)...)
+	gates := layoutGates(len(targets))
 	for i := range targets {
-		slot := SlotForTarget(i)
+		slot := SlotForTarget(i, len(targets))
 		if slot < 0 {
 			break
 		}
