@@ -320,11 +320,12 @@ func ValidatePortRouting(port *v1.NetworkPort, fallbackHostnames []string) error
 }
 
 // Builds reservation requests for a module's ports
-func (m *Manager) ModuleNetRequests(module *v1.Module, serverHostnames []string) []NetRequest {
+func (m *Manager) ModuleNetRequests(ctx context.Context, module *v1.Module, serverHostnames []string) []NetRequest {
 	m.mu.Lock()
 	enabled := m.enabled
+	fallback := m.moduleFallbackLocked(ctx, serverHostnames)
 	m.mu.Unlock()
-	return PortNetRequests(module.Ports, serverHostnames, enabled)
+	return PortNetRequests(module.Ports, fallback, enabled)
 }
 
 // One request per port and hostname pair
@@ -512,6 +513,8 @@ func (m *Manager) reservationsLocked(ctx context.Context) ([]Reservation, error)
 		if srv := serversByID[mod.ServerId]; srv != nil {
 			hostnames = srv.ProxyHostnames
 		}
+		// Global modules use panel names
+		hostnames = m.moduleFallbackLocked(ctx, hostnames)
 		for _, req := range PortNetRequests(mod.Ports, hostnames, m.enabled) {
 			if res, err := m.reservationFromRequest(owner, req); err == nil {
 				all = append(all, res)

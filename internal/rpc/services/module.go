@@ -566,12 +566,13 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 		return nil, err
 	}
 
-	if err := normalizeModulePorts(ports, server.ProxyHostnames); err != nil {
+	fallback := s.proxyManager.ModuleFallbackNames(ctx, server.ProxyHostnames)
+	if err := normalizeModulePorts(ports, fallback); err != nil {
 		return nil, err
 	}
 
 	// Registry checkout guards every port until the row persists
-	netClaim, err := s.checkoutModuleNetwork(ctx, moduleID, ports, server.ProxyHostnames)
+	netClaim, err := s.checkoutModuleNetwork(ctx, moduleID, ports, fallback)
 	if err != nil {
 		return nil, err
 	}
@@ -745,12 +746,14 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 			return nil, err
 		}
 
-		if err := normalizeModulePorts(msg.Ports, hostnames); err != nil {
+		// Global and bare server names inherit panel names
+		fallback := s.proxyManager.ModuleFallbackNames(ctx, hostnames)
+		if err := normalizeModulePorts(msg.Ports, fallback); err != nil {
 			return nil, err
 		}
 
 		// Registry checkout guards the new ports until persist
-		claim, err := s.checkoutModuleNetwork(ctx, module.Id, msg.Ports, hostnames)
+		claim, err := s.checkoutModuleNetwork(ctx, module.Id, msg.Ports, fallback)
 		if err != nil {
 			return nil, err
 		}
@@ -1403,7 +1406,7 @@ func (s *ModuleService) allocateModulePorts(ctx context.Context, ports []*v1.Net
 
 // Claims module network, failed checkouts retire stray rows
 func (s *ModuleService) checkoutModuleNetwork(ctx context.Context, moduleID string, ports []*v1.NetworkPort, hostnames []string) (*proxy.NetClaim, error) {
-	netReqs := s.proxyManager.ModuleNetRequests(&v1.Module{Id: moduleID, Ports: ports}, hostnames)
+	netReqs := s.proxyManager.ModuleNetRequests(ctx, &v1.Module{Id: moduleID, Ports: ports}, hostnames)
 	if err := s.proxyManager.EnsureListenersFor(ctx, netReqs); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}

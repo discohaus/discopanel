@@ -320,6 +320,21 @@ func (m *Manager) panelServedNamesLocked(ctx context.Context) []string {
 	return out
 }
 
+// Server names when present, else panel served names
+func (m *Manager) moduleFallbackLocked(ctx context.Context, hostnames []string) []string {
+	if len(hostnames) > 0 {
+		return hostnames
+	}
+	return m.panelServedNamesLocked(ctx)
+}
+
+// Module fallback names for one server hostname set
+func (m *Manager) ModuleFallbackNames(ctx context.Context, serverHostnames []string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.moduleFallbackLocked(ctx, serverHostnames)
+}
+
 // Panel routes, named always plus an optional catch all
 func (m *Manager) panelRoutesLocked(ctx context.Context) []Route {
 	if m.panelBackend == 0 {
@@ -807,6 +822,8 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 		if srv := serversByID[mod.ServerId]; srv != nil {
 			hostnames = srv.ProxyHostnames
 		}
+		// Global modules use panel names
+		hostnames = m.moduleFallbackLocked(ctx, hostnames)
 		module := mod
 		appendPortRoutes(tcpRoutes, udpRoutes, mod.Ports, hostnames,
 			OwnerModule, mod.Id, ip, func(p *v1.NetworkPort) int { return m.moduleContainerPort(module, p) })

@@ -85,9 +85,6 @@
 	// Typed base wins else the live effective one
 	let suggestionBase = $derived(draftBaseUrl.trim().toLowerCase() || effectiveBaseUrl);
 
-	// Catch all only turns off once a name exists
-	let catchAllLocked = $derived(draftCatchAll && draftHostnames.length === 0);
-
 	function toggleEnabled(next: boolean) {
 		// Turning off proxied workloads goes through the convert dialog
 		if (!next && enabled && hasProxiedWorkloads) {
@@ -181,17 +178,13 @@
 				<span class="text-sm">
 					<span class="font-medium">Catch all</span>
 					<span class="mt-0.5 block text-xs font-normal text-muted-foreground">
-						{#if catchAllLocked}
-							Add a panel hostname first to turn this off
-						{:else}
-							The panel answers addresses that are not listed
-						{/if}
+						The panel answers addresses that are not listed
 					</span>
 				</span>
 				<Switch
 					checked={draftCatchAll}
 					onCheckedChange={(next) => (draftCatchAll = next)}
-					disabled={saving || catchAllLocked}
+					disabled={saving}
 				/>
 			</label>
 

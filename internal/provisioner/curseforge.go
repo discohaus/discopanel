@@ -115,7 +115,7 @@ func (p *Provisioner) installCurseForgePack(ctx context.Context, server *v1.Serv
 	}
 
 	res, err := p.installCurseForgeZip(ctx, server, cfg, zipPath, client, force)
-	// FTB style server packs hold only installer scripts
+	// Script only server packs fall back to client manifest
 	if errors.Is(err, errNoLaunchTarget) && dlFile.ID != file.ID {
 		p.progress(server, "server pack is not launchable, installing from client pack manifest...")
 		zipPath, err = p.downloadCurseForgeFile(ctx, client, server, pack, file)
@@ -228,6 +228,12 @@ func (p *Provisioner) installCurseForgeZip(ctx context.Context, server *v1.Serve
 		return nil, fmt.Errorf("failed to open modpack zip: %w", err)
 	}
 	defer reader.Close()
+
+	// FTB stubs point at the api holding real server files
+	if packID, versionID, ok := ftbInstallerRef(&reader.Reader); ok {
+		p.progress(server, "pack is an FTB installer stub, using the FTB api...")
+		return p.installFTBPack(ctx, server, cfg, packID, versionID, force)
+	}
 
 	manifest, manifestPrefix := readCFManifest(&reader.Reader)
 	if manifest != nil {

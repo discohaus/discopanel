@@ -174,12 +174,6 @@ func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	// Catch all off needs at least one named hostname
-	if !msg.CatchAll && len(hostnames) == 0 {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("add a panel hostname before turning catch all off"))
-	}
-
 	// Registry claim holds the names through the persist
 	var claim *proxy.NetClaim
 	if s.proxyManager != nil {
