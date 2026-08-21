@@ -51,7 +51,7 @@ func TestDisableClientOnlyMods(t *testing.T) {
 
 	p := &Provisioner{log: logger.New()}
 	server := &v1.Server{DataPath: dataPath, ModLoader: v1.ModLoader_MOD_LOADER_MODRINTH}
-	p.disableClientOnlyMods(context.Background(), server, []string{"keepme"})
+	p.disableClientOnlyMods(context.Background(), server, []string{"keepme"}, nil)
 
 	if _, err := os.Stat(filepath.Join(modsDir+"_disabled", "clientmod.jar")); err != nil {
 		t.Fatal("client-only jar should be disabled")
@@ -67,34 +67,87 @@ func TestDisableClientOnlyMods(t *testing.T) {
 	}
 }
 
-func TestPackDownloadSkipsKnownClientMods(t *testing.T) {
-	p := &Provisioner{log: logger.New()}
-	server := &v1.Server{}
-
+func TestPackDownloadFlagsKnownClientMods(t *testing.T) {
 	slugged := &fuego.File{FileName: "some-shaders-1.0.jar", GameVersions: []string{"Client", "Server"}}
-	if p.cfFileWanted(server, slugged, &fuego.Modpack{Slug: "oculus"}, 42, nil, nil) {
-		t.Fatal("known client slug must be skipped")
+	if wanted, flag := cfFileWanted(slugged, &fuego.Modpack{Slug: "oculus"}, 42, nil, nil); !wanted || flag == "" {
+		t.Fatal("known client slug must download flagged")
 	}
-	if !p.cfFileWanted(server, slugged, &fuego.Modpack{Slug: "oculus"}, 42, nil, []string{"oculus"}) {
-		t.Fatal("force include must override the client list")
+	if wanted, flag := cfFileWanted(slugged, &fuego.Modpack{Slug: "oculus"}, 42, nil, []string{"oculus"}); !wanted || flag != "" {
+		t.Fatal("force include must clear the client flag")
+	}
+	if wanted, _ := cfFileWanted(slugged, &fuego.Modpack{Slug: "oculus"}, 42, []string{"oculus"}, nil); wanted {
+		t.Fatal("explicit exclude must skip the download")
 	}
 	prefixed := &fuego.File{FileName: "rubidium-0.6.5.jar", GameVersions: []string{"Client", "Server"}}
-	if p.cfFileWanted(server, prefixed, &fuego.Modpack{}, 7, nil, nil) {
-		t.Fatal("known client file prefix must be skipped")
+	if wanted, flag := cfFileWanted(prefixed, &fuego.Modpack{}, 7, nil, nil); !wanted || flag == "" {
+		t.Fatal("known client file prefix must download flagged")
 	}
-	wanted := &fuego.File{FileName: "create-1.0.jar", GameVersions: []string{"Client", "Server"}}
-	if !p.cfFileWanted(server, wanted, &fuego.Modpack{Slug: "create"}, 9, nil, nil) {
-		t.Fatal("server mod must stay wanted")
+	envTagged := &fuego.File{FileName: "athena-4.0.0.jar", GameVersions: []string{"Client"}}
+	if wanted, flag := cfFileWanted(envTagged, &fuego.Modpack{Slug: "athena"}, 8, nil, nil); !wanted || flag == "" {
+		t.Fatal("client env tags must download flagged")
+	}
+	plain := &fuego.File{FileName: "create-1.0.jar", GameVersions: []string{"Client", "Server"}}
+	if wanted, flag := cfFileWanted(plain, &fuego.Modpack{Slug: "create"}, 9, nil, nil); !wanted || flag != "" {
+		t.Fatal("server mod must stay wanted unflagged")
 	}
 
-	if p.mrpackFileWanted(server, mrpackFile{Path: "mods/embeddium-0.3.jar"}, nil, nil) {
-		t.Fatal("known client jar must be skipped in mrpack")
+	if wanted, flag := mrpackFileWanted(mrpackFile{Path: "mods/embeddium-0.3.jar"}, nil, nil); !wanted || flag == "" {
+		t.Fatal("known client jar must download flagged in mrpack")
 	}
-	if !p.mrpackFileWanted(server, mrpackFile{Path: "mods/embeddium-0.3.jar"}, nil, []string{"embeddium"}) {
-		t.Fatal("force include must override in mrpack")
+	if wanted, flag := mrpackFileWanted(mrpackFile{Path: "mods/embeddium-0.3.jar"}, nil, []string{"embeddium"}); !wanted || flag != "" {
+		t.Fatal("force include must clear the flag in mrpack")
 	}
-	if !p.mrpackFileWanted(server, mrpackFile{Path: "mods/lithium-0.11.jar"}, nil, nil) {
-		t.Fatal("server jar must stay wanted in mrpack")
+	if wanted, flag := mrpackFileWanted(mrpackFile{Path: "mods/lithium-0.11.jar"}, nil, nil); !wanted || flag != "" {
+		t.Fatal("server jar must stay wanted unflagged in mrpack")
+	}
+
+	if wanted, flag := ftbFileWanted(&ftbFile{Name: "shaders.jar", ClientOnly: true}, nil, nil); !wanted || !flag {
+		t.Fatal("FTB client flag must download flagged")
+	}
+	if wanted, flag := ftbFileWanted(&ftbFile{Name: "shaders.jar", ClientOnly: true}, nil, []string{"shaders"}); !wanted || flag {
+		t.Fatal("force include must clear the FTB flag")
+	}
+	if wanted, _ := ftbFileWanted(&ftbFile{Name: "shaders.jar", ClientOnly: true}, []string{"shaders"}, nil); wanted {
+		t.Fatal("explicit exclude must skip the download")
+	}
+}
+
+func TestPackFlaggedClientModsSweepKeepsDeps(t *testing.T) {
+	dataPath := t.TempDir()
+	modsDir := filepath.Join(dataPath, "mods")
+	// Mirrors chipped needing athena, both flagged client by CF tags
+	writeClientJar(t, modsDir, "chipped.jar", `{"id":"chipped","version":"4.0.2","environment":"*","depends":{"athena":">=4.0.0"}}`)
+	writeClientJar(t, modsDir, "rechiseled.jar", `{"id":"rechiseled","version":"1.2.5","environment":"*","depends":{"fusion":">=1.2.12"}}`)
+	writeClientJar(t, modsDir, "athena.jar", `{"id":"athena","version":"4.0.0","environment":"*"}`)
+	writeClientJar(t, modsDir, "fusion.jar", `{"id":"fusion","version":"1.2.12","environment":"*"}`)
+	writeClientJar(t, modsDir, "shaders.jar", `{"id":"shaders","version":"1.0.0","environment":"*"}`)
+
+	p := &Provisioner{log: logger.New()}
+	server := &v1.Server{DataPath: dataPath, ModLoader: v1.ModLoader_MOD_LOADER_CURSEFORGE}
+
+	// Required flagged jars stay, nothing moves on disk
+	p.disableClientOnlyMods(context.Background(), server, nil, []string{"athena.jar", "fusion.jar"})
+
+	// Flag marking must not poison the shared scan cache
+	for _, meta := range minecraft.ScanModsDir(modsDir) {
+		if meta.ClientOnly {
+			t.Fatalf("%s cache entry must stay unmarked", meta.FileName)
+		}
+	}
+
+	flagged := []string{"athena.jar", "fusion.jar", "shaders.jar"}
+	p.disableClientOnlyMods(context.Background(), server, nil, flagged)
+
+	for _, name := range []string{"chipped.jar", "rechiseled.jar", "athena.jar", "fusion.jar"} {
+		if !fileExists(filepath.Join(modsDir, name)) {
+			t.Fatalf("%s must stay enabled, mods depend on it", name)
+		}
+	}
+	if fileExists(filepath.Join(modsDir, "shaders.jar")) {
+		t.Fatal("flagged jar nothing needs must be disabled")
+	}
+	if !fileExists(filepath.Join(modsDir+"_disabled", "shaders.jar")) {
+		t.Fatal("disabled jar must land in the disabled dir")
 	}
 }
 

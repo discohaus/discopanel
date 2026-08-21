@@ -119,7 +119,7 @@ func (p *httpLane) start(feed *connFeed) {
 	// Header stalls drop, bodies stay open for long streams
 	p.server = &http.Server{
 		Handler:           p,
-		ReadHeaderTimeout: 30 * time.Second,
+		ReadHeaderTimeout: 0,
 		IdleTimeout:       2 * time.Minute,
 	}
 	// Agent streams arrive as cleartext http2

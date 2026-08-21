@@ -128,11 +128,23 @@ func (p *Provisioner) installFTBPack(ctx context.Context, server *v1.Server, cfg
 	forceIncludes := packForceIncludes(cfg)
 
 	// Resolves wanted files, then downloads concurrently, bounded
+	// Client flagged mods still download, the sweep decides
 	var pending []ftbFile
+	var packFlagged []string
 	total := 0
 	for _, file := range manifest.Files {
-		if !p.ftbFileWanted(server, &file, excludes, forceIncludes) {
+		wanted, clientFlag := ftbFileWanted(&file, excludes, forceIncludes)
+		if !wanted {
+			p.progress(server, "skipping excluded file %s", file.Name)
 			continue
+		}
+		if clientFlag {
+			// Non-mod client files cannot be loader deps
+			if filepath.Dir(ftbDest(server.DataPath, &file)) != joinData(server.DataPath, "mods") {
+				p.progress(server, "skipping client-only file %s", file.Name)
+				continue
+			}
+			packFlagged = append(packFlagged, strings.ToLower(file.Name))
 		}
 		total++
 		if !force && fileExists(ftbDest(server.DataPath, &file)) {
@@ -149,21 +161,7 @@ func (p *Provisioner) installFTBPack(ctx context.Context, server *v1.Server, cfg
 	g.SetLimit(packDownloadConcurrency)
 	for _, file := range pending {
 		g.Go(func() error {
-			dest := ftbDest(server.DataPath, &file)
-			var sum *checksum
-			if file.Sha1 != "" {
-				sum = &checksum{algo: "sha1", value: file.Sha1}
-			}
-			err := fmt.Errorf("file %q has no download url", file.Name)
-			for _, u := range append([]string{file.URL}, file.Mirrors...) {
-				if u == "" {
-					continue
-				}
-				if err = p.download(gctx, u, dest, sum, nil, nil); err == nil {
-					break
-				}
-			}
-			if err != nil {
+			if err := p.downloadFTBFile(gctx, &file, ftbDest(server.DataPath, &file)); err != nil {
 				return fmt.Errorf("failed to download %q: %w", file.Name, err)
 			}
 			if n := done.Add(1); n%25 == 0 {
@@ -179,10 +177,30 @@ func (p *Provisioner) installFTBPack(ctx context.Context, server *v1.Server, cfg
 		p.progress(server, "pack downloads complete (%d/%d)", done.Load(), total)
 	}
 
+	p.disableClientOnlyMods(ctx, server, forceIncludes, packFlagged)
+
 	// Adopted pack version keeps the server row coherent
 	ev := ftbEvidence(&manifest)
 	p.adoptMCVersion(ctx, server, ev.mcVersion)
 	return p.installPackRuntime(ctx, server, cfg, ev)
+}
+
+// Tries the primary url then mirrors until one lands
+func (p *Provisioner) downloadFTBFile(ctx context.Context, file *ftbFile, dest string) error {
+	var sum *checksum
+	if file.Sha1 != "" {
+		sum = &checksum{algo: "sha1", value: file.Sha1}
+	}
+	err := fmt.Errorf("file %q has no download url", file.Name)
+	for _, u := range append([]string{file.URL}, file.Mirrors...) {
+		if u == "" {
+			continue
+		}
+		if err = p.download(ctx, u, dest, sum, nil, nil); err == nil {
+			return nil
+		}
+	}
+	return err
 }
 
 // Loader facts an FTB manifest declares
@@ -204,20 +222,15 @@ func ftbEvidence(manifest *ftbVersionManifest) packEvidence {
 }
 
 // Applies FTB side flags plus user include exclude rules
-func (p *Provisioner) ftbFileWanted(server *v1.Server, file *ftbFile, excludes, forceIncludes []string) bool {
+// Client side flags mark for the sweep instead of skipping
+func ftbFileWanted(file *ftbFile, excludes, forceIncludes []string) (bool, bool) {
 	if minecraft.MatchesPatterns(file.Name, forceIncludes) {
-		return true
+		return true, false
 	}
 	if minecraft.MatchesPatterns(file.Name, excludes) {
-		p.progress(server, "skipping excluded file %s", file.Name)
-		return false
+		return false, false
 	}
-	// FTB side flags are authoritative, no slug guessing
-	if file.ClientOnly {
-		p.progress(server, "skipping client-only file %s", file.Name)
-		return false
-	}
-	return true
+	return true, file.ClientOnly
 }
 
 // Joins an FTB file entry onto the data dir

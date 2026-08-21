@@ -2163,7 +2163,7 @@ message ServerProperties {
   }];
   optional string motd = 27 [(discopanel.options.v1.prop) = {
     prop: "motd"
-    default_value: ""
+    default_value: "A DiscoPanel Server"
     desc: "Server log in message"
     input: "text"
     label: "Message of the Day"
@@ -2201,7 +2201,7 @@ message ServerProperties {
   }];
   optional int32 max_world_size = 30 [(discopanel.options.v1.prop) = {
     prop: "max-world-size"
-    default_value: "0"
+    default_value: "29999984"
     desc: "Maximum world size in blocks (radius)"
     input: "number"
     label: "Max World Size"
@@ -2257,7 +2257,7 @@ message ServerProperties {
   }];
   optional bool snooper_enabled = 37 [(discopanel.options.v1.prop) = {
     prop: "snooper-enabled"
-    default_value: "false"
+    default_value: "true"
     desc: "Send data to snoop.minecraft.net (legacy versions)"
     input: "checkbox"
     label: "Enable Snooper"
@@ -2300,7 +2300,7 @@ message ServerProperties {
   ];
   optional int32 spawn_protection = 42 [(discopanel.options.v1.prop) = {
     prop: "spawn-protection"
-    default_value: "0"
+    default_value: "16"
     desc: "Area that non-ops cannot edit (0 to disable)"
     input: "number"
     label: "Spawn Protection"
@@ -2308,7 +2308,7 @@ message ServerProperties {
   }];
   optional int32 view_distance = 43 [(discopanel.options.v1.prop) = {
     prop: "view-distance"
-    default_value: "0"
+    default_value: "10"
     desc: "Server-side viewing distance in chunks"
     input: "number"
     label: "View Distance"
@@ -2346,7 +2346,7 @@ message ServerProperties {
   }];
   optional string level_type = 47 [(discopanel.options.v1.prop) = {
     prop: "level-type"
-    default_value: "minecraft:default"
+    default_value: "minecraft:normal"
     desc: "World generation type"
     input: "text"
     label: "Level Type"
@@ -2427,7 +2427,7 @@ message ServerProperties {
   }];
   optional int32 entity_broadcast_range_percentage = 57 [(discopanel.options.v1.prop) = {
     prop: "entity-broadcast-range-percentage"
-    default_value: "0"
+    default_value: "100"
     desc: "Entity broadcast range percentage"
     input: "number"
     label: "Entity Broadcast Range Percentage"
@@ -2435,7 +2435,7 @@ message ServerProperties {
   }];
   optional int32 function_permission_level = 58 [(discopanel.options.v1.prop) = {
     prop: "function-permission-level"
-    default_value: "0"
+    default_value: "2"
     desc: "Function permission level"
     input: "number"
     label: "Function Permission Level"
@@ -2443,7 +2443,7 @@ message ServerProperties {
   }];
   optional int32 network_compression_threshold = 59 [(discopanel.options.v1.prop) = {
     prop: "network-compression-threshold"
-    default_value: "0"
+    default_value: "256"
     desc: "Network compression threshold"
     input: "number"
     label: "Network Compression Threshold"
@@ -2451,7 +2451,7 @@ message ServerProperties {
   }];
   optional int32 op_permission_level = 60 [(discopanel.options.v1.prop) = {
     prop: "op-permission-level"
-    default_value: "0"
+    default_value: "4"
     desc: "OP permission level"
     input: "number"
     label: "OP Permission Level"
@@ -2475,7 +2475,7 @@ message ServerProperties {
   }];
   optional int32 simulation_distance = 63 [(discopanel.options.v1.prop) = {
     prop: "simulation-distance"
-    default_value: "0"
+    default_value: "10"
     desc: "Simulation distance"
     input: "number"
     label: "Simulation Distance"
@@ -2781,7 +2781,7 @@ message ServerProperties {
   }];
   optional bool broadcast_rcon_to_ops = 102 [(discopanel.options.v1.prop) = {
     prop: "broadcast-rcon-to-ops"
-    default_value: "false"
+    default_value: "true"
     desc: "Broadcast RCON to ops"
     input: "checkbox"
     label: "Broadcast RCON to OPs"

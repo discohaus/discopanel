@@ -68,10 +68,10 @@ func (m *ModJarMeta) HasReportedModID(id string) bool {
 	return false
 }
 
-// True when any declared mod id is required
-func (m *ModJarMeta) providesAny(required map[string]bool) bool {
-	for i := range m.Mods {
-		if required[m.Mods[i].ID] {
+// True when any declared mod satisfies a needed id
+func (m *ModJarMeta) ProvidesAny(needed map[string]bool) bool {
+	for id := range needed {
+		if m.HasReportedModID(id) {
 			return true
 		}
 	}
@@ -109,7 +109,7 @@ func ClientOnlySweep(metas []ModJarMeta, forceIncludes []string) []ModJarMeta {
 		var next []ModJarMeta
 		moved := false
 		for _, m := range drop {
-			if m.providesAny(required) {
+			if m.ProvidesAny(required) {
 				keep = append(keep, m)
 				moved = true
 			} else {

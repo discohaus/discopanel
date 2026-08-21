@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -166,7 +167,7 @@ func (p *Provisioner) Ensure(ctx context.Context, server *v1.Server, cfg *v1.Ser
 
 	// Pack-managed mods get the client-only sweep every pass
 	if desired != nil {
-		p.disableClientOnlyMods(ctx, server, storage.ForceIncludePatterns(cfg))
+		p.disableClientOnlyMods(ctx, server, storage.ForceIncludePatterns(cfg), nil)
 	}
 
 	// Config files are cheap and authoritative, always applied
@@ -432,12 +433,19 @@ func launchTargetExists(dataPath string, spec *v1.LaunchSpec) bool {
 	}
 }
 
-func (p *Provisioner) disableClientOnlyMods(ctx context.Context, server *v1.Server, forceIncludes []string) {
+// Pack metadata client flags add evidence beside jar metadata
+func (p *Provisioner) disableClientOnlyMods(ctx context.Context, server *v1.Server, forceIncludes, packFlagged []string) {
 	modsDir := minecraft.GetModsPath(server.DataPath, server.ModLoader)
 	if modsDir == "" {
 		return
 	}
-	for _, meta := range minecraft.ClientOnlySweep(minecraft.ScanModsDir(modsDir), forceIncludes) {
+	metas := slices.Clone(minecraft.ScanModsDir(modsDir))
+	for i := range metas {
+		if !metas[i].ClientOnly && minecraft.MatchesPatterns(metas[i].FileName, packFlagged) {
+			metas[i].ClientOnly = true
+		}
+	}
+	for _, meta := range minecraft.ClientOnlySweep(metas, forceIncludes) {
 		if err := minecraft.DisableModJar(modsDir, meta.FileName); err != nil {
 			p.progress(server, "could not disable client-only mod %s (%v)", meta.FileName, err)
 			continue

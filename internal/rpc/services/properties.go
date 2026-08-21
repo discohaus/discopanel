@@ -69,7 +69,7 @@ func (s *PropertiesService) GetServerProperties(ctx context.Context, req *connec
 	}
 
 	// Convert to categorized format
-	categories, err := buildPropertyCategories(config)
+	categories, err := buildPropertyCategories(config, serverFileProps(server))
 	if err != nil {
 		s.log.Error("Failed to build config categories: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to format properties"))
@@ -127,7 +127,7 @@ func (s *PropertiesService) UpdateServerProperties(ctx context.Context, req *con
 	}
 
 	// Return updated config
-	categories, err := buildPropertyCategories(config)
+	categories, err := buildPropertyCategories(config, serverFileProps(server))
 	if err != nil {
 		s.log.Error("Failed to build config categories: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to format properties"))
@@ -146,7 +146,7 @@ func (s *PropertiesService) GetGlobalSettings(ctx context.Context, req *connect.
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get global settings"))
 	}
 
-	categories, err := buildPropertyCategories(config)
+	categories, err := buildPropertyCategories(config, nil)
 	if err != nil {
 		s.log.Error("Failed to build config categories: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to format properties"))
@@ -176,7 +176,7 @@ func (s *PropertiesService) UpdateGlobalSettings(ctx context.Context, req *conne
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to save global settings"))
 	}
 
-	categories, err := buildPropertyCategories(config)
+	categories, err := buildPropertyCategories(config, nil)
 	if err != nil {
 		s.log.Error("Failed to build config categories: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to format properties"))
@@ -228,7 +228,16 @@ func propertyValueByKey(config proto.Message, key string) string {
 	return value
 }
 
-func buildPropertyCategories(config proto.Message) ([]*v1.PropertyCategory, error) {
+// Reads live file values for unmanaged default display
+func serverFileProps(server *v1.Server) minecraft.PropertiesFile {
+	props, err := minecraft.LoadPropertiesFile(server.DataPath)
+	if err != nil {
+		return nil
+	}
+	return props
+}
+
+func buildPropertyCategories(config proto.Message, fileProps minecraft.PropertiesFile) ([]*v1.PropertyCategory, error) {
 	m := config.ProtoReflect()
 	declared := protometa.Categories(m.Descriptor())
 	categories := make([]*v1.PropertyCategory, len(declared))
@@ -245,7 +254,7 @@ func buildPropertyCategories(config proto.Message) ([]*v1.PropertyCategory, erro
 		}
 
 		key := p.Field.JSONName()
-		value, _ := protometa.ScalarString(m, p.Field)
+		value, set := protometa.ScalarString(m, p.Field)
 
 		env := p.Meta.Env
 		if env == "" {
@@ -273,6 +282,13 @@ func buildPropertyCategories(config proto.Message) ([]*v1.PropertyCategory, erro
 		if p.Meta.DefaultValue != "" {
 			def := p.Meta.DefaultValue
 			prop.DefaultValue = &def
+		}
+
+		// Unmanaged keys show their current file value instead
+		if !set && p.Meta.Prop != "" {
+			if current, ok := fileProps[p.Meta.Prop]; ok {
+				prop.DefaultValue = &current
+			}
 		}
 
 		if p.Meta.Input == "select" {

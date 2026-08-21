@@ -13,6 +13,7 @@ import (
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/minecraft"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/protometa"
 	"github.com/discohaus/discopanel/pkg/runtimespec"
 	"github.com/go-viper/mapstructure/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -335,6 +336,7 @@ func (s *Store) CreateDefaultServerProperties(serverID string) *v1.ServerPropert
 
 	// Skip global settings lookup when creating global settings
 	if serverID == GlobalSettingsID {
+		seedAnnotationDefaults(config)
 		return config
 	}
 
@@ -367,6 +369,20 @@ func (s *Store) CreateDefaultServerProperties(serverID string) *v1.ServerPropert
 	}
 
 	return config
+}
+
+// Fills unset fields from proto default value annotations
+func seedAnnotationDefaults(config *v1.ServerProperties) {
+	m := config.ProtoReflect()
+	for _, p := range protometa.Props(m.Descriptor()) {
+		if p.Meta.DefaultValue == "" || p.Meta.Ephemeral {
+			continue
+		}
+		if m.Has(p.Field) {
+			continue
+		}
+		_ = protometa.SetScalarString(m, p.Field, p.Meta.DefaultValue)
+	}
 }
 
 // Server ids are public so the secret must be random

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -246,11 +247,24 @@ func (p *Provisioner) installFromMrpackIndex(ctx context.Context, server *v1.Ser
 	forceIncludes := packForceIncludes(cfg)
 
 	// Resolves wanted files, then downloads concurrently, bounded
+	// Client flagged mods still download, the sweep decides
 	var pending []mrpackFile
+	var packFlagged []string
 	total := 0
 	for _, file := range index.Files {
-		if !p.mrpackFileWanted(server, file, excludes, forceIncludes) {
+		wanted, clientReason := mrpackFileWanted(file, excludes, forceIncludes)
+		if !wanted {
+			p.progress(server, "skipping excluded file %s", file.Path)
 			continue
+		}
+		if clientReason != "" {
+			rel := path.Clean(filepath.ToSlash(file.Path))
+			// Non-mod client files cannot be loader deps
+			if !strings.HasPrefix(rel, "mods/") {
+				p.progress(server, "skipping %s %s", clientReason, file.Path)
+				continue
+			}
+			packFlagged = append(packFlagged, strings.ToLower(filepath.Base(file.Path)))
 		}
 		total++
 		if len(file.Downloads) == 0 {
@@ -302,33 +316,33 @@ func (p *Provisioner) installFromMrpackIndex(ctx context.Context, server *v1.Ser
 		}
 	}
 
+	p.disableClientOnlyMods(ctx, server, forceIncludes, packFlagged)
+
 	return p.installPackRuntime(ctx, server, cfg, mrpackEvidence(index))
 }
 
-// Applies env.server and user include/exclude rules
-func (p *Provisioner) mrpackFileWanted(server *v1.Server, file mrpackFile, excludes, forceIncludes []string) bool {
+// Applies env.server and user include exclude rules
+// Client heuristics flag for the sweep instead of skipping
+func mrpackFileWanted(file mrpackFile, excludes, forceIncludes []string) (bool, string) {
 	name := strings.ToLower(filepath.Base(file.Path))
 	for _, pattern := range forceIncludes {
 		if strings.Contains(name, pattern) {
-			return true
+			return true, ""
 		}
 	}
 	for _, pattern := range excludes {
 		if strings.Contains(name, pattern) {
-			p.progress(server, "skipping excluded file %s", file.Path)
-			return false
+			return false, ""
 		}
 	}
-	// Known client jars skip even without env metadata
+	// Known client jars flag even without env metadata
 	if defaultClientFile(name) {
-		p.progress(server, "skipping known client-only file %s", file.Path)
-		return false
+		return true, "known client-only file"
 	}
 	if file.Env != nil && file.Env.Server == "unsupported" {
-		p.progress(server, "skipping client-only file %s", file.Path)
-		return false
+		return true, "client-only file"
 	}
-	return true
+	return true, ""
 }
 
 // Mrpack dependency keys and the loaders they pin

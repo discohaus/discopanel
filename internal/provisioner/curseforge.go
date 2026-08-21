@@ -294,14 +294,14 @@ func (p *Provisioner) installFromCFManifest(ctx context.Context, server *v1.Serv
 	}
 
 	// Resolve wanted files up front then download concurrently
+	// Client flagged mods still download, the sweep decides
 	type cfDownload struct {
 		projectID int
-		fileID    int
 		file      fuego.File
-		mod       fuego.Modpack
 		dest      string
 	}
 	var pending []cfDownload
+	var packFlagged []string
 	total := 0
 	for _, entry := range manifest.Files {
 		file, ok := files[entry.FileID]
@@ -310,20 +310,29 @@ func (p *Provisioner) installFromCFManifest(ctx context.Context, server *v1.Serv
 		}
 		mod := mods[entry.ProjectID]
 
-		if !p.cfFileWanted(server, &file, &mod, entry.ProjectID, excludes, forceIncludes) {
+		wanted, clientReason := cfFileWanted(&file, &mod, entry.ProjectID, excludes, forceIncludes)
+		if !wanted {
+			p.progress(server, "skipping excluded mod %s", file.FileName)
 			continue
+		}
+		classDir := cfClassDir(mod.ClassID)
+		if clientReason != "" {
+			// Non-mod client files cannot be loader deps
+			if classDir != "mods" {
+				p.progress(server, "skipping %s %s", clientReason, file.FileName)
+				continue
+			}
+			packFlagged = append(packFlagged, strings.ToLower(file.FileName))
 		}
 		total++
 
-		dest := joinData(server.DataPath, filepath.Join(cfClassDir(mod.ClassID), file.FileName))
+		dest := joinData(server.DataPath, filepath.Join(classDir, file.FileName))
 		if fileExists(dest) && !force {
 			continue
 		}
 		pending = append(pending, cfDownload{
 			projectID: entry.ProjectID,
-			fileID:    entry.FileID,
 			file:      file,
-			mod:       mod,
 			dest:      dest,
 		})
 	}
@@ -360,39 +369,39 @@ func (p *Provisioner) installFromCFManifest(ctx context.Context, server *v1.Serv
 		p.progress(server, "mod downloads complete (%d/%d)", done.Load(), total)
 	}
 
+	p.disableClientOnlyMods(ctx, server, forceIncludes, packFlagged)
+
 	return p.installPackRuntime(ctx, server, cfg, cfManifestEvidence(manifest))
 }
 
 // Applies exclude and include rules plus client-only heuristic
-func (p *Provisioner) cfFileWanted(server *v1.Server, file *fuego.File, mod *fuego.Modpack, projectID int, excludes, forceIncludes []string) bool {
+// Client heuristics flag for the sweep instead of skipping
+func cfFileWanted(file *fuego.File, mod *fuego.Modpack, projectID int, excludes, forceIncludes []string) (bool, string) {
 	idStr := strconv.Itoa(projectID)
 	slug := strings.ToLower(mod.Slug)
 	fileName := strings.ToLower(file.FileName)
 
 	if slices.Contains(forceIncludes, idStr) || (slug != "" && slices.Contains(forceIncludes, slug)) ||
 		(fileName != "" && slices.Contains(forceIncludes, fileName)) {
-		return true
+		return true, ""
 	}
 	if slices.Contains(excludes, idStr) || (slug != "" && slices.Contains(excludes, slug)) ||
 		(fileName != "" && slices.Contains(excludes, fileName)) {
-		p.progress(server, "skipping excluded mod %s", file.FileName)
-		return false
+		return false, ""
 	}
 
-	// Known client mods skip even without API environment flags
+	// Known client mods flag even without API environment flags
 	if defaultClientSlug(slug) || defaultClientFile(fileName) {
-		p.progress(server, "skipping known client-only mod %s", file.FileName)
-		return false
+		return true, "known client-only mod"
 	}
 
 	// CurseForge marks environment support inside gameVersions
 	hasClient := slices.Contains(file.GameVersions, "Client")
 	hasServer := slices.Contains(file.GameVersions, "Server")
 	if hasClient && !hasServer {
-		p.progress(server, "skipping client-only mod %s", file.FileName)
-		return false
+		return true, "client-only mod"
 	}
-	return true
+	return true, ""
 }
 
 // Maps a CurseForge class to its install directory
