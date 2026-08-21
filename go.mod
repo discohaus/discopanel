@@ -1,6 +1,6 @@
 module github.com/discohaus/discopanel
 
-go 1.27.0
+go 1.26.6
 
 tool github.com/nickheyer/protogorm/cmd/protogorm
 

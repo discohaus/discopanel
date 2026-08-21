@@ -4,7 +4,7 @@ ARG APP_VERSION=dev
 ARG BUILDPLATFORM=linux/amd64
 
 # Generates proto code in-image matching make proto exactly
-FROM --platform=$BUILDPLATFORM golang:1.27.0-alpine AS proto-builder
+FROM --platform=$BUILDPLATFORM golang:alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS proto-builder
 
 COPY --from=bufbuild/buf:latest /usr/local/bin/buf /usr/local/bin/buf
 
@@ -35,7 +35,7 @@ COPY --from=proto-builder /app/web/discopanel/static/schemav1.yaml ./static/
 
 RUN npm run build
 
-FROM golang:1.27.0-alpine AS backend-builder
+FROM golang:alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS backend-builder
 
 ARG APP_VERSION
 ENV APP_VERSION=${APP_VERSION}
