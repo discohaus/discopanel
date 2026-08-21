@@ -77,7 +77,7 @@
 	const VIEWS = [
 		{ key: 'browse', label: 'Browse', desc: 'Browse and install modpacks for your servers' },
 		{ key: 'favorites', label: 'Favorites', desc: 'Modpacks you starred' },
-		{ key: 'uploaded', label: 'Uploaded', desc: 'Modpack ZIPs hosted on this panel' }
+		{ key: 'uploaded', label: 'Uploaded', desc: 'Modpack archives hosted on this panel' }
 	] as const;
 
 	let fuegoBlocked = $derived(
@@ -289,8 +289,8 @@
 		if (!files || files.length === 0) return;
 
 		const file = files[0];
-		if (!file.name.endsWith('.zip')) {
-			notify.error('Please select a valid modpack ZIP file');
+		if (!file.name.endsWith('.zip') && !file.name.endsWith('.mrpack')) {
+			notify.error('Please select a valid modpack archive (.zip or .mrpack)');
 			return;
 		}
 
@@ -311,7 +311,7 @@
 
 			const result = await rpcClient.modpack.importUploadedModpack({
 				uploadSessionId: uploadResult.sessionId,
-				name: file.name.replace(/\.zip$/i, ''),
+				name: file.name.replace(/\.(zip|mrpack)$/i, ''),
 				description: ''
 			});
 
@@ -521,7 +521,7 @@
 			<input
 				bind:this={fileInput}
 				type="file"
-				accept=".zip"
+				accept=".zip,.mrpack"
 				onchange={handleModpackUpload}
 				class="hidden"
 			/>
@@ -707,7 +707,7 @@
 						<EmptyState
 							icon={Upload}
 							title="No uploaded modpacks"
-							description="Upload a modpack ZIP to host it here."
+							description="Upload a modpack archive (.zip or .mrpack) to host it here."
 						>
 							<Button
 								variant="outline"

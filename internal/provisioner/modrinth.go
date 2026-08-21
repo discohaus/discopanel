@@ -1,3 +1,4 @@
+// Modrinth pack acquisition and mrpack format install
 package provisioner
 
 import (
@@ -5,9 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -15,7 +14,6 @@ import (
 	"github.com/discohaus/discopanel/pkg/indexers/modrinth"
 	"github.com/discohaus/discopanel/pkg/minecraft"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
-	"github.com/discohaus/discopanel/pkg/runtimespec"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -24,6 +22,7 @@ type mrpackIndex struct {
 	FormatVersion int               `json:"formatVersion"`
 	VersionID     string            `json:"versionId"`
 	Name          string            `json:"name"`
+	Summary       string            `json:"summary"`
 	Dependencies  map[string]string `json:"dependencies"`
 	Files         []mrpackFile      `json:"files"`
 }
@@ -39,8 +38,8 @@ type mrpackFile struct {
 	} `json:"env"`
 }
 
-// Downloads a Modrinth modpack and installs its loader
-func (p *Provisioner) installModrinthPack(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, desired *desiredModpack, force bool) (*Result, error) {
+// Resolves a Modrinth pack into ordered archive candidates
+func resolveModrinthPayloads(p *Provisioner, ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, desired *desiredModpack) ([]packPayload, error) {
 	client := modrinth.NewClient(p.cfg.Server.UserAgent)
 
 	version, err := p.resolveModrinthVersion(ctx, client, cfg, desired)
@@ -49,24 +48,65 @@ func (p *Provisioner) installModrinthPack(ctx context.Context, server *v1.Server
 	}
 	desired.versionID = version.ID
 
-	// Pick the primary file (packs may ship auxiliary non-primary files)
-	packFile := primaryFile(version)
-	if packFile == nil {
+	files := orderedPackFiles(version)
+	if len(files) == 0 {
 		return nil, fmt.Errorf("Modrinth version %s has no files", version.ID)
 	}
 
-	p.progress(server, "downloading modpack %s (%s)...", desired.id, version.VersionNumber)
-	packPath := filepath.Join(installerDir(server.DataPath), "modpack.mrpack")
-	if err := p.download(ctx, packFile.URL, packPath, mrChecksum(packFile.Hashes), nil, p.reporter(server, packFile.Filename)); err != nil {
-		return nil, err
+	var payloads []packPayload
+	for _, file := range files {
+		payloads = append(payloads, packPayload{
+			label: file.Filename,
+			fetch: func(ctx context.Context) (string, error) {
+				p.progress(server, "downloading modpack %s (%s)...", desired.id, file.Filename)
+				dest := stagedArchivePath(server.DataPath, file.Filename)
+				if err := p.download(ctx, file.URL, dest, mrChecksum(file.Hashes), nil, p.reporter(server, file.Filename)); err != nil {
+					return "", err
+				}
+				return dest, nil
+			},
+		})
 	}
+	return payloads, nil
+}
 
-	index, err := p.installMrpack(ctx, server, cfg, packPath, force)
-	if err != nil {
-		return nil, err
+// Orders version files, primary first then server archives
+func orderedPackFiles(version *modrinth.Version) []modrinth.File {
+	var out []modrinth.File
+	seen := map[string]bool{}
+	add := func(f modrinth.File) {
+		if f.URL == "" || seen[f.URL] {
+			return
+		}
+		seen[f.URL] = true
+		out = append(out, f)
 	}
+	if primary := primaryFile(version); primary != nil && isArchiveFile(primary.Filename) {
+		add(*primary)
+	}
+	for _, f := range version.Files {
+		if isArchiveFile(f.Filename) && strings.Contains(strings.ToLower(f.Filename), "server") {
+			add(f)
+		}
+	}
+	for _, f := range version.Files {
+		if isArchiveFile(f.Filename) {
+			add(f)
+		}
+	}
+	// Nothing archive shaped, the primary file still gets a try
+	if len(out) == 0 {
+		if primary := primaryFile(version); primary != nil {
+			add(*primary)
+		}
+	}
+	return out
+}
 
-	return p.installPackLoader(ctx, server, cfg, index, force)
+// Reports whether a file name looks like a pack archive
+func isArchiveFile(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.HasSuffix(lower, ".zip") || strings.HasSuffix(lower, ".mrpack")
 }
 
 // Picks the pack version to install
@@ -153,37 +193,57 @@ func versionTypesOf(versions []modrinth.Version) []string {
 	return out
 }
 
-// Extracts mrpack, downloads files then applies overrides
-func (p *Provisioner) installMrpack(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, packPath string, force bool) (*mrpackIndex, error) {
-	reader, err := zip.OpenReader(packPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open mrpack: %w", err)
-	}
-	defer reader.Close()
-
-	var index *mrpackIndex
+// Finds modrinth.index.json at zip root or one dir deep
+func readMrpackIndex(reader *zip.Reader) (*mrpackIndex, string) {
 	for _, f := range reader.File {
-		if f.Name == "modrinth.index.json" {
-			rc, err := f.Open()
-			if err != nil {
-				return nil, err
-			}
-			err = json.NewDecoder(rc).Decode(&index)
-			rc.Close()
-			if err != nil {
-				return nil, fmt.Errorf("invalid modrinth.index.json: %w", err)
-			}
-			break
+		name := f.Name
+		prefix := ""
+		if idx := strings.Index(name, "/"); idx >= 0 && strings.Count(name, "/") == 1 {
+			prefix = name[:idx+1]
+			name = name[idx+1:]
+		}
+		if name != "modrinth.index.json" {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			continue
+		}
+		var index mrpackIndex
+		err = json.NewDecoder(rc).Decode(&index)
+		rc.Close()
+		if err == nil {
+			return &index, prefix
 		}
 	}
-	if index == nil {
-		return nil, fmt.Errorf("mrpack has no modrinth.index.json")
-	}
+	return nil, ""
+}
 
-	// Doctor holds stay out until it re-enables them
-	excludes := append(minecraft.SplitPatterns(strVal(cfg.ModrinthExcludeFiles)), runtimespec.DoctorExcludes(server.DataPath)...)
-	excludes = append(excludes, runtimespec.IncidentHeldFiles(server.DataPath)...)
-	forceIncludes := minecraft.SplitPatterns(strVal(cfg.ModrinthForceIncludeFiles))
+// Loader facts a Modrinth index declares
+func mrpackEvidence(index *mrpackIndex) packEvidence {
+	ev := packEvidence{mcVersion: index.Dependencies["minecraft"]}
+	for _, entry := range mrpackLoaderKeys {
+		if version := index.Dependencies[entry.key]; version != "" {
+			ev.loaderID = entry.key + "-" + version
+			ev.loader = entry.loader
+			ev.loaderVersion = version
+			return ev
+		}
+	}
+	// Unknown dependency keys still name themselves in errors
+	for key, version := range index.Dependencies {
+		if key != "minecraft" {
+			ev.loaderID = key + "-" + version
+		}
+	}
+	return ev
+}
+
+// Downloads index files, applies overrides, provisions the runtime
+func (p *Provisioner) installFromMrpackIndex(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, reader *zip.ReadCloser, index *mrpackIndex, prefix string, opts packInstallOpts) (*Result, error) {
+	force := opts.force
+	excludes := p.packRuleExcludes(server, cfg, opts)
+	forceIncludes := packForceIncludes(cfg)
 
 	// Resolves wanted files, then downloads concurrently, bounded
 	var pending []mrpackFile
@@ -236,13 +296,13 @@ func (p *Provisioner) installMrpack(ctx context.Context, server *v1.Server, cfg 
 	}
 
 	// Apply overrides then server-overrides on top
-	for _, prefix := range []string{"overrides/", "server-overrides/"} {
-		if err := p.extractZipPrefix(reader, prefix, server.DataPath, !force, excludes); err != nil {
-			return nil, fmt.Errorf("failed to apply %s: %w", strings.TrimSuffix(prefix, "/"), err)
+	for _, dir := range []string{"overrides/", "server-overrides/"} {
+		if err := p.extractZipPrefix(reader, prefix+dir, server.DataPath, !force, excludes); err != nil {
+			return nil, fmt.Errorf("failed to apply %s: %w", strings.TrimSuffix(dir, "/"), err)
 		}
 	}
 
-	return index, nil
+	return p.installPackRuntime(ctx, server, cfg, mrpackEvidence(index))
 }
 
 // Applies env.server and user include/exclude rules
@@ -271,49 +331,6 @@ func (p *Provisioner) mrpackFileWanted(server *v1.Server, file mrpackFile, exclu
 	return true
 }
 
-// Extracts entries under prefix from an open zip into destDir
-func (p *Provisioner) extractZipPrefix(reader *zip.ReadCloser, prefix, destDir string, skipExisting bool, excludes []string) error {
-	for _, f := range reader.File {
-		if !strings.HasPrefix(f.Name, prefix) || f.Name == prefix {
-			continue
-		}
-		rel := strings.TrimPrefix(f.Name, prefix)
-		if !f.FileInfo().IsDir() && minecraft.MatchesPatterns(path.Base(f.Name), excludes) {
-			continue
-		}
-		target := joinData(destDir, rel)
-
-		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(target, 0755); err != nil {
-				return err
-			}
-			continue
-		}
-		if skipExisting && fileExists(target) {
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			return err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return err
-		}
-		out, err := os.Create(target)
-		if err != nil {
-			rc.Close()
-			return err
-		}
-		_, err = io.Copy(out, rc)
-		rc.Close()
-		out.Close()
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // Mrpack dependency keys and the loaders they pin
 var mrpackLoaderKeys = []struct {
 	key    string
@@ -323,16 +340,6 @@ var mrpackLoaderKeys = []struct {
 	{"quilt-loader", v1.ModLoader_MOD_LOADER_QUILT},
 	{"forge", v1.ModLoader_MOD_LOADER_FORGE},
 	{"neoforge", v1.ModLoader_MOD_LOADER_NEOFORGE},
-}
-
-// Installs the mod loader a pack's index depends on
-func (p *Provisioner) installPackLoader(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, index *mrpackIndex, force bool) (*Result, error) {
-	for _, entry := range mrpackLoaderKeys {
-		if version := index.Dependencies[entry.key]; version != "" {
-			return p.installLoaderForPack(ctx, server, cfg, entry.loader, version, index.Dependencies["minecraft"])
-		}
-	}
-	return nil, fmt.Errorf("modpack declares no supported loader (dependencies: %v)", index.Dependencies)
 }
 
 // Remembers what a project resolved to on a past boot

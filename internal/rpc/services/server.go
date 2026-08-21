@@ -29,6 +29,7 @@ import (
 	"github.com/discohaus/discopanel/pkg/indexers"
 	"github.com/discohaus/discopanel/pkg/logger"
 	"github.com/discohaus/discopanel/pkg/minecraft"
+	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
 	"github.com/discohaus/discopanel/pkg/protometa"
@@ -312,7 +313,7 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 		}
 
 		// Override mod loader based on the pack platform
-		loader, ok := minecraft.LoaderForPackSource(indexers.PackSourceFor(modpack.Indexer))
+		loader, ok := modpackPlatformLoader(ctx, s.store, modpack)
 		if !ok {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unsupported modpack indexer %q", modpack.Indexer))
 		}
@@ -433,26 +434,26 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 	serverDataPath := filepath.Join(s.config.Storage.DataDir, "servers", serverDataDir)
 
 	server := &v1.Server{
-		Id:                serverUUID,
-		Name:              msg.Name,
-		Description:       msg.Description,
-		ModLoader:         modLoader,
-		McVersion:         msg.McVersion,
-		Status:            v1.ServerStatus_SERVER_STATUS_CREATING,
-		Port:              int32(port),
-		ProxyHostnames:    proxyHostnames,
-		ProxyListenerId:   proxyListenerID,
-		MaxPlayers:        msg.MaxPlayers,
-		Memory:            msg.Memory,
-		MemoryMin:         msg.MemoryMin,
-		MemoryMax:         msg.MemoryMax,
-		DataPath:          serverDataPath,
-		JavaVersion:       docker.GetRequiredJavaVersion(msg.McVersion, modLoader),
-		DockerImage:       dockerImage,
-		AutoStart:         msg.AutoStart,
-		Detached:          msg.Detached,
-		AdditionalPorts:   additionalPorts,
-		DockerOverrides:   msg.DockerOverrides,
+		Id:              serverUUID,
+		Name:            msg.Name,
+		Description:     msg.Description,
+		ModLoader:       modLoader,
+		McVersion:       msg.McVersion,
+		Status:          v1.ServerStatus_SERVER_STATUS_CREATING,
+		Port:            int32(port),
+		ProxyHostnames:  proxyHostnames,
+		ProxyListenerId: proxyListenerID,
+		MaxPlayers:      msg.MaxPlayers,
+		Memory:          msg.Memory,
+		MemoryMin:       msg.MemoryMin,
+		MemoryMax:       msg.MemoryMax,
+		DataPath:        serverDataPath,
+		JavaVersion:     docker.GetRequiredJavaVersion(msg.McVersion, modLoader),
+		DockerImage:     dockerImage,
+		AutoStart:       msg.AutoStart,
+		Detached:        msg.Detached,
+		AdditionalPorts: additionalPorts,
+		DockerOverrides: msg.DockerOverrides,
 	}
 
 	// Set defaults
@@ -752,49 +753,82 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 
 // Points server loader and properties at the selected modpack
 func (s *ServerService) applyModpackSelection(ctx context.Context, server *v1.Server, serverConfig *v1.ServerProperties, modpack *v1.IndexedModpack, versionID string) error {
-	loader, ok := minecraft.LoaderForPackSource(indexers.PackSourceFor(modpack.Indexer))
+	loader, ok := modpackPlatformLoader(ctx, s.store, modpack)
 	if !ok {
 		return fmt.Errorf("unsupported modpack indexer %q", modpack.Indexer)
 	}
 	server.ModLoader = loader
 
-	switch modpack.Indexer {
-	case indexers.ManualIndexer:
-		packFiles, err := s.store.GetIndexedModpackFiles(ctx, modpack.Id)
-		if err != nil || len(packFiles) == 0 {
-			return fmt.Errorf("uploaded modpack has no archive")
+	// Stale identities from earlier selections must not linger
+	clearPackSelection(serverConfig)
+
+	pinned := versionID != "" && versionID != "latest"
+	switch indexers.PackSourceFor(modpack.Indexer) {
+	case optionsv1.PackSource_PACK_SOURCE_ZIP:
+		staged, err := s.stageManualModpack(ctx, server, modpack)
+		if err != nil {
+			return err
 		}
-		if err := files.CopyFile(packFiles[0].DownloadUrl, filepath.Join(server.DataPath, "modpack.zip")); err != nil {
-			return fmt.Errorf("failed to stage modpack archive: %w", err)
+		serverConfig.CfModpackZip = &staged
+	case optionsv1.PackSource_PACK_SOURCE_CURSEFORGE:
+		slug := modpack.Slug
+		serverConfig.CfSlug = &slug
+		if pinned {
+			fileID := versionID
+			serverConfig.CfFileId = &fileID
 		}
-		cfModpackZip := "/data/modpack.zip"
-		serverConfig.CfModpackZip = &cfModpackZip
-		cfSlug := "manual-" + modpack.Id
-		serverConfig.CfSlug = &cfSlug
-	case "fuego":
-		pageURL := modpack.WebsiteUrl
-		if versionID != "" && versionID != "latest" {
-			pageURL = fmt.Sprintf("%s/files/%s", modpack.WebsiteUrl, versionID)
-		}
-		serverConfig.CfPageUrl = &pageURL
-	case "modrinth":
-		projectSpec := modpack.IndexerId
-		if versionID != "" && versionID != "latest" {
-			projectSpec = fmt.Sprintf("%s:%s", modpack.IndexerId, versionID)
-		}
-		serverConfig.ModrinthModpack = &projectSpec
-		downloadDeps := "required"
-		serverConfig.ModrinthDownloadDependencies = &downloadDeps
-		if versionID == "" || versionID == "latest" {
+	case optionsv1.PackSource_PACK_SOURCE_MODRINTH:
+		project := modpack.IndexerId
+		serverConfig.ModrinthModpack = &project
+		if pinned {
+			pin := versionID
+			serverConfig.ModrinthVersion = &pin
+		} else {
 			versionType := "release"
 			serverConfig.ModrinthModpackVersionType = &versionType
 		}
+		downloadDeps := "required"
+		serverConfig.ModrinthDownloadDependencies = &downloadDeps
+	default:
+		return fmt.Errorf("unsupported modpack indexer %q", modpack.Indexer)
 	}
 
 	// Pack art becomes the server icon like an upload would
 	s.adoptModpackIcon(ctx, server, modpack)
 	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_MODPACK_SELECT, metrics.Attrs{"modpack": modpack.Name}, "selected modpack %s", modpack.Name)
 	return nil
+}
+
+// Clears pack identity properties from earlier selections
+func clearPackSelection(cfg *v1.ServerProperties) {
+	cfg.CfPageUrl = nil
+	cfg.CfSlug = nil
+	cfg.CfFileId = nil
+	cfg.CfModpackZip = nil
+	cfg.ModrinthModpack = nil
+	cfg.ModrinthVersion = nil
+}
+
+// Stages an uploaded pack archive into the data dir
+func (s *ServerService) stageManualModpack(ctx context.Context, server *v1.Server, modpack *v1.IndexedModpack) (string, error) {
+	packFiles, err := s.store.GetIndexedModpackFiles(ctx, modpack.Id)
+	if err != nil || len(packFiles) == 0 {
+		return "", fmt.Errorf("uploaded modpack has no archive")
+	}
+	src := packFiles[0].DownloadUrl
+	ext := filepath.Ext(src)
+	if ext == "" {
+		ext = ".zip"
+	}
+	// Unique names keep pack change detection honest
+	staged := fmt.Sprintf("modpack-%s%s", modpack.Id, ext)
+	if err := os.MkdirAll(server.DataPath, 0755); err != nil {
+		return "", fmt.Errorf("failed to create server data dir: %w", err)
+	}
+	if err := files.CopyFile(src, filepath.Join(server.DataPath, staged)); err != nil {
+		return "", fmt.Errorf("failed to stage modpack archive: %w", err)
+	}
+	return "/data/" + staged, nil
 }
 
 // Rebuilds the container after config changes, restarts if running

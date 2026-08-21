@@ -54,7 +54,7 @@ func LastActivity(inc *v1.DoctorIncident) *timestamppb.Timestamp {
 	return last
 }
 
-// Jars an open incident disabled, still on trial
+// Files an open incident holds, still on trial
 func IncidentHeldFiles(dataPath string) []string {
 	j := LoadDoctor(dataPath)
 	if j.Incident == nil {
@@ -62,8 +62,14 @@ func IncidentHeldFiles(dataPath string) []string {
 	}
 	var files []string
 	for _, a := range j.Incident.Actions {
-		if a.Kind == v1.DoctorActionKind_DOCTOR_ACTION_KIND_DISABLE && !a.Reverted {
+		if a.Reverted || a.File == "" {
+			continue
+		}
+		switch a.Kind {
+		case v1.DoctorActionKind_DOCTOR_ACTION_KIND_DISABLE:
 			files = append(files, a.File)
+		case v1.DoctorActionKind_DOCTOR_ACTION_KIND_DISABLE_PACK:
+			files = append(files, filepath.Base(a.File))
 		}
 	}
 	return files

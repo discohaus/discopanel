@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -13,7 +15,6 @@ import (
 
 	"github.com/discohaus/discopanel/pkg/minecraft"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
-	"github.com/discohaus/discopanel/pkg/runtimespec"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -68,22 +69,48 @@ func ftbInstallerRef(reader *zip.Reader) (int, int, bool) {
 		if err != nil {
 			continue
 		}
-		content := strings.ToLower(string(data))
-		if !strings.Contains(content, "ftb") {
-			continue
-		}
-		packMatch := ftbPackIDRe.FindStringSubmatch(content)
-		versionMatch := ftbVersionIDRe.FindStringSubmatch(content)
-		if packMatch == nil || versionMatch == nil {
-			continue
-		}
-		packID, _ := strconv.Atoi(packMatch[1])
-		versionID, _ := strconv.Atoi(versionMatch[1])
-		if packID > 0 && versionID > 0 {
+		if packID, versionID, ok := ftbStubIDs(string(data)); ok {
 			return packID, versionID, true
 		}
 	}
 	return 0, 0, false
+}
+
+// Reads FTB installer stub ids from the data dir
+func ftbInstallerRefDir(dataPath string) (int, int, bool) {
+	for _, name := range []string{"install.sh", "install.bat"} {
+		info, err := os.Stat(filepath.Join(dataPath, name))
+		if err != nil || info.Size() > 1<<20 {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dataPath, name))
+		if err != nil {
+			continue
+		}
+		if packID, versionID, ok := ftbStubIDs(string(data)); ok {
+			return packID, versionID, true
+		}
+	}
+	return 0, 0, false
+}
+
+// Matches FTB ids inside installer script content
+func ftbStubIDs(content string) (int, int, bool) {
+	content = strings.ToLower(content)
+	if !strings.Contains(content, "ftb") {
+		return 0, 0, false
+	}
+	packMatch := ftbPackIDRe.FindStringSubmatch(content)
+	versionMatch := ftbVersionIDRe.FindStringSubmatch(content)
+	if packMatch == nil || versionMatch == nil {
+		return 0, 0, false
+	}
+	packID, _ := strconv.Atoi(packMatch[1])
+	versionID, _ := strconv.Atoi(versionMatch[1])
+	if packID <= 0 || versionID <= 0 {
+		return 0, 0, false
+	}
+	return packID, versionID, true
 }
 
 // Installs server files straight from the FTB api
@@ -97,12 +124,8 @@ func (p *Provisioner) installFTBPack(ctx context.Context, server *v1.Server, cfg
 		return nil, fmt.Errorf("FTB api rejected pack %d version %d: %s", packID, versionID, manifest.Message)
 	}
 
-	excludes := minecraft.SplitPatterns(strVal(cfg.CfExcludeMods))
-	// Doctor holds stay out until it re-enables them
-	for _, held := range append(runtimespec.DoctorExcludes(server.DataPath), runtimespec.IncidentHeldFiles(server.DataPath)...) {
-		excludes = append(excludes, strings.ToLower(held))
-	}
-	forceIncludes := minecraft.SplitPatterns(strVal(cfg.CfForceIncludeMods))
+	excludes := p.packExcludes(server, cfg)
+	forceIncludes := packForceIncludes(cfg)
 
 	// Resolves wanted files, then downloads concurrently, bounded
 	var pending []ftbFile
@@ -156,28 +179,28 @@ func (p *Provisioner) installFTBPack(ctx context.Context, server *v1.Server, cfg
 		p.progress(server, "pack downloads complete (%d/%d)", done.Load(), total)
 	}
 
-	// Pack targets name the loader and game version
-	mcVersion := server.McVersion
-	loaderID := ""
+	// Adopted pack version keeps the server row coherent
+	ev := ftbEvidence(&manifest)
+	p.adoptMCVersion(ctx, server, ev.mcVersion)
+	return p.installPackRuntime(ctx, server, cfg, ev)
+}
+
+// Loader facts an FTB manifest declares
+func ftbEvidence(manifest *ftbVersionManifest) packEvidence {
+	ev := packEvidence{}
 	for _, t := range manifest.Targets {
 		switch t.Type {
 		case "game":
-			mcVersion = t.Version
+			ev.mcVersion = t.Version
 		case "modloader":
-			loaderID = t.Name + "-" + t.Version
+			ev.loaderID = t.Name + "-" + t.Version
 		}
 	}
-	if loaderID == "" {
-		return nil, fmt.Errorf("FTB manifest for pack %d declares no mod loader", packID)
+	if loader, version, ok := minecraft.CutPackLoaderID(ev.loaderID); ok {
+		ev.loader = loader
+		ev.loaderVersion = version
 	}
-	loader, version, ok := minecraft.CutPackLoaderID(loaderID)
-	if !ok {
-		return nil, fmt.Errorf("FTB manifest declares unknown loader %q", loaderID)
-	}
-	if _, ok := packLoaderInstallers[loader]; !ok {
-		return nil, fmt.Errorf("FTB manifest declares unsupported loader %q", loaderID)
-	}
-	return p.installLoaderForPack(ctx, server, cfg, loader, version, mcVersion)
+	return ev
 }
 
 // Applies FTB side flags plus user include exclude rules

@@ -12,7 +12,6 @@ import (
 
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/minecraft"
-	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/runtimespec"
 	"github.com/go-viper/mapstructure/v2"
@@ -70,27 +69,18 @@ func (s *Store) HydrateProxyPorts(ctx context.Context, servers ...*v1.Server) er
 	return nil
 }
 
-// Splits the platform's force include list into patterns
-func ForceIncludePatterns(loader v1.ModLoader, cfg *v1.ServerProperties) []string {
+// Splits every platform force include list into patterns
+func ForceIncludePatterns(cfg *v1.ServerProperties) []string {
 	if cfg == nil {
 		return nil
 	}
-	field := platformField(minecraft.PackSourceFor(loader), cfg)
-	if field == nil || *field == nil {
-		return nil
+	var out []string
+	for _, field := range []*string{cfg.CfForceIncludeMods, cfg.ModrinthForceIncludeFiles} {
+		if field != nil {
+			out = append(out, minecraft.SplitPatterns(*field)...)
+		}
 	}
-	return minecraft.SplitPatterns(**field)
-}
-
-// Selects the platform's force include column
-func platformField(source optionsv1.PackSource, cfg *v1.ServerProperties) **string {
-	switch source {
-	case optionsv1.PackSource_PACK_SOURCE_CURSEFORGE:
-		return &cfg.CfForceIncludeMods
-	case optionsv1.PackSource_PACK_SOURCE_MODRINTH:
-		return &cfg.ModrinthForceIncludeFiles
-	}
-	return nil
+	return out
 }
 
 type Store struct {
@@ -434,10 +424,11 @@ func (s *Store) CheckModpackInUse(ctx context.Context, modpackID string) ([]*v1.
 	var servers []*v1.Server
 	var configs []*v1.ServerProperties
 
-	// Manual modpacks set CFSlug to manual plus the id
-	cfSlug := "manual-" + modpackID
+	// Staged archives carry the id, legacy rows used a slug
+	stagedZip := "/data/modpack-" + modpackID + ".%"
+	legacySlug := "manual-" + modpackID
 
-	if err := s.db.WithContext(ctx).Where("cf_slug = ?", cfSlug).Find(&configs).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("cf_modpack_zip LIKE ? OR cf_slug = ?", stagedZip, legacySlug).Find(&configs).Error; err != nil {
 		return nil, err
 	}
 

@@ -131,7 +131,7 @@ func LookupIndexer(name string) (IndexerInfo, bool) {
 // Pack source behind an indexed modpack row
 func PackSourceFor(indexer string) optionsv1.PackSource {
 	if indexer == ManualIndexer {
-		return optionsv1.PackSource_PACK_SOURCE_CURSEFORGE
+		return optionsv1.PackSource_PACK_SOURCE_ZIP
 	}
 	if info, ok := LookupIndexer(indexer); ok {
 		return info.PackSource

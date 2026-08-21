@@ -166,7 +166,7 @@ func (p *Provisioner) Ensure(ctx context.Context, server *v1.Server, cfg *v1.Ser
 
 	// Pack-managed mods get the client-only sweep every pass
 	if desired != nil {
-		p.disableClientOnlyMods(ctx, server, storage.ForceIncludePatterns(server.ModLoader, cfg))
+		p.disableClientOnlyMods(ctx, server, storage.ForceIncludePatterns(cfg))
 	}
 
 	// Config files are cheap and authoritative, always applied
@@ -254,18 +254,23 @@ func (p *Provisioner) snapshotWorld(server *v1.Server) {
 
 // Derives the modpack identity from server and config
 func (p *Provisioner) desiredModpackFor(server *v1.Server, cfg *v1.ServerProperties) *desiredModpack {
-	switch minecraft.PackSourceFor(server.ModLoader) {
+	source := minecraft.PackSourceFor(server.ModLoader)
+	if source == optionsv1.PackSource_PACK_SOURCE_UNSPECIFIED {
+		return nil
+	}
+	// Staged archives win on every pack platform
+	if v := strVal(cfg.CfModpackZip); v != "" {
+		return &desiredModpack{source: optionsv1.PackSource_PACK_SOURCE_ZIP, id: v}
+	}
+	switch source {
 	case optionsv1.PackSource_PACK_SOURCE_CURSEFORGE:
-		if v := strVal(cfg.CfModpackZip); v != "" {
-			return &desiredModpack{source: optionsv1.PackSource_PACK_SOURCE_ZIP, id: v}
-		}
 		slug, fileID := parseCurseForgeRef(strVal(cfg.CfPageUrl), strVal(cfg.CfSlug), strVal(cfg.CfFileId))
 		return &desiredModpack{source: optionsv1.PackSource_PACK_SOURCE_CURSEFORGE, id: slug, versionID: fileID}
 	case optionsv1.PackSource_PACK_SOURCE_MODRINTH:
 		project, version := parseModrinthRef(strVal(cfg.ModrinthModpack), strVal(cfg.ModrinthVersion))
 		return &desiredModpack{source: optionsv1.PackSource_PACK_SOURCE_MODRINTH, id: project, versionID: version}
 	default:
-		return nil
+		return &desiredModpack{source: source}
 	}
 }
 
@@ -298,13 +303,13 @@ var loaderInstallers = map[v1.ModLoader]installFunc{
 		return p.installPurpur(ctx, server)
 	},
 	v1.ModLoader_MOD_LOADER_AUTO_CURSEFORGE: func(p *Provisioner, ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, desired *desiredModpack, force bool) (*Result, error) {
-		return p.installCurseForgePack(ctx, server, cfg, desired, force)
+		return p.installPack(ctx, server, cfg, desired, force)
 	},
 	v1.ModLoader_MOD_LOADER_CURSEFORGE: func(p *Provisioner, ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, desired *desiredModpack, force bool) (*Result, error) {
-		return p.installCurseForgePack(ctx, server, cfg, desired, force)
+		return p.installPack(ctx, server, cfg, desired, force)
 	},
 	v1.ModLoader_MOD_LOADER_MODRINTH: func(p *Provisioner, ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, desired *desiredModpack, force bool) (*Result, error) {
-		return p.installModrinthPack(ctx, server, cfg, desired, force)
+		return p.installPack(ctx, server, cfg, desired, force)
 	},
 	v1.ModLoader_MOD_LOADER_CUSTOM: func(p *Provisioner, ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, desired *desiredModpack, force bool) (*Result, error) {
 		return p.installCustom(ctx, server, cfg)
@@ -363,6 +368,17 @@ func (p *Provisioner) install(ctx context.Context, server *v1.Server, cfg *v1.Se
 	// Loaders without a native installer still use custom-jar
 	if strVal(cfg.CustomServer) != "" || strVal(cfg.CustomJarExec) != "" {
 		return p.installCustom(ctx, server, cfg)
+	}
+	// Uploaded FTB server files testify their pack
+	if packID, versionID, ok := ftbInstallerRefDir(server.DataPath); ok {
+		p.progress(server, "found an FTB installer stub, using the FTB api...")
+		return p.installFTBPack(ctx, server, cfg, packID, versionID, force)
+	}
+	// User staged server files can still testify a launch
+	if spec := detectPackLaunch(server.DataPath); spec != nil {
+		p.progress(server, "found launchable server files for %s", protometa.Name(server.ModLoader))
+		p.adoptServerPackVersion(ctx, server, spec)
+		return p.finishLaunch(server, spec, server.ModLoader, "", server.McVersion)
 	}
 	return nil, fmt.Errorf(
 		"mod loader %q has no native DiscoPanel installer: upload your server files to the data directory and set the Custom Server JAR or Custom JAR Execution fields",

@@ -285,18 +285,85 @@ type mavenInterval struct {
 
 func (iv mavenInterval) contains(version string) bool {
 	if iv.low != "" {
-		c := CompareVersions(version, iv.low)
+		c := CompareMavenVersions(version, iv.low)
 		if c < 0 || (c == 0 && !iv.lowIncl) {
 			return false
 		}
 	}
 	if iv.high != "" {
-		c := CompareVersions(version, iv.high)
+		c := CompareMavenVersions(version, iv.high)
 		if c > 0 || (c == 0 && !iv.highIncl) {
 			return false
 		}
 	}
 	return true
+}
+
+// Orders versions like maven so forge range checks agree
+func CompareMavenVersions(a, b string) int {
+	as := versionSegments(strings.ToLower(a))
+	bs := versionSegments(strings.ToLower(b))
+	for i := 0; i < len(as) || i < len(bs); i++ {
+		av, bv := "", ""
+		if i < len(as) {
+			av = as[i]
+		}
+		if i < len(bs) {
+			bv = bs[i]
+		}
+		an, aErr := strconv.Atoi(av)
+		bn, bErr := strconv.Atoi(bv)
+		switch {
+		case aErr == nil && bErr == nil:
+			if an != bn {
+				return sign(an - bn)
+			}
+		case aErr == nil && bv != "":
+			// Numbers outrank every qualifier like maven
+			return 1
+		case bErr == nil && av != "":
+			return -1
+		case aErr == nil:
+			if an != 0 {
+				return 1
+			}
+		case bErr == nil:
+			if bn != 0 {
+				return -1
+			}
+		default:
+			ar, aq := mavenRanks(av)
+			br, bq := mavenRanks(bv)
+			if ar != br {
+				return sign(ar - br)
+			}
+			if c := strings.Compare(aq, bq); c != 0 {
+				return c
+			}
+		}
+	}
+	return 0
+}
+
+func mavenRanks(q string) (int, string) {
+	switch q {
+	case "alpha", "a":
+		return -5, ""
+	case "beta", "b":
+		return -4, ""
+	case "milestone", "m":
+		return -3, ""
+	case "rc", "cr":
+		return -2, ""
+	case "snapshot":
+		return -1, ""
+	case "", "ga", "final", "release":
+		return 0, ""
+	case "sp":
+		return 1, ""
+	}
+	// Unknown qualifiers compare lexically
+	return 2, q
 }
 
 func parseMavenIntervals(s string) ([]mavenInterval, bool) {

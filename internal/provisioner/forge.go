@@ -250,37 +250,6 @@ func (p *Provisioner) fetchChecksumSidecar(ctx context.Context, artifactURL, alg
 	return &checksum{algo: algo, value: value[0]}, nil
 }
 
-// Reads a pack start script for its loader version
-func detectServerPackLoader(dataPath, mc string) (v1.ModLoader, string) {
-	for _, name := range []string{"startserver.sh", "startserver.bat", "start.sh", "run.sh"} {
-		data, err := os.ReadFile(filepath.Join(dataPath, name))
-		if err != nil {
-			continue
-		}
-		s := string(data)
-		if v := scriptVar(s, "NEOFORGE_VERSION"); v != "" {
-			return v1.ModLoader_MOD_LOADER_NEOFORGE, v
-		}
-		if v := scriptVar(s, "FORGE_VERSION"); v != "" {
-			return v1.ModLoader_MOD_LOADER_FORGE, strings.TrimPrefix(v, mc+"-")
-		}
-	}
-	return v1.ModLoader_MOD_LOADER_UNSPECIFIED, ""
-}
-
-// Returns the value assigned to a shell variable
-func scriptVar(s, key string) string {
-	i := strings.Index(s, key+"=")
-	if i < 0 {
-		return ""
-	}
-	rest := s[i+len(key)+1:]
-	if end := strings.IndexAny(rest, " \t\r\n\"'"); end >= 0 {
-		rest = rest[:end]
-	}
-	return strings.TrimSpace(rest)
-}
-
 // Locates the launch entry produced by a Forge installer
 func detectForgeLaunch(dataPath, vendorPath, version string) (*v1.LaunchSpec, error) {
 	pattern := filepath.Join(dataPath, "libraries", "net", filepath.FromSlash(vendorPath), "*", "unix_args.txt")
