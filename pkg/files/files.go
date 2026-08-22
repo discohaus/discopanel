@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -13,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"sync/atomic"
+	"syscall"
 
 	"github.com/discohaus/discopanel/pkg/minecraft"
 	"github.com/mholt/archives"
@@ -25,7 +27,40 @@ func ResolveUnder(base, rel string) (string, error) {
 	if err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("path escapes base directory: %s", rel)
 	}
+	// Symlinks inside the jail must not escape it either
+	baseReal, err := resolveExisting(base)
+	if err != nil {
+		return "", fmt.Errorf("path escapes base directory: %s", rel)
+	}
+	fullReal, err := resolveExisting(full)
+	if err != nil {
+		return "", fmt.Errorf("path escapes base directory: %s", rel)
+	}
+	if !Within(baseReal, fullReal) {
+		return "", fmt.Errorf("path escapes base directory: %s", rel)
+	}
 	return full, nil
+}
+
+// Resolves symlinks through the deepest existing ancestor
+func resolveExisting(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return resolved, nil
+	}
+	// Files mid path read like missing for creation flows
+	if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
+		return "", err
+	}
+	parent := filepath.Dir(path)
+	if parent == path {
+		return "", err
+	}
+	parentReal, perr := resolveExisting(parent)
+	if perr != nil {
+		return "", perr
+	}
+	return filepath.Join(parentReal, filepath.Base(path)), nil
 }
 
 // Reports whether child sits at or under parent

@@ -18,6 +18,7 @@ export { default as DiscoLogo } from './disco-logo.svelte';
 export { default as CollectionSection } from './collection-section.svelte';
 export { default as EnumSelect } from './enum-select.svelte';
 export { default as LabeledInput } from './labeled-input.svelte';
+export { default as PathInput } from './path-input.svelte';
 export { default as KeyValueRowsEditor } from './key-value-rows-editor.svelte';
 export { default as NetworkPortRowsEditor } from './network-port-rows-editor.svelte';
 export { default as VolumeMountRowsEditor } from './volume-mount-rows-editor.svelte';

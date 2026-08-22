@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/discohaus/discopanel/internal/auth"
 	"github.com/discohaus/discopanel/internal/command"
 	storage "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/docker"
@@ -52,6 +53,7 @@ type ServerService struct {
 	config           *config.Config
 	proxy            *proxy.Manager
 	lifecycle        *lifecycle.Manager
+	authManager      *auth.Manager
 	rec              *metrics.Recorder
 	log              *logger.Logger
 	logStreamer      *logger.LogStreamer
@@ -155,7 +157,7 @@ func networkPortsEqual(a, b []*v1.NetworkPort) bool {
 }
 
 // NewServerService creates a new server service
-func NewServerService(store *storage.Store, docker *docker.Client, sender *command.Sender, config *config.Config, proxy *proxy.Manager, lifecycleManager *lifecycle.Manager, logStreamer *logger.LogStreamer, metricsCollector *metrics.Collector, moduleManager *module.Manager, bus *events.Bus, uploadManager *transfer.UploadManager, rec *metrics.Recorder, log *logger.Logger) *ServerService {
+func NewServerService(store *storage.Store, docker *docker.Client, sender *command.Sender, config *config.Config, proxy *proxy.Manager, lifecycleManager *lifecycle.Manager, authManager *auth.Manager, logStreamer *logger.LogStreamer, metricsCollector *metrics.Collector, moduleManager *module.Manager, bus *events.Bus, uploadManager *transfer.UploadManager, rec *metrics.Recorder, log *logger.Logger) *ServerService {
 	return &ServerService{
 		store:            store,
 		docker:           docker,
@@ -163,6 +165,7 @@ func NewServerService(store *storage.Store, docker *docker.Client, sender *comma
 		config:           config,
 		proxy:            proxy,
 		lifecycle:        lifecycleManager,
+		authManager:      authManager,
 		rec:              rec,
 		log:              log,
 		logStreamer:      logStreamer,
@@ -440,6 +443,10 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	if err := validateBindSources(ctx, s.authManager, s.config.Storage.DataDir, msg.DockerOverrides.GetVolumes()); err != nil {
+		return nil, err
+	}
+
 	// Create server object
 	serverUUID := uuid.New().String()
 
@@ -687,6 +694,10 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 			if strings.HasPrefix(key, "discopanel.") {
 				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("docker label keys cannot start with 'discopanel.', namespace reserved for internal management"))
 			}
+		}
+
+		if err := validateBindSources(ctx, s.authManager, s.config.Storage.DataDir, msg.DockerOverrides.GetVolumes()); err != nil {
+			return nil, err
 		}
 
 		if !proto.Equal(server.DockerOverrides, msg.DockerOverrides) {

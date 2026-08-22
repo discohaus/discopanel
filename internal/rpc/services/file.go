@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -34,6 +35,7 @@ const maxInlineFileBytes = 10 << 20
 // Tracks an in-progress or completed extraction
 type extractionOp struct {
 	mu             sync.Mutex
+	ServerID       string
 	State          v1.ExtractionState
 	FilesExtracted atomic.Int32
 	Error          string
@@ -423,7 +425,7 @@ func (s *FileService) ExtractArchive(ctx context.Context, req *connect.Request[v
 
 	// Start async extraction
 	opID := uuid.New().String()
-	op := &extractionOp{State: v1.ExtractionState_EXTRACTION_STATE_EXTRACTING}
+	op := &extractionOp{ServerID: server.Id, State: v1.ExtractionState_EXTRACTION_STATE_EXTRACTING}
 	s.extractions.Store(opID, op)
 
 	bgCtx := detach(ctx)
@@ -458,6 +460,11 @@ func (s *FileService) GetExtractionStatus(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("extraction operation not found"))
 	}
 	op := val.(*extractionOp)
+
+	// Operations answer only under their own server scope
+	if op.ServerID != req.Msg.ServerId {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("extraction operation not found"))
+	}
 
 	op.mu.Lock()
 	state, opErr := op.State, op.Error
@@ -773,6 +780,121 @@ func (s *FileService) InitFileDownload(ctx context.Context, req *connect.Request
 		SessionId: session.ID,
 		Filename:  filename,
 		TotalSize: info.Size(),
+	}), nil
+}
+
+// Lists one host directory for the admin path picker
+func (s *FileService) ListHostFiles(ctx context.Context, req *connect.Request[v1.ListHostFilesRequest]) (*connect.Response[v1.ListHostFilesResponse], error) {
+	path := req.Msg.Path
+	if path == "" {
+		path = string(filepath.Separator)
+	}
+	// Panel relative paths resolve from its working directory
+	if !filepath.IsAbs(path) {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid path"))
+		}
+		path = abs
+	}
+	path = filepath.Clean(path)
+
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("directory not found"))
+		}
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("failed to read directory"))
+	}
+
+	lsFiles := make([]*v1.FileInfo, 0, len(entries))
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		full := filepath.Join(path, entry.Name())
+		isDir := entry.IsDir()
+		// Symlinked directories stay traversable for admins
+		if entry.Type()&fs.ModeSymlink != 0 {
+			if target, terr := os.Stat(full); terr == nil {
+				isDir = target.IsDir()
+			}
+		}
+		lsFiles = append(lsFiles, &v1.FileInfo{
+			Name:     entry.Name(),
+			Path:     full,
+			IsDir:    isDir,
+			Size:     info.Size(),
+			Modified: info.ModTime().Unix(),
+		})
+	}
+
+	return connect.NewResponse(&v1.ListHostFilesResponse{
+		Path:  path,
+		Files: lsFiles,
+	}), nil
+}
+
+// Lists one directory inside a running container
+func (s *FileService) ListContainerFiles(ctx context.Context, req *connect.Request[v1.ListContainerFilesRequest]) (*connect.Response[v1.ListContainerFilesResponse], error) {
+	msg := req.Msg
+
+	path := msg.Path
+	if path == "" {
+		path = "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("path must be absolute"))
+	}
+	path = filepath.Clean(path)
+
+	var containerID string
+	if msg.ModuleId != "" {
+		module, err := s.store.GetModule(ctx, msg.ModuleId)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("module not found"))
+		}
+		// Module scope must match the enforced server scope
+		if module.ServerId != msg.ServerId {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("module not found"))
+		}
+		containerID = module.ContainerId
+	} else {
+		server, err := getServer(ctx, s.store, msg.ServerId)
+		if err != nil {
+			return nil, err
+		}
+		containerID = server.ContainerId
+	}
+	if containerID == "" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("the container has not been created yet, type the path instead"))
+	}
+
+	// Plain ls keeps this working on minimal images
+	stdout, _, err := s.docker.Exec(ctx, containerID, []string{"ls", "-1Ap", "--", path})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("the container is not running or cannot list this path"))
+	}
+
+	var lsFiles []*v1.FileInfo
+	for _, line := range strings.Split(stdout, "\n") {
+		name := strings.TrimRight(line, "\r")
+		if name == "" {
+			continue
+		}
+		isDir := strings.HasSuffix(name, "/")
+		name = strings.TrimSuffix(name, "/")
+		lsFiles = append(lsFiles, &v1.FileInfo{
+			Name:  name,
+			Path:  filepath.Join(path, name),
+			IsDir: isDir,
+		})
+	}
+
+	return connect.NewResponse(&v1.ListContainerFilesResponse{
+		Path:  path,
+		Files: lsFiles,
 	}), nil
 }
 

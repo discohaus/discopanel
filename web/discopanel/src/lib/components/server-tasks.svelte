@@ -16,6 +16,7 @@
 		EmptyState,
 		EnumSelect,
 		LabeledInput,
+		PathInput,
 		SectionCard,
 		SectionedDialogLayout
 	} from '$lib/components/app';
@@ -72,6 +73,7 @@
 	import { timestampToDate, formatDateTime } from '$lib/utils/time';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import CodeEditor from '$lib/components/ui/code-editor.svelte';
+	import { serverDataRoot } from '$lib/components/files/picker-roots';
 
 	let { server, active }: { server: Server; active?: boolean } = $props();
 
@@ -794,6 +796,17 @@
 		if (ok) notify.success(`Copied ${variable}`);
 		else notify.error('Failed to copy to clipboard');
 	}
+
+	// Picker roots for the script and backup fields
+	let scriptRoots = $derived([
+		serverDataRoot(server.id, { emitBase: '/data', context: '/data inside the container' })
+	]);
+	let backupRoots = $derived([serverDataRoot(server.id)]);
+
+	function appendBackupPath(path: string) {
+		const current = backupPaths.trim().replace(/,\s*$/, '');
+		backupPaths = current ? `${current}, ${path}` : path;
+	}
 </script>
 
 <SectionCard title="Tasks" description="Scheduled backups, restarts, webhooks, and custom jobs">
@@ -1020,13 +1033,16 @@
 							hint="The command to execute via RCON"
 						/>
 					{:else if taskType === TaskType.SCRIPT}
-						<LabeledInput
+						<PathInput
 							id="scriptPath"
 							label="Script path or executable *"
 							bind:value={scriptConfig.scriptPath}
 							placeholder="/data/scripts/cleanup.sh"
-							class="font-mono"
 							hint="Path to the script/executable inside the container"
+							mode="file"
+							roots={scriptRoots}
+							pickerTitle="Select script"
+							pickerDescription="Pick an executable from the server data directory"
 						/>
 						<LabeledInput
 							id="scriptArgs"
@@ -1044,13 +1060,16 @@
 							placeholder={taskName || 'Daily Backup'}
 							hint="Used as the archive filename prefix. Defaults to the task name."
 						/>
-						<LabeledInput
+						<PathInput
 							id="backupPaths"
 							label="Paths to include"
 							bind:value={backupPaths}
 							placeholder="world, world_nether, world_the_end"
-							class="font-mono"
 							hint="Comma-separated paths relative to the server directory. Leave empty to back up the world directory."
+							roots={backupRoots}
+							onSelect={appendBackupPath}
+							pickerTitle="Add backup path"
+							pickerDescription="Pick a folder or file to append to the list"
 						/>
 						<label
 							class="flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-accent/40"

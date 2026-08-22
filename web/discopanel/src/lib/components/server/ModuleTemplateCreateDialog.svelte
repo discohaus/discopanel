@@ -48,6 +48,7 @@
 		trimVolumes
 	} from '$lib/module-form';
 	import type { KvRow } from '$lib/module-form';
+	import { volumeSourceRoots } from '$lib/components/files/picker-roots';
 	import {
 		Loader2,
 		Plus,
@@ -434,7 +435,7 @@
 						bind:value={certMountPath}
 						placeholder="/etc/certs"
 						class="font-mono"
-						hint="Optional. Lets instances upload a cert pair mounted here as tls.crt and tls.key"
+						hint="Optional. Path inside the container where an instance's uploaded cert pair mounts as tls.crt and tls.key"
 					/>
 
 					<div class="rounded-lg border bg-card">
@@ -770,7 +771,12 @@
 					emptyTitle="No volumes configured"
 					emptyDescription="Mount host directories for persistent data"
 				>
-					<VolumeMountRowsEditor bind:volumes sourcePlaceholder={'/host/path or {{alias}}'} />
+					<VolumeMountRowsEditor
+						bind:volumes
+						sourcePlaceholder={'/host/path or {{alias}}'}
+						sourceRoots={() => volumeSourceRoots({})}
+						targetRoots={[]}
+					/>
 				</CollectionSection>
 			{:else if activeSection === 'advanced'}
 				<div class="space-y-8">

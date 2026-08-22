@@ -51,6 +51,7 @@
 		VolumeMountSchema
 	} from '$lib/proto/discopanel/v1/storage_pb';
 	import { create, clone } from '@bufbuild/protobuf';
+	import { containerRoot, volumeSourceRoots } from '$lib/components/files/picker-roots';
 	import {
 		dropEmptyPorts,
 		kvToMap,
@@ -1113,7 +1114,18 @@
 						emptyTitle="No volumes mounted"
 						emptyDescription="Mount host directories to persist data"
 					>
-						<VolumeMountRowsEditor bind:volumes disabled={systemLocked} />
+						<VolumeMountRowsEditor
+							bind:volumes
+							disabled={systemLocked}
+							sourceRoots={() =>
+								volumeSourceRoots({
+									serverId,
+									moduleId: mode === 'edit' ? module?.id : undefined
+								})}
+							targetRoots={mode === 'edit' && module
+								? [containerRoot({ serverId, moduleId: module.id })]
+								: []}
+						/>
 					</CollectionSection>
 				{:else if activeSection === 'advanced'}
 					<fieldset class="min-w-0 space-y-8" disabled={systemLocked}>

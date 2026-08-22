@@ -117,6 +117,22 @@ service FileService {
     option (discopanel.options.v1.perm) = {
       resource: RESOURCE_TYPE_FILES
       action: ACTION_TYPE_READ
+      object_id_field: "server_id"
+    };
+  }
+  // Browse the panel host filesystem one directory at a time
+  rpc ListHostFiles(ListHostFilesRequest) returns (ListHostFilesResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SETTINGS
+      action: ACTION_TYPE_UPDATE
+    };
+  }
+  // Browse inside a running container one directory at a time
+  rpc ListContainerFiles(ListContainerFilesRequest) returns (ListContainerFilesResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_FILES
+      action: ACTION_TYPE_READ
+      object_id_field: "server_id"
     };
   }
 }
@@ -283,6 +299,7 @@ message ExtractArchiveResponse {
 // Extraction status poll
 message GetExtractionStatusRequest {
   string operation_id = 1;
+  string server_id = 2;
 }
 
 // Archive extraction lifecycle
@@ -304,6 +321,30 @@ message GetExtractionStatusResponse {
 message InitFileDownloadRequest {
   string server_id = 1;
   string path = 2;
+}
+
+// Host directory to list
+message ListHostFilesRequest {
+  string path = 1; // Directory to list, empty means the filesystem root
+}
+
+// Host directory contents, one level deep
+message ListHostFilesResponse {
+  string path = 1; // Absolute directory that was listed
+  repeated FileInfo files = 2;
+}
+
+// Container directory to list
+message ListContainerFilesRequest {
+  string server_id = 1; // Owning server, empty for global modules
+  string module_id = 2; // Module container instead of the server's
+  string path = 3; // Absolute container directory, empty means /
+}
+
+// Container directory contents, one level deep
+message ListContainerFilesResponse {
+  string path = 1; // Absolute directory that was listed
+  repeated FileInfo files = 2;
 }
 
 // Download session

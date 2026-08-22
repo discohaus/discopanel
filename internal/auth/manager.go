@@ -18,6 +18,7 @@ import (
 	"github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/rbac"
 	"github.com/discohaus/discopanel/pkg/config"
+	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -264,6 +265,16 @@ func (m *Manager) SystemUser() *v1.User {
 		Roles:        []string{"admin"},
 		AuthProvider: v1.AuthProvider_AUTH_PROVIDER_NONE,
 	}
+}
+
+// Reports whether the context user holds a global grant
+func (m *Manager) Can(ctx context.Context, resource optionsv1.ResourceType, action optionsv1.ActionType) bool {
+	user := GetUserFromContext(ctx)
+	if user == nil {
+		return false
+	}
+	allowed, err := m.enforcer.Enforce(user.Roles, resource, action, "*")
+	return err == nil && allowed
 }
 
 func (m *Manager) IsAnonymousAccessEnabled() bool {

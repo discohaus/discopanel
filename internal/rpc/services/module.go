@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,7 +24,9 @@ import (
 	"github.com/discohaus/discopanel/internal/module"
 	"github.com/discohaus/discopanel/internal/proxy"
 	"github.com/discohaus/discopanel/pkg/config"
+	"github.com/discohaus/discopanel/pkg/files"
 	"github.com/discohaus/discopanel/pkg/logger"
+	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
 	"github.com/google/uuid"
@@ -205,6 +208,9 @@ func (s *ModuleService) CreateModuleTemplate(ctx context.Context, req *connect.R
 	if err := validateTemplatePorts(msg.Ports); err != nil {
 		return nil, err
 	}
+	if err := validateBindSources(ctx, s.authManager, s.config.Storage.DataDir, msg.DefaultVolumes); err != nil {
+		return nil, err
+	}
 
 	template := &v1.ModuleTemplate{
 		Id:                      uuid.New().String(),
@@ -278,6 +284,9 @@ func (s *ModuleService) UpdateModuleTemplate(ctx context.Context, req *connect.R
 		template.DefaultEnv = msg.DefaultEnv
 	}
 	if msg.DefaultVolumes != nil {
+		if err := validateBindSources(ctx, s.authManager, s.config.Storage.DataDir, msg.DefaultVolumes); err != nil {
+			return nil, err
+		}
 		template.DefaultVolumes = msg.DefaultVolumes
 	}
 	if msg.HealthCheckPath != nil {
@@ -571,6 +580,10 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	if err := validateBindSources(ctx, s.authManager, s.config.Storage.DataDir, msg.VolumeOverrides); err != nil {
+		return nil, err
+	}
+
 	// Use ports from request, or fall back to template defaults
 	ports := msg.Ports
 	if len(ports) == 0 {
@@ -707,6 +720,9 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 		module.EnvOverrides = msg.EnvOverrides
 	}
 	if msg.VolumeOverrides != nil {
+		if err := validateBindSources(ctx, s.authManager, s.config.Storage.DataDir, msg.VolumeOverrides); err != nil {
+			return nil, err
+		}
 		module.VolumeOverrides = msg.VolumeOverrides
 	}
 	if msg.Memory != nil {
@@ -1296,6 +1312,67 @@ func (s *ModuleService) AnswerModulePrompt(ctx context.Context, req *connect.Req
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("module rejected answer: %d", resp.StatusCode))
 	}
 	return connect.NewResponse(&v1.AnswerModulePromptResponse{Accepted: true}), nil
+}
+
+// Alias prefixes non admins may bind sources from
+var sanctionedSourceAliases = []string{
+	"{{server.data_path}}",
+	"{{module.data_path}}",
+	"{{config.storage.data_dir}}",
+	"{{config.storage.backup_dir}}",
+	"{{config.storage.temp_dir}}",
+}
+
+// Reports whether rel lexically stays inside its root
+func staysInside(rel string) bool {
+	r := filepath.Clean(rel)
+	return r != ".." && !strings.HasPrefix(r, ".."+string(filepath.Separator))
+}
+
+// Rejects bind sources outside panel storage for non admins
+func validateBindSources(ctx context.Context, am *auth.Manager, dataDir string, vols []*v1.VolumeMount) error {
+	// Host browse rights also cover binding anywhere
+	if am.Can(ctx, optionsv1.ResourceType_RESOURCE_TYPE_SETTINGS, optionsv1.ActionType_ACTION_TYPE_UPDATE) {
+		return nil
+	}
+	absData, err := filepath.Abs(dataDir)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, errors.New("failed to resolve panel storage directory"))
+	}
+	for _, vol := range vols {
+		if vol == nil || vol.Source == "" {
+			continue
+		}
+		// Named volumes carry no host path
+		if vol.Type != "" && vol.Type != "bind" {
+			continue
+		}
+		src := vol.Source
+		if strings.Contains(src, "{{") {
+			ok := false
+			for _, alias := range sanctionedSourceAliases {
+				rest, found := strings.CutPrefix(src, alias)
+				if !found {
+					continue
+				}
+				if rest == "" || (strings.HasPrefix(rest, "/") && !strings.Contains(rest, "{{") &&
+					staysInside(strings.TrimPrefix(rest, "/"))) {
+					ok = true
+				}
+				break
+			}
+			if !ok {
+				return connect.NewError(connect.CodePermissionDenied,
+					fmt.Errorf("bind source %q needs administrator rights, use a data path alias instead", src))
+			}
+			continue
+		}
+		if !filepath.IsAbs(src) || !files.Within(absData, filepath.Clean(src)) {
+			return connect.NewError(connect.CodePermissionDenied,
+				fmt.Errorf("bind source %q sits outside panel storage and needs administrator rights", src))
+		}
+	}
+	return nil
 }
 
 // Rejects cert pairs the template or tls loader cannot take

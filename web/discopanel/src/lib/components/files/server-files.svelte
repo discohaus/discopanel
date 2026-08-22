@@ -621,7 +621,7 @@
 			extractionPollId = setInterval(async () => {
 				try {
 					const status = await rpcClient.file.getExtractionStatus(
-						{ operationId },
+						{ operationId, serverId: server.id },
 						silentCallOptions
 					);
 					extractionFilesExtracted = status.filesExtracted;

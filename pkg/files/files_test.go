@@ -24,6 +24,35 @@ func TestResolveUnderContainment(t *testing.T) {
 	}
 }
 
+func TestResolveUnderSymlinkEscape(t *testing.T) {
+	base := t.TempDir()
+	outside := t.TempDir()
+
+	if err := os.Symlink(outside, filepath.Join(base, "leak")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if got, err := ResolveUnder(base, "leak/secret"); err == nil {
+		t.Errorf("symlink escape resolved to %q", got)
+	}
+	if got, err := ResolveUnder(base, "leak"); err == nil {
+		t.Errorf("symlink target escape resolved to %q", got)
+	}
+
+	// Links staying inside the jail keep working
+	if err := os.MkdirAll(filepath.Join(base, "real"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(base, "real"), filepath.Join(base, "inlink")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveUnder(base, "inlink/newfile"); err != nil {
+		t.Errorf("internal symlink rejected: %v", err)
+	}
+	if _, err := ResolveUnder(base, "brand/new/tree"); err != nil {
+		t.Errorf("unborn path rejected: %v", err)
+	}
+}
+
 func TestFindWorldDirReadsLevelName(t *testing.T) {
 	dir := t.TempDir()
 	worldPath := filepath.Join(dir, "myrealm")

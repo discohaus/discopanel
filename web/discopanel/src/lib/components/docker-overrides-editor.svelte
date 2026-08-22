@@ -5,7 +5,8 @@
 	import { Textarea } from '$lib/components/ui/textarea';
 	import { Card, CardContent } from '$lib/components/ui/card';
 	import { Switch } from '$lib/components/ui/switch';
-	import { KeyValueRowsEditor } from '$lib/components/app';
+	import { KeyValueRowsEditor, PathInput } from '$lib/components/app';
+	import type { RootsInput } from '$lib/components/files/picker-roots';
 	import { Plus, AlertCircle, Code, ChevronDown, ChevronRight, X } from '@lucide/svelte';
 	import type { DockerOverrides, VolumeMount } from '$lib/proto/discopanel/v1/storage_pb';
 	import { DockerOverridesSchema, VolumeMountSchema } from '$lib/proto/discopanel/v1/storage_pb';
@@ -16,10 +17,20 @@
 	interface Props {
 		overrides?: DockerOverrides;
 		disabled?: boolean;
+		sourceRoots?: RootsInput;
+		targetRoots?: RootsInput;
 		onchange?: (overrides: DockerOverrides | undefined) => void;
 	}
 
-	let { overrides = $bindable(), disabled = false, onchange }: Props = $props();
+	let {
+		overrides = $bindable(),
+		disabled = false,
+		sourceRoots,
+		targetRoots,
+		onchange
+	}: Props = $props();
+
+	const uid = $props.id();
 
 	const ENTRYPOINT_PLACEHOLDER = '/bin/sh, -c, echo "hello"';
 
@@ -392,21 +403,33 @@
 							<div class="space-y-3 rounded-lg border p-3">
 								{#each overrides.volumes as volume, i (i)}
 									<div class="space-y-2 rounded-md border bg-muted/30 p-2">
-										<div class="flex items-center gap-2">
+										<div class="flex items-start gap-2">
 											<div class="grid flex-1 grid-cols-2 gap-2">
-												<Input
+												<PathInput
+													id="{uid}-src-{i}"
+													label="Host path"
+													labelClass="text-xs text-muted-foreground"
 													value={volume.source}
-													onchange={(e) => updateVolumeField(i, 'source', e.currentTarget.value)}
+													onValueChange={(v) => updateVolumeField(i, 'source', v)}
 													placeholder="/host/path or volume-name"
 													{disabled}
-													class="h-8 font-mono text-xs"
+													class="h-8 text-xs"
+													roots={sourceRoots}
+													pickerTitle="Select host path"
+													pickerDescription="Pick where the mounted data lives on the host"
 												/>
-												<Input
+												<PathInput
+													id="{uid}-dst-{i}"
+													label="Container path"
+													labelClass="text-xs text-muted-foreground"
 													value={volume.target}
-													onchange={(e) => updateVolumeField(i, 'target', e.currentTarget.value)}
+													onValueChange={(v) => updateVolumeField(i, 'target', v)}
 													placeholder="/container/path"
 													{disabled}
-													class="h-8 font-mono text-xs"
+													class="h-8 text-xs"
+													roots={targetRoots}
+													pickerTitle="Select container path"
+													pickerDescription="Pick where the data mounts inside the container"
 												/>
 											</div>
 											<Button
@@ -415,7 +438,7 @@
 												size="icon"
 												onclick={() => updateVolume(i, null)}
 												{disabled}
-												class="size-8 hover:bg-destructive/10 hover:text-destructive"
+												class="mt-6 size-8 hover:bg-destructive/10 hover:text-destructive"
 											>
 												<X class="size-3" />
 											</Button>

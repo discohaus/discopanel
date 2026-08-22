@@ -43,6 +43,7 @@
 	import { loadModLoaders } from '$lib/stores/loaders';
 	import ConnectivityCard from '$lib/components/connectivity-card.svelte';
 	import DockerOverridesEditor from '$lib/components/docker-overrides-editor.svelte';
+	import { volumeSourceRoots } from '$lib/components/files/picker-roots';
 	import { NetworkPortRowsEditor } from '$lib/components/app';
 	import MemorySlider from '$lib/components/memory-slider.svelte';
 	import { getUniqueDockerImages, getDockerImageDisplayName } from '$lib/utils';
@@ -991,6 +992,8 @@
 						<DockerOverridesEditor
 							bind:overrides={formData.dockerOverrides}
 							disabled={loading}
+							sourceRoots={() => volumeSourceRoots({})}
+							targetRoots={[]}
 							onchange={(overrides) => (formData.dockerOverrides = overrides)}
 						/>
 					</div>

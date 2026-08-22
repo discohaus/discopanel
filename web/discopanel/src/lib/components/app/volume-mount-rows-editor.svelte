@@ -1,19 +1,23 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
-	import { Input } from '$lib/components/ui/input';
-	import { Label } from '$lib/components/ui/label';
 	import { Checkbox } from '$lib/components/ui/checkbox';
+	import PathInput from './path-input.svelte';
+	import type { RootsInput } from '$lib/components/files/picker-roots';
 	import type { VolumeMount } from '$lib/proto/discopanel/v1/storage_pb';
 	import { Trash2 } from '@lucide/svelte';
 
 	let {
 		volumes = $bindable([]),
 		disabled = false,
-		sourcePlaceholder = '/host/path'
+		sourcePlaceholder = '/host/path',
+		sourceRoots,
+		targetRoots
 	}: {
 		volumes?: VolumeMount[];
 		disabled?: boolean;
 		sourcePlaceholder?: string;
+		sourceRoots?: RootsInput;
+		targetRoots?: RootsInput;
 	} = $props();
 
 	const uid = $props.id();
@@ -42,26 +46,26 @@
 			</div>
 
 			<div class="grid gap-3 sm:grid-cols-2">
-				<div class="space-y-1.5">
-					<Label for="{uid}-{i}-source">Host path</Label>
-					<Input
-						id="{uid}-{i}-source"
-						bind:value={vol.source}
-						placeholder={sourcePlaceholder}
-						class="font-mono"
-						{disabled}
-					/>
-				</div>
-				<div class="space-y-1.5">
-					<Label for="{uid}-{i}-target">Container path</Label>
-					<Input
-						id="{uid}-{i}-target"
-						bind:value={vol.target}
-						placeholder="/container/path"
-						class="font-mono"
-						{disabled}
-					/>
-				</div>
+				<PathInput
+					id="{uid}-{i}-source"
+					label="Host path"
+					bind:value={vol.source}
+					placeholder={sourcePlaceholder}
+					{disabled}
+					roots={sourceRoots}
+					pickerTitle="Select host path"
+					pickerDescription="Pick where the mounted data lives on the host"
+				/>
+				<PathInput
+					id="{uid}-{i}-target"
+					label="Container path"
+					bind:value={vol.target}
+					placeholder="/container/path"
+					{disabled}
+					roots={targetRoots}
+					pickerTitle="Select container path"
+					pickerDescription="Pick where the data mounts inside the container"
+				/>
 			</div>
 
 			<div class="flex flex-wrap items-center gap-x-6 gap-y-2">
