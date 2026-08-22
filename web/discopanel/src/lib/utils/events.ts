@@ -4,7 +4,7 @@ import {
 	TriggeredEventType,
 	TriggeredEventTypeSchema
 } from '$lib/proto/discopanel/v1/storage_pb';
-import { enumDesc, enumLabel } from '$lib/proto-meta';
+import { enumDesc, enumLabel, enumLabelOr } from '$lib/proto-meta';
 
 export interface EventTypeMeta {
 	type: TriggeredEventType;
@@ -34,10 +34,7 @@ export const SERVER_EVENT_TYPES: EventTypeMeta[] = EVENT_TYPE_ORDER.map((type) =
 
 // Resolves display label for an event type
 export function getEventTypeLabel(type: TriggeredEventType): string {
-	return (
-		enumLabel(TriggeredEventTypeSchema, type) ||
-		enumLabel(TriggeredEventTypeSchema, TriggeredEventType.UNSPECIFIED)
-	);
+	return enumLabelOr(TriggeredEventTypeSchema, type);
 }
 
 // Display order for event action choices
@@ -51,8 +48,5 @@ export const EVENT_ACTION_OPTIONS: ModuleEventAction[] = [
 
 // Resolves display label for an event action
 export function getEventActionLabel(action: ModuleEventAction): string {
-	return (
-		enumLabel(ModuleEventActionSchema, action) ||
-		enumLabel(ModuleEventActionSchema, ModuleEventAction.UNSPECIFIED)
-	);
+	return enumLabelOr(ModuleEventActionSchema, action);
 }

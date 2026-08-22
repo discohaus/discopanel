@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -149,11 +150,6 @@ func (m *Manager) activeConnsByServer() map[string]int64 {
 	return out
 }
 
-// Panel hosted lobby runtime
-func (m *Manager) Hub() *HubRuntime {
-	return m.hub
-}
-
 // Rebuilds the lobby fleet from servers and listeners
 func (m *Manager) syncHubTargets(ctx context.Context, servers []*v1.Server, listenersByID map[string]*v1.ProxyListener) {
 	if m.hub == nil {
@@ -214,11 +210,6 @@ func (m *Manager) refreshHubTargets(ctx context.Context) {
 		byID[l.Id] = l
 	}
 	m.syncHubTargets(ctx, servers, byID)
-}
-
-// Shared reroute claims across every socket
-func (m *Manager) Intents() *IntentTable {
-	return m.intents
 }
 
 // Panel http backend target, must precede Start
@@ -396,15 +387,7 @@ func (m *Manager) ensurePanelSocketLocked() error {
 	if _, ok := m.tcpSockets[port]; ok {
 		return nil
 	}
-	sock := NewListenerSocket(&Config{
-		ListenAddr:  net.JoinHostPort(m.appCfg.Server.Host, strconv.Itoa(port)),
-		Logger:      m.logger,
-		Gate:        m.gate,
-		Certs:       m.certs,
-		TrustedEdge: m.config.TrustedEdge,
-		Intents:     m.intents,
-		Hub:         m.hub,
-	})
+	sock := m.newSocketLocked(net.JoinHostPort(m.appCfg.Server.Host, strconv.Itoa(port)))
 	if err := sock.Start(); err != nil {
 		return fmt.Errorf("panel socket failed on port %d: %w", port, err)
 	}
@@ -637,39 +620,14 @@ func (m *Manager) syncListenersLocked(ctx context.Context) error {
 	}
 
 	// Sockets for removed or disabled listeners stop first
-	for port, sock := range m.tcpSockets {
-		if desired[port] != nil {
-			continue
-		}
-		if err := sock.Stop(); err != nil {
-			m.logger.Error("Failed to stop listener socket on port %d: %v", port, err)
-		}
-		delete(m.tcpSockets, port)
-		delete(m.listenerIDs, port)
-		m.logger.Info("Stopped listener socket on port %d", port)
-	}
-	for port, up := range m.udpSockets {
-		if desired[port] != nil {
-			continue
-		}
-		up.Stop()
-		delete(m.udpSockets, port)
-	}
+	m.reapSocketsLocked(func(port int) bool { return desired[port] != nil })
 
 	// Missing sockets start, running ones stay untouched
 	for port, listener := range desired {
 		m.listenerIDs[port] = listener.Id
 		sock, ok := m.tcpSockets[port]
 		if !ok {
-			sock = NewListenerSocket(&Config{
-				ListenAddr:  fmt.Sprintf(":%d", port),
-				Logger:      m.logger,
-				Gate:        m.gate,
-				Certs:       m.certs,
-				TrustedEdge: m.config.TrustedEdge,
-				Intents:     m.intents,
-				Hub:         m.hub,
-			})
+			sock = m.newSocketLocked(fmt.Sprintf(":%d", port))
 			if err := sock.Start(); err != nil {
 				m.logger.Error("Failed to start listener %s on port %d: %v", listener.Name, port, err)
 				continue
@@ -719,8 +677,30 @@ func (m *Manager) syncListenersLocked(ctx context.Context) error {
 // Disabled proxy keeps only the panel socket serving itself
 func (m *Manager) syncDisabledLocked(ctx context.Context) error {
 	panelPort := m.panelWebPort()
+	m.reapSocketsLocked(func(port int) bool { return port == panelPort })
+	if sock := m.tcpSockets[panelPort]; sock != nil {
+		sock.SetRoutes(m.panelRoutesLocked(ctx))
+	}
+	return nil
+}
+
+// Builds a listener socket bound to one address
+func (m *Manager) newSocketLocked(addr string) *ListenerSocket {
+	return NewListenerSocket(&Config{
+		ListenAddr:  addr,
+		Logger:      m.logger,
+		Gate:        m.gate,
+		Certs:       m.certs,
+		TrustedEdge: m.config.TrustedEdge,
+		Intents:     m.intents,
+		Hub:         m.hub,
+	})
+}
+
+// Stops and forgets every socket the keep test rejects
+func (m *Manager) reapSocketsLocked(keep func(port int) bool) {
 	for port, sock := range m.tcpSockets {
-		if port == panelPort {
+		if keep(port) {
 			continue
 		}
 		if err := sock.Stop(); err != nil {
@@ -728,15 +708,15 @@ func (m *Manager) syncDisabledLocked(ctx context.Context) error {
 		}
 		delete(m.tcpSockets, port)
 		delete(m.listenerIDs, port)
+		m.logger.Info("Stopped listener socket on port %d", port)
 	}
 	for port, up := range m.udpSockets {
+		if keep(port) {
+			continue
+		}
 		up.Stop()
 		delete(m.udpSockets, port)
 	}
-	if sock := m.tcpSockets[panelPort]; sock != nil {
-		sock.SetRoutes(m.panelRoutesLocked(ctx))
-	}
-	return nil
 }
 
 // Desired route tables derived from rows and containers
@@ -770,15 +750,9 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 				} else if want {
 					// Every hostname relays to the same backend
 					port := int(listener.Port)
-					for _, name := range server.ProxyHostnames {
+					for _, name := range serverRouteNames(server) {
 						variant := route
 						variant.Hostname = name
-						tcpRoutes[port] = append(tcpRoutes[port], variant)
-					}
-					// Empty hostname is the port's mc catch all
-					if server.ProxyCatchAll {
-						variant := route
-						variant.Hostname = ""
 						tcpRoutes[port] = append(tcpRoutes[port], variant)
 					}
 				}
@@ -854,15 +828,21 @@ func (m *Manager) pruneStatsLocked(servers []*v1.Server, modules []*v1.Module, t
 	for _, r := range udpRoutes {
 		live[r.ServerID] = true
 	}
-	prune := func(stats map[string]*v1.ProxyRoute) {
-		for id := range stats {
-			if !live[id] && !owners[id] {
-				delete(stats, id)
-			}
+	m.dropStatsLocked(func(id string) bool { return !live[id] && !owners[id] })
+}
+
+// Deletes counter rows both stat maps agree to drop
+func (m *Manager) dropStatsLocked(drop func(string) bool) {
+	for id := range m.statsBase {
+		if drop(id) {
+			delete(m.statsBase, id)
 		}
 	}
-	prune(m.statsBase)
-	prune(m.statsLast)
+	for id := range m.statsLast {
+		if drop(id) {
+			delete(m.statsLast, id)
+		}
+	}
 }
 
 // Adds one port list's routes onto the desired tables
@@ -1123,25 +1103,26 @@ func (m *Manager) UpdateServerRoute(server *v1.Server) error {
 		return err
 	}
 	if !want {
-		for _, name := range server.ProxyHostnames {
+		for _, name := range serverRouteNames(server) {
 			sock.RemoveRoute(v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT, name)
-		}
-		if server.ProxyCatchAll {
-			sock.RemoveRoute(v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT, "")
 		}
 		return nil
 	}
-	for _, name := range server.ProxyHostnames {
+	for _, name := range serverRouteNames(server) {
 		variant := route
 		variant.Hostname = name
 		sock.UpsertServerRoute(variant)
 	}
-	if server.ProxyCatchAll {
-		variant := route
-		variant.Hostname = ""
-		sock.UpsertServerRoute(variant)
-	}
 	return nil
+}
+
+// Every hostname a server routes on, catch all included as ""
+func serverRouteNames(server *v1.Server) []string {
+	names := slices.Clone(server.ProxyHostnames)
+	if server.ProxyCatchAll {
+		names = append(names, "")
+	}
+	return names
 }
 
 // Reconciles every route a server owns after status changes
@@ -1337,16 +1318,7 @@ func (m *Manager) DropOwnerStats(ownerID string) {
 	match := func(id string) bool { return id == ownerID || strings.HasPrefix(id, prefix) }
 
 	m.mu.Lock()
-	for id := range m.statsBase {
-		if match(id) {
-			delete(m.statsBase, id)
-		}
-	}
-	for id := range m.statsLast {
-		if match(id) {
-			delete(m.statsLast, id)
-		}
-	}
+	m.dropStatsLocked(match)
 	socks := make([]*ListenerSocket, 0, len(m.tcpSockets))
 	for _, sock := range m.tcpSockets {
 		socks = append(socks, sock)

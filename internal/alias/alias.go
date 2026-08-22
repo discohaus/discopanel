@@ -66,6 +66,16 @@ func (ctx *Context) populateComputed() {
 	if ctx.Server != nil {
 		ctx.Server.ContainerPort = int32(models.InContainerPort(ctx.Server))
 	}
+	if ctx.Config != nil {
+		if ctx.Module != nil && ctx.Module.DataPath == "" {
+			ctx.Module.DataPath = models.ModuleDataDir(ctx.Config.Storage.DataDir, ctx.Module.Id)
+		}
+		for _, sibling := range ctx.Modules {
+			if sibling != nil && sibling.DataPath == "" {
+				sibling.DataPath = models.ModuleDataDir(ctx.Config.Storage.DataDir, sibling.Id)
+			}
+		}
+	}
 	if ctx.Host == nil {
 		ctx.Host = &Host{UID: os.Getuid(), GID: os.Getgid()}
 	}

@@ -763,11 +763,33 @@ func (s *ProxyService) CreateProxyListener(ctx context.Context, req *connect.Req
 	}
 
 	// Reconcile starts the socket when the proxy is on
-	if err := s.proxyManager.SyncListeners(ctx); err != nil {
-		s.log.Error("Failed to sync listeners: %v", err)
-	}
+	syncRoutes(ctx, s.proxyManager, s.log, "after listener create")
 
 	return connect.NewResponse(&v1.CreateProxyListenerResponse{Listener: listener}), nil
+}
+
+// Reconciles proxy sockets and routes, logging any failure
+func syncRoutes(ctx context.Context, pm *proxy.Manager, log *logger.Logger, why string) {
+	if pm == nil {
+		return
+	}
+	if err := pm.SyncListeners(ctx); err != nil {
+		log.Error("Failed to sync listeners %s: %v", why, err)
+	}
+}
+
+// Claims network slices, failed checkouts retire stray rows
+func checkoutNetwork(ctx context.Context, pm *proxy.Manager, log *logger.Logger, owner proxy.NetOwner, netReqs []proxy.NetRequest) (*proxy.NetClaim, error) {
+	if err := pm.EnsureListenersFor(ctx, netReqs); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	claim, err := pm.CheckoutNetwork(ctx, owner, netReqs)
+	if err != nil {
+		// Reconcile retires any listener row made just above
+		syncRoutes(ctx, pm, log, "after checkout failure")
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return claim, nil
 }
 
 // Routed and relay reservation counts bucketed by port
@@ -860,9 +882,7 @@ func (s *ProxyService) UpdateProxyListener(ctx context.Context, req *connect.Req
 	}
 
 	// Reconcile moves sockets and keeps routes registered
-	if err := s.proxyManager.SyncListeners(ctx); err != nil {
-		s.log.Error("Failed to sync listeners: %v", err)
-	}
+	syncRoutes(ctx, s.proxyManager, s.log, "after listener update")
 
 	return connect.NewResponse(&v1.UpdateProxyListenerResponse{Listener: listener}), nil
 }
@@ -911,9 +931,7 @@ func (s *ProxyService) DeleteProxyListener(ctx context.Context, req *connect.Req
 	}
 
 	// Reconcile stops the socket and promotes a new default
-	if err := s.proxyManager.SyncListeners(ctx); err != nil {
-		s.log.Error("Failed to sync listeners: %v", err)
-	}
+	syncRoutes(ctx, s.proxyManager, s.log, "after listener delete")
 
 	return connect.NewResponse(&v1.DeleteProxyListenerResponse{}), nil
 }
@@ -1128,16 +1146,9 @@ func (s *ProxyService) applyServerRouting(ctx context.Context, server *v1.Server
 		} else {
 			netReqs = proxy.ServerDirectNetRequests(int(newPort), server.AdditionalPorts, proxyOn)
 		}
-		if err := s.proxyManager.EnsureListenersFor(ctx, netReqs); err != nil {
-			return connect.NewError(connect.CodeInvalidArgument, err)
-		}
-		claim, err := s.proxyManager.CheckoutNetwork(ctx, proxy.NetOwner{Kind: proxy.OwnerServer, ID: server.Id}, netReqs)
+		claim, err := checkoutNetwork(ctx, s.proxyManager, s.log, proxy.NetOwner{Kind: proxy.OwnerServer, ID: server.Id}, netReqs)
 		if err != nil {
-			// Reconcile retires any listener row made just above
-			if serr := s.proxyManager.SyncListeners(ctx); serr != nil {
-				s.log.Error("Failed to sync after checkout failure: %v", serr)
-			}
-			return connect.NewError(connect.CodeInvalidArgument, err)
+			return err
 		}
 		netClaim = claim
 		defer netClaim.Release()
@@ -1222,11 +1233,7 @@ func (s *ProxyService) applyServerRouting(ctx context.Context, server *v1.Server
 	}
 
 	// Reconcile drops stale routes and registers new ones
-	if s.proxyManager != nil {
-		if err := s.proxyManager.SyncListeners(ctx); err != nil {
-			s.log.Error("Failed to sync routes after routing change: %v", err)
-		}
-	}
+	syncRoutes(ctx, s.proxyManager, s.log, "after routing change")
 
 	return nil
 }

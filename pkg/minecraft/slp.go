@@ -10,6 +10,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"github.com/discohaus/discopanel/pkg/mcproto"
 )
 
 // Frame bound shared by packet and JSON string
@@ -71,12 +73,17 @@ func (c *SLPClient) Ping(ctx context.Context, host string, port int) (*SLPResult
 	}
 
 	// Protocol -1 is accepted for status pings
-	if err := c.sendHandshake(conn, host, port, -1); err != nil {
+	if err := mcproto.WriteHandshakePacket(conn, &mcproto.HandshakePacket{
+		ProtocolVersion: -1,
+		ServerAddress:   host,
+		ServerPort:      uint16(port),
+		NextState:       mcproto.NextStateStatus,
+	}); err != nil {
 		return nil, fmt.Errorf("failed to send handshake: %w", err)
 	}
 
-	// Send status request
-	if err := c.sendStatusRequest(conn); err != nil {
+	// Status request is one empty packet with id zero
+	if err := mcproto.WriteFramed(conn, []byte{0x00}); err != nil {
 		return nil, fmt.Errorf("failed to send status request: %w", err)
 	}
 
@@ -117,43 +124,10 @@ func (c *SLPClient) Ping(ctx context.Context, host string, port int) (*SLPResult
 	return &result, nil
 }
 
-// Send handshake packet
-func (c *SLPClient) sendHandshake(conn net.Conn, host string, port int, protocolVersion int) error {
-	var buf bytes.Buffer
-
-	// Packet ID (0x00 for handshake)
-	writeVarInt(&buf, 0x00)
-
-	// Protocol version
-	writeVarInt(&buf, int32(protocolVersion))
-
-	// Server address (string)
-	writeString(&buf, host)
-
-	// Server port (unsigned short, big endian)
-	if err := binary.Write(&buf, binary.BigEndian, uint16(port)); err != nil {
-		return err
-	}
-
-	// Next state (1 for status)
-	writeVarInt(&buf, 1)
-
-	// Send packet with length prefix
-	return c.sendPacket(conn, buf.Bytes())
-}
-
-// Send empty status request packet
-func (c *SLPClient) sendStatusRequest(conn net.Conn) error {
-	var buf bytes.Buffer
-	// Packet ID (0x00 for status request)
-	writeVarInt(&buf, 0x00)
-	return c.sendPacket(conn, buf.Bytes())
-}
-
 // Read and parse status response
 func (c *SLPClient) readStatusResponse(conn net.Conn) (string, error) {
 	// Read packet length
-	packetLen, err := readVarInt(conn)
+	packetLen, err := mcproto.ReadVarInt(conn)
 	if err != nil {
 		return "", fmt.Errorf("failed to read packet length: %w", err)
 	}
@@ -171,7 +145,7 @@ func (c *SLPClient) readStatusResponse(conn net.Conn) (string, error) {
 	reader := bytes.NewReader(data)
 
 	// Read packet ID (should be 0x00)
-	packetID, err := readVarInt(reader)
+	packetID, err := mcproto.ReadVarInt(reader)
 	if err != nil {
 		return "", fmt.Errorf("failed to read packet ID: %w", err)
 	}
@@ -181,7 +155,7 @@ func (c *SLPClient) readStatusResponse(conn net.Conn) (string, error) {
 	}
 
 	// Read JSON string
-	jsonStr, err := readString(reader)
+	jsonStr, err := mcproto.ReadString(reader, maxSLPPacketBytes)
 	if err != nil {
 		return "", fmt.Errorf("failed to read JSON string: %w", err)
 	}
@@ -193,18 +167,18 @@ func (c *SLPClient) readStatusResponse(conn net.Conn) (string, error) {
 func (c *SLPClient) sendPing(conn net.Conn, payload int64) error {
 	var buf bytes.Buffer
 	// Packet ID (0x01 for ping)
-	writeVarInt(&buf, 0x01)
+	mcproto.WriteVarInt(&buf, 0x01)
 	// Payload (8 bytes, big endian)
 	if err := binary.Write(&buf, binary.BigEndian, payload); err != nil {
 		return err
 	}
-	return c.sendPacket(conn, buf.Bytes())
+	return mcproto.WriteFramed(conn, buf.Bytes())
 }
 
 // Read pong response and return payload
 func (c *SLPClient) readPong(conn net.Conn) (int64, error) {
 	// Read packet length
-	packetLen, err := readVarInt(conn)
+	packetLen, err := mcproto.ReadVarInt(conn)
 	if err != nil {
 		return 0, fmt.Errorf("failed to read packet length: %w", err)
 	}
@@ -222,7 +196,7 @@ func (c *SLPClient) readPong(conn net.Conn) (int64, error) {
 	reader := bytes.NewReader(data)
 
 	// Read packet ID (should be 0x01)
-	packetID, err := readVarInt(reader)
+	packetID, err := mcproto.ReadVarInt(reader)
 	if err != nil {
 		return 0, fmt.Errorf("failed to read packet ID: %w", err)
 	}
@@ -238,15 +212,6 @@ func (c *SLPClient) readPong(conn net.Conn) (int64, error) {
 	}
 
 	return payload, nil
-}
-
-// Send packet with length prefix
-func (c *SLPClient) sendPacket(conn net.Conn, data []byte) error {
-	var buf bytes.Buffer
-	writeVarInt(&buf, int32(len(data)))
-	buf.Write(data)
-	_, err := conn.Write(buf.Bytes())
-	return err
 }
 
 // Extract plain text Motd from description field
@@ -281,67 +246,3 @@ func parseDescription(desc json.RawMessage) string {
 	return strings.TrimSpace(string(desc))
 }
 
-func writeVarInt(w io.Writer, value int32) error {
-	for {
-		if (value & ^0x7F) == 0 {
-			return binary.Write(w, binary.BigEndian, byte(value))
-		}
-		if err := binary.Write(w, binary.BigEndian, byte((value&0x7F)|0x80)); err != nil {
-			return err
-		}
-		value = int32(uint32(value) >> 7)
-	}
-}
-
-func readVarInt(r io.Reader) (int32, error) {
-	var value int32
-	var position int
-	buf := make([]byte, 1)
-
-	for {
-		n, err := r.Read(buf)
-		if err != nil {
-			return 0, err
-		}
-		if n != 1 {
-			return 0, fmt.Errorf("failed to read byte")
-		}
-		currentByte := buf[0]
-
-		value |= int32(currentByte&0x7F) << position
-
-		if currentByte&0x80 == 0 {
-			break
-		}
-
-		position += 7
-		if position >= 32 {
-			return 0, fmt.Errorf("VarInt is too big")
-		}
-	}
-
-	return value, nil
-}
-
-func writeString(w io.Writer, s string) error {
-	if err := writeVarInt(w, int32(len(s))); err != nil {
-		return err
-	}
-	_, err := w.Write([]byte(s))
-	return err
-}
-
-func readString(r io.Reader) (string, error) {
-	length, err := readVarInt(r)
-	if err != nil {
-		return "", err
-	}
-	if length < 0 || length > maxSLPPacketBytes {
-		return "", fmt.Errorf("string length out of bounds: %d", length)
-	}
-	data := make([]byte, length)
-	if _, err := io.ReadFull(r, data); err != nil {
-		return "", err
-	}
-	return string(data), nil
-}

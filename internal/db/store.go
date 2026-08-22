@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -27,6 +28,11 @@ const MinecraftDefaultPort = 25565
 // Docker container name for a module id
 func ModuleContainerName(moduleID string) string {
 	return "discopanel-module-" + moduleID
+}
+
+// Panel owned host dir for one module's files
+func ModuleDataDir(dataDir, moduleID string) string {
+	return filepath.Join(dataDir, "modules", moduleID)
 }
 
 // Port the server listens on inside its container
@@ -272,6 +278,9 @@ func rollupSamples(samples []*v1.MetricsSample, bucket int64, rawSeconds int) []
 		agg.ProxyBytesIn += r.ProxyBytesIn
 		agg.ProxyBytesOut += r.ProxyBytesOut
 		agg.ProxyLogins += r.ProxyLogins
+		agg.GcPauseCount += r.GcPauseCount
+		agg.GcPauseTotalMs += r.GcPauseTotalMs
+		agg.GcPauseMaxMs = max(agg.GcPauseMaxMs, r.GcPauseMaxMs)
 		weights[agg] += w
 	}
 	for _, agg := range rolled {

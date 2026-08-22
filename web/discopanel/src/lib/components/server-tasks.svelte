@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
+	import { rpcClient, rpcErrorMessage, silentCallOptions } from '$lib/api/rpc-client';
 	import { registerRefresh } from '$lib/stores/refresh';
 	import { notify } from '$lib/stores/activity.svelte';
 	import { Input } from '$lib/components/ui/input';
@@ -9,12 +9,13 @@
 	import { Switch } from '$lib/components/ui/switch';
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { Skeleton } from '$lib/components/ui/skeleton';
-	import * as Select from '$lib/components/ui/select';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import {
 		ConfirmDialog,
 		CopyButton,
 		EmptyState,
+		EnumSelect,
+		LabeledInput,
 		SectionCard,
 		SectionedDialogLayout
 	} from '$lib/components/app';
@@ -24,9 +25,6 @@
 		Play,
 		Trash2,
 		Clock,
-		CheckCircle2,
-		XCircle,
-		AlertCircle,
 		Terminal,
 		RotateCcw,
 		Square,
@@ -58,7 +56,6 @@
 		ScheduleType,
 		ScheduleTypeSchema,
 		ExecutionStatus,
-		ExecutionStatusSchema,
 		TriggeredEventType,
 		TaskTrigger,
 		TaskTriggerSchema,
@@ -67,7 +64,8 @@
 		ScriptTaskConfigSchema,
 		WebhookTaskConfigSchema
 	} from '$lib/proto/discopanel/v1/storage_pb';
-	import { enumLabel } from '$lib/proto-meta';
+	import { enumLabelOr } from '$lib/proto-meta';
+	import { executionMeta } from '$lib/task-status';
 	import { SERVER_EVENT_TYPES, getEventTypeLabel } from '$lib/utils/events';
 	import { create, clone } from '@bufbuild/protobuf';
 	import { timestampFromDate } from '@bufbuild/protobuf/wkt';
@@ -332,7 +330,7 @@
 	}
 
 	function getDefaultTemplate(url: string): string {
-		return webhookTemplatePresets[getDefaultPresetKey(url)] || '';
+		return webhookTemplatePresets[getDefaultPresetKey(url)];
 	}
 
 	// Resets task state when server changes
@@ -507,23 +505,29 @@
 
 		creating = true;
 		try {
-			commandConfig.command = commandConfig.command.trim();
-			scriptConfig.scriptPath = scriptConfig.scriptPath.trim();
-			scriptConfig.args = scriptArgs
-				.split(' ')
-				.map((a) => a.trim())
-				.filter(Boolean);
-			backupConfig.backupName = backupConfig.backupName.trim();
-			backupConfig.paths = backupPaths
-				.split(',')
-				.map((p) => p.trim())
-				.filter(Boolean);
-			// Always sends a concrete resolved template
-			webhookConfig.payloadTemplate = customizePayload
-				? webhookConfig.payloadTemplate
-				: getDefaultTemplate(webhookConfig.url);
-			// Existing secret survives edit unless replaced
-			if (webhookSecret) webhookConfig.secret = webhookSecret;
+			// Only the active type's config reaches the payload
+			if (taskType === TaskType.COMMAND) {
+				commandConfig.command = commandConfig.command.trim();
+			} else if (taskType === TaskType.SCRIPT) {
+				scriptConfig.scriptPath = scriptConfig.scriptPath.trim();
+				scriptConfig.args = scriptArgs
+					.split(' ')
+					.map((a) => a.trim())
+					.filter(Boolean);
+			} else if (taskType === TaskType.BACKUP) {
+				backupConfig.backupName = backupConfig.backupName.trim();
+				backupConfig.paths = backupPaths
+					.split(',')
+					.map((p) => p.trim())
+					.filter(Boolean);
+			} else if (taskType === TaskType.WEBHOOK) {
+				// Always sends a concrete resolved template
+				webhookConfig.payloadTemplate = customizePayload
+					? webhookConfig.payloadTemplate
+					: getDefaultTemplate(webhookConfig.url);
+				// Existing secret survives edit unless replaced
+				if (webhookSecret) webhookConfig.secret = webhookSecret;
+			}
 
 			const runAtTimestamp =
 				scheduleType === ScheduleType.ONCE && runAt
@@ -583,7 +587,7 @@
 			resetForm();
 			await loadTasks();
 		} catch (error: unknown) {
-			notify.error(error instanceof Error ? error.message : 'Failed to save task');
+			notify.error(rpcErrorMessage(error, 'Failed to save task'));
 		} finally {
 			creating = false;
 		}
@@ -611,7 +615,7 @@
 			notify.success('Task triggered successfully');
 			await loadTasks();
 		} catch (error: unknown) {
-			notify.error(error instanceof Error ? error.message : 'Failed to trigger task');
+			notify.error(rpcErrorMessage(error, 'Failed to trigger task'));
 		} finally {
 			if (runningTaskId === task.id) runningTaskId = null;
 		}
@@ -711,7 +715,7 @@
 	];
 
 	function getTaskTypeLabel(type: TaskType): string {
-		return enumLabel(TaskTypeSchema, type) || enumLabel(TaskTypeSchema, TaskType.UNSPECIFIED);
+		return enumLabelOr(TaskTypeSchema, type);
 	}
 
 	function getTaskTypeIcon(type: TaskType) {
@@ -736,9 +740,7 @@
 	}
 
 	function getScheduleTypeLabel(s: ScheduleType): string {
-		return (
-			enumLabel(ScheduleTypeSchema, s) || enumLabel(ScheduleTypeSchema, ScheduleType.UNSPECIFIED)
-		);
+		return enumLabelOr(ScheduleTypeSchema, s);
 	}
 
 	function getScheduleLabel(task: ScheduledTask): string {
@@ -761,44 +763,6 @@
 		if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
 		if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
 		return `${Math.floor(seconds / 86400)}d`;
-	}
-
-	function executionBadge(status: ExecutionStatus): { icon: typeof Clock; class: string } {
-		switch (status) {
-			case ExecutionStatus.COMPLETED:
-				return {
-					icon: CheckCircle2,
-					class: 'border-status-ok/30 bg-status-ok/10 text-status-ok'
-				};
-			case ExecutionStatus.FAILED:
-				return {
-					icon: XCircle,
-					class: 'border-status-danger/30 bg-status-danger/10 text-status-danger'
-				};
-			case ExecutionStatus.RUNNING:
-				return {
-					icon: Loader2,
-					class: 'border-status-busy/30 bg-status-busy/10 text-status-busy'
-				};
-			case ExecutionStatus.SKIPPED:
-				return { icon: AlertCircle, class: 'text-muted-foreground' };
-			case ExecutionStatus.TIMEOUT:
-				return {
-					icon: Clock,
-					class: 'border-status-danger/30 bg-status-danger/10 text-status-danger'
-				};
-			case ExecutionStatus.CANCELLED:
-				return { icon: XCircle, class: 'text-muted-foreground' };
-			default:
-				return { icon: Clock, class: 'text-muted-foreground' };
-		}
-	}
-
-	function getExecutionStatusLabel(status: ExecutionStatus): string {
-		return (
-			enumLabel(ExecutionStatusSchema, status) ||
-			enumLabel(ExecutionStatusSchema, ExecutionStatus.UNSPECIFIED)
-		);
 	}
 
 	function formatDuration(ms: bigint): string {
@@ -919,7 +883,7 @@
 									<Clock class="size-3" />
 									{getScheduleLabel(task)}
 								</span>
-								{#if task.nextRun && task.status === TaskStatus.ENABLED && task.schedule !== ScheduleType.EVENT}
+								{#if task.nextRun && enabled && task.schedule !== ScheduleType.EVENT}
 									<span class="tabular">Next: {formatNextRun(task)}</span>
 								{/if}
 								{#if task.lastRun}
@@ -1038,88 +1002,56 @@
 
 					<div class="space-y-2">
 						<Label>Task type</Label>
-						<Select.Root
-							type="single"
+						<EnumSelect
+							schema={TaskTypeSchema}
+							options={TASK_TYPE_OPTIONS}
+							bind:value={taskType}
 							name="taskType"
-							value={taskType.toString()}
-							onValueChange={(v) => {
-								if (v) taskType = parseInt(v) as TaskType;
-							}}
-						>
-							<Select.Trigger class="w-full">
-								{getTaskTypeLabel(taskType)}
-							</Select.Trigger>
-							<Select.Content>
-								{#each TASK_TYPE_OPTIONS as t (t)}
-									<Select.Item value={t.toString()} label={getTaskTypeLabel(t)}>
-										{getTaskTypeLabel(t)}
-									</Select.Item>
-								{/each}
-							</Select.Content>
-						</Select.Root>
+						/>
 					</div>
 
 					{#if taskType === TaskType.COMMAND}
-						<div class="space-y-2">
-							<Label for="command">RCON command *</Label>
-							<Input
-								id="command"
-								bind:value={commandConfig.command}
-								placeholder="say Hello World!"
-								class="font-mono"
-							/>
-							<p class="text-xs text-muted-foreground">The command to execute via RCON</p>
-						</div>
+						<LabeledInput
+							id="command"
+							label="RCON command *"
+							bind:value={commandConfig.command}
+							placeholder="say Hello World!"
+							class="font-mono"
+							hint="The command to execute via RCON"
+						/>
 					{:else if taskType === TaskType.SCRIPT}
-						<div class="space-y-2">
-							<Label for="scriptPath">Script path or executable *</Label>
-							<Input
-								id="scriptPath"
-								bind:value={scriptConfig.scriptPath}
-								placeholder="/data/scripts/cleanup.sh"
-								class="font-mono"
-							/>
-							<p class="text-xs text-muted-foreground">
-								Path to the script/executable inside the container
-							</p>
-						</div>
-						<div class="space-y-2">
-							<Label for="scriptArgs">Arguments</Label>
-							<Input
-								id="scriptArgs"
-								bind:value={scriptArgs}
-								placeholder="--verbose --level 2"
-								class="font-mono"
-							/>
-							<p class="text-xs text-muted-foreground">
-								Space-separated arguments to pass to the script/executable
-							</p>
-						</div>
+						<LabeledInput
+							id="scriptPath"
+							label="Script path or executable *"
+							bind:value={scriptConfig.scriptPath}
+							placeholder="/data/scripts/cleanup.sh"
+							class="font-mono"
+							hint="Path to the script/executable inside the container"
+						/>
+						<LabeledInput
+							id="scriptArgs"
+							label="Arguments"
+							bind:value={scriptArgs}
+							placeholder="--verbose --level 2"
+							class="font-mono"
+							hint="Space-separated arguments to pass to the script/executable"
+						/>
 					{:else if taskType === TaskType.BACKUP}
-						<div class="space-y-2">
-							<Label for="backupName">Backup name</Label>
-							<Input
-								id="backupName"
-								bind:value={backupConfig.backupName}
-								placeholder={taskName || 'Daily Backup'}
-							/>
-							<p class="text-xs text-muted-foreground">
-								Used as the archive filename prefix. Defaults to the task name.
-							</p>
-						</div>
-						<div class="space-y-2">
-							<Label for="backupPaths">Paths to include</Label>
-							<Input
-								id="backupPaths"
-								bind:value={backupPaths}
-								placeholder="world, world_nether, world_the_end"
-								class="font-mono"
-							/>
-							<p class="text-xs text-muted-foreground">
-								Comma-separated paths relative to the server directory. Leave empty to back up the
-								world directory.
-							</p>
-						</div>
+						<LabeledInput
+							id="backupName"
+							label="Backup name"
+							bind:value={backupConfig.backupName}
+							placeholder={taskName || 'Daily Backup'}
+							hint="Used as the archive filename prefix. Defaults to the task name."
+						/>
+						<LabeledInput
+							id="backupPaths"
+							label="Paths to include"
+							bind:value={backupPaths}
+							placeholder="world, world_nether, world_the_end"
+							class="font-mono"
+							hint="Comma-separated paths relative to the server directory. Leave empty to back up the world directory."
+						/>
 						<label
 							class="flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-accent/40"
 						>
@@ -1132,57 +1064,45 @@
 							</div>
 						</label>
 						<div class="grid gap-4 sm:grid-cols-3">
-							<div class="space-y-2">
-								<Label for="retentionDays">Retention (days)</Label>
-								<Input
-									id="retentionDays"
-									type="number"
-									bind:value={backupConfig.retentionDays}
-									min={0}
-								/>
-								<p class="text-xs text-muted-foreground">
-									Delete backups older than this. 0 = keep forever
-								</p>
-							</div>
-							<div class="space-y-2">
-								<Label for="minBackups">Min backups</Label>
-								<Input
-									id="minBackups"
-									type="number"
-									bind:value={backupConfig.minBackups}
-									min={0}
-									disabled={backupConfig.retentionDays <= 0}
-								/>
-								<p class="text-xs text-muted-foreground">
-									Never expire by age below this many, even past retention
-								</p>
-							</div>
-							<div class="space-y-2">
-								<Label for="maxBackups">Max backups</Label>
-								<Input id="maxBackups" type="number" bind:value={backupConfig.maxBackups} min={0} />
-								<p class="text-xs text-muted-foreground">
-									Hard cap, oldest deleted first. 0 = unlimited
-								</p>
-							</div>
+							<LabeledInput
+								id="retentionDays"
+								label="Retention (days)"
+								type="number"
+								bind:value={backupConfig.retentionDays}
+								min={0}
+								hint="Delete backups older than this. 0 = keep forever"
+							/>
+							<LabeledInput
+								id="minBackups"
+								label="Min backups"
+								type="number"
+								bind:value={backupConfig.minBackups}
+								min={0}
+								disabled={backupConfig.retentionDays <= 0}
+								hint="Never expire by age below this many, even past retention"
+							/>
+							<LabeledInput
+								id="maxBackups"
+								label="Max backups"
+								type="number"
+								bind:value={backupConfig.maxBackups}
+								min={0}
+								hint="Hard cap, oldest deleted first. 0 = unlimited"
+							/>
 						</div>
 						<p class="text-xs text-muted-foreground">
 							World saving is automatically paused and flushed while the backup runs, then
 							re-enabled.
 						</p>
 					{:else if taskType === TaskType.WEBHOOK}
-						<div class="space-y-2">
-							<Label for="url">Webhook URL *</Label>
-							<Input
-								id="url"
-								bind:value={webhookConfig.url}
-								placeholder="https://example.com/webhook"
-								class="font-mono"
-							/>
-							<p class="text-xs text-muted-foreground">
-								The endpoint the request is sent to. Discord/Slack/Teams/ntfy URLs are auto-detected
-								for the default payload preset.
-							</p>
-						</div>
+						<LabeledInput
+							id="url"
+							label="Webhook URL *"
+							bind:value={webhookConfig.url}
+							placeholder="https://example.com/webhook"
+							class="font-mono"
+							hint="The endpoint the request is sent to. Discord/Slack/Teams/ntfy URLs are auto-detected for the default payload preset."
+						/>
 					{:else}
 						<div class="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
 							No additional configuration required for this task type.
@@ -1196,9 +1116,7 @@
 								{#if customizePayload}
 									Using a custom payload template
 								{:else}
-									Using the default {presetLabels[getDefaultPresetKey(webhookConfig.url)] ||
-										'Generic'}
-									preset
+									Using the default {presetLabels[getDefaultPresetKey(webhookConfig.url)]} preset
 								{/if}
 							</p>
 						</div>
@@ -1217,16 +1135,14 @@
 						<p class="stat-label mb-1.5">Presets</p>
 						<div class="flex flex-wrap gap-1">
 							{#each Object.keys(presetLabels) as key (key)}
-								{#if webhookTemplatePresets[key]}
-									<Button
-										variant="outline"
-										size="sm"
-										class="h-7 text-xs"
-										onclick={() => applyPreset(key)}
-									>
-										{presetLabels[key]}
-									</Button>
-								{/if}
+								<Button
+									variant="outline"
+									size="sm"
+									class="h-7 text-xs"
+									onclick={() => applyPreset(key)}
+								>
+									{presetLabels[key]}
+								</Button>
 							{/each}
 						</div>
 					</div>
@@ -1262,56 +1178,40 @@
 				{:else if activeSection === 'schedule'}
 					<div class="space-y-2">
 						<Label>Schedule type</Label>
-						<Select.Root
-							type="single"
+						<EnumSelect
+							schema={ScheduleTypeSchema}
+							options={SCHEDULE_TYPE_OPTIONS}
+							bind:value={scheduleType}
 							name="scheduleType"
-							value={scheduleType.toString()}
-							onValueChange={(v) => {
-								if (v) scheduleType = parseInt(v) as ScheduleType;
-							}}
-						>
-							<Select.Trigger class="w-full">
-								{getScheduleTypeLabel(scheduleType)}
-							</Select.Trigger>
-							<Select.Content>
-								{#each SCHEDULE_TYPE_OPTIONS as s (s)}
-									<Select.Item value={s.toString()} label={getScheduleTypeLabel(s)}>
-										{getScheduleTypeLabel(s)}
-									</Select.Item>
-								{/each}
-							</Select.Content>
-						</Select.Root>
+						/>
 					</div>
 
 					{#if scheduleType === ScheduleType.CRON}
-						<div class="space-y-2">
-							<Label for="cronExpr">Cron expression *</Label>
-							<Input
-								id="cronExpr"
-								bind:value={cronExpr}
-								placeholder="0 0 * * *"
-								class="font-mono"
-							/>
-							<p class="text-xs text-muted-foreground">
-								Format: minute hour day month weekday (e.g., "0 0 * * *" for daily at midnight)
-							</p>
-						</div>
+						<LabeledInput
+							id="cronExpr"
+							label="Cron expression *"
+							bind:value={cronExpr}
+							placeholder="0 0 * * *"
+							class="font-mono"
+							hint={'Format: minute hour day month weekday (e.g., "0 0 * * *" for daily at midnight)'}
+						/>
 					{:else if scheduleType === ScheduleType.INTERVAL}
-						<div class="space-y-2">
-							<Label for="intervalSecs">Interval (seconds)</Label>
-							<Input id="intervalSecs" type="number" bind:value={intervalSecs} min={60} />
-							<p class="text-xs text-muted-foreground">
-								Minimum 60 seconds. Current: every {formatInterval(intervalSecs)}
-							</p>
-						</div>
+						<LabeledInput
+							id="intervalSecs"
+							label="Interval (seconds)"
+							type="number"
+							bind:value={intervalSecs}
+							min={60}
+							hint="Minimum 60 seconds. Current: every {formatInterval(intervalSecs)}"
+						/>
 					{:else if scheduleType === ScheduleType.ONCE}
-						<div class="space-y-2">
-							<Label for="runAt">Run at</Label>
-							<Input id="runAt" type="datetime-local" bind:value={runAt} />
-							<p class="text-xs text-muted-foreground">
-								The task runs once at this time, then is disabled
-							</p>
-						</div>
+						<LabeledInput
+							id="runAt"
+							label="Run at"
+							type="datetime-local"
+							bind:value={runAt}
+							hint="The task runs once at this time, then is disabled"
+						/>
 					{:else if scheduleType === ScheduleType.EVENT}
 						<div class="space-y-2">
 							<Label>Events *</Label>
@@ -1338,76 +1238,73 @@
 					{/if}
 				{:else if activeSection === 'advanced'}
 					{#if taskType === TaskType.WEBHOOK}
-						<div class="space-y-2">
-							<Label for="secret">Secret (optional)</Label>
-							<Input
-								id="secret"
-								type="password"
-								bind:value={webhookSecret}
-								placeholder={originalWebhookHasSecret ? '(unchanged)' : 'HMAC signing secret'}
-							/>
-							<p class="text-xs text-muted-foreground">
-								Signs the payload with HMAC-SHA256 so the receiver can verify it.
-							</p>
-						</div>
+						<LabeledInput
+							id="secret"
+							label="Secret (optional)"
+							type="password"
+							bind:value={webhookSecret}
+							placeholder={originalWebhookHasSecret ? '(unchanged)' : 'HMAC signing secret'}
+							hint="Signs the payload with HMAC-SHA256 so the receiver can verify it."
+						/>
 
 						<div class="grid gap-4 sm:grid-cols-3">
-							<div class="space-y-2">
-								<Label for="maxRetries">Max retries</Label>
-								<Input
-									id="maxRetries"
-									type="number"
-									bind:value={webhookConfig.maxRetries}
-									min={0}
-									max={10}
-								/>
-								<p class="text-xs text-muted-foreground">Delivery attempts before giving up</p>
-							</div>
-							<div class="space-y-2">
-								<Label for="retryDelayMs">Retry delay (ms)</Label>
-								<Input
-									id="retryDelayMs"
-									type="number"
-									bind:value={webhookConfig.retryDelayMs}
-									min={100}
-									max={60000}
-								/>
-								<p class="text-xs text-muted-foreground">Wait between delivery attempts</p>
-							</div>
-							<div class="space-y-2">
-								<Label for="webhookTimeout">Timeout (ms)</Label>
-								<Input
-									id="webhookTimeout"
-									type="number"
-									bind:value={webhookConfig.timeoutMs}
-									min={1000}
-									max={30000}
-								/>
-								<p class="text-xs text-muted-foreground">Per-attempt request timeout</p>
-							</div>
+							<LabeledInput
+								id="maxRetries"
+								label="Max retries"
+								type="number"
+								bind:value={webhookConfig.maxRetries}
+								min={0}
+								max={10}
+								hint="Delivery attempts before giving up"
+							/>
+							<LabeledInput
+								id="retryDelayMs"
+								label="Retry delay (ms)"
+								type="number"
+								bind:value={webhookConfig.retryDelayMs}
+								min={100}
+								max={60000}
+								hint="Wait between delivery attempts"
+							/>
+							<LabeledInput
+								id="webhookTimeout"
+								label="Timeout (ms)"
+								type="number"
+								bind:value={webhookConfig.timeoutMs}
+								min={1000}
+								max={30000}
+								hint="Per-attempt request timeout"
+							/>
 						</div>
 					{:else}
-						<div class="space-y-2">
-							<Label for="timeout">Timeout (seconds)</Label>
-							<Input id="timeout" type="number" bind:value={timeout} min={10} max={3600} />
-							<p class="text-xs text-muted-foreground">
-								Maximum execution time before the task is cancelled
-							</p>
-						</div>
+						<LabeledInput
+							id="timeout"
+							label="Timeout (seconds)"
+							type="number"
+							bind:value={timeout}
+							min={10}
+							max={3600}
+							hint="Maximum execution time before the task is cancelled"
+						/>
 
 						<div class="grid gap-4 sm:grid-cols-2">
-							<div class="space-y-2">
-								<Label for="retryCount">Retry count</Label>
-								<Input id="retryCount" type="number" bind:value={retryCount} min={0} max={10} />
-								<p class="text-xs text-muted-foreground">
-									Times to retry on failure. 0 = no retries
-								</p>
-							</div>
-							<div class="space-y-2">
-								<Label for="retryDelay">Retry delay (seconds)</Label>
-								<Input id="retryDelay" type="number" bind:value={retryDelay} min={1} />
-								<p class="text-xs text-muted-foreground">Wait between retry attempts</p>
-							</div>
+							<LabeledInput
+								id="retryCount"
+								label="Retry count"
+								type="number"
+								bind:value={retryCount}
+								min={0}
+								max={10}
+								hint="Times to retry on failure. 0 = no retries"
+							/>
+							<LabeledInput
+								id="retryDelay"
+								label="Retry delay (seconds)"
+								type="number"
+								bind:value={retryDelay}
+								min={1}
+								hint="Wait between retry attempts"
+							/>
 						</div>
 
 						<label
@@ -1461,7 +1358,7 @@
 		{:else}
 			<div class="space-y-2">
 				{#each taskHistory as execution (execution.id)}
-					{@const badge = executionBadge(execution.status)}
+					{@const badge = executionMeta(execution.status)}
 					{@const StatusIcon = badge.icon}
 					<div class="rounded-lg border bg-card p-3">
 						<div class="flex items-start justify-between gap-2">
@@ -1472,10 +1369,10 @@
 											? 'animate-spin'
 											: ''}"
 									/>
-									{getExecutionStatusLabel(execution.status)}
+									{badge.label}
 								</Badge>
 								<span class="text-xs text-muted-foreground">
-									{enumLabel(TaskTriggerSchema, execution.trigger || TaskTrigger.SCHEDULED)}
+									{enumLabelOr(TaskTriggerSchema, execution.trigger, TaskTrigger.SCHEDULED)}
 								</span>
 							</div>
 							{#if execution.status === ExecutionStatus.RUNNING}

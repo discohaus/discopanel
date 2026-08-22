@@ -187,6 +187,40 @@ func getServer(ctx context.Context, store *storage.Store, id string) (*v1.Server
 	return server, nil
 }
 
+// Runs one lifecycle op in the background with a deadline
+func (s *ServerService) runLifecycleAsync(ctx context.Context, server *v1.Server, timeout time.Duration, verb string, fn func(context.Context, string) error) {
+	go func() {
+		bgCtx, cancel := context.WithTimeout(detach(ctx), timeout)
+		defer cancel()
+		if err := fn(bgCtx, server.Id); err != nil {
+			s.log.Error("Failed to %s server %s: %v", verb, server.Name, err)
+		}
+	}()
+}
+
+// Loads properties or falls back to defaults on error
+func (s *ServerService) serverPropertiesOrDefault(ctx context.Context, serverID string) *v1.ServerProperties {
+	serverConfig, err := s.store.GetServerProperties(ctx, serverID)
+	if err != nil {
+		s.log.Error("Failed to get server config: %v", err)
+		serverConfig = s.store.CreateDefaultServerProperties(serverID)
+	}
+	return serverConfig
+}
+
+// Renders the registry port snapshot for client hints
+func usedPortsProto(ctx context.Context, pm *proxy.Manager) ([]*v1.UsedPort, error) {
+	used, err := pm.UsedNetworkPorts(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	out := make([]*v1.UsedPort, 0, len(used))
+	for _, p := range used {
+		out = append(out, &v1.UsedPort{Port: p})
+	}
+	return out, nil
+}
+
 // Serves server-icon.png from disk, cached by file identity
 func (s *ServerService) serverFavicon(server *v1.Server) string {
 	return s.favicons.Get(server.Id, server.DataPath)
@@ -418,16 +452,9 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 	} else {
 		netReqs = proxy.ServerDirectNetRequests(port, additionalPorts, proxyOn)
 	}
-	if err := s.proxy.EnsureListenersFor(ctx, netReqs); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	netClaim, err := s.proxy.CheckoutNetwork(ctx, netOwner, netReqs)
+	netClaim, err := checkoutNetwork(ctx, s.proxy, s.log, netOwner, netReqs)
 	if err != nil {
-		// Reconcile retires any listener row made just above
-		if serr := s.proxy.SyncListeners(ctx); serr != nil {
-			s.log.Error("Failed to sync after checkout failure: %v", serr)
-		}
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, err
 	}
 	defer netClaim.Release()
 	serverDataDir := fmt.Sprintf("%s_%s", files.SanitizePathName(msg.Name), serverUUID)
@@ -506,16 +533,10 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_SERVER_CREATE, nil, "created the server")
 
 	// Reconcile starts any auto created listener sockets
-	if err := s.proxy.SyncListeners(ctx); err != nil {
-		s.log.Error("Failed to sync routes after server create: %v", err)
-	}
+	syncRoutes(ctx, s.proxy, s.log, "after server create")
 
 	// Get the server config
-	serverConfig, err := s.store.GetServerProperties(ctx, server.Id)
-	if err != nil {
-		s.log.Error("Failed to get server config: %v", err)
-		serverConfig = s.store.CreateDefaultServerProperties(server.Id)
-	}
+	serverConfig := s.serverPropertiesOrDefault(ctx, server.Id)
 	if importedLevelName != "" {
 		serverConfig.Level = &importedLevelName
 	}
@@ -543,13 +564,7 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 		if err := s.store.UpdateServer(ctx, server); err != nil {
 			s.log.Error("Failed to update server status: %v", err)
 		}
-		go func() {
-			bgCtx, cancel := context.WithTimeout(detach(ctx), 2*time.Hour)
-			defer cancel()
-			if err := s.lifecycle.Start(bgCtx, server.Id); err != nil {
-				s.log.Error("Failed to start newly created server %s: %v", server.Name, err)
-			}
-		}()
+		s.runLifecycleAsync(ctx, server, 2*time.Hour, "start newly created", s.lifecycle.Start)
 	} else {
 		server.Status = v1.ServerStatus_SERVER_STATUS_STOPPED
 		if err := s.store.UpdateServer(ctx, server); err != nil {
@@ -682,11 +697,7 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 
 	// Handle modpack version update
 	if msg.ModpackId != "" {
-		serverConfig, err := s.store.GetServerProperties(ctx, server.Id)
-		if err != nil {
-			s.log.Error("Failed to get server config: %v", err)
-			serverConfig = s.store.CreateDefaultServerProperties(server.Id)
-		}
+		serverConfig := s.serverPropertiesOrDefault(ctx, server.Id)
 
 		modpack, err := s.store.GetIndexedModpack(ctx, msg.ModpackId)
 		if err != nil {
@@ -713,16 +724,9 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 	} else {
 		netReqs = proxy.ServerDirectNetRequests(int(server.Port), server.AdditionalPorts, proxyOn)
 	}
-	if err := s.proxy.EnsureListenersFor(ctx, netReqs); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	netClaim, err := s.proxy.CheckoutNetwork(ctx, proxy.NetOwner{Kind: proxy.OwnerServer, ID: server.Id}, netReqs)
+	netClaim, err := checkoutNetwork(ctx, s.proxy, s.log, proxy.NetOwner{Kind: proxy.OwnerServer, ID: server.Id}, netReqs)
 	if err != nil {
-		// Reconcile retires any listener row made just above
-		if serr := s.proxy.SyncListeners(ctx); serr != nil {
-			s.log.Error("Failed to sync after checkout failure: %v", serr)
-		}
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, err
 	}
 	defer netClaim.Release()
 
@@ -734,9 +738,7 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 	netClaim.Confirm()
 
 	// Reconcile keeps routes matching the saved shape
-	if err := s.proxy.SyncListeners(ctx); err != nil {
-		s.log.Error("Failed to sync routes after server update: %v", err)
-	}
+	syncRoutes(ctx, s.proxy, s.log, "after server update")
 
 	if needsRecreation {
 		s.recreateAfterConfigChange(ctx, server)
@@ -832,9 +834,9 @@ func (s *ServerService) stageManualModpack(ctx context.Context, server *v1.Serve
 }
 
 // Rebuilds the container after config changes, restarts if running
-func (s *ServerService) recreateAfterConfigChange(ctx context.Context, server *v1.Server) bool {
+func (s *ServerService) recreateAfterConfigChange(ctx context.Context, server *v1.Server) {
 	if server.ContainerId == "" {
-		return false
+		return
 	}
 
 	wasRunning := false
@@ -847,14 +849,8 @@ func (s *ServerService) recreateAfterConfigChange(ctx context.Context, server *v
 
 	// Running servers come back through the full lifecycle
 	if wasRunning {
-		go func() {
-			bgCtx, cancel := context.WithTimeout(detach(ctx), 2*time.Hour)
-			defer cancel()
-			if err := s.lifecycle.Recreate(bgCtx, server.Id); err != nil {
-				s.log.Error("Failed to recreate server %s after update: %v", server.Name, err)
-			}
-		}()
-		return true
+		s.runLifecycleAsync(ctx, server, 2*time.Hour, "recreate", s.lifecycle.Recreate)
+		return
 	}
 
 	if err := s.docker.RemoveContainer(ctx, server.ContainerId); err != nil {
@@ -866,7 +862,6 @@ func (s *ServerService) recreateAfterConfigChange(ctx context.Context, server *v
 		s.log.Error("Failed to update server after container removal: %v", err)
 	}
 	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_CONTAINER_REMOVE, nil, "removed the container so new settings apply on next start")
-	return false
 }
 
 // Adopts modpack art as the server icon, uploads win
@@ -978,10 +973,8 @@ func (s *ServerService) DeleteServer(ctx context.Context, req *connect.Request[v
 	}
 
 	// Reconcile drops the server's routes and counters
+	syncRoutes(ctx, s.proxy, s.log, "after server delete")
 	if s.proxy != nil {
-		if err := s.proxy.SyncListeners(ctx); err != nil {
-			s.log.Error("Failed to sync routes after server delete: %v", err)
-		}
 		s.proxy.DropOwnerStats(server.Id)
 	}
 
@@ -1037,13 +1030,7 @@ func (s *ServerService) StopServer(ctx context.Context, req *connect.Request[v1.
 		s.log.Error("Failed to update server status: %v", err)
 	}
 
-	go func() {
-		bgCtx, cancel := context.WithTimeout(detach(ctx), 15*time.Minute)
-		defer cancel()
-		if err := s.lifecycle.Stop(bgCtx, server.Id); err != nil {
-			s.log.Error("Failed to stop server %s: %v", server.Name, err)
-		}
-	}()
+	s.runLifecycleAsync(ctx, server, 15*time.Minute, "stop", s.lifecycle.Stop)
 
 	return connect.NewResponse(&v1.StopServerResponse{
 		Status: v1.ServerStatus_SERVER_STATUS_STOPPING,
@@ -1057,13 +1044,7 @@ func (s *ServerService) RestartServer(ctx context.Context, req *connect.Request[
 		return nil, err
 	}
 
-	go func() {
-		bgCtx, cancel := context.WithTimeout(detach(ctx), 2*time.Hour)
-		defer cancel()
-		if err := s.lifecycle.Restart(bgCtx, server.Id); err != nil {
-			s.log.Error("Failed to restart server %s: %v", server.Name, err)
-		}
-	}()
+	s.runLifecycleAsync(ctx, server, 2*time.Hour, "restart", s.lifecycle.Restart)
 
 	return connect.NewResponse(&v1.RestartServerResponse{
 		Status: v1.ServerStatus_SERVER_STATUS_STARTING,
@@ -1077,13 +1058,7 @@ func (s *ServerService) RecreateServer(ctx context.Context, req *connect.Request
 		return nil, err
 	}
 
-	go func() {
-		bgCtx, cancel := context.WithTimeout(detach(ctx), 2*time.Hour)
-		defer cancel()
-		if err := s.lifecycle.Recreate(bgCtx, server.Id); err != nil {
-			s.log.Error("Failed to recreate server %s: %v", server.Name, err)
-		}
-	}()
+	s.runLifecycleAsync(ctx, server, 2*time.Hour, "recreate", s.lifecycle.Recreate)
 
 	return connect.NewResponse(&v1.RecreateServerResponse{
 		Status: v1.ServerStatus_SERVER_STATUS_CREATING,
@@ -1246,14 +1221,9 @@ func (s *ServerService) GetNextAvailablePort(ctx context.Context, req *connect.R
 	}
 
 	// Registry snapshot backs the client side hints
-	used, err := s.proxy.UsedNetworkPorts(ctx)
+	usedPorts, err := usedPortsProto(ctx, s.proxy)
 	if err != nil {
-		s.log.Error("Failed to snapshot used ports: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get available port"))
-	}
-	usedPorts := make([]*v1.UsedPort, 0, len(used))
-	for _, port := range used {
-		usedPorts = append(usedPorts, &v1.UsedPort{Port: port})
+		return nil, err
 	}
 
 	return connect.NewResponse(&v1.GetNextAvailablePortResponse{

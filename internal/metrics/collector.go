@@ -84,10 +84,13 @@ type ServerMetrics struct {
 
 // Renders the sampled subset as one telemetry point
 func (m *ServerMetrics) Sample(serverID string) *v1.MetricsSample {
-	// Stale heap without a live agent must not report
+	// Stale heap and GC without a live agent must not report
 	var heapUsed float64
+	var gcCount int64
+	var gcTotalMs, gcMaxMs float64
 	if m.AgentConnected {
 		heapUsed = m.HeapUsedMb
+		gcCount, gcTotalMs, gcMaxMs = m.GCPauseCount, m.GCPauseTotalMs, m.GCPauseMaxMs
 	}
 	return &v1.MetricsSample{
 		ServerId:         serverID,
@@ -100,6 +103,9 @@ func (m *ServerMetrics) Sample(serverID string) *v1.MetricsSample {
 		HeapUsedMb:       heapUsed,
 		DiskBytes:        m.DiskUsage,
 		ProxyActiveConns: m.ProxyActiveConns,
+		GcPauseCount:     gcCount,
+		GcPauseTotalMs:   gcTotalMs,
+		GcPauseMaxMs:     gcMaxMs,
 	}
 }
 

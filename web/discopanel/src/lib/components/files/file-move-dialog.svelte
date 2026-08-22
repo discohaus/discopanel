@@ -11,6 +11,7 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import { Folder, FolderOpen, ChevronRight, ChevronDown } from '@lucide/svelte';
 	import type { FileInfo } from '$lib/proto/discopanel/v1/file_pb';
+	import { flattenTree, fileDepth } from './tree.svelte';
 
 	interface Props {
 		open?: boolean;
@@ -32,10 +33,6 @@
 			expanded.clear();
 		}
 	});
-
-	function getDirs(items: FileInfo[]): FileInfo[] {
-		return items.filter((f) => f.isDir);
-	}
 
 	function toggleExpand(path: string) {
 		if (expanded.has(path)) {
@@ -62,44 +59,36 @@
 				<FolderOpen class="size-4 text-status-sleep" />
 				<span class="font-mono">/ (root)</span>
 			</button>
-			{#snippet dirTree(dirs: FileInfo[], depth: number)}
-				{#each getDirs(dirs) as dir (dir.path)}
-					<div>
-						<button
-							class="flex w-full items-center gap-1 py-1.5 text-left text-sm transition-colors hover:bg-accent/40
-								{selectedPath === dir.path ? 'bg-primary/10 font-medium' : ''}"
-							style="padding-left: {depth * 16 + 12}px"
-							onclick={() => (selectedPath = dir.path)}
+			{#each flattenTree(files, { expanded, dirsOnly: true }) as dir (dir.path)}
+				<button
+					class="flex w-full items-center gap-1 py-1.5 text-left text-sm transition-colors hover:bg-accent/40
+						{selectedPath === dir.path ? 'bg-primary/10 font-medium' : ''}"
+					style="padding-left: {(fileDepth(dir) + 1) * 16 + 12}px"
+					onclick={() => (selectedPath = dir.path)}
+				>
+					{#if dir.children?.some((c) => c.isDir)}
+						<span
+							role="button"
+							tabindex="-1"
+							class="shrink-0 cursor-pointer p-0 text-muted-foreground transition-colors hover:text-foreground"
+							onclick={(e) => {
+								e.stopPropagation();
+								toggleExpand(dir.path);
+							}}
 						>
-							{#if dir.children && getDirs(dir.children).length > 0}
-								<span
-									role="button"
-									tabindex="-1"
-									class="shrink-0 cursor-pointer p-0 text-muted-foreground transition-colors hover:text-foreground"
-									onclick={(e) => {
-										e.stopPropagation();
-										toggleExpand(dir.path);
-									}}
-								>
-									{#if expanded.has(dir.path)}
-										<ChevronDown class="size-3" />
-									{:else}
-										<ChevronRight class="size-3" />
-									{/if}
-								</span>
+							{#if expanded.has(dir.path)}
+								<ChevronDown class="size-3" />
 							{:else}
-								<span class="w-3"></span>
+								<ChevronRight class="size-3" />
 							{/if}
-							<Folder class="size-4 shrink-0 text-status-sleep" />
-							<span class="truncate font-mono">{dir.name}</span>
-						</button>
-						{#if expanded.has(dir.path) && dir.children}
-							{@render dirTree(getDirs(dir.children), depth + 1)}
-						{/if}
-					</div>
-				{/each}
-			{/snippet}
-			{@render dirTree(files, 1)}
+						</span>
+					{:else}
+						<span class="w-3"></span>
+					{/if}
+					<Folder class="size-4 shrink-0 text-status-sleep" />
+					<span class="truncate font-mono">{dir.name}</span>
+				</button>
+			{/each}
 		</div>
 		<DialogFooter>
 			<Button variant="outline" onclick={() => (open = false)}>Cancel</Button>

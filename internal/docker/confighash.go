@@ -94,7 +94,7 @@ func (c *Client) DesiredModuleConfigHash(module *v1.Module, template *v1.ModuleT
 		}
 		w("port", strconv.Itoa(int(p.HostPort)), strconv.Itoa(int(p.ContainerPort)), protometa.Name(p.Protocol), strconv.FormatBool(p.ProxyEnabled))
 	}
-	vols := c.resolveModuleVolumes(module.VolumeOverrides, aliasCtx)
+	vols := c.resolveVolumes(module.VolumeOverrides, aliasCtx)
 	if server != nil {
 		resolveWorldSources(vols, server.DataPath)
 	}

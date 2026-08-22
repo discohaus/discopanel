@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { FileInfo } from '$lib/proto/discopanel/v1/file_pb';
+	import { isArchiveFile } from './tree.svelte';
 	import {
 		FileEdit,
 		Pencil,
@@ -55,27 +56,6 @@
 		onExtract,
 		onDelete
 	}: Props = $props();
-
-	const archiveExts = [
-		'zip',
-		'tar',
-		'gz',
-		'tgz',
-		'rar',
-		'7z',
-		'bz2',
-		'xz',
-		'lz',
-		'zst',
-		'tbz2',
-		'txz'
-	];
-
-	function isArchive(f: FileInfo | null): boolean {
-		if (!f || f.isDir) return false;
-		const ext = f.name.toLowerCase().split('.').pop() || '';
-		return archiveExts.includes(ext);
-	}
 
 	function handleAction(action: () => void) {
 		action();
@@ -169,7 +149,7 @@
 				Compress{hasSelection && selectedCount > 1 ? ` (${selectedCount})` : ''}
 			</button>
 
-			{#if isArchive(file)}
+			{#if isArchiveFile(file)}
 				<button class={itemClass} onclick={() => handleAction(onExtract)}>
 					<Package class="size-3.5" />
 					Extract

@@ -63,6 +63,16 @@ func VersionNamesForProtocol(protocol int32) []string {
 	return out
 }
 
+// Oldest release name speaking the given protocol
+func OldestVersionForProtocol(protocol int32) (string, bool) {
+	for _, e := range versionEntries {
+		if e.proto == protocol {
+			return e.name, true
+		}
+	}
+	return "", false
+}
+
 // Newest release name speaking the given protocol
 func NewestVersionForProtocol(protocol int32) (string, bool) {
 	name := ""

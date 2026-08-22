@@ -14,6 +14,7 @@
 	import type { FileInfo } from '$lib/proto/discopanel/v1/file_pb';
 	import { formatBytes } from '$lib/utils';
 	import { formatRelative } from '$lib/utils/time';
+	import { archiveExts } from './tree.svelte';
 
 	interface Props {
 		file: FileInfo;
@@ -70,20 +71,6 @@
 		'lua'
 	];
 	const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'svg', 'webp'];
-	const archiveExts = [
-		'zip',
-		'tar',
-		'gz',
-		'tgz',
-		'rar',
-		'7z',
-		'bz2',
-		'xz',
-		'lz',
-		'zst',
-		'tbz2',
-		'txz'
-	];
 
 	function getFileIcon(f: FileInfo) {
 		if (f.isDir) return isExpanded ? FolderOpen : Folder;
@@ -170,7 +157,7 @@
 	</div>
 
 	<!-- Size column -->
-	<span class="tabular w-16 shrink-0 text-right font-mono text-muted-foreground">
+	<span class="tabular w-20 shrink-0 text-right font-mono text-muted-foreground">
 		{#if !file.isDir}
 			{formatBytes(Number(file.size))}
 		{/if}

@@ -98,7 +98,7 @@ func init() {
 			migrate.TableChange{
 				Table:    target.Table("modules"),
 				Adds:     []string{"cert_pem", "key_pem"},
-				Drops:    []string{"config", "token_plaintext"},
+				Drops:    []string{"config", "token_plaintext", "data_path"},
 				Modifies: []string{"status"},
 			},
 

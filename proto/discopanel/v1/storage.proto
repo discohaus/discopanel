@@ -1496,6 +1496,9 @@ message MetricsSample {
   int64 id = 13 [(protogorm.v1.db) = {tag: "primaryKey;autoIncrement"}];
   string server_id = 14 [(protogorm.v1.db) = {tag: "not null;index:idx_metrics_lookup,priority:1"}];
   int32 resolution = 15 [(protogorm.v1.db) = {tag: "not null;default:0;index:idx_metrics_lookup,priority:2"}];
+  int64 gc_pause_count = 16; // GC pauses observed this window
+  double gc_pause_total_ms = 17; // Summed GC pause ms this window
+  double gc_pause_max_ms = 18; // Longest GC pause ms this window
 }
 
 // ModuleTemplate defines a reusable blueprint for creating module instances.
@@ -1657,7 +1660,7 @@ message Module {
   // Run independently of server lifecycle.
   bool detached = 14 [(protogorm.v1.db) = {tag: "default:false"}];
   // Path to module's persistent data directory.
-  string data_path = 15;
+  string data_path = 15 [(protogorm.v1.db) = {skip: true}];
   // When this module was created.
   google.protobuf.Timestamp created_at = 16 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
   // When this module was last updated.

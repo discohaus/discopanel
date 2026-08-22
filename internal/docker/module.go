@@ -77,7 +77,7 @@ func (c *Client) CreateModuleContainer(ctx context.Context, module *v1.Module, t
 	}
 
 	// Build mounts from module configuration only (frontend sends complete config)
-	vols := c.resolveModuleVolumes(module.VolumeOverrides, aliasCtx)
+	vols := c.resolveVolumes(module.VolumeOverrides, aliasCtx)
 	if server != nil {
 		resolveWorldSources(vols, server.DataPath)
 	}
@@ -102,7 +102,7 @@ func (c *Client) CreateModuleContainer(ctx context.Context, module *v1.Module, t
 		}
 	}
 
-	mounts := c.moduleVolumesToMounts(vols)
+	mounts := c.volumesToMounts(vols)
 
 	siblings := map[string]*v1.Module{}
 	if len(siblingModules) > 0 && siblingModules[0] != nil {
@@ -260,18 +260,13 @@ func resolveWorldSources(vols []*v1.VolumeMount, dataPath string) {
 	}
 }
 
-// Panel owned host dir for one module's files
-func ModuleDataDir(cfg *config.Config, moduleID string) string {
-	return filepath.Join(cfg.Storage.DataDir, "modules", moduleID)
-}
-
 // Writes the stored cert pair and mounts it read only
 func (c *Client) mountModuleCerts(module *v1.Module, template *v1.ModuleTemplate, cfg *config.Config, vols []*v1.VolumeMount) ([]*v1.VolumeMount, error) {
 	if template.CertMountPath == "" || module.CertPem == "" || module.KeyPem == "" {
 		return vols, nil
 	}
 	// Parent stays private, mounted dir stays container readable
-	base := ModuleDataDir(cfg, module.Id)
+	base := models.ModuleDataDir(cfg.Storage.DataDir, module.Id)
 	if err := os.MkdirAll(base, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create module data dir: %w", err)
 	}
@@ -290,7 +285,7 @@ func (c *Client) mountModuleCerts(module *v1.Module, template *v1.ModuleTemplate
 }
 
 // Clones volume mounts and substitutes aliases in paths
-func (c *Client) resolveModuleVolumes(vols []*v1.VolumeMount, aliasCtx *alias.Context) []*v1.VolumeMount {
+func (c *Client) resolveVolumes(vols []*v1.VolumeMount, aliasCtx *alias.Context) []*v1.VolumeMount {
 	resolved := make([]*v1.VolumeMount, 0, len(vols))
 	for _, vol := range vols {
 		if vol == nil {
@@ -304,8 +299,8 @@ func (c *Client) resolveModuleVolumes(vols []*v1.VolumeMount, aliasCtx *alias.Co
 	return resolved
 }
 
-// Module volumes to Docker mount specs
-func (c *Client) moduleVolumesToMounts(volumes []*v1.VolumeMount) []mount.Mount {
+// Volume mounts to Docker mount specs
+func (c *Client) volumesToMounts(volumes []*v1.VolumeMount) []mount.Mount {
 	var mounts []mount.Mount
 
 	for _, vol := range volumes {

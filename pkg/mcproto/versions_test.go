@@ -45,6 +45,9 @@ func TestVersionNamesForProtocol(t *testing.T) {
 	if newest, ok := NewestVersionForProtocol(763); !ok || newest != "1.20.1" {
 		t.Fatalf("newest 763 = %q/%v, want 1.20.1", newest, ok)
 	}
+	if oldest, ok := OldestVersionForProtocol(754); !ok || oldest != "1.16.4" {
+		t.Fatalf("oldest 754 = %q/%v, want 1.16.4", oldest, ok)
+	}
 	if _, ok := NewestVersionForProtocol(9999); ok {
 		t.Fatal("unknown protocol must miss")
 	}
@@ -59,8 +62,5 @@ func TestSplitHostMarkers(t *testing.T) {
 	host, markers = SplitHostMarkers("mc.example.com")
 	if host != "mc.example.com" || markers != "" {
 		t.Fatalf("plain split = %q + %q", host, markers)
-	}
-	if !HasHostMarkers("x\x00FML2\x00") || HasHostMarkers("x") {
-		t.Fatal("marker detection wrong")
 	}
 }

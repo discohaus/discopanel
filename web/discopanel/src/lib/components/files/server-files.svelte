@@ -2,17 +2,7 @@
 	import { onDestroy } from 'svelte';
 	import { Progress } from '$lib/components/ui/progress';
 	import { Button } from '$lib/components/ui/button';
-	import { Input } from '$lib/components/ui/input';
-	import { Label } from '$lib/components/ui/label';
 	import { Skeleton } from '$lib/components/ui/skeleton';
-	import {
-		DialogContent,
-		DialogDescription,
-		DialogFooter,
-		DialogHeader,
-		DialogTitle
-	} from '$lib/components/ui/dialog';
-	import { Dialog as DialogPrimitive } from 'bits-ui';
 	import { ConfirmDialog, EmptyState } from '$lib/components/app';
 	import { Loader2, Folder, Upload, X } from '@lucide/svelte';
 	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
@@ -29,6 +19,15 @@
 	import FileTree from './file-tree.svelte';
 	import FileContextMenu from './file-context-menu.svelte';
 	import FileMoveDialog from './file-move-dialog.svelte';
+	import FileNameDialog from './file-name-dialog.svelte';
+	import {
+		FileTreeState,
+		flattenTree,
+		collectFiles,
+		findFile,
+		fileDepth,
+		isArchiveFile
+	} from './tree.svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 
 	interface Props {
@@ -39,8 +38,7 @@
 	let { server, active = false }: Props = $props();
 
 	// --- File state ---
-	let files = $state<FileInfo[]>([]);
-	let loading = $state(true);
+	const tree = new FileTreeState(server.id);
 
 	// --- Upload state ---
 	let uploading = $state(false);
@@ -55,7 +53,6 @@
 	let extractionPollId: ReturnType<typeof setInterval> | null = null;
 
 	// --- Tree state ---
-	let expandedDirs = $state<Set<string>>(new Set());
 	let filterText = $state('');
 
 	// --- Selection state ---
@@ -94,58 +91,10 @@
 	let previousServerId: string;
 
 	// --- Derived ---
-	let flatFiles = $derived.by(() => {
-		const result: FileInfo[] = [];
-		function walk(items: FileInfo[]) {
-			for (const item of items) {
-				if (filterText) {
-					const match = item.name.toLowerCase().includes(filterText.toLowerCase());
-					if (match) result.push(item);
-					if (item.isDir && item.children) walk(item.children);
-				} else {
-					result.push(item);
-					if (item.isDir && item.children && expandedDirs.has(item.path)) {
-						walk(item.children);
-					}
-				}
-			}
-		}
-		walk(files);
-		return result;
-	});
-
-	let selectedFiles = $derived.by(() => {
-		const paths = selectedPaths;
-		const result: FileInfo[] = [];
-		function walk(items: FileInfo[]) {
-			for (const item of items) {
-				if (paths.has(item.path)) result.push(item);
-				if (item.isDir && item.children) walk(item.children);
-			}
-		}
-		walk(files);
-		return result;
-	});
-
-	function isArchiveFile(f: FileInfo): boolean {
-		if (f.isDir) return false;
-		const ext = f.name.toLowerCase().split('.').pop() || '';
-		return [
-			'zip',
-			'tar',
-			'gz',
-			'tgz',
-			'rar',
-			'7z',
-			'bz2',
-			'xz',
-			'lz',
-			'zst',
-			'tbz2',
-			'txz'
-		].includes(ext);
-	}
-
+	let flatFiles = $derived(
+		flattenTree(tree.files, { expanded: tree.expanded, filter: filterText })
+	);
+	let selectedFiles = $derived(collectFiles(tree.files, selectedPaths));
 	let canExtractSelection = $derived(selectedFiles.length === 1 && isArchiveFile(selectedFiles[0]));
 
 	// --- Lifecycle ---
@@ -157,15 +106,13 @@
 			// Stops extraction polling aimed at the old server
 			stopExtractionPoll();
 			extracting = false;
-			files = [];
-			loading = true;
 			uploading = false;
-			expandedDirs = new SvelteSet();
+			tree.reset(server.id);
 			selectedPaths = new SvelteSet();
 			focusedPath = '';
 			hasLoaded = false;
 			if (active) {
-				loadFiles();
+				tree.load();
 				hasLoaded = true;
 			}
 		}
@@ -173,36 +120,19 @@
 
 	$effect(() => {
 		if (active && !hasLoaded) {
-			loadFiles();
+			tree.load();
 			hasLoaded = true;
 		}
 	});
 
 	$effect(() => {
 		if (!active) return;
-		return registerRefresh(loadFiles);
+		return registerRefresh(tree.load);
 	});
 
 	onDestroy(() => {
 		stopExtractionPoll();
 	});
-
-	// --- Data loading ---
-	async function loadFiles() {
-		try {
-			loading = true;
-			const response = await rpcClient.file.listFiles({
-				serverId: server.id,
-				path: '',
-				tree: true
-			});
-			files = response.files;
-		} catch {
-			notify.error('Failed to load files');
-		} finally {
-			loading = false;
-		}
-	}
 
 	function itemsLabel(count: number): string {
 		return count === 1 ? '1 item' : `${count} items`;
@@ -213,28 +143,7 @@
 		return paths.some((p) => destinationPath === p || destinationPath.startsWith(p + '/'));
 	}
 
-	// Checks the loaded tree for an existing path
-	function pathExists(path: string): boolean {
-		let found = false;
-		function walk(items: FileInfo[]) {
-			for (const item of items) {
-				if (found) return;
-				if (item.path === path) {
-					found = true;
-					return;
-				}
-				if (item.isDir && item.children) walk(item.children);
-			}
-		}
-		walk(files);
-		return found;
-	}
-
 	// --- Selection logic ---
-	function getDepth(file: FileInfo): number {
-		return file.path.split('/').length - 1;
-	}
-
 	function handleSelect(file: FileInfo, event: MouseEvent) {
 		if (event.ctrlKey || event.metaKey) {
 			// Toggles membership
@@ -261,7 +170,7 @@
 		} else {
 			// Plain click navigates dirs or opens editor
 			if (file.isDir) {
-				toggleExpand(file.path);
+				tree.toggle(file.path);
 			} else if (file.isEditable) {
 				editFile(file);
 			}
@@ -294,17 +203,6 @@
 		selectedPaths = new SvelteSet();
 	}
 
-	// --- Tree navigation ---
-	function toggleExpand(path: string) {
-		const next = new SvelteSet(expandedDirs);
-		if (next.has(path)) {
-			next.delete(path);
-		} else {
-			next.add(path);
-		}
-		expandedDirs = next;
-	}
-
 	// --- Keyboard navigation ---
 	function scrollFocusedIntoView() {
 		queueMicrotask(() => {
@@ -332,19 +230,19 @@
 		} else if (event.key === 'ArrowRight') {
 			event.preventDefault();
 			const file = flatFiles[idx];
-			if (file?.isDir && !expandedDirs.has(file.path)) {
-				toggleExpand(file.path);
+			if (file?.isDir && !tree.expanded.has(file.path)) {
+				tree.toggle(file.path);
 			}
 		} else if (event.key === 'ArrowLeft') {
 			event.preventDefault();
 			const file = flatFiles[idx];
-			if (file?.isDir && expandedDirs.has(file.path)) {
-				toggleExpand(file.path);
+			if (file?.isDir && tree.expanded.has(file.path)) {
+				tree.toggle(file.path);
 			}
 		} else if (event.key === 'Enter') {
 			event.preventDefault();
 			const file = flatFiles[idx];
-			if (file?.isDir) toggleExpand(file.path);
+			if (file?.isDir) tree.toggle(file.path);
 			else if (file?.isEditable) editFile(file);
 		} else if (event.key === ' ') {
 			event.preventDefault();
@@ -441,7 +339,7 @@
 				}
 			}
 			notify.success(`${isCopy ? 'Copied' : 'Moved'} ${itemsLabel(paths.length)}`);
-			await loadFiles();
+			await tree.load();
 		} catch {
 			notify.error(`Failed to ${isCopy ? 'copy' : 'move'} files`);
 		}
@@ -498,7 +396,7 @@
 				path: deleteTarget.path
 			});
 			notify.success('Deleted');
-			await loadFiles();
+			await tree.load();
 		} catch {
 			notify.error('Failed to delete');
 		}
@@ -535,7 +433,7 @@
 			if (lastClickedPath === oldPath) lastClickedPath = newPath;
 			notify.success(`Renamed to ${newItemName}`);
 			showRenameDialog = false;
-			await loadFiles();
+			await tree.load();
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : 'Failed to rename';
 			notify.error(msg);
@@ -546,7 +444,7 @@
 		if (!newItemName.trim()) return;
 		const fullPath = dialogTargetPath ? `${dialogTargetPath}/${newItemName}` : newItemName;
 		// Refuses names that would truncate existing files
-		if (pathExists(fullPath)) {
+		if (findFile(tree.files, fullPath)) {
 			notify.error(`"${newItemName}" already exists here`);
 			return;
 		}
@@ -558,7 +456,7 @@
 			});
 			notify.success(`Created file: ${newItemName}`);
 			showNewFileDialog = false;
-			await loadFiles();
+			await tree.load();
 		} catch {
 			notify.error('Failed to create file');
 		}
@@ -567,7 +465,7 @@
 	async function createNewFolder() {
 		if (!newItemName.trim()) return;
 		const fullPath = dialogTargetPath ? `${dialogTargetPath}/${newItemName}` : newItemName;
-		if (pathExists(fullPath)) {
+		if (findFile(tree.files, fullPath)) {
 			notify.error(`"${newItemName}" already exists here`);
 			return;
 		}
@@ -578,7 +476,7 @@
 			});
 			notify.success(`Created folder: ${newItemName}`);
 			showNewFolderDialog = false;
-			await loadFiles();
+			await tree.load();
 		} catch {
 			notify.error('Failed to create folder');
 		}
@@ -602,7 +500,7 @@
 			});
 			notify.success(`Deleted ${itemsLabel(paths.length)}`);
 			selectedPaths = new SvelteSet();
-			await loadFiles();
+			await tree.load();
 		} catch {
 			notify.error('Failed to delete items');
 		}
@@ -642,7 +540,7 @@
 				archiveName: ''
 			});
 			notify.success(`Archive created: ${result.filesArchived} files`);
-			await loadFiles();
+			await tree.load();
 		} catch {
 			notify.error('Failed to create archive');
 		}
@@ -667,7 +565,7 @@
 			}
 			notify.success(`Moved ${itemsLabel(paths.length)}`);
 			selectedPaths = new SvelteSet();
-			await loadFiles();
+			await tree.load();
 		} catch {
 			notify.error('Failed to move items');
 		}
@@ -692,7 +590,7 @@
 			}
 			notify.success(`Copied ${itemsLabel(paths.length)}`);
 			selectedPaths = new SvelteSet();
-			await loadFiles();
+			await tree.load();
 		} catch {
 			notify.error('Failed to copy items');
 		}
@@ -732,7 +630,7 @@
 						stopExtractionPoll();
 						extracting = false;
 						notify.success(`Extracted ${status.filesExtracted} files`);
-						await loadFiles();
+						await tree.load();
 					} else if (status.state === ExtractionState.FAILED) {
 						stopExtractionPoll();
 						extracting = false;
@@ -851,7 +749,7 @@
 				});
 			}
 			notify.success(`Uploaded ${fileList.length} file(s)`);
-			await loadFiles();
+			await tree.load();
 		} catch (error) {
 			if (error instanceof Error && error.message === 'Upload cancelled') {
 				notify.info('Upload cancelled');
@@ -948,13 +846,13 @@
 		onExtract={() => extractArchive()}
 	/>
 
-	{#if loading}
+	{#if tree.loading}
 		<div class="flex-1 space-y-1.5 p-3">
 			{#each Array(8) as _, i (i)}
 				<Skeleton class="h-6" />
 			{/each}
 		</div>
-	{:else if files.length === 0}
+	{:else if tree.files.length === 0}
 		<EmptyState
 			icon={Folder}
 			title="No files found"
@@ -970,12 +868,12 @@
 		<!-- File tree -->
 		<FileTree
 			{flatFiles}
-			{expandedDirs}
+			expandedDirs={tree.expanded}
 			{selectedPaths}
 			{focusedPath}
 			{filterText}
 			{dragOverPath}
-			onToggleExpand={toggleExpand}
+			onToggleExpand={tree.toggle}
 			onSelect={handleSelect}
 			onCheckboxToggle={handleCheckboxToggle}
 			onSelectAll={handleSelectAll}
@@ -985,7 +883,7 @@
 			onDragLeave={handleDragLeave}
 			onDrop={handleDrop}
 			onKeydown={handleKeydown}
-			{getDepth}
+			getDepth={fileDepth}
 		/>
 	{/if}
 
@@ -1032,108 +930,58 @@
 		editingFile = null;
 	}}
 	onSave={async () => {
-		await loadFiles();
+		await tree.load();
 	}}
 />
 
 <!-- New file dialog -->
-<DialogPrimitive.Root bind:open={showNewFileDialog}>
-	<DialogContent>
-		<DialogHeader>
-			<DialogTitle>Create new file</DialogTitle>
-			<DialogDescription>
-				Enter a name for the new file in <span class="font-mono">{dialogTargetPath || 'root'}</span>
-			</DialogDescription>
-		</DialogHeader>
-		<div class="grid gap-4 py-4">
-			<div class="grid gap-2">
-				<Label for="new-file-name">File name</Label>
-				<Input
-					id="new-file-name"
-					bind:value={newItemName}
-					placeholder="example.txt"
-					class="font-mono"
-					onkeydown={(e) => {
-						if (e.key === 'Enter') createNewFile();
-					}}
-				/>
-			</div>
-		</div>
-		<DialogFooter>
-			<Button variant="outline" onclick={() => (showNewFileDialog = false)}>Cancel</Button>
-			<Button onclick={createNewFile}>Create</Button>
-		</DialogFooter>
-	</DialogContent>
-</DialogPrimitive.Root>
+<FileNameDialog
+	bind:open={showNewFileDialog}
+	id="new-file-name"
+	title="Create new file"
+	description="Enter a name for the new file in"
+	subject={dialogTargetPath || 'root'}
+	label="File name"
+	placeholder="example.txt"
+	confirmLabel="Create"
+	bind:value={newItemName}
+	onConfirm={createNewFile}
+/>
 
 <!-- New folder dialog -->
-<DialogPrimitive.Root bind:open={showNewFolderDialog}>
-	<DialogContent>
-		<DialogHeader>
-			<DialogTitle>Create new folder</DialogTitle>
-			<DialogDescription>
-				Enter a name for the new folder in <span class="font-mono"
-					>{dialogTargetPath || 'root'}</span
-				>
-			</DialogDescription>
-		</DialogHeader>
-		<div class="grid gap-4 py-4">
-			<div class="grid gap-2">
-				<Label for="new-folder-name">Folder name</Label>
-				<Input
-					id="new-folder-name"
-					bind:value={newItemName}
-					placeholder="new-folder"
-					class="font-mono"
-					onkeydown={(e) => {
-						if (e.key === 'Enter') createNewFolder();
-					}}
-				/>
-			</div>
-		</div>
-		<DialogFooter>
-			<Button variant="outline" onclick={() => (showNewFolderDialog = false)}>Cancel</Button>
-			<Button onclick={createNewFolder}>Create</Button>
-		</DialogFooter>
-	</DialogContent>
-</DialogPrimitive.Root>
+<FileNameDialog
+	bind:open={showNewFolderDialog}
+	id="new-folder-name"
+	title="Create new folder"
+	description="Enter a name for the new folder in"
+	subject={dialogTargetPath || 'root'}
+	label="Folder name"
+	placeholder="new-folder"
+	confirmLabel="Create"
+	bind:value={newItemName}
+	onConfirm={createNewFolder}
+/>
 
 <!-- Rename dialog -->
-<DialogPrimitive.Root bind:open={showRenameDialog}>
-	<DialogContent>
-		<DialogHeader>
-			<DialogTitle>Rename {renamingItem?.isDir ? 'folder' : 'file'}</DialogTitle>
-			<DialogDescription>
-				Enter a new name for <span class="font-mono">{renamingItem?.name}</span>
-			</DialogDescription>
-		</DialogHeader>
-		<div class="grid gap-4 py-4">
-			<div class="grid gap-2">
-				<Label for="rename-item">New name</Label>
-				<Input
-					id="rename-item"
-					bind:value={newItemName}
-					placeholder={renamingItem?.name}
-					class="font-mono"
-					onkeydown={(e) => {
-						if (e.key === 'Enter') confirmRename();
-					}}
-				/>
-			</div>
-		</div>
-		<DialogFooter>
-			<Button variant="outline" onclick={() => (showRenameDialog = false)}>Cancel</Button>
-			<Button onclick={confirmRename}>Rename</Button>
-		</DialogFooter>
-	</DialogContent>
-</DialogPrimitive.Root>
+<FileNameDialog
+	bind:open={showRenameDialog}
+	id="rename-item"
+	title="Rename {renamingItem?.isDir ? 'folder' : 'file'}"
+	description="Enter a new name for"
+	subject={renamingItem?.name ?? ''}
+	label="New name"
+	placeholder={renamingItem?.name ?? ''}
+	confirmLabel="Rename"
+	bind:value={newItemName}
+	onConfirm={confirmRename}
+/>
 
 <!-- Move dialog -->
 <FileMoveDialog
 	bind:open={showMoveDialog}
 	title="Move {itemsLabel(selectedPaths.size)}"
 	confirmLabel="Move here"
-	{files}
+	files={tree.files}
 	onConfirm={confirmMove}
 />
 
@@ -1142,7 +990,7 @@
 	bind:open={showCopyDialog}
 	title="Copy {itemsLabel(selectedPaths.size)}"
 	confirmLabel="Copy here"
-	{files}
+	files={tree.files}
 	onConfirm={confirmCopy}
 />
 

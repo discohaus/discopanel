@@ -98,6 +98,53 @@ func (s *ModuleService) resolveCreatedByUsername(ctx context.Context, userID str
 	return user.Username
 }
 
+// Loads a module or returns the canonical not found error
+func getModule(ctx context.Context, store *storage.Store, id string) (*v1.Module, error) {
+	if id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
+	}
+	module, err := store.GetModule(ctx, id)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("module not found"))
+	}
+	return module, nil
+}
+
+// Loads a template or returns the canonical not found error
+func getModuleTemplate(ctx context.Context, store *storage.Store, id string) (*v1.ModuleTemplate, error) {
+	if id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("template ID is required"))
+	}
+	template, err := store.GetModuleTemplate(ctx, id)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("template not found"))
+	}
+	return template, nil
+}
+
+// Fills display fields and strips the nested template
+func (s *ModuleService) hydrateModule(ctx context.Context, m *v1.Module, server *v1.Server, template *v1.ModuleTemplate) {
+	m.Template = nil
+	if server == nil && m.ServerId != "" {
+		if srv, err := s.store.GetServer(ctx, m.ServerId); err == nil {
+			server = srv
+		}
+	}
+	if server != nil {
+		m.ServerName = server.Name
+		m.ServerProxyHostnames = server.ProxyHostnames
+	}
+	if template == nil {
+		if t, err := s.store.GetModuleTemplate(ctx, m.TemplateId); err == nil {
+			template = t
+		}
+	}
+	if template != nil {
+		m.TemplateName = template.Name
+	}
+	m.CreatedByUsername = s.resolveCreatedByUsername(ctx, m.CreatedByUserId)
+}
+
 // Template operations
 
 func (s *ModuleService) ListModuleTemplates(ctx context.Context, req *connect.Request[v1.ListModuleTemplatesRequest]) (*connect.Response[v1.ListModuleTemplatesResponse], error) {
@@ -128,14 +175,9 @@ func (s *ModuleService) ListModuleTemplates(ctx context.Context, req *connect.Re
 }
 
 func (s *ModuleService) GetModuleTemplate(ctx context.Context, req *connect.Request[v1.GetModuleTemplateRequest]) (*connect.Response[v1.GetModuleTemplateResponse], error) {
-	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("template ID is required"))
-	}
-
-	template, err := s.store.GetModuleTemplate(ctx, msg.Id)
+	template, err := getModuleTemplate(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("template not found"))
+		return nil, err
 	}
 
 	return connect.NewResponse(&v1.GetModuleTemplateResponse{
@@ -206,13 +248,9 @@ func (s *ModuleService) CreateModuleTemplate(ctx context.Context, req *connect.R
 
 func (s *ModuleService) UpdateModuleTemplate(ctx context.Context, req *connect.Request[v1.UpdateModuleTemplateRequest]) (*connect.Response[v1.UpdateModuleTemplateResponse], error) {
 	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("template ID is required"))
-	}
-
-	template, err := s.store.GetModuleTemplate(ctx, msg.Id)
+	template, err := getModuleTemplate(ctx, s.store, msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("template not found"))
+		return nil, err
 	}
 
 	// Don't allow modifying built-in templates' core fields
@@ -317,13 +355,9 @@ func (s *ModuleService) UpdateModuleTemplate(ctx context.Context, req *connect.R
 
 func (s *ModuleService) DeleteModuleTemplate(ctx context.Context, req *connect.Request[v1.DeleteModuleTemplateRequest]) (*connect.Response[v1.DeleteModuleTemplateResponse], error) {
 	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("template ID is required"))
-	}
-
-	template, err := s.store.GetModuleTemplate(ctx, msg.Id)
+	template, err := getModuleTemplate(ctx, s.store, msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("template not found"))
+		return nil, err
 	}
 
 	// Don't allow deleting built-in templates
@@ -426,14 +460,9 @@ func (s *ModuleService) ListModules(ctx context.Context, req *connect.Request[v1
 }
 
 func (s *ModuleService) GetModule(ctx context.Context, req *connect.Request[v1.GetModuleRequest]) (*connect.Response[v1.GetModuleResponse], error) {
-	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
-	}
-
-	module, err := s.store.GetModule(ctx, msg.Id)
+	module, err := getModule(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("module not found"))
+		return nil, err
 	}
 
 	// Get actual status from Docker and update if different
@@ -447,15 +476,7 @@ func (s *ModuleService) GetModule(ctx context.Context, req *connect.Request[v1.G
 
 	s.applyModuleStats(module)
 
-	module.Template = nil
-	if server, err := s.store.GetServer(ctx, module.ServerId); err == nil {
-		module.ServerName = server.Name
-		module.ServerProxyHostnames = server.ProxyHostnames
-	}
-	if template, err := s.store.GetModuleTemplate(ctx, module.TemplateId); err == nil {
-		module.TemplateName = template.Name
-	}
-	module.CreatedByUsername = s.resolveCreatedByUsername(ctx, module.CreatedByUserId)
+	s.hydrateModule(ctx, module, nil, nil)
 	return connect.NewResponse(&v1.GetModuleResponse{
 		Module: module.Redact(),
 	}), nil
@@ -533,9 +554,9 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 	}
 
 	// Verify template exists
-	template, err := s.store.GetModuleTemplate(ctx, msg.TemplateId)
+	template, err := getModuleTemplate(ctx, s.store, msg.TemplateId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("template not found"))
+		return nil, err
 	}
 
 	// Global templates run panel wide, never per server
@@ -556,23 +577,10 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 		ports = template.Ports
 	}
 
-	if err := s.rejectProxiedPortsWhileDisabled(ports); err != nil {
-		return nil, err
-	}
-
 	moduleID := uuid.New().String()
 
-	if err := s.allocateModulePorts(ctx, ports); err != nil {
-		return nil, err
-	}
-
-	fallback := s.proxyManager.ModuleFallbackNames(ctx, server.ProxyHostnames)
-	if err := normalizeModulePorts(ports, fallback); err != nil {
-		return nil, err
-	}
-
 	// Registry checkout guards every port until the row persists
-	netClaim, err := s.checkoutModuleNetwork(ctx, moduleID, ports, fallback)
+	netClaim, err := s.preparePorts(ctx, moduleID, ports, server.ProxyHostnames)
 	if err != nil {
 		return nil, err
 	}
@@ -667,9 +675,7 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 	netClaim.Confirm()
 
 	// Reconcile starts any auto created listener sockets
-	if err := s.proxyManager.SyncListeners(ctx); err != nil {
-		s.log.Error("Failed to sync routes after module create: %v", err)
-	}
+	syncRoutes(ctx, s.proxyManager, s.log, "after module create")
 	s.rec.Record(ctx, module.ServerId, v1.ServerActionKind_SERVER_ACTION_KIND_MODULE_CREATE, metrics.Attrs{"module": module.Name, "template": template.Name}, "created module %s", module.Name)
 
 	// Create container in background
@@ -680,11 +686,7 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 		}
 	}()
 
-	module.Template = nil
-	module.ServerName = server.Name
-	module.TemplateName = template.Name
-	module.ServerProxyHostnames = server.ProxyHostnames
-	module.CreatedByUsername = s.resolveCreatedByUsername(ctx, module.CreatedByUserId)
+	s.hydrateModule(ctx, module, server, template)
 	return connect.NewResponse(&v1.CreateModuleResponse{
 		Module: module.Redact(),
 	}), nil
@@ -692,13 +694,9 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 
 func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v1.UpdateModuleRequest]) (*connect.Response[v1.UpdateModuleResponse], error) {
 	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
-	}
-
-	module, err := s.store.GetModule(ctx, msg.Id)
+	module, err := getModule(ctx, s.store, msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("module not found"))
+		return nil, err
 	}
 
 	// Update fields if provided
@@ -728,10 +726,6 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 	}
 	var netClaim *proxy.NetClaim
 	if len(msg.Ports) > 0 {
-		if err := s.rejectProxiedPortsWhileDisabled(msg.Ports); err != nil {
-			return nil, err
-		}
-
 		// Global modules carry no server hostname context
 		var hostnames []string
 		if module.ServerId != "" {
@@ -742,18 +736,8 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 			hostnames = server.ProxyHostnames
 		}
 
-		if err := s.allocateModulePorts(ctx, msg.Ports); err != nil {
-			return nil, err
-		}
-
-		// Global and bare server names inherit panel names
-		fallback := s.proxyManager.ModuleFallbackNames(ctx, hostnames)
-		if err := normalizeModulePorts(msg.Ports, fallback); err != nil {
-			return nil, err
-		}
-
 		// Registry checkout guards the new ports until persist
-		claim, err := s.checkoutModuleNetwork(ctx, module.Id, msg.Ports, fallback)
+		claim, err := s.preparePorts(ctx, module.Id, msg.Ports, hostnames)
 		if err != nil {
 			return nil, err
 		}
@@ -804,9 +788,9 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 		module.RestartAfterInit = *msg.RestartAfterInit
 	}
 
-	template, err := s.store.GetModuleTemplate(ctx, module.TemplateId)
+	template, err := getModuleTemplate(ctx, s.store, module.TemplateId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("template not found"))
+		return nil, err
 	}
 
 	// Cert swaps only land where the template mounts them
@@ -831,9 +815,7 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 	netClaim.Confirm()
 
 	// Reconcile keeps routes matching the saved ports
-	if err := s.proxyManager.SyncListeners(ctx); err != nil {
-		s.log.Error("Failed to sync routes after module update: %v", err)
-	}
+	syncRoutes(ctx, s.proxyManager, s.log, "after module update")
 
 	// Config hash decides whether the container must rebuild
 	if needsRecreate, err := s.moduleManager.NeedsRecreate(ctx, module.Id); err == nil && needsRecreate {
@@ -845,13 +827,7 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 		}()
 	}
 
-	module.Template = nil
-	if server, err := s.store.GetServer(ctx, module.ServerId); err == nil {
-		module.ServerName = server.Name
-		module.ServerProxyHostnames = server.ProxyHostnames
-	}
-	module.TemplateName = template.Name
-	module.CreatedByUsername = s.resolveCreatedByUsername(ctx, module.CreatedByUserId)
+	s.hydrateModule(ctx, module, nil, template)
 	return connect.NewResponse(&v1.UpdateModuleResponse{
 		Module: module.Redact(),
 	}), nil
@@ -890,13 +866,9 @@ func (s *ModuleService) DeleteModule(ctx context.Context, req *connect.Request[v
 
 func (s *ModuleService) StartModule(ctx context.Context, req *connect.Request[v1.StartModuleRequest]) (*connect.Response[v1.StartModuleResponse], error) {
 	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
-	}
-
-	module, err := s.store.GetModule(ctx, msg.Id)
+	module, err := getModule(ctx, s.store, msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("module not found"))
+		return nil, err
 	}
 
 	// If no container exists, create one first
@@ -918,54 +890,27 @@ func (s *ModuleService) StartModule(ctx context.Context, req *connect.Request[v1
 }
 
 func (s *ModuleService) StopModule(ctx context.Context, req *connect.Request[v1.StopModuleRequest]) (*connect.Response[v1.StopModuleResponse], error) {
-	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
+	status, err := s.moduleOp(ctx, req.Msg.Id, "stop", "stopped", v1.ServerActionKind_SERVER_ACTION_KIND_MODULE_STOP, s.moduleManager.StopModule)
+	if err != nil {
+		return nil, err
 	}
-
-	if err := s.moduleManager.StopModule(ctx, msg.Id); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to stop module: %w", err))
-	}
-	if module, err := s.store.GetModule(ctx, msg.Id); err == nil {
-		s.rec.Record(ctx, module.ServerId, v1.ServerActionKind_SERVER_ACTION_KIND_MODULE_STOP, metrics.Attrs{"module": module.Name}, "stopped module %s", module.Name)
-	}
-
-	return connect.NewResponse(&v1.StopModuleResponse{
-		Status: s.moduleStatus(ctx, msg.Id),
-	}), nil
+	return connect.NewResponse(&v1.StopModuleResponse{Status: status}), nil
 }
 
 func (s *ModuleService) RestartModule(ctx context.Context, req *connect.Request[v1.RestartModuleRequest]) (*connect.Response[v1.RestartModuleResponse], error) {
-	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
+	status, err := s.moduleOp(ctx, req.Msg.Id, "restart", "restarted", v1.ServerActionKind_SERVER_ACTION_KIND_MODULE_RESTART, s.moduleManager.RestartModule)
+	if err != nil {
+		return nil, err
 	}
-
-	if err := s.moduleManager.RestartModule(ctx, msg.Id); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to restart module: %w", err))
-	}
-	if module, err := s.store.GetModule(ctx, msg.Id); err == nil {
-		s.rec.Record(ctx, module.ServerId, v1.ServerActionKind_SERVER_ACTION_KIND_MODULE_RESTART, metrics.Attrs{"module": module.Name}, "restarted module %s", module.Name)
-	}
-
-	return connect.NewResponse(&v1.RestartModuleResponse{
-		Status: s.moduleStatus(ctx, msg.Id),
-	}), nil
+	return connect.NewResponse(&v1.RestartModuleResponse{Status: status}), nil
 }
 
 func (s *ModuleService) RecreateModule(ctx context.Context, req *connect.Request[v1.RecreateModuleRequest]) (*connect.Response[v1.RecreateModuleResponse], error) {
-	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
+	status, err := s.moduleOp(ctx, req.Msg.Id, "recreate", "", v1.ServerActionKind_SERVER_ACTION_KIND_UNSPECIFIED, s.moduleManager.RecreateModule)
+	if err != nil {
+		return nil, err
 	}
-
-	if err := s.moduleManager.RecreateModule(ctx, msg.Id); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to recreate module: %w", err))
-	}
-
-	return connect.NewResponse(&v1.RecreateModuleResponse{
-		Status: s.moduleStatus(ctx, msg.Id),
-	}), nil
+	return connect.NewResponse(&v1.RecreateModuleResponse{Status: status}), nil
 }
 
 // Current stored status for op responses
@@ -976,17 +921,28 @@ func (s *ModuleService) moduleStatus(ctx context.Context, id string) v1.ModuleSt
 	return v1.ModuleStatus_MODULE_STATUS_UNSPECIFIED
 }
 
+// Runs one lifecycle op and answers with stored status
+func (s *ModuleService) moduleOp(ctx context.Context, id, verb, past string, kind v1.ServerActionKind, run func(context.Context, string) error) (v1.ModuleStatus, error) {
+	module, err := getModule(ctx, s.store, id)
+	if err != nil {
+		return v1.ModuleStatus_MODULE_STATUS_UNSPECIFIED, err
+	}
+	if err := run(ctx, id); err != nil {
+		return v1.ModuleStatus_MODULE_STATUS_UNSPECIFIED, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to %s module: %w", verb, err))
+	}
+	if kind != v1.ServerActionKind_SERVER_ACTION_KIND_UNSPECIFIED {
+		s.rec.Record(ctx, module.ServerId, kind, metrics.Attrs{"module": module.Name}, "%s module %s", past, module.Name)
+	}
+	return s.moduleStatus(ctx, id), nil
+}
+
 // Logs and status
 
 func (s *ModuleService) GetModuleLogs(ctx context.Context, req *connect.Request[v1.GetModuleLogsRequest]) (*connect.Response[v1.GetModuleLogsResponse], error) {
 	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
-	}
-
-	module, err := s.store.GetModule(ctx, msg.Id)
+	module, err := getModule(ctx, s.store, msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("module not found"))
+		return nil, err
 	}
 
 	tail := msg.Tail
@@ -1018,14 +974,9 @@ func (s *ModuleService) GetNextAvailableModulePort(ctx context.Context, req *con
 	}
 
 	// Registry snapshot backs the client side hints
-	usedPorts, err := s.proxyManager.UsedNetworkPorts(ctx)
+	protoUsedPorts, err := usedPortsProto(ctx, s.proxyManager)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
-	var protoUsedPorts []*v1.UsedPort
-	for _, p := range usedPorts {
-		protoUsedPorts = append(protoUsedPorts, &v1.UsedPort{Port: p})
+		return nil, err
 	}
 
 	return connect.NewResponse(&v1.GetNextAvailableModulePortResponse{
@@ -1034,33 +985,42 @@ func (s *ModuleService) GetNextAvailableModulePort(ctx context.Context, req *con
 	}), nil
 }
 
-// GetAvailableAliases returns all available aliases for module/template configuration
-func (s *ModuleService) GetAvailableAliases(ctx context.Context, req *connect.Request[v1.GetAvailableAliasesRequest]) (*connect.Response[v1.GetAvailableAliasesResponse], error) {
-	msg := req.Msg
-
-	// Build alias context from request
+// Builds the alias context one RPC asked about
+func (s *ModuleService) aliasContext(ctx context.Context, serverID, moduleID *string, withSiblings bool) *alias.Context {
 	aliasCtx := alias.NewContext()
 	aliasCtx.Config = s.config
 
-	// Get server context if provided
-	if msg.ServerId != nil && *msg.ServerId != "" {
-		if server, err := s.store.GetServer(ctx, *msg.ServerId); err == nil {
+	if serverID != nil && *serverID != "" {
+		if server, err := s.store.GetServer(ctx, *serverID); err == nil {
 			s.store.HydrateProxyPorts(ctx, server)
 			aliasCtx.Server = server
 			// Also get server config for server.config.* aliases
-			if serverConfig, err := s.store.GetServerProperties(ctx, *msg.ServerId); err == nil {
+			if serverConfig, err := s.store.GetServerProperties(ctx, *serverID); err == nil {
 				aliasCtx.ServerProperties = serverConfig
 			}
 		}
 	}
 
-	// Get module context if provided
-	if msg.ModuleId != nil && *msg.ModuleId != "" {
-		if mod, err := s.store.GetModule(ctx, *msg.ModuleId); err == nil {
+	if moduleID != nil && *moduleID != "" {
+		if mod, err := s.store.GetModule(ctx, *moduleID); err == nil {
 			aliasCtx.Module = mod
+			if !withSiblings {
+				return aliasCtx
+			}
+			if siblings, err := s.store.ListServerModules(ctx, mod.ServerId); err == nil {
+				aliasCtx.Modules = make(map[string]*v1.Module, len(siblings))
+				for _, sib := range siblings {
+					aliasCtx.Modules[sib.Name] = sib
+				}
+			}
 		}
 	}
+	return aliasCtx
+}
 
+// GetAvailableAliases returns all available aliases for module/template configuration
+func (s *ModuleService) GetAvailableAliases(ctx context.Context, req *connect.Request[v1.GetAvailableAliasesRequest]) (*connect.Response[v1.GetAvailableAliasesResponse], error) {
+	aliasCtx := s.aliasContext(ctx, req.Msg.ServerId, req.Msg.ModuleId, false)
 	return connect.NewResponse(&v1.GetAvailableAliasesResponse{
 		Aliases: alias.GetAvailableAliases(aliasCtx),
 	}), nil
@@ -1068,34 +1028,8 @@ func (s *ModuleService) GetAvailableAliases(ctx context.Context, req *connect.Re
 
 // Get all aliases with resolved values for ctx
 func (s *ModuleService) GetResolvedAliases(ctx context.Context, req *connect.Request[v1.GetResolvedAliasesRequest]) (*connect.Response[v1.GetResolvedAliasesResponse], error) {
-	msg := req.Msg
-	aliasCtx := alias.NewContext()
-	aliasCtx.Config = s.config
-
-	if msg.ServerId != nil && *msg.ServerId != "" {
-		if server, err := s.store.GetServer(ctx, *msg.ServerId); err == nil {
-			s.store.HydrateProxyPorts(ctx, server)
-			aliasCtx.Server = server
-			if serverConfig, err := s.store.GetServerProperties(ctx, *msg.ServerId); err == nil {
-				aliasCtx.ServerProperties = serverConfig
-			}
-		}
-	}
-
-	if msg.ModuleId != nil && *msg.ModuleId != "" {
-		if mod, err := s.store.GetModule(ctx, *msg.ModuleId); err == nil {
-			aliasCtx.Module = mod
-			if siblings, err := s.store.ListServerModules(ctx, mod.ServerId); err == nil {
-				aliasCtx.Modules = make(map[string]*v1.Module)
-				for _, sib := range siblings {
-					aliasCtx.Modules[sib.Name] = sib
-				}
-			}
-		}
-	}
-
-	resolved := alias.GetResolvedAliases(aliasCtx)
-	return connect.NewResponse(&v1.GetResolvedAliasesResponse{Aliases: resolved}), nil
+	aliasCtx := s.aliasContext(ctx, req.Msg.ServerId, req.Msg.ModuleId, true)
+	return connect.NewResponse(&v1.GetResolvedAliasesResponse{Aliases: alias.GetResolvedAliases(aliasCtx)}), nil
 }
 
 // Runtime input prompts
@@ -1193,12 +1127,9 @@ func (s *ModuleService) fetchModulePrompt(ctx context.Context, module *v1.Module
 }
 
 func (s *ModuleService) GetModulePrompt(ctx context.Context, req *connect.Request[v1.GetModulePromptRequest]) (*connect.Response[v1.GetModulePromptResponse], error) {
-	if req.Msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
-	}
-	module, err := s.store.GetModule(ctx, req.Msg.Id)
+	module, err := getModule(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("module not found"))
+		return nil, err
 	}
 
 	prompt, err := s.fetchModulePrompt(ctx, module)
@@ -1281,12 +1212,9 @@ func snapshotValue(v any) string {
 }
 
 func (s *ModuleService) GetModuleStatusSnapshot(ctx context.Context, req *connect.Request[v1.GetModuleStatusSnapshotRequest]) (*connect.Response[v1.GetModuleStatusSnapshotResponse], error) {
-	if req.Msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
-	}
-	module, err := s.store.GetModule(ctx, req.Msg.Id)
+	module, err := getModule(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("module not found"))
+		return nil, err
 	}
 
 	unavailable := connect.NewResponse(&v1.GetModuleStatusSnapshotResponse{Available: false})
@@ -1335,9 +1263,9 @@ func (s *ModuleService) AnswerModulePrompt(ctx context.Context, req *connect.Req
 	if msg.Id == "" || msg.PromptId == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID and prompt ID are required"))
 	}
-	module, err := s.store.GetModule(ctx, msg.Id)
+	module, err := getModule(ctx, s.store, msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("module not found"))
+		return nil, err
 	}
 
 	base, err := s.moduleHTTPBase(ctx, module)
@@ -1404,19 +1332,19 @@ func (s *ModuleService) allocateModulePorts(ctx context.Context, ports []*v1.Net
 	return nil
 }
 
-// Claims module network, failed checkouts retire stray rows
-func (s *ModuleService) checkoutModuleNetwork(ctx context.Context, moduleID string, ports []*v1.NetworkPort, hostnames []string) (*proxy.NetClaim, error) {
-	netReqs := s.proxyManager.ModuleNetRequests(ctx, &v1.Module{Id: moduleID, Ports: ports}, hostnames)
-	if err := s.proxyManager.EnsureListenersFor(ctx, netReqs); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+// Validates, allocates, and checks out a module's ports
+func (s *ModuleService) preparePorts(ctx context.Context, moduleID string, ports []*v1.NetworkPort, serverHostnames []string) (*proxy.NetClaim, error) {
+	if err := s.rejectProxiedPortsWhileDisabled(ports); err != nil {
+		return nil, err
 	}
-	claim, err := s.proxyManager.CheckoutNetwork(ctx, proxy.NetOwner{Kind: proxy.OwnerModule, ID: moduleID}, netReqs)
-	if err != nil {
-		// Reconcile retires any listener row made just above
-		if serr := s.proxyManager.SyncListeners(ctx); serr != nil {
-			s.log.Error("Failed to sync after checkout failure: %v", serr)
-		}
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	if err := s.allocateModulePorts(ctx, ports); err != nil {
+		return nil, err
 	}
-	return claim, nil
+	// Global and bare server names inherit panel names
+	fallback := s.proxyManager.ModuleFallbackNames(ctx, serverHostnames)
+	if err := normalizeModulePorts(ports, fallback); err != nil {
+		return nil, err
+	}
+	netReqs := s.proxyManager.ModuleNetRequests(ctx, &v1.Module{Id: moduleID, Ports: ports}, fallback)
+	return checkoutNetwork(ctx, s.proxyManager, s.log, proxy.NetOwner{Kind: proxy.OwnerModule, ID: moduleID}, netReqs)
 }

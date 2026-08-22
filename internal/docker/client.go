@@ -22,6 +22,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
+	"github.com/discohaus/discopanel/internal/alias"
 	models "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/pkg/logger"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
@@ -154,20 +155,6 @@ func ApplyOverrides(overrides *v1.DockerOverrides, config *container.Config, hos
 		for key, value := range overrides.GetEnvironment() {
 			config.Env = append(config.Env, fmt.Sprintf("%s=%s", key, value))
 		}
-	}
-
-	// Apply additional volume mounts
-	for _, vol := range overrides.GetVolumes() {
-		mountType := mount.Type(vol.GetType())
-		if mountType == "" {
-			mountType = mount.TypeBind
-		}
-		hostConfig.Mounts = append(hostConfig.Mounts, mount.Mount{
-			Type:     mountType,
-			Source:   vol.GetSource(),
-			Target:   vol.GetTarget(),
-			ReadOnly: vol.GetReadOnly(),
-		})
 	}
 
 	// Apply restart policy override
@@ -368,6 +355,11 @@ func (c *Client) CreateContainer(ctx context.Context, server *v1.Server, serverC
 
 	// Apply docker overrides
 	ApplyOverrides(server.DockerOverrides, config, hostConfig)
+
+	// Override volumes take the module volume path, aliases and all
+	aliasCtx := &alias.Context{Server: server, ServerProperties: serverConfig}
+	overrideVols := c.resolveVolumes(server.DockerOverrides.GetVolumes(), aliasCtx)
+	hostConfig.Mounts = append(hostConfig.Mounts, c.volumesToMounts(overrideVols)...)
 
 	// Lets the supervisor raise tick thread priority
 	if !slices.Contains(hostConfig.CapAdd, "SYS_NICE") {

@@ -44,8 +44,12 @@ export function enumLabel(desc: DescEnum, value: number): string {
 	return metaFor(desc).get(value)?.label ?? '';
 }
 
+// Label with a fallback value for unknown numbers
+export function enumLabelOr(desc: DescEnum, value: number, fallback = 0): string {
+	return enumLabel(desc, value) || enumLabel(desc, fallback);
+}
+
 // Longer help text for an enum value
 export function enumDesc(desc: DescEnum, value: number): string {
 	return metaFor(desc).get(value)?.desc ?? '';
 }
-

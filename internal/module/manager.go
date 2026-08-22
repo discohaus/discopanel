@@ -801,7 +801,7 @@ func (m *Manager) DeleteModule(ctx context.Context, moduleID string) error {
 	}
 
 	// Panel written files leave with the module
-	if err := os.RemoveAll(docker.ModuleDataDir(m.config, moduleID)); err != nil {
+	if err := os.RemoveAll(storage.ModuleDataDir(m.config.Storage.DataDir, moduleID)); err != nil {
 		m.logger.Error("Failed to remove module data dir: %v", err)
 	}
 

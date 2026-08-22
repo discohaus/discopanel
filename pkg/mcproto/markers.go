@@ -9,8 +9,3 @@ func SplitHostMarkers(address string) (host, markers string) {
 	}
 	return address, ""
 }
-
-// True when the address carries loader markers
-func HasHostMarkers(address string) bool {
-	return strings.IndexByte(address, 0) >= 0
-}

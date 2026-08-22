@@ -1,5 +1,5 @@
 import { ServerStatus, ServerStatusSchema } from '$lib/proto/discopanel/v1/storage_pb';
-import { enumDesc, enumLabel } from '$lib/proto-meta';
+import { enumDesc, enumLabelOr } from '$lib/proto-meta';
 
 export type StatusTone = 'ok' | 'busy' | 'warn' | 'danger' | 'sleep' | 'idle';
 
@@ -27,8 +27,10 @@ const STATUS_UI: Record<ServerStatus, { tone: StatusTone; transitional: boolean 
 export function statusMeta(status: ServerStatus): StatusMeta {
 	const ui = STATUS_UI[status] ?? STATUS_UI[ServerStatus.UNSPECIFIED];
 	return {
-		label: enumLabel(ServerStatusSchema, status) || enumLabel(ServerStatusSchema, ServerStatus.UNSPECIFIED),
-		desc: enumDesc(ServerStatusSchema, status) || enumDesc(ServerStatusSchema, ServerStatus.UNSPECIFIED),
+		label: enumLabelOr(ServerStatusSchema, status),
+		desc:
+			enumDesc(ServerStatusSchema, status) ||
+			enumDesc(ServerStatusSchema, ServerStatus.UNSPECIFIED),
 		tone: ui.tone,
 		transitional: ui.transitional
 	};

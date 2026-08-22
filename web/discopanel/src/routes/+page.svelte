@@ -480,7 +480,7 @@
 				{#if liveServers.length > 0 && recentlyOffline.length > 0}
 					<section class="overflow-hidden rounded-xl border bg-card">
 						<header class="flex items-center justify-between border-b px-4 py-2.5">
-							<h2 class="text-sm font-semibold">Waking these up?</h2>
+							<h2 class="text-sm font-semibold">Currently Offline</h2>
 							<a
 								href={resolve('/servers')}
 								class="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"

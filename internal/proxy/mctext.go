@@ -271,10 +271,7 @@ func kickAuthFailed() minecraft.Text {
 
 // Kick screen naming the versions the lobby speaks
 func kickHubVersion() minecraft.Text {
-	floor := "1.16.4"
-	if names := mcproto.VersionNamesForProtocol(family.ModernFloor); len(names) > 0 {
-		floor = names[0]
-	}
+	floor, _ := mcproto.OldestVersionForProtocol(family.ModernFloor)
 	return poster(
 		headline("the lobby can't host your version yet", inkEmber),
 		minecraft.Plain("\n"),

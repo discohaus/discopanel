@@ -9,8 +9,8 @@
 	import { Select, SelectContent, SelectItem, SelectTrigger } from '$lib/components/ui/select';
 	import { Switch } from '$lib/components/ui/switch';
 	import { Badge } from '$lib/components/ui/badge';
-	import { CardStack, PageHeader, ServerAvatar } from '$lib/components/app';
-	import { rpcClient } from '$lib/api/rpc-client';
+	import { CardStack, PageHeader, SectionCard, ServerAvatar } from '$lib/components/app';
+	import { rpcClient, rpcErrorMessage } from '$lib/api/rpc-client';
 	import { notify } from '$lib/stores/activity.svelte';
 	import {
 		ArrowLeft,
@@ -94,66 +94,58 @@
 
 	let formData = $state<CreateServerRequest>(
 		create(CreateServerRequestSchema, {
-			name: '',
-			description: '',
-			modLoader: ModLoader.UNSPECIFIED,
-			mcVersion: '',
 			port: 25565,
 			maxPlayers: 20,
 			memory: 2048,
 			memoryMin: 1024,
-			memoryMax: 1536,
-			dockerImage: '',
-			autoStart: false,
-			detached: false,
-			startImmediately: false,
-			proxyHostnames: [],
-			proxyListenerId: '',
-			additionalPorts: [],
-			dockerOverrides: undefined,
-			modpackId: '',
-			modpackVersionId: ''
+			memoryMax: 1536
 		})
 	);
 
-	// Last auto filled text, user typed text wins
-	let autoName = '';
-	let autoDesc = '';
-	function fillName(value: string) {
-		const current = formData.name.trim();
-		if (current && current !== autoName) return;
-		formData.name = value;
-		autoName = value;
+	// Tracks one auto filled field, user typed text wins
+	function autoField(get: () => string, set: (v: string) => void) {
+		let last = '';
+		return {
+			fill(value: string) {
+				const current = get().trim();
+				if (current && current !== last) return;
+				set(value);
+				last = value;
+			},
+			clear() {
+				if (last && get().trim() === last) set('');
+				last = '';
+			}
+		};
 	}
-	function fillDesc(value: string) {
-		const current = formData.description.trim();
-		if (current && current !== autoDesc) return;
-		formData.description = value;
-		autoDesc = value;
-	}
-	function clearAutoName() {
-		if (autoName && formData.name.trim() === autoName) formData.name = '';
-		autoName = '';
-	}
-	function clearAutoDesc() {
-		if (autoDesc && formData.description.trim() === autoDesc) formData.description = '';
-		autoDesc = '';
+	const autoName = autoField(
+		() => formData.name,
+		(v) => (formData.name = v)
+	);
+	const autoDesc = autoField(
+		() => formData.description,
+		(v) => (formData.description = v)
+	);
+
+	// Unwraps one tolerant settled result, logging failures
+	function settled<T>(r: PromiseSettledResult<T>, label: string): T | null {
+		if (r.status === 'fulfilled') return r.value;
+		console.error(`Failed to load ${label}:`, r.reason);
+		return null;
 	}
 
 	onMount(async () => {
 		try {
 			// Settle independently so one permission rejection cannot fail all
-			const [versionsData, loadersData, imagesData, proxyStatus, portData, listeners, hostMemory] =
+			const [versionsData, loadersData, imagesData, proxyStatus, listeners, hostMemory] =
 				await Promise.allSettled([
 					rpcClient.minecraft.getMinecraftVersions({}),
 					loadModLoaders(),
 					rpcClient.minecraft.getDockerImages({}),
 					rpcClient.proxy.getProxyStatus({}),
-					rpcClient.server.getNextAvailablePort({}),
 					rpcClient.proxy.getProxyListeners({}),
 					rpcClient.server.getHostMemory({})
 				]);
-			if (proxyStatus.status === 'fulfilled') status = proxyStatus.value;
 
 			if (versionsData.status === 'fulfilled') {
 				minecraftVersions = versionsData.value.versions.map((v) => v.id);
@@ -172,14 +164,12 @@
 				throw imagesData.reason;
 			}
 
-			if (proxyStatus.status === 'fulfilled') {
-				proxyEnabled = proxyStatus.value.enabled;
-			} else {
-				console.error('Failed to load proxy status:', proxyStatus.reason);
-			}
+			status = settled(proxyStatus, 'proxy status');
+			proxyEnabled = status?.enabled ?? false;
 
-			if (listeners.status === 'fulfilled') {
-				proxyListeners = listeners.value.listeners
+			const listenerRows = settled(listeners, 'proxy listeners');
+			if (listenerRows) {
+				proxyListeners = listenerRows.listeners
 					.map((l) => l.listener)
 					.filter((l): l is ProxyListener => l !== undefined && l.enabled);
 
@@ -189,25 +179,17 @@
 				} else if (proxyListeners.length > 0) {
 					formData.proxyListenerId = proxyListeners[0]?.id || '';
 				}
-			} else {
-				console.error('Failed to load proxy listeners:', listeners.reason);
 			}
 
 			// Proxy routing is the preferred default when available
 			useProxyMode = proxyEnabled && proxyListeners.length > 0;
 
-			if (portData.status === 'fulfilled') {
-				formData.port = portData.value.port;
-				usedPorts = Object.fromEntries(portData.value.usedPorts?.map((p) => [p.port, true]) || []);
-			} else {
-				console.error('Failed to load next available port:', portData.reason);
-			}
+			await refreshAvailablePort();
 
-			if (hostMemory.status === 'fulfilled') {
-				hostTotalMb = Number(hostMemory.value.totalMb);
-				occupiedMb = hostMemory.value.allocations.reduce((sum, a) => sum + a.memory, 0);
-			} else {
-				console.error('Failed to load host memory:', hostMemory.reason);
+			const memory = settled(hostMemory, 'host memory');
+			if (memory) {
+				hostTotalMb = Number(memory.totalMb);
+				occupiedMb = memory.allocations.reduce((sum, a) => sum + a.memory, 0);
 			}
 
 			if (!formData.mcVersion && latestVersion) {
@@ -279,8 +261,8 @@
 				selectedModpack = null;
 				return;
 			}
-			fillName(modpack.name || '');
-			fillDesc(modpack.summary || '');
+			autoName.fill(modpack.name || '');
+			autoDesc.fill(modpack.summary || '');
 			formData.modLoader = loaderInfo.loader;
 			formData.mcVersion = config['mc_version'] || modpack.mcVersion || '';
 			// Backend floors modpack memory at 4 GB
@@ -298,8 +280,8 @@
 		selectedModpack = null;
 		modpackVersions = [];
 		selectedVersionId = '';
-		clearAutoName();
-		clearAutoDesc();
+		autoName.clear();
+		autoDesc.clear();
 		formData.modLoader = ModLoader.UNSPECIFIED;
 		formData.mcVersion = latestVersion || '';
 		formData.dockerImage = '';
@@ -462,9 +444,7 @@
 			notify.success(`Server "${created?.name}" created!`);
 			goto(resolve(`/servers/${created?.id}`));
 		} catch (error) {
-			notify.error(
-				`Failed to create server: ${error instanceof Error ? error.message : 'Unknown error'}`
-			);
+			notify.error(`Failed to create server: ${rpcErrorMessage(error, 'Unknown error')}`);
 		} finally {
 			loading = false;
 		}
@@ -474,13 +454,6 @@
 <svelte:head>
 	<title>New server · DiscoPanel</title>
 </svelte:head>
-
-{#snippet sectionHeader(title: string, desc: string)}
-	<header class="border-b bg-muted/30 px-4 py-3">
-		<h3 class="text-sm font-semibold">{title}</h3>
-		<p class="mt-0.5 text-xs text-muted-foreground">{desc}</p>
-	</header>
-{/snippet}
 
 {#snippet createButton(fullWidth: boolean)}
 	<Button
@@ -510,329 +483,332 @@
 
 	<div class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_19rem]">
 		<form id="create-server-form" onsubmit={handleSubmit} class="min-w-0 space-y-4">
-			<section class="overflow-hidden rounded-xl border bg-card">
-				{@render sectionHeader('Source', 'Start from scratch or from a favorite modpack')}
-				<div class="space-y-4 p-4">
-					<div class="grid grid-cols-2 gap-3">
-						<button
-							type="button"
-							class="rounded-lg border p-4 text-left transition-colors {sourceMode === 'blank'
-								? 'border-primary bg-primary/5'
-								: 'hover:bg-accent/40'}"
-							onclick={() => setSourceMode('blank')}
-							disabled={loading}
-						>
-							<div class="flex items-center gap-2 text-sm font-medium">
-								<Sparkles class="size-4 text-primary" />
-								Start fresh
-							</div>
-							<p class="mt-1 text-xs text-muted-foreground">Pick a version and loader yourself</p>
-						</button>
-						<button
-							type="button"
-							class="rounded-lg border p-4 text-left transition-colors {sourceMode === 'modpack'
-								? 'border-primary bg-primary/5'
-								: 'hover:bg-accent/40'}"
-							onclick={() => setSourceMode('modpack')}
-							disabled={loading}
-						>
-							<div class="flex items-center gap-2 text-sm font-medium">
-								<Package class="size-4 text-primary" />
-								From a modpack
-							</div>
-							<p class="mt-1 text-xs text-muted-foreground">
-								Version, loader, and memory come preset
-							</p>
-						</button>
-					</div>
+			<SectionCard
+				title="Source"
+				description="Start from scratch or from a favorite modpack"
+				contentClass="space-y-4"
+			>
+				<div class="grid grid-cols-2 gap-3">
+					<button
+						type="button"
+						class="rounded-lg border p-4 text-left transition-colors {sourceMode === 'blank'
+							? 'border-primary bg-primary/5'
+							: 'hover:bg-accent/40'}"
+						onclick={() => setSourceMode('blank')}
+						disabled={loading}
+					>
+						<div class="flex items-center gap-2 text-sm font-medium">
+							<Sparkles class="size-4 text-primary" />
+							Start fresh
+						</div>
+						<p class="mt-1 text-xs text-muted-foreground">Pick a version and loader yourself</p>
+					</button>
+					<button
+						type="button"
+						class="rounded-lg border p-4 text-left transition-colors {sourceMode === 'modpack'
+							? 'border-primary bg-primary/5'
+							: 'hover:bg-accent/40'}"
+						onclick={() => setSourceMode('modpack')}
+						disabled={loading}
+					>
+						<div class="flex items-center gap-2 text-sm font-medium">
+							<Package class="size-4 text-primary" />
+							From a modpack
+						</div>
+						<p class="mt-1 text-xs text-muted-foreground">
+							Version, loader, and memory come preset
+						</p>
+					</button>
+				</div>
 
-					{#if sourceMode === 'modpack'}
-						{#if selectedModpack}
-							<div class="rounded-lg border border-primary/30 bg-primary/5 p-4">
-								<div class="flex items-start gap-3">
-									{#if selectedModpack.logoUrl}
-										<img
-											src={selectedModpack.logoUrl}
-											alt=""
-											class="size-12 shrink-0 rounded-md object-cover"
-										/>
-									{/if}
-									<div class="min-w-0 flex-1">
-										<div class="flex items-center gap-2">
-											<h4 class="truncate font-semibold">{selectedModpack.name}</h4>
-											<Badge variant="secondary" class="text-xs capitalize">
-												{selectedModpack.indexer}
+				{#if sourceMode === 'modpack'}
+					{#if selectedModpack}
+						<div class="rounded-lg border border-primary/30 bg-primary/5 p-4">
+							<div class="flex items-start gap-3">
+								{#if selectedModpack.logoUrl}
+									<img
+										src={selectedModpack.logoUrl}
+										alt=""
+										class="size-12 shrink-0 rounded-md object-cover"
+									/>
+								{/if}
+								<div class="min-w-0 flex-1">
+									<div class="flex items-center gap-2">
+										<h4 class="truncate font-semibold">{selectedModpack.name}</h4>
+										<Badge variant="secondary" class="text-xs capitalize">
+											{selectedModpack.indexer}
+										</Badge>
+									</div>
+									<p class="mt-0.5 line-clamp-2 text-sm text-muted-foreground">
+										{selectedModpack.summary}
+									</p>
+									<div class="mt-2 flex flex-wrap gap-2">
+										{#if selectedModpack.gameVersions.length > 0}
+											<Badge variant="outline" class="text-xs">
+												MC {selectedModpack.gameVersions[0]}
 											</Badge>
-										</div>
-										<p class="mt-0.5 line-clamp-2 text-sm text-muted-foreground">
-											{selectedModpack.summary}
-										</p>
-										<div class="mt-2 flex flex-wrap gap-2">
-											{#if selectedModpack.gameVersions.length > 0}
-												<Badge variant="outline" class="text-xs">
-													MC {selectedModpack.gameVersions[0]}
-												</Badge>
-											{/if}
-											{#if selectedModpack.modLoaders.length > 0}
-												<Badge variant="outline" class="text-xs capitalize">
-													{selectedModpack.modLoaders[0]}
-												</Badge>
-											{/if}
-										</div>
-
-										{#if modpackVersions.length > 0}
-											<div class="mt-3 max-w-xs space-y-1">
-												<Label for="modpack_version" class="text-xs text-muted-foreground">
-													Modpack version
-												</Label>
-												<Select
-													type="single"
-													value={selectedVersionId}
-													onValueChange={(v) => (selectedVersionId = v || '')}
-													disabled={loading || loadingModpackVersions}
-												>
-													<SelectTrigger id="modpack_version" class="h-8 w-full">
-														<span class="truncate text-sm">
-															{selectedVersionId
-																? modpackVersions.find((v) => v.id === selectedVersionId)
-																		?.displayName || 'Latest'
-																: 'Latest version'}
-														</span>
-													</SelectTrigger>
-													<SelectContent>
-														<SelectItem value="">Latest version</SelectItem>
-														{#each modpackVersions as version (version.id)}
-															<SelectItem value={version.id}>
-																{version.displayName}
-																{#if version.releaseType && version.releaseType !== ReleaseType.RELEASE}
-																	({enumLabel(ReleaseTypeSchema, version.releaseType)})
-																{/if}
-															</SelectItem>
-														{/each}
-													</SelectContent>
-												</Select>
-											</div>
-										{:else if loadingModpackVersions}
-											<div class="mt-3 text-xs text-muted-foreground">
-												<Loader2 class="mr-1 inline size-3 animate-spin" />
-												Loading versions...
-											</div>
+										{/if}
+										{#if selectedModpack.modLoaders.length > 0}
+											<Badge variant="outline" class="text-xs capitalize">
+												{selectedModpack.modLoaders[0]}
+											</Badge>
 										{/if}
 									</div>
-									<Button
-										type="button"
-										variant="ghost"
-										size="icon"
-										class="size-7 shrink-0"
-										onclick={removeModpack}
-										disabled={loading}
-										title="Remove modpack"
-									>
-										<X class="size-4" />
-									</Button>
-								</div>
-							</div>
-						{:else if favoriteModpacks.length > 0}
-							<CardStack
-								items={favoriteModpacks}
-								visible={2}
-								columns={2}
-								slotHeight="4rem"
-								itemKey={(m: IndexedModpack) => m.id}
-							>
-								{#snippet card(modpack: IndexedModpack)}
-									<button
-										type="button"
-										class="flex h-full w-full items-center gap-3 rounded-md p-3 text-left transition-colors hover:bg-accent/40"
-										onclick={() => selectModpack(modpack)}
-										disabled={loading}
-									>
-										{#if modpack.logoUrl}
-											<img
-												src={modpack.logoUrl}
-												alt=""
-												class="size-10 shrink-0 rounded-md object-cover"
-											/>
-										{:else}
-											<div
-												class="flex size-10 shrink-0 items-center justify-center rounded-md bg-muted"
-											>
-												<Package class="size-5 text-muted-foreground" />
-											</div>
-										{/if}
-										<div class="min-w-0">
-											<p class="truncate text-sm font-medium">{modpack.name}</p>
-											<p class="truncate text-xs text-muted-foreground">{modpack.summary}</p>
-										</div>
-									</button>
-								{/snippet}
-							</CardStack>
-							<p class="text-xs text-muted-foreground">
-								Only favorites show here. Find more on the
-								<a href={resolve('/modpacks')} class="text-primary hover:underline">Modpacks</a> page.
-							</p>
-						{:else}
-							<p class="text-sm text-muted-foreground">
-								No favorite modpacks yet. Browse the
-								<a href={resolve('/modpacks')} class="text-primary hover:underline">Modpacks</a>
-								page and star the ones you like, then they show up here.
-							</p>
-						{/if}
-					{/if}
-				</div>
-			</section>
 
-			<section class="overflow-hidden rounded-xl border bg-card">
-				{@render sectionHeader('Basics', 'Name and icon players will see')}
-				<div class="flex flex-col gap-5 p-4 sm:flex-row">
-					<div class="flex shrink-0 flex-col items-center gap-1.5">
+									{#if modpackVersions.length > 0}
+										<div class="mt-3 max-w-xs space-y-1">
+											<Label for="modpack_version" class="text-xs text-muted-foreground">
+												Modpack version
+											</Label>
+											<Select
+												type="single"
+												value={selectedVersionId}
+												onValueChange={(v) => (selectedVersionId = v || '')}
+												disabled={loading || loadingModpackVersions}
+											>
+												<SelectTrigger id="modpack_version" class="h-8 w-full">
+													<span class="truncate text-sm">
+														{selectedVersionId
+															? modpackVersions.find((v) => v.id === selectedVersionId)
+																	?.displayName || 'Latest'
+															: 'Latest version'}
+													</span>
+												</SelectTrigger>
+												<SelectContent>
+													<SelectItem value="">Latest version</SelectItem>
+													{#each modpackVersions as version (version.id)}
+														<SelectItem value={version.id}>
+															{version.displayName}
+															{#if version.releaseType && version.releaseType !== ReleaseType.RELEASE}
+																({enumLabel(ReleaseTypeSchema, version.releaseType)})
+															{/if}
+														</SelectItem>
+													{/each}
+												</SelectContent>
+											</Select>
+										</div>
+									{:else if loadingModpackVersions}
+										<div class="mt-3 text-xs text-muted-foreground">
+											<Loader2 class="mr-1 inline size-3 animate-spin" />
+											Loading versions...
+										</div>
+									{/if}
+								</div>
+								<Button
+									type="button"
+									variant="ghost"
+									size="icon"
+									class="size-7 shrink-0"
+									onclick={removeModpack}
+									disabled={loading}
+									title="Remove modpack"
+								>
+									<X class="size-4" />
+								</Button>
+							</div>
+						</div>
+					{:else if favoriteModpacks.length > 0}
+						<CardStack
+							items={favoriteModpacks}
+							visible={2}
+							columns={2}
+							slotHeight="4rem"
+							itemKey={(m: IndexedModpack) => m.id}
+						>
+							{#snippet card(modpack: IndexedModpack)}
+								<button
+									type="button"
+									class="flex h-full w-full items-center gap-3 rounded-md p-3 text-left transition-colors hover:bg-accent/40"
+									onclick={() => selectModpack(modpack)}
+									disabled={loading}
+								>
+									{#if modpack.logoUrl}
+										<img
+											src={modpack.logoUrl}
+											alt=""
+											class="size-10 shrink-0 rounded-md object-cover"
+										/>
+									{:else}
+										<div
+											class="flex size-10 shrink-0 items-center justify-center rounded-md bg-muted"
+										>
+											<Package class="size-5 text-muted-foreground" />
+										</div>
+									{/if}
+									<div class="min-w-0">
+										<p class="truncate text-sm font-medium">{modpack.name}</p>
+										<p class="truncate text-xs text-muted-foreground">{modpack.summary}</p>
+									</div>
+								</button>
+							{/snippet}
+						</CardStack>
+						<p class="text-xs text-muted-foreground">
+							Only favorites show here. Find more on the
+							<a href={resolve('/modpacks')} class="text-primary hover:underline">Modpacks</a> page.
+						</p>
+					{:else}
+						<p class="text-sm text-muted-foreground">
+							No favorite modpacks yet. Browse the
+							<a href={resolve('/modpacks')} class="text-primary hover:underline">Modpacks</a>
+							page and star the ones you like, then they show up here.
+						</p>
+					{/if}
+				{/if}
+			</SectionCard>
+
+			<SectionCard
+				title="Basics"
+				description="Name and icon players will see"
+				contentClass="flex flex-col gap-5 sm:flex-row"
+			>
+				<div class="flex shrink-0 flex-col items-center gap-1.5">
+					<button
+						type="button"
+						class="group relative shrink-0 rounded-xl outline-offset-2"
+						onclick={() => iconInput?.click()}
+						disabled={loading}
+						title="Choose server icon"
+					>
+						<ServerAvatar name={formData.name.trim() || '?'} favicon={avatarPreview} size="xl" />
+						<span
+							class="absolute inset-0 flex items-center justify-center rounded-xl bg-black/55 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+						>
+							<Camera class="size-5 text-white" />
+						</span>
+					</button>
+					<span class="text-[11px] text-muted-foreground">Server icon</span>
+					{#if iconFile}
 						<button
 							type="button"
-							class="group relative shrink-0 rounded-xl outline-offset-2"
-							onclick={() => iconInput?.click()}
+							class="text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+							onclick={clearIcon}
 							disabled={loading}
-							title="Choose server icon"
 						>
-							<ServerAvatar name={formData.name.trim() || '?'} favicon={avatarPreview} size="xl" />
-							<span
-								class="absolute inset-0 flex items-center justify-center rounded-xl bg-black/55 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
-							>
-								<Camera class="size-5 text-white" />
-							</span>
+							Remove
 						</button>
-						<span class="text-[11px] text-muted-foreground">Server icon</span>
-						{#if iconFile}
-							<button
-								type="button"
-								class="text-[11px] text-muted-foreground underline-offset-2 hover:underline"
-								onclick={clearIcon}
+					{/if}
+				</div>
+				<input
+					bind:this={iconInput}
+					type="file"
+					accept="image/png,image/jpeg,image/webp,image/gif"
+					class="hidden"
+					onchange={handleIconSelect}
+				/>
+				<div class="grid min-w-0 flex-1 content-start gap-4">
+					<div class="grid gap-4 sm:grid-cols-[minmax(0,1fr)_8rem]">
+						<div class="space-y-2">
+							<Label for="name">Server name <span class="text-destructive">*</span></Label>
+							<Input
+								id="name"
+								placeholder={namePlaceholder}
+								bind:value={formData.name}
+								required
 								disabled={loading}
-							>
-								Remove
-							</button>
-						{/if}
-					</div>
-					<input
-						bind:this={iconInput}
-						type="file"
-						accept="image/png,image/jpeg,image/webp,image/gif"
-						class="hidden"
-						onchange={handleIconSelect}
-					/>
-					<div class="grid min-w-0 flex-1 content-start gap-4">
-						<div class="grid gap-4 sm:grid-cols-[minmax(0,1fr)_8rem]">
-							<div class="space-y-2">
-								<Label for="name">Server name <span class="text-destructive">*</span></Label>
-								<Input
-									id="name"
-									placeholder={namePlaceholder}
-									bind:value={formData.name}
-									required
-									disabled={loading}
-								/>
-							</div>
-
-							<div class="space-y-2">
-								<Label for="max_players">Max players</Label>
-								<Input
-									id="max_players"
-									type="number"
-									min="1"
-									max="1000"
-									bind:value={formData.maxPlayers}
-									disabled={loading}
-								/>
-							</div>
+							/>
 						</div>
 
 						<div class="space-y-2">
-							<Label for="description">
-								Description <span class="text-xs text-muted-foreground">(optional)</span>
-							</Label>
-							<Textarea
-								id="description"
-								placeholder={serverDescPlaceholder}
-								bind:value={formData.description}
+							<Label for="max_players">Max players</Label>
+							<Input
+								id="max_players"
+								type="number"
+								min="1"
+								max="1000"
+								bind:value={formData.maxPlayers}
 								disabled={loading}
-								class="min-h-20 resize-none"
 							/>
 						</div>
 					</div>
-				</div>
-			</section>
 
-			<section class="overflow-hidden rounded-xl border bg-card">
-				{@render sectionHeader(
-					'Version & loader',
-					selectedModpack ? 'Preset by the modpack' : 'Minecraft version and mod loader'
-				)}
-				<div class="grid gap-4 p-4 sm:grid-cols-2">
 					<div class="space-y-2">
-						<Label for="mcVersion">Minecraft version</Label>
-						{#if loadingVersions}
-							<div class="flex h-9 items-center">
-								<Loader2 class="size-4 animate-spin text-muted-foreground" />
-							</div>
-						{:else}
-							<Select
-								type="single"
-								value={formData.mcVersion}
-								onValueChange={(v: string | undefined) => (formData.mcVersion = v ?? '')}
-								disabled={loading || !!selectedModpack}
-							>
-								<SelectTrigger id="mcVersion" class="w-full">
-									<span>
-										{formData.mcVersion || 'Select a version'}
-										{formData.mcVersion === latestVersion ? ' (latest)' : ''}
-									</span>
-								</SelectTrigger>
-								<SelectContent>
-									{#each minecraftVersions as version (version)}
-										<SelectItem value={version}>
-											{version}
-											{version === latestVersion ? '(latest)' : ''}
-										</SelectItem>
-									{/each}
-								</SelectContent>
-							</Select>
-						{/if}
+						<Label for="description">
+							Description <span class="text-xs text-muted-foreground">(optional)</span>
+						</Label>
+						<Textarea
+							id="description"
+							placeholder={serverDescPlaceholder}
+							bind:value={formData.description}
+							disabled={loading}
+							class="min-h-20 resize-none"
+						/>
 					</div>
+				</div>
+			</SectionCard>
 
-					<div class="space-y-2">
-						<Label for="modLoader">Mod loader</Label>
+			<SectionCard
+				title="Version & loader"
+				description={selectedModpack ? 'Preset by the modpack' : 'Minecraft version and mod loader'}
+				contentClass="grid gap-4 sm:grid-cols-2"
+			>
+				<div class="space-y-2">
+					<Label for="mcVersion">Minecraft version</Label>
+					{#if loadingVersions}
+						<div class="flex h-9 items-center">
+							<Loader2 class="size-4 animate-spin text-muted-foreground" />
+						</div>
+					{:else}
 						<Select
 							type="single"
-							value={selectedLoaderName}
-							onValueChange={(v: string | undefined) => {
-								formData.modLoader =
-									installableLoaders.find((l) => l.name === v)?.loader ?? ModLoader.VANILLA;
-							}}
+							value={formData.mcVersion}
+							onValueChange={(v: string | undefined) => (formData.mcVersion = v ?? '')}
 							disabled={loading || !!selectedModpack}
 						>
-							<SelectTrigger id="modLoader" class="w-full">
-								<span>{selectedLoaderInfo?.displayName || 'Select a mod loader'}</span>
+							<SelectTrigger id="mcVersion" class="w-full">
+								<span>
+									{formData.mcVersion || 'Select a version'}
+									{formData.mcVersion === latestVersion ? ' (latest)' : ''}
+								</span>
 							</SelectTrigger>
 							<SelectContent>
-								{#each installableLoaders as loader (loader.name)}
-									<SelectItem value={loader.name}>
-										{loader.displayName}
+								{#each minecraftVersions as version (version)}
+									<SelectItem value={version}>
+										{version}
+										{version === latestVersion ? '(latest)' : ''}
 									</SelectItem>
 								{/each}
 							</SelectContent>
 						</Select>
-						{#if selectedModpack}
-							<p class="text-xs text-muted-foreground">Mod loader comes from the modpack</p>
-						{:else if formData.modLoader === ModLoader.VANILLA}
-							<p class="text-xs text-muted-foreground">Plain Minecraft, no mod support</p>
-						{:else if selectedLoaderInfo?.supportsMods}
-							<p class="text-xs text-muted-foreground">This loader supports mods</p>
-						{/if}
-					</div>
+					{/if}
 				</div>
-			</section>
 
-			<section class="overflow-hidden rounded-xl border bg-card">
-				{@render sectionHeader('Connectivity', 'How players will reach the server')}
+				<div class="space-y-2">
+					<Label for="modLoader">Mod loader</Label>
+					<Select
+						type="single"
+						value={selectedLoaderName}
+						onValueChange={(v: string | undefined) => {
+							formData.modLoader =
+								installableLoaders.find((l) => l.name === v)?.loader ?? ModLoader.VANILLA;
+						}}
+						disabled={loading || !!selectedModpack}
+					>
+						<SelectTrigger id="modLoader" class="w-full">
+							<span>{selectedLoaderInfo?.displayName || 'Select a mod loader'}</span>
+						</SelectTrigger>
+						<SelectContent>
+							{#each installableLoaders as loader (loader.name)}
+								<SelectItem value={loader.name}>
+									{loader.displayName}
+								</SelectItem>
+							{/each}
+						</SelectContent>
+					</Select>
+					{#if selectedModpack}
+						<p class="text-xs text-muted-foreground">Mod loader comes from the modpack</p>
+					{:else if formData.modLoader === ModLoader.VANILLA}
+						<p class="text-xs text-muted-foreground">Plain Minecraft, no mod support</p>
+					{:else if selectedLoaderInfo?.supportsMods}
+						<p class="text-xs text-muted-foreground">This loader supports mods</p>
+					{/if}
+				</div>
+			</SectionCard>
+
+			<SectionCard
+				title="Connectivity"
+				description="How players will reach the server"
+				contentClass="p-0"
+			>
 				<ConnectivityCard
 					{proxyEnabled}
 					listeners={proxyListeners}
@@ -848,87 +824,89 @@
 					bind:portError
 					onAutoAssignPort={refreshAvailablePort}
 				/>
-			</section>
+			</SectionCard>
 
-			<section class="overflow-hidden rounded-xl border bg-card">
-				{@render sectionHeader('Memory', "How much of the host's memory this server gets")}
-				<div class="space-y-4 p-4">
-					<MemorySlider
-						bind:memory={formData.memory}
-						bind:memoryMin={formData.memoryMin}
-						bind:memoryMax={formData.memoryMax}
-						totalMb={hostTotalMb}
-						{occupiedMb}
-						disabled={loading}
-					/>
-				</div>
-			</section>
+			<SectionCard
+				title="Memory"
+				description="How much of the host's memory this server gets"
+				contentClass="space-y-4"
+			>
+				<MemorySlider
+					bind:memory={formData.memory}
+					bind:memoryMin={formData.memoryMin}
+					bind:memoryMax={formData.memoryMax}
+					totalMb={hostTotalMb}
+					{occupiedMb}
+					disabled={loading}
+				/>
+			</SectionCard>
 
-			<section class="overflow-hidden rounded-xl border bg-card">
-				{@render sectionHeader('Lifecycle', 'When the server starts and stops')}
-				<div class="grid gap-3 p-4 sm:grid-cols-3">
-					<label
-						class="flex cursor-pointer flex-col gap-1.5 rounded-lg border p-3 text-sm transition-colors hover:bg-accent/30"
-					>
-						<span class="flex items-center justify-between gap-2">
-							<span class="font-medium">Start immediately</span>
-							<Switch bind:checked={formData.startImmediately} disabled={loading} />
-						</span>
-						<span class="text-xs font-normal text-muted-foreground">
-							Boot the server right after creation
-						</span>
-					</label>
+			<SectionCard
+				title="Lifecycle"
+				description="When the server starts and stops"
+				contentClass="grid gap-3 sm:grid-cols-3"
+			>
+				<label
+					class="flex cursor-pointer flex-col gap-1.5 rounded-lg border p-3 text-sm transition-colors hover:bg-accent/30"
+				>
+					<span class="flex items-center justify-between gap-2">
+						<span class="font-medium">Start immediately</span>
+						<Switch bind:checked={formData.startImmediately} disabled={loading} />
+					</span>
+					<span class="text-xs font-normal text-muted-foreground">
+						Boot the server right after creation
+					</span>
+				</label>
 
-					<label
-						class="flex cursor-pointer flex-col gap-1.5 rounded-lg border p-3 text-sm transition-colors hover:bg-accent/30"
-					>
-						<span class="flex items-center justify-between gap-2">
-							<span class="font-medium">Detached mode</span>
-							<Switch
-								bind:checked={formData.detached}
-								disabled={loading || useProxyMode}
-								onCheckedChange={(checked) => {
-									if (checked && useProxyMode) {
-										notify.error('Cannot detach proxied servers');
-										formData.detached = false;
-										return;
-									}
-									formData.detached = checked;
-									if (checked) {
-										formData.autoStart = false;
-									}
-								}}
-							/>
-						</span>
-						<span class="text-xs font-normal text-muted-foreground">
-							Keeps running when DiscoPanel stops. Not available for proxied servers.
-						</span>
-					</label>
+				<label
+					class="flex cursor-pointer flex-col gap-1.5 rounded-lg border p-3 text-sm transition-colors hover:bg-accent/30"
+				>
+					<span class="flex items-center justify-between gap-2">
+						<span class="font-medium">Detached mode</span>
+						<Switch
+							bind:checked={formData.detached}
+							disabled={loading || useProxyMode}
+							onCheckedChange={(checked) => {
+								if (checked && useProxyMode) {
+									notify.error('Cannot detach proxied servers');
+									formData.detached = false;
+									return;
+								}
+								formData.detached = checked;
+								if (checked) {
+									formData.autoStart = false;
+								}
+							}}
+						/>
+					</span>
+					<span class="text-xs font-normal text-muted-foreground">
+						Keeps running when DiscoPanel stops. Not available for proxied servers.
+					</span>
+				</label>
 
-					<label
-						class="flex cursor-pointer flex-col gap-1.5 rounded-lg border p-3 text-sm transition-colors hover:bg-accent/30"
-					>
-						<span class="flex items-center justify-between gap-2">
-							<span class="font-medium">Auto start</span>
-							<Switch
-								bind:checked={formData.autoStart}
-								disabled={loading || formData.detached}
-								onCheckedChange={(checked) => {
-									if (formData.detached) {
-										notify.error('Cannot enable auto-start for detached servers');
-										formData.autoStart = false;
-										return;
-									}
-									formData.autoStart = checked;
-								}}
-							/>
-						</span>
-						<span class="text-xs font-normal text-muted-foreground">
-							Starts with DiscoPanel{formData.detached ? '. Disabled for detached servers.' : '.'}
-						</span>
-					</label>
-				</div>
-			</section>
+				<label
+					class="flex cursor-pointer flex-col gap-1.5 rounded-lg border p-3 text-sm transition-colors hover:bg-accent/30"
+				>
+					<span class="flex items-center justify-between gap-2">
+						<span class="font-medium">Auto start</span>
+						<Switch
+							bind:checked={formData.autoStart}
+							disabled={loading || formData.detached}
+							onCheckedChange={(checked) => {
+								if (formData.detached) {
+									notify.error('Cannot enable auto-start for detached servers');
+									formData.autoStart = false;
+									return;
+								}
+								formData.autoStart = checked;
+							}}
+						/>
+					</span>
+					<span class="text-xs font-normal text-muted-foreground">
+						Starts with DiscoPanel{formData.detached ? '. Disabled for detached servers.' : '.'}
+					</span>
+				</label>
+			</SectionCard>
 
 			<section class="overflow-hidden rounded-xl border bg-card">
 				<button

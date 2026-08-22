@@ -10,12 +10,13 @@
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { Textarea } from '$lib/components/ui/textarea';
 	import {
+		CollectionSection,
 		ConfirmDialog,
 		CopyButton,
-		EmptyState,
 		EventHookRowsEditor,
 		InitCommandFields,
 		KeyValueRowsEditor,
+		LabeledInput,
 		NetworkPortRowsEditor,
 		SectionedDialogLayout,
 		VolumeMountRowsEditor
@@ -23,7 +24,7 @@
 	import AliasHelper from '$lib/components/ui/AliasHelper.svelte';
 	import DynamicIcon from '$lib/components/ui/DynamicIcon.svelte';
 	import ModuleTemplateMenu from './ModuleTemplateMenu.svelte';
-	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
+	import { rpcClient, rpcErrorMessage, silentCallOptions } from '$lib/api/rpc-client';
 	import { notify } from '$lib/stores/activity.svelte';
 	import { cn } from '$lib/utils';
 	import { TONE_BADGE } from '$lib/server-status';
@@ -43,8 +44,6 @@
 		ModuleStatus,
 		ModuleConfigFieldType,
 		ModuleConfigSeverity,
-		ModuleEventAction,
-		TriggeredEventType,
 		ModuleProtocol,
 		NetworkPortSchema,
 		ModuleDependencySchema,
@@ -52,6 +51,15 @@
 		VolumeMountSchema
 	} from '$lib/proto/discopanel/v1/storage_pb';
 	import { create, clone } from '@bufbuild/protobuf';
+	import {
+		dropEmptyPorts,
+		kvToMap,
+		mapToKv,
+		newHook,
+		newPort,
+		trimVolumes
+	} from '$lib/module-form';
+	import type { KvRow } from '$lib/module-form';
 	import { evaluateConfigField, groupedConfigFields } from '$lib/module-config';
 	import type { ConfigFieldIssue } from '$lib/module-config';
 	import {
@@ -65,7 +73,6 @@
 		Loader2,
 		Network,
 		Play,
-		Plus,
 		Save,
 		Settings,
 		ShieldCheck,
@@ -84,15 +91,6 @@
 		module?: Module;
 		onSuccess: () => void;
 		onTemplateDeleted?: () => void;
-	}
-
-	interface EnvVar {
-		key: string;
-		value: string;
-	}
-	interface MetadataEntry {
-		key: string;
-		value: string;
 	}
 
 	type ConfigSection =
@@ -137,7 +135,7 @@
 	let initCommandDelay = $state(0);
 	let restartAfterInit = $state(false);
 	let startImmediately = $state(true);
-	let envVars = $state<EnvVar[]>([]);
+	let envVars = $state<KvRow[]>([]);
 	let volumes = $state<VolumeMount[]>([]);
 	let ports = $state<NetworkPort[]>([]);
 	let dependencies = $state<ModuleDependency[]>([]);
@@ -145,7 +143,7 @@
 	let healthCheckTimeout = $state(5);
 	let healthCheckRetries = $state(3);
 	let eventHooks = $state<ModuleEventHook[]>([]);
-	let metadata = $state<MetadataEntry[]>([]);
+	let metadata = $state<KvRow[]>([]);
 	let serverModules = $state<Module[]>([]);
 
 	// Runtime input the module is waiting on
@@ -217,17 +215,9 @@
 		}
 	};
 
-	function envVarsToMap(): { [key: string]: string } {
-		const map: { [key: string]: string } = {};
-		for (const env of envVars) {
-			if (env.key.trim()) map[env.key.trim()] = env.value;
-		}
-		return map;
-	}
-
 	// Config fields win over hand added env rows
 	function envPayload(): { [key: string]: string } {
-		const map = envVarsToMap();
+		const map = kvToMap(envVars);
 		for (const field of configFields) {
 			if (field.env) map[field.env] = configValues[field.env] ?? '';
 		}
@@ -246,40 +236,12 @@
 		);
 	}
 
-	function parseEnvVars(m: { [key: string]: string } | undefined): EnvVar[] {
-		return m ? Object.entries(m).map(([key, value]) => ({ key, value })) : [];
-	}
+	const addEnvVar = () => (envVars = [...envVars, { key: '', value: '' }]);
+	const addVolume = () => (volumes = [...volumes, create(VolumeMountSchema, {})]);
+	const addPort = () => (ports = [...ports, newPort(true)]);
+	const addEventHook = () => (eventHooks = [...eventHooks, newHook()]);
+	const addMetadataEntry = () => (metadata = [...metadata, { key: '', value: '' }]);
 
-	function parseMetadata(m: { [key: string]: string } | undefined): MetadataEntry[] {
-		return m ? Object.entries(m).map(([key, value]) => ({ key, value })) : [];
-	}
-
-	function metadataToMap(): { [key: string]: string } {
-		const map: { [key: string]: string } = {};
-		for (const e of metadata) {
-			if (e.key.trim()) map[e.key.trim()] = e.value;
-		}
-		return map;
-	}
-
-	function addEnvVar() {
-		envVars = [...envVars, { key: '', value: '' }];
-	}
-	function addVolume() {
-		volumes = [...volumes, create(VolumeMountSchema, {})];
-	}
-	function addPort() {
-		ports = [
-			...ports,
-			create(NetworkPortSchema, {
-				name: '',
-				containerPort: 0,
-				hostPort: 0,
-				protocol: ModuleProtocol.TCP,
-				proxyEnabled: true
-			})
-		];
-	}
 	function addDependency() {
 		dependencies = [
 			...dependencies,
@@ -288,21 +250,6 @@
 	}
 	function removeDependency(i: number) {
 		dependencies = dependencies.filter((_, idx) => idx !== i);
-	}
-	function addEventHook() {
-		eventHooks = [
-			...eventHooks,
-			create(ModuleEventHookSchema, {
-				event: TriggeredEventType.SERVER_START,
-				action: ModuleEventAction.START,
-				command: '',
-				delaySeconds: 0,
-				condition: ''
-			})
-		];
-	}
-	function addMetadataEntry() {
-		metadata = [...metadata, { key: '', value: '' }];
 	}
 
 	async function loadServerModules() {
@@ -362,7 +309,7 @@
 		keyPem = '';
 		await loadServerModules();
 		const fieldKeys = new Set(template.configFields.map((f) => f.env));
-		envVars = parseEnvVars(template.defaultEnv).filter((e) => !fieldKeys.has(e.key));
+		envVars = mapToKv(template.defaultEnv).filter((e) => !fieldKeys.has(e.key));
 		seedConfigValues(template.configFields, {});
 		volumes = template.defaultVolumes.map((v) => clone(VolumeMountSchema, v));
 		// Zero host ports stay zero, backend registry allocates them
@@ -374,7 +321,7 @@
 		initCommandDelay = template.defaultInitCommandDelay;
 		restartAfterInit = template.defaultRestartAfterInit;
 		eventHooks = template.defaultHooks.map((h) => clone(ModuleEventHookSchema, h));
-		metadata = parseMetadata(template.metadata);
+		metadata = mapToKv(template.metadata);
 		step = 'configure';
 	}
 
@@ -394,9 +341,7 @@
 			notify.success(`Template "${template.name}" deleted`);
 			onTemplateDeleted?.();
 		} catch (error) {
-			notify.error(
-				`Failed to delete template: ${error instanceof Error ? error.message : 'Unknown error'}`
-			);
+			notify.error(`Failed to delete template: ${rpcErrorMessage(error, 'Unknown error')}`);
 		}
 	}
 
@@ -472,7 +417,7 @@
 				initCommand = module.initCommand;
 				initCommandDelay = module.initCommandDelay;
 				restartAfterInit = module.restartAfterInit;
-				envVars = parseEnvVars(module.envOverrides);
+				envVars = mapToKv(module.envOverrides);
 				volumes = module.volumeOverrides.map((v) => clone(VolumeMountSchema, v));
 				ports = module.ports.map((p) => clone(NetworkPortSchema, p));
 				dependencies = module.dependencies.map((d) => clone(ModuleDependencySchema, d));
@@ -480,7 +425,7 @@
 				healthCheckTimeout = module.healthCheckTimeout || 5;
 				healthCheckRetries = module.healthCheckRetries || 3;
 				eventHooks = module.eventHooks.map((h) => clone(ModuleEventHookSchema, h));
-				metadata = parseMetadata(module.metadata);
+				metadata = mapToKv(module.metadata);
 				loadServerModules();
 				loadEditTemplate(module);
 			});
@@ -567,7 +512,7 @@
 			// Give the module a moment then re-check
 			setTimeout(pollPrompt, 1500);
 		} catch (err) {
-			notify.error(err instanceof Error ? err.message : 'Failed to send input');
+			notify.error(rpcErrorMessage(err, 'Failed to send input'));
 		} finally {
 			promptSubmitting = false;
 		}
@@ -589,19 +534,9 @@
 
 		submitting = true;
 		try {
-			const portsPayload = ports.filter((p) => p.containerPort > 0);
-			const droppedPorts = ports.length - portsPayload.length;
-			if (droppedPorts > 0) {
-				notify.warning(
-					`Ignored ${droppedPorts} port row${droppedPorts === 1 ? '' : 's'} without a container port`
-				);
-			}
+			const portsPayload = dropEmptyPorts(ports);
 			const depsPayload = dependencies.filter((d) => d.moduleId);
-			for (const v of volumes) {
-				v.source = v.source.trim();
-				v.target = v.target.trim();
-			}
-			const volumesPayload = volumes.filter((v) => v.source && v.target);
+			const volumesPayload = trimVolumes(volumes);
 
 			if (mode === 'create' && selectedTemplate) {
 				await rpcClient.module.createModule({
@@ -622,7 +557,7 @@
 					healthCheckTimeout,
 					healthCheckRetries,
 					eventHooks,
-					metadata: metadataToMap(),
+					metadata: kvToMap(metadata),
 					uid,
 					gid,
 					initCommand,
@@ -660,7 +595,7 @@
 					healthCheckTimeout,
 					healthCheckRetries,
 					eventHooks,
-					metadata: metadataToMap(),
+					metadata: kvToMap(metadata),
 					uid,
 					gid,
 					initCommand,
@@ -676,7 +611,7 @@
 			open = false;
 			onSuccess();
 		} catch (error) {
-			notify.error(`Failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+			notify.error(`Failed: ${rpcErrorMessage(error, 'Unknown error')}`);
 		} finally {
 			submitting = false;
 		}
@@ -865,18 +800,14 @@
 
 				{#if activeSection === 'general'}
 					<div class="space-y-6">
-						<div class="space-y-2">
-							<Label for="module-name">Module name</Label>
-							<Input
-								id="module-name"
-								bind:value={name}
-								placeholder="Enter module name"
-								disabled={systemLocked}
-							/>
-							<p class="text-xs text-muted-foreground">
-								A unique identifier for this module instance
-							</p>
-						</div>
+						<LabeledInput
+							id="module-name"
+							label="Module name"
+							bind:value={name}
+							placeholder="Enter module name"
+							disabled={systemLocked}
+							hint="A unique identifier for this module instance"
+						/>
 
 						{#if activeTemplate?.certMountPath && !systemLocked}
 							<div class="space-y-3">
@@ -917,57 +848,49 @@
 						<div class="space-y-3">
 							<h3 class="text-sm font-semibold">Resource limits</h3>
 							<div class="grid gap-4 sm:grid-cols-2">
-								<div class="space-y-2">
-									<Label for="module-memory">Memory (MB)</Label>
-									<Input
-										id="module-memory"
-										type="number"
-										bind:value={memory}
-										min={64}
-										max={32768}
-									/>
-									<p class="text-xs text-muted-foreground">Minimum: 64 MB</p>
-								</div>
-								<div class="space-y-2">
-									<Label for="module-cpu">CPU limit (cores)</Label>
-									<Input
-										id="module-cpu"
-										type="number"
-										bind:value={cpuLimit}
-										min={0.1}
-										max={16}
-										step={0.1}
-									/>
-									<p class="text-xs text-muted-foreground">Fraction of CPU cores</p>
-								</div>
+								<LabeledInput
+									id="module-memory"
+									label="Memory (MB)"
+									type="number"
+									bind:value={memory}
+									min={64}
+									max={32768}
+									hint="Minimum: 64 MB"
+								/>
+								<LabeledInput
+									id="module-cpu"
+									label="CPU limit (cores)"
+									type="number"
+									bind:value={cpuLimit}
+									min={0.1}
+									max={16}
+									step={0.1}
+									hint="Fraction of CPU cores"
+								/>
 							</div>
 						</div>
 
 						<div class="space-y-3">
 							<h3 class="text-sm font-semibold">Container user</h3>
 							<div class="grid gap-4 sm:grid-cols-2">
-								<div class="space-y-2">
-									<Label for="module-uid">UID</Label>
-									<Input
-										id="module-uid"
-										bind:value={uid}
-										placeholder={'{{host.uid}}'}
-										class="font-mono"
-										disabled={systemLocked}
-									/>
-									<p class="text-xs text-muted-foreground">User ID or alias</p>
-								</div>
-								<div class="space-y-2">
-									<Label for="module-gid">GID</Label>
-									<Input
-										id="module-gid"
-										bind:value={gid}
-										placeholder={'{{host.gid}}'}
-										class="font-mono"
-										disabled={systemLocked}
-									/>
-									<p class="text-xs text-muted-foreground">Group ID or alias</p>
-								</div>
+								<LabeledInput
+									id="module-uid"
+									label="UID"
+									bind:value={uid}
+									placeholder={'{{host.uid}}'}
+									class="font-mono"
+									disabled={systemLocked}
+									hint="User ID or alias"
+								/>
+								<LabeledInput
+									id="module-gid"
+									label="GID"
+									bind:value={gid}
+									placeholder={'{{host.gid}}'}
+									class="font-mono"
+									disabled={systemLocked}
+									hint="Group ID or alias"
+								/>
 							</div>
 						</div>
 
@@ -1145,187 +1068,113 @@
 						{/each}
 					</div>
 				{:else if activeSection === 'ports'}
-					<div class="space-y-4">
-						<div class="flex items-center justify-between gap-2">
-							<p class="text-sm text-muted-foreground">
-								{ports.length} port{ports.length === 1 ? '' : 's'} configured
-							</p>
-							{#if !systemLocked}
-								<Button size="sm" onclick={addPort}>
-									<Plus class="size-4" />
-									Add port
-								</Button>
-							{/if}
-						</div>
-
-						{#if ports.length > 0}
-							<NetworkPortRowsEditor bind:ports locked={systemLocked} {serverHosts} />
-						{:else}
-							<div class="rounded-lg border border-dashed">
-								<EmptyState
-									icon={Network}
-									title="No ports configured"
-									description="Add ports to expose container services"
-								>
-									{#if !systemLocked}
-										<Button variant="outline" size="sm" onclick={addPort}>
-											<Plus class="size-4" />
-											Add port
-										</Button>
-									{/if}
-								</EmptyState>
-							</div>
-						{/if}
-					</div>
+					<CollectionSection
+						count={ports.length}
+						countLabel="port"
+						countSuffix="configured"
+						addLabel="Add port"
+						onAdd={addPort}
+						locked={systemLocked}
+						emptyIcon={Network}
+						emptyTitle="No ports configured"
+						emptyDescription="Add ports to expose container services"
+					>
+						<NetworkPortRowsEditor bind:ports locked={systemLocked} {serverHosts} />
+					</CollectionSection>
 				{:else if activeSection === 'environment'}
-					<div class="space-y-4">
-						<div class="flex items-center justify-between gap-2">
-							<p class="text-sm text-muted-foreground">
-								{envVars.length} variable{envVars.length === 1 ? '' : 's'} defined
-							</p>
-							{#if !systemLocked}
-								<Button size="sm" onclick={addEnvVar}>
-									<Plus class="size-4" />
-									Add variable
-								</Button>
-							{/if}
-						</div>
-
-						{#if envVars.length > 0}
-							<KeyValueRowsEditor
-								bind:rows={envVars}
-								keyPlaceholder="VARIABLE_NAME"
-								valuePlaceholder="value"
-								entryLabel="variable"
-								disabled={systemLocked}
-							/>
-						{:else}
-							<div class="rounded-lg border border-dashed">
-								<EmptyState
-									icon={Variable}
-									title="No environment variables"
-									description="Add variables to configure the container"
-								>
-									{#if !systemLocked}
-										<Button variant="outline" size="sm" onclick={addEnvVar}>
-											<Plus class="size-4" />
-											Add variable
-										</Button>
-									{/if}
-								</EmptyState>
-							</div>
-						{/if}
-					</div>
+					<CollectionSection
+						count={envVars.length}
+						countLabel="variable"
+						countSuffix="defined"
+						addLabel="Add variable"
+						onAdd={addEnvVar}
+						locked={systemLocked}
+						emptyIcon={Variable}
+						emptyTitle="No environment variables"
+						emptyDescription="Add variables to configure the container"
+					>
+						<KeyValueRowsEditor
+							bind:rows={envVars}
+							keyPlaceholder="VARIABLE_NAME"
+							valuePlaceholder="value"
+							entryLabel="variable"
+							disabled={systemLocked}
+						/>
+					</CollectionSection>
 				{:else if activeSection === 'volumes'}
-					<div class="space-y-4">
-						<div class="flex items-center justify-between gap-2">
-							<p class="text-sm text-muted-foreground">
-								{volumes.length} volume{volumes.length === 1 ? '' : 's'} mounted
-							</p>
-							{#if !systemLocked}
-								<Button size="sm" onclick={addVolume}>
-									<Plus class="size-4" />
-									Add volume
-								</Button>
-							{/if}
-						</div>
-
-						{#if volumes.length > 0}
-							<VolumeMountRowsEditor bind:volumes disabled={systemLocked} />
-						{:else}
-							<div class="rounded-lg border border-dashed">
-								<EmptyState
-									icon={HardDrive}
-									title="No volumes mounted"
-									description="Mount host directories to persist data"
-								>
-									{#if !systemLocked}
-										<Button variant="outline" size="sm" onclick={addVolume}>
-											<Plus class="size-4" />
-											Add volume
-										</Button>
-									{/if}
-								</EmptyState>
-							</div>
-						{/if}
-					</div>
+					<CollectionSection
+						count={volumes.length}
+						countLabel="volume"
+						countSuffix="mounted"
+						addLabel="Add volume"
+						onAdd={addVolume}
+						locked={systemLocked}
+						emptyIcon={HardDrive}
+						emptyTitle="No volumes mounted"
+						emptyDescription="Mount host directories to persist data"
+					>
+						<VolumeMountRowsEditor bind:volumes disabled={systemLocked} />
+					</CollectionSection>
 				{:else if activeSection === 'advanced'}
 					<fieldset class="min-w-0 space-y-8" disabled={systemLocked}>
-						<section class="space-y-3">
-							<div class="flex items-start justify-between gap-2">
-								<div>
-									<h3 class="text-sm font-semibold">Dependencies</h3>
-									<p class="mt-0.5 text-xs text-muted-foreground">
-										Modules that must be running before this one starts
-									</p>
-								</div>
-								<Button
-									variant="outline"
-									size="sm"
-									onclick={addDependency}
-									disabled={serverModules.length === 0}
-								>
-									<Plus class="size-4" />
-									Add
-								</Button>
-							</div>
+						<CollectionSection
+							count={dependencies.length}
+							title="Dependencies"
+							description="Modules that must be running before this one starts"
+							addLabel="Add"
+							addOutline
+							onAdd={addDependency}
+							addDisabled={serverModules.length === 0}
+							emptyText={serverModules.length === 0
+								? 'No other modules available on this server'
+								: 'No dependencies configured'}
+						>
+							<div class="space-y-2">
+								{#each dependencies as dep, i (i)}
+									<div class="flex flex-wrap items-center gap-3 rounded-lg border bg-card p-3">
+										<Select
+											type="single"
+											value={dep.moduleId}
+											onValueChange={(v) => {
+												if (v) dep.moduleId = v;
+											}}
+										>
+											<SelectTrigger class="w-56">
+												<span class="truncate">
+													{serverModules.find((m) => m.id === dep.moduleId)?.name ||
+														'Select module...'}
+												</span>
+											</SelectTrigger>
+											<SelectContent>
+												{#each serverModules as mod (mod.id)}
+													<SelectItem value={mod.id}>{mod.name}</SelectItem>
+												{/each}
+											</SelectContent>
+										</Select>
 
-							{#if dependencies.length > 0}
-								<div class="space-y-2">
-									{#each dependencies as dep, i (i)}
-										<div class="flex flex-wrap items-center gap-3 rounded-lg border bg-card p-3">
-											<Select
-												type="single"
-												value={dep.moduleId}
-												onValueChange={(v) => {
-													if (v) dep.moduleId = v;
-												}}
-											>
-												<SelectTrigger class="w-56">
-													<span class="truncate">
-														{serverModules.find((m) => m.id === dep.moduleId)?.name ||
-															'Select module...'}
-													</span>
-												</SelectTrigger>
-												<SelectContent>
-													{#each serverModules as mod (mod.id)}
-														<SelectItem value={mod.id}>{mod.name}</SelectItem>
-													{/each}
-												</SelectContent>
-											</Select>
+										<label class="flex cursor-pointer items-center gap-2">
+											<Checkbox bind:checked={dep.waitForHealthy} />
+											<span class="text-sm">Wait for healthy</span>
+										</label>
 
-											<label class="flex cursor-pointer items-center gap-2">
-												<Checkbox bind:checked={dep.waitForHealthy} />
-												<span class="text-sm">Wait for healthy</span>
-											</label>
-
-											<div class="flex items-center gap-2">
-												<Label class="text-sm whitespace-nowrap">Timeout (s)</Label>
-												<Input type="number" bind:value={dep.timeoutSeconds} class="w-24" />
-											</div>
-
-											<Button
-												variant="ghost"
-												size="icon"
-												class="ml-auto size-8 text-muted-foreground hover:text-destructive"
-												onclick={() => removeDependency(i)}
-											>
-												<Trash2 class="size-4" />
-												<span class="sr-only">Remove dependency</span>
-											</Button>
+										<div class="flex items-center gap-2">
+											<Label class="text-sm whitespace-nowrap">Timeout (s)</Label>
+											<Input type="number" bind:value={dep.timeoutSeconds} class="w-24" />
 										</div>
-									{/each}
-								</div>
-							{:else}
-								<div
-									class="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground"
-								>
-									{serverModules.length === 0
-										? 'No other modules available on this server'
-										: 'No dependencies configured'}
-								</div>
-							{/if}
-						</section>
+
+										<Button
+											variant="ghost"
+											size="icon"
+											class="ml-auto size-8 text-muted-foreground hover:text-destructive"
+											onclick={() => removeDependency(i)}
+										>
+											<Trash2 class="size-4" />
+											<span class="sr-only">Remove dependency</span>
+										</Button>
+									</div>
+								{/each}
+							</div>
+						</CollectionSection>
 
 						<section class="space-y-3">
 							<div>
@@ -1339,21 +1188,30 @@
 							</div>
 
 							<div class="grid gap-4 rounded-lg border bg-card p-4 sm:grid-cols-3">
-								<div class="space-y-1.5">
-									<Label>Interval (seconds)</Label>
-									<Input type="number" bind:value={healthCheckInterval} min={5} />
-									<p class="text-xs text-muted-foreground">Time between checks</p>
-								</div>
-								<div class="space-y-1.5">
-									<Label>Timeout (seconds)</Label>
-									<Input type="number" bind:value={healthCheckTimeout} min={1} />
-									<p class="text-xs text-muted-foreground">Max wait for response</p>
-								</div>
-								<div class="space-y-1.5">
-									<Label>Retries</Label>
-									<Input type="number" bind:value={healthCheckRetries} min={1} />
-									<p class="text-xs text-muted-foreground">Failures before unhealthy</p>
-								</div>
+								<LabeledInput
+									id="module-hc-interval"
+									label="Interval (seconds)"
+									type="number"
+									bind:value={healthCheckInterval}
+									min={5}
+									hint="Time between checks"
+								/>
+								<LabeledInput
+									id="module-hc-timeout"
+									label="Timeout (seconds)"
+									type="number"
+									bind:value={healthCheckTimeout}
+									min={1}
+									hint="Max wait for response"
+								/>
+								<LabeledInput
+									id="module-hc-retries"
+									label="Retries"
+									type="number"
+									bind:value={healthCheckRetries}
+									min={1}
+									hint="Failures before unhealthy"
+								/>
 							</div>
 						</section>
 
@@ -1372,64 +1230,36 @@
 							/>
 						</section>
 
-						<section class="space-y-3">
-							<div class="flex items-start justify-between gap-2">
-								<div>
-									<h3 class="text-sm font-semibold">Event hooks</h3>
-									<p class="mt-0.5 text-xs text-muted-foreground">
-										Actions to run when specific events occur
-									</p>
-								</div>
-								<Button variant="outline" size="sm" onclick={addEventHook}>
-									<Plus class="size-4" />
-									Add hook
-								</Button>
-							</div>
+						<CollectionSection
+							count={eventHooks.length}
+							title="Event hooks"
+							description="Actions to run when specific events occur"
+							addLabel="Add hook"
+							addOutline
+							onAdd={addEventHook}
+							emptyText="No event hooks configured"
+						>
+							<EventHookRowsEditor bind:hooks={eventHooks} />
+						</CollectionSection>
 
-							{#if eventHooks.length > 0}
-								<EventHookRowsEditor bind:hooks={eventHooks} />
-							{:else}
-								<div
-									class="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground"
-								>
-									No event hooks configured
-								</div>
-							{/if}
-						</section>
-
-						<section class="space-y-3">
-							<div class="flex items-start justify-between gap-2">
-								<div>
-									<h3 class="flex items-center gap-1.5 text-sm font-semibold">
-										<Info class="size-4" />
-										Metadata
-									</h3>
-									<p class="mt-0.5 text-xs text-muted-foreground">
-										Custom key-value pairs for module configuration
-									</p>
-								</div>
-								<Button variant="outline" size="sm" onclick={addMetadataEntry}>
-									<Plus class="size-4" />
-									Add entry
-								</Button>
-							</div>
-
-							{#if metadata.length > 0}
-								<KeyValueRowsEditor
-									bind:rows={metadata}
-									separator=":"
-									keyClass="w-48"
-									keyPlaceholder="key"
-									entryLabel="entry"
-								/>
-							{:else}
-								<div
-									class="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground"
-								>
-									No metadata entries
-								</div>
-							{/if}
-						</section>
+						<CollectionSection
+							count={metadata.length}
+							title="Metadata"
+							headingIcon={Info}
+							description="Custom key-value pairs for module configuration"
+							addLabel="Add entry"
+							addOutline
+							onAdd={addMetadataEntry}
+							emptyText="No metadata entries"
+						>
+							<KeyValueRowsEditor
+								bind:rows={metadata}
+								separator=":"
+								keyClass="w-48"
+								keyPlaceholder="key"
+								entryLabel="entry"
+							/>
+						</CollectionSection>
 					</fieldset>
 				{/if}
 

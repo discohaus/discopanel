@@ -513,6 +513,27 @@
           }
         },
         {
+          "name": "gc_pause_count",
+          "types": {
+            "postgres": "bigint",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "gc_pause_max_ms",
+          "types": {
+            "postgres": "decimal",
+            "sqlite": "real"
+          }
+        },
+        {
+          "name": "gc_pause_total_ms",
+          "types": {
+            "postgres": "decimal",
+            "sqlite": "real"
+          }
+        },
+        {
           "name": "heap_used_mb",
           "types": {
             "postgres": "decimal",
@@ -1055,13 +1076,6 @@
         },
         {
           "name": "created_by",
-          "types": {
-            "postgres": "text",
-            "sqlite": "text"
-          }
-        },
-        {
-          "name": "data_path",
           "types": {
             "postgres": "text",
             "sqlite": "text"
