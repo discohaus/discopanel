@@ -58,6 +58,58 @@ func WriteVarInt(w io.Writer, value VarInt) error {
 	}
 }
 
+func readPacket(r io.Reader) (VarInt, []byte, error) {
+	length, err := ReadVarInt(r)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to read packet length: %w", err)
+	}
+	if length < 1 || length > 1<<20 {
+		return 0, nil, fmt.Errorf("invalid packet length: %d", length)
+	}
+
+	data := make([]byte, int(length))
+	if _, err := io.ReadFull(r, data); err != nil {
+		return 0, nil, fmt.Errorf("failed to read packet data: %w", err)
+	}
+
+	buf := bytes.NewReader(data)
+	packetID, err := ReadVarInt(buf)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to read packet ID: %w", err)
+	}
+
+	payload, err := io.ReadAll(buf)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to read packet payload: %w", err)
+	}
+
+	return packetID, payload, nil
+}
+
+func writePacket(w io.Writer, packetID VarInt, payload []byte) error {
+	var packet bytes.Buffer
+	if err := WriteVarInt(&packet, packetID); err != nil {
+		return err
+	}
+	if _, err := packet.Write(payload); err != nil {
+		return err
+	}
+
+	if err := WriteVarInt(w, VarInt(packet.Len())); err != nil {
+		return err
+	}
+	_, err := w.Write(packet.Bytes())
+	return err
+}
+
+func writeString(w io.Writer, value string) error {
+	if err := WriteVarInt(w, VarInt(len(value))); err != nil {
+		return err
+	}
+	_, err := io.WriteString(w, value)
+	return err
+}
+
 // Len returns the length of the VarInt when encoded
 func (v VarInt) Len() int {
 	value := int32(v)

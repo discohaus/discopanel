@@ -25,6 +25,7 @@ import (
 	"github.com/nickheyer/discopanel/internal/ws"
 	"github.com/nickheyer/discopanel/pkg/download"
 	"github.com/nickheyer/discopanel/pkg/logger"
+	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
 	"github.com/nickheyer/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
 	"github.com/nickheyer/discopanel/pkg/upload"
 	web "github.com/nickheyer/discopanel/web/discopanel"
@@ -191,13 +192,41 @@ func (s *Server) setupHandler() {
 func (s *Server) registerServices(mux *http.ServeMux, opts []connect.HandlerOption) {
 	// Create service instances
 	authService := services.NewAuthService(s.store, s.authManager, s.enforcer, s.oidcHandler, s.log)
-	configService := services.NewConfigService(s.store, s.config, s.docker, s.log)
+	configService := services.NewConfigService(s.store, s.config, s.docker, s.proxyManager, s.log)
 	fileService := services.NewFileService(s.store, s.docker, s.uploadManager, s.downloadManager, s.log)
 	minecraftService := services.NewMinecraftService(s.store, s.docker, s.log)
 	modService := services.NewModService(s.store, s.docker, s.uploadManager, s.log)
 	modpackService := services.NewModpackService(s.store, s.config, s.uploadManager, s.log)
 	proxyService := services.NewProxyService(s.store, s.docker, s.proxyManager, s.config, s.logStreamer, s.log)
 	serverService := services.NewServerService(s.store, s.docker, s.sender, s.config, s.proxyManager, s.logStreamer, s.metricsCollector, s.moduleManager, s.bus, s.log)
+	// Route lazy wake-ups through ServerService so they use the same lifecycle
+	// events and container handling as a manual server start.
+	if s.proxyManager != nil {
+		s.proxyManager.SetWakeHandler(func(ctx context.Context, serverID string) error {
+			server, err := s.store.GetServer(ctx, serverID)
+			if err != nil {
+				return err
+			}
+			if server.ContainerID == "" {
+				return fmt.Errorf("server has no container")
+			}
+
+			status, err := s.docker.GetContainerStatus(ctx, server.ContainerID)
+			if err != nil {
+				return err
+			}
+
+			switch status {
+			case storage.StatusRunning, storage.StatusStarting:
+				return nil
+			case storage.StatusStopped:
+				_, err = serverService.StartServer(ctx, connect.NewRequest(&v1.StartServerRequest{Id: serverID}))
+				return err
+			default:
+				return fmt.Errorf("server cannot be woken while in %s state", status)
+			}
+		})
+	}
 	supportService := services.NewSupportService(s.store, s.docker, s.config, s.log)
 	taskService := services.NewTaskService(s.store, s.scheduler, s.log)
 	userService := services.NewUserService(s.store, s.authManager, s.log)

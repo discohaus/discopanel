@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -14,26 +16,30 @@ import (
 
 // MinecraftProxy handles Minecraft protocol proxying with handshake parsing for hostname-based routing
 type MinecraftProxy struct {
-	listener     net.Listener
-	routes       map[string]*Route
-	routesMutex  sync.RWMutex
-	logger       *logger.Logger
-	listenAddr   string
-	running      bool
-	runningMutex sync.RWMutex
-	ctx          context.Context
-	cancel       context.CancelFunc
+	listener            net.Listener
+	routes              map[string]*Route
+	routesMutex         sync.RWMutex
+	logger              *logger.Logger
+	listenAddr          string
+	running             bool
+	runningMutex        sync.RWMutex
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	wakeServer          func(context.Context, string) error
+	getLazyServerConfig func(context.Context, string) LazyServerConfig
 }
 
 // NewMinecraftProxy creates a new Minecraft proxy instance
 func NewMinecraftProxy(cfg *Config) *MinecraftProxy {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &MinecraftProxy{
-		routes:     make(map[string]*Route),
-		logger:     cfg.Logger,
-		listenAddr: cfg.ListenAddr,
-		ctx:        ctx,
-		cancel:     cancel,
+		routes:              make(map[string]*Route),
+		logger:              cfg.Logger,
+		listenAddr:          cfg.ListenAddr,
+		ctx:                 ctx,
+		cancel:              cancel,
+		wakeServer:          cfg.WakeServer,
+		getLazyServerConfig: cfg.GetLazyServerConfig,
 	}
 }
 
@@ -178,9 +184,14 @@ func (p *MinecraftProxy) handleConnection(clientConn net.Conn) {
 		p.logger.Debug("Null byte(s) detected, trimmed suffix null termination: %s", hostname)
 	}
 
-	// Find the route
+	// Copy the route while holding the lock so backend updates can happen
+	// concurrently without changing this connection's routing decision.
 	p.routesMutex.RLock()
-	route, exists := p.routes[hostname]
+	routePtr, exists := p.routes[hostname]
+	var route Route
+	if exists {
+		route = *routePtr
+	}
 	p.routesMutex.RUnlock()
 
 	if !exists || !route.Active {
@@ -194,10 +205,43 @@ func (p *MinecraftProxy) handleConnection(clientConn net.Conn) {
 		return
 	}
 
+	// Sleeping lazy servers keep their route but have no backend until a login
+	// attempt wakes the container. Server list pings must not trigger a wake-up.
+	if route.BackendHost == "" {
+		lazyConfig := p.lazyServerConfig(route.ServerID)
+		if !lazyConfig.Enabled {
+			return
+		}
+
+		switch handshake.NextState {
+		case 1:
+			if err := p.serveSleepingStatus(clientConn, handshake, lazyConfig.MOTD); err != nil {
+				p.logger.Debug("Failed to serve sleeping status for %s: %v", route.ServerID, err)
+			}
+		case 2:
+			p.wakeOnLogin(clientConn, &route, lazyConfig.StartingMessage)
+		}
+		return
+	}
+
 	// Connect to backend
 	backendAddr := net.JoinHostPort(route.BackendHost, fmt.Sprintf("%d", route.BackendPort))
 	backendConn, err := net.DialTimeout("tcp", backendAddr, 5*time.Second)
 	if err != nil {
+		lazyConfig := p.lazyServerConfig(route.ServerID)
+		if lazyConfig.Enabled {
+			p.logger.Debug("Backend %s unavailable for lazy server %s: %v", backendAddr, route.ServerID, err)
+			switch handshake.NextState {
+			case 1:
+				if err := p.serveSleepingStatus(clientConn, handshake, lazyConfig.MOTD); err != nil {
+					p.logger.Debug("Failed to serve sleeping status for %s: %v", route.ServerID, err)
+				}
+			case 2:
+				p.wakeOnLogin(clientConn, &route, lazyConfig.StartingMessage)
+			}
+			return
+		}
+
 		p.logger.Error("Failed to connect to backend %s: %v", backendAddr, err)
 		return
 	}
@@ -253,6 +297,113 @@ func (p *MinecraftProxy) handleConnection(clientConn net.Conn) {
 	}()
 
 	wg.Wait()
+}
+
+func (p *MinecraftProxy) lazyServerConfig(serverID string) LazyServerConfig {
+	lazyConfig := LazyServerConfig{}
+	if p.getLazyServerConfig != nil {
+		lazyConfig = p.getLazyServerConfig(p.ctx, serverID)
+	}
+	if lazyConfig.MOTD == "" {
+		lazyConfig.MOTD = defaultLazyServerMOTD
+	}
+	if lazyConfig.StartingMessage == "" {
+		lazyConfig.StartingMessage = defaultLazyServerStartingMessage
+	}
+	return lazyConfig
+}
+
+func (p *MinecraftProxy) wakeOnLogin(clientConn net.Conn, route *Route, startingMessage string) {
+	if p.wakeServer == nil {
+		return
+	}
+
+	if err := p.wakeServer(p.ctx, route.ServerID); err != nil {
+		p.logger.Error("Failed to wake server %s: %v", route.ServerID, err)
+		if err := writeLoginDisconnect(clientConn, "Unable to start the server. Please try again later."); err != nil {
+			p.logger.Debug("Failed to send wake error to client: %v", err)
+		}
+		return
+	}
+
+	p.logger.Info("Wake requested for lazy server %s", route.ServerID)
+	if err := writeLoginDisconnect(clientConn, startingMessage); err != nil {
+		p.logger.Debug("Failed to send starting message to client: %v", err)
+	}
+}
+
+func (p *MinecraftProxy) serveSleepingStatus(clientConn net.Conn, handshake *HandshakePacket, motd string) error {
+	packetID, payload, err := readPacket(clientConn)
+	if err != nil {
+		return err
+	}
+	if packetID != 0 || len(payload) != 0 {
+		return fmt.Errorf("expected status request packet, got id=%d payload=%d bytes", packetID, len(payload))
+	}
+
+	status := struct {
+		Version struct {
+			Name     string `json:"name"`
+			Protocol int32  `json:"protocol"`
+		} `json:"version"`
+		Players struct {
+			Max    int `json:"max"`
+			Online int `json:"online"`
+		} `json:"players"`
+		Description struct {
+			Text  string `json:"text"`
+			Color string `json:"color"`
+		} `json:"description"`
+	}{}
+	status.Version.Name = "Sleeping"
+	status.Version.Protocol = int32(handshake.ProtocolVersion)
+	status.Description.Text = motd
+	status.Description.Color = "gray"
+
+	statusJSON, err := json.Marshal(status)
+	if err != nil {
+		return fmt.Errorf("failed to encode sleeping status: %w", err)
+	}
+
+	var response bytes.Buffer
+	if err := writeString(&response, string(statusJSON)); err != nil {
+		return err
+	}
+	if err := writePacket(clientConn, 0, response.Bytes()); err != nil {
+		return fmt.Errorf("failed to write sleeping status: %w", err)
+	}
+
+	packetID, payload, err = readPacket(clientConn)
+	if err != nil {
+		return err
+	}
+	if packetID != 1 || len(payload) != 8 {
+		return fmt.Errorf("expected status ping packet, got id=%d payload=%d bytes", packetID, len(payload))
+	}
+
+	if err := writePacket(clientConn, 1, payload); err != nil {
+		return fmt.Errorf("failed to write status pong: %w", err)
+	}
+	return nil
+}
+
+func writeLoginDisconnect(w io.Writer, message string) error {
+	reason, err := json.Marshal(struct {
+		Text  string `json:"text"`
+		Color string `json:"color"`
+	}{
+		Text:  message,
+		Color: "yellow",
+	})
+	if err != nil {
+		return err
+	}
+
+	var payload bytes.Buffer
+	if err := writeString(&payload, string(reason)); err != nil {
+		return err
+	}
+	return writePacket(w, 0, payload.Bytes())
 }
 
 // GetRoutes returns a copy of all current routes
