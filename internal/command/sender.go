@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	storage "github.com/discohaus/discopanel/internal/db"
@@ -11,13 +12,15 @@ import (
 	"github.com/discohaus/discopanel/internal/metrics"
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/logger"
+	"github.com/discohaus/discopanel/pkg/mcconsole"
 
-	"github.com/jltobler/go-rcon"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/jltobler/go-rcon"
 )
 
 var (
 	ErrEmptyCommand   = errors.New("command is required")
+	ErrEmptyMessage   = errors.New("message is required")
 	ErrServerNotFound = errors.New("server not found")
 	ErrNoContainer    = errors.New("server has no container")
 	ErrNotRunning     = errors.New("server is not running")
@@ -27,6 +30,7 @@ var (
 type ConsoleAgent interface {
 	Connected(serverID string) bool
 	SendConsole(ctx context.Context, serverID, command string) error
+	SendChat(ctx context.Context, serverID, sender, message string) error
 }
 
 type Sender struct {
@@ -85,21 +89,30 @@ func SendCommand(ctx context.Context, RCONHost string, RCONPort int, RCONPasswor
 	}
 }
 
+// Loads a server and refuses anything not running
+func (s *Sender) runningServer(ctx context.Context, serverID string) (*v1.Server, error) {
+	server, err := s.store.GetServer(ctx, serverID)
+	if err != nil {
+		return nil, ErrServerNotFound
+	}
+	if server.ContainerId == "" {
+		return nil, ErrNoContainer
+	}
+	status, err := s.docker.GetContainerStatus(ctx, server.ContainerId)
+	if err != nil || (status != v1.ServerStatus_SERVER_STATUS_RUNNING && status != v1.ServerStatus_SERVER_STATUS_UNHEALTHY) {
+		return nil, ErrNotRunning
+	}
+	return server, nil
+}
+
 // Gates, echoes, sends, and records one console command
 func (s *Sender) Run(ctx context.Context, serverID, cmd string, silent bool) (string, error) {
 	if cmd == "" {
 		return "", ErrEmptyCommand
 	}
-	server, err := s.store.GetServer(ctx, serverID)
+	server, err := s.runningServer(ctx, serverID)
 	if err != nil {
-		return "", ErrServerNotFound
-	}
-	if server.ContainerId == "" {
-		return "", ErrNoContainer
-	}
-	status, err := s.docker.GetContainerStatus(ctx, server.ContainerId)
-	if err != nil || (status != v1.ServerStatus_SERVER_STATUS_RUNNING && status != v1.ServerStatus_SERVER_STATUS_UNHEALTHY) {
-		return "", ErrNotRunning
+		return "", err
 	}
 
 	commandTime := time.Now()
@@ -115,6 +128,26 @@ func (s *Sender) Run(ctx context.Context, serverID, cmd string, silent bool) (st
 		s.streamer.AddCommandOutput(server.Id, output, err == nil, commandTime)
 	}
 	return output, err
+}
+
+// Shows a chat line in game without echo or ledger
+func (s *Sender) Chat(ctx context.Context, serverID, sender, message string) error {
+	if strings.TrimSpace(message) == "" {
+		return ErrEmptyMessage
+	}
+	if sender == "" {
+		sender = "Panel"
+	}
+	server, err := s.runningServer(ctx, serverID)
+	if err != nil {
+		return err
+	}
+	// Supervisor tellraw skips RCON and its connection spam
+	if s.agent != nil && s.agent.Connected(server.Id) {
+		return s.agent.SendChat(ctx, server.Id, sender, message)
+	}
+	_, err = s.SendCommand(ctx, server.Id, mcconsole.TellrawCommand(sender, message))
+	return err
 }
 
 // Falls back to agent console, stdin has no captured response

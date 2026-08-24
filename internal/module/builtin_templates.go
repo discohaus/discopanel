@@ -9,13 +9,16 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Template id of the global crash doctor module
-const doctorTemplateID = "builtin-doctor"
-
-// Panel user keeps doctor writes owned by the panel
+// Template ids of the panel owned global modules
 const (
-	doctorUID = "{{host.uid}}"
-	doctorGID = "{{host.gid}}"
+	doctorTemplateID = "builtin-doctor"
+	botTemplateID    = "builtin-bot"
+)
+
+// Panel user keeps seeded module writes owned by the panel
+const (
+	hostUID = "{{host.uid}}"
+	hostGID = "{{host.gid}}"
 )
 
 // Default web port for the seeded doctor instance
@@ -52,6 +55,56 @@ func doctorAccessURLs() []string {
 func doctorVolumes() []*v1.VolumeMount {
 	return []*v1.VolumeMount{
 		{Source: "{{config.storage.data_dir}}", Target: "/data"},
+	}
+}
+
+// Seeded doctor instance, bootstrapped builtins hold supermodule tokens
+func doctorInstance(cfg *config.Config) *v1.Module {
+	return &v1.Module{
+		Id:                    "builtin-doctor-instance",
+		Name:                  "Doctor",
+		TemplateId:            doctorTemplateID,
+		Status:                v1.ModuleStatus_MODULE_STATUS_STOPPED,
+		AutoStart:             true,
+		FollowServerLifecycle: false,
+		Memory:                512,
+		Ports:                 doctorPorts(cfg),
+		EnvOverrides:          doctorEnv(),
+		VolumeOverrides:       doctorVolumes(),
+		AccessUrls:            doctorAccessURLs(),
+		Uid:                   hostUID,
+		Gid:                   hostGID,
+	}
+}
+
+func botEnv() map[string]string {
+	return map[string]string{
+		"POLL_INTERVAL": "10s",
+		"PORT":          "8210",
+	}
+}
+
+// Bot state lives in its own module data dir
+func botVolumes() []*v1.VolumeMount {
+	return []*v1.VolumeMount{
+		{Source: "{{module.data_path}}", Target: "/data", CreateDir: true},
+	}
+}
+
+// Seeded bot instance, stays off until a token is configured
+func botInstance() *v1.Module {
+	return &v1.Module{
+		Id:                    "builtin-bot-instance",
+		Name:                  "Discord Bot",
+		TemplateId:            botTemplateID,
+		Status:                v1.ModuleStatus_MODULE_STATUS_STOPPED,
+		AutoStart:             false,
+		FollowServerLifecycle: false,
+		Memory:                256,
+		EnvOverrides:          botEnv(),
+		VolumeOverrides:       botVolumes(),
+		Uid:                   hostUID,
+		Gid:                   hostGID,
 	}
 }
 
@@ -376,11 +429,69 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			DefaultVolumes:    doctorVolumes(),
 			HealthCheckPath:   "/health",
 			HealthCheckPort:   8190,
-			DefaultUid:        doctorUID,
-			DefaultGid:        doctorGID,
+			DefaultUid:        hostUID,
+			DefaultGid:        hostGID,
 			Metadata:          map[string]string{"module_role": "doctor"},
 			Documentation:     "Runs as a single global module for the whole panel. Discovers servers through the DiscoPanel API, watches their exit history on the shared data volume, and repairs crash loops with reversible mod disables, re-enables, and dependency installs from CurseForge or Modrinth using the panel API keys. Configure it from the Doctor category in Settings, with per-server overrides on each server's properties page. Doctor Mode observe diagnoses without acting, and Install Missing Dependencies off disables downloads.",
 			DefaultMemory:     512,
+		},
+		{
+			Id:             botTemplateID,
+			Name:           "Discord Bot",
+			Description:    "Global Discord bot. Bridges in-game chat with Discord channels, announces joins, deaths, advancements, crashes and doctor repairs, keeps live status boards, and adds slash commands to check on and control servers from Discord.",
+			Type:           v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_BUILTIN,
+			DockerImage:    "ghcr.io/discohaus/discomodule-bot:latest",
+			Category:       "community",
+			SupportsProxy:  false,
+			RequiresServer: false,
+			Global:         true,
+			Icon:           "bot",
+			DefaultEnv:     botEnv(),
+			ConfigFields: []*v1.ModuleConfigField{
+				{
+					Env:         "DISCORD_TOKEN",
+					Label:       "Bot token",
+					Description: "From the Bot page of your application at discord.com/developers",
+					Group:       "Discord",
+					Type:        v1.ModuleConfigFieldType_MODULE_CONFIG_FIELD_TYPE_PASSWORD,
+					Required:    true,
+					Severity:    v1.ModuleConfigSeverity_MODULE_CONFIG_SEVERITY_DENY,
+				},
+				{
+					Env:          "DISCORD_GUILD_ID",
+					Label:        "Guild ID",
+					Description:  "Registers slash commands instantly in one server, empty registers them globally which can take up to an hour",
+					Group:        "Discord",
+					Type:         v1.ModuleConfigFieldType_MODULE_CONFIG_FIELD_TYPE_STRING,
+					Regex:        `^[0-9]*$`,
+					RegexMessage: "DISCORD_GUILD_ID must be a numeric snowflake",
+					Placeholder:  "Right click your server, Copy Server ID",
+				},
+				{
+					Env:          "BOT_AVATARS",
+					Label:        "Player heads",
+					Description:  "Bridged chat posts through a channel webhook with the player's name and head",
+					Group:        "Bridge",
+					Type:         v1.ModuleConfigFieldType_MODULE_CONFIG_FIELD_TYPE_BOOL,
+					DefaultValue: "true",
+				},
+				{
+					Env:          "BOT_PRESENCE",
+					Label:        "Presence",
+					Description:  "Show the online player count as the bot's Discord status",
+					Group:        "Bridge",
+					Type:         v1.ModuleConfigFieldType_MODULE_CONFIG_FIELD_TYPE_BOOL,
+					DefaultValue: "true",
+				},
+			},
+			DefaultVolumes:  botVolumes(),
+			HealthCheckPath: "/health",
+			HealthCheckPort: 8210,
+			DefaultUid:      hostUID,
+			DefaultGid:      hostGID,
+			Metadata:        map[string]string{"module_role": "bot", "status_path": "/status"},
+			Documentation:   "Runs as a single global module for the whole panel. Create an application at discord.com/developers, add a Bot, copy its token into Bot token, and enable the Message Content intent under Privileged Gateway Intents so Discord messages can be relayed into the game. Invite it with the bot and applications.commands scopes plus Send Messages, Embed Links, Attach Files, Read Message History and Manage Webhooks permissions, then enable the module. In Discord run /link in a channel to bind it to a server, choosing which streams it carries (chat, player events, lifecycle and crash announcements, or the full console). /board posts a status embed the bot keeps updated, /status, /players and /health answer on demand, and /start, /stop, /restart, /cmd, /backups and /answer stay behind the Manage Server permission, which server admins can retarget per role under Integrations. Chat typed in a linked channel shows in game as <name> text, and in-game chat posts back through a channel webhook with the player's head when Player heads is on.",
+			DefaultMemory:   256,
 		},
 	}
 

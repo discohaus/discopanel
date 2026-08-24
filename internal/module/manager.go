@@ -82,76 +82,65 @@ func (m *Manager) Start() error {
 	m.running = true
 	m.logger.Info("Module manager started")
 
-	// Doctor module lives for the panel's lifetime
-	if m.config.Module.DoctorEnabled {
-		go m.seedDoctorModule()
-	}
+	// Global modules live for the panel's lifetime
+	go m.seedGlobalModules()
 	return nil
 }
 
-// Seeds and starts the global doctor module instance
-func (m *Manager) seedDoctorModule() {
+// Seeds every panel owned global module instance
+func (m *Manager) seedGlobalModules() {
+	if m.config.Module.DoctorEnabled {
+		m.seedGlobalModule(doctorInstance(m.config))
+	}
+	m.seedGlobalModule(botInstance())
+}
+
+// Seeds one global module instance, starts it when enabled
+func (m *Manager) seedGlobalModule(seed *v1.Module) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	modules, err := m.store.ListModules(ctx)
 	if err != nil {
-		m.logger.Error("Doctor seed: failed to list modules: %v", err)
+		m.logger.Error("%s seed: failed to list modules: %v", seed.Name, err)
 		return
 	}
-	var doctor *v1.Module
+	var module *v1.Module
 	for _, mod := range modules {
-		if mod.TemplateId == doctorTemplateID {
-			doctor = mod
+		if mod.TemplateId == seed.TemplateId {
+			module = mod
 			break
 		}
 	}
 
-	if doctor == nil {
-		ports := doctorPorts(m.config)
-		// Registry moves the doctor off a taken default port
-		if m.proxyManager != nil && len(ports) > 0 {
-			owner := proxy.NetOwner{Kind: proxy.OwnerModule, ID: "builtin-doctor-instance"}
-			probe := &v1.Module{Id: owner.ID, Ports: ports}
+	if module == nil {
+		// Registry moves a seeded port off a taken default
+		if m.proxyManager != nil && len(seed.Ports) > 0 {
+			owner := proxy.NetOwner{Kind: proxy.OwnerModule, ID: seed.Id}
+			probe := &v1.Module{Id: owner.ID, Ports: seed.Ports}
 			if err := m.proxyManager.ValidateNetwork(ctx, owner, m.proxyManager.ModuleNetRequests(ctx, probe, nil)); err != nil {
-				free, ferr := m.AllocateModulePortExcluding(ctx, ports[0].Protocol, nil)
+				free, ferr := m.AllocateModulePortExcluding(ctx, seed.Ports[0].Protocol, nil)
 				if ferr != nil {
-					m.logger.Error("Doctor seed: no free port for doctor: %v", ferr)
+					m.logger.Error("%s seed: no free port: %v", seed.Name, ferr)
 					return
 				}
-				ports[0].HostPort = int32(free)
+				seed.Ports[0].HostPort = int32(free)
 			}
 		}
-
-		// Bootstrapped builtins have no owner, supermodule token instead
-		doctor = &v1.Module{
-			Id:                    "builtin-doctor-instance",
-			Name:                  "Doctor",
-			TemplateId:            doctorTemplateID,
-			Status:                v1.ModuleStatus_MODULE_STATUS_STOPPED,
-			AutoStart:             true,
-			FollowServerLifecycle: false,
-			Memory:                512,
-			Ports:                 ports,
-			EnvOverrides:          doctorEnv(),
-			VolumeOverrides:       doctorVolumes(),
-			AccessUrls:            doctorAccessURLs(),
-			Uid:                   doctorUID,
-			Gid:                   doctorGID,
-		}
-		if err := m.store.CreateModule(ctx, doctor); err != nil {
-			m.logger.Error("Doctor seed: failed to create module: %v", err)
+		if err := m.store.CreateModule(ctx, seed); err != nil {
+			m.logger.Error("%s seed: failed to create module: %v", seed.Name, err)
 			return
 		}
-		m.logger.Info("Seeded the global doctor module")
+		m.logger.Info("Seeded the global %s module", seed.Name)
+		module = seed
 	}
 
 	// AutoStart off means the user disabled it, respect that
-	if !doctor.AutoStart {
+	if !module.AutoStart {
 		return
 	}
-	if err := m.StartModule(ctx, doctor.Id); err != nil {
-		m.logger.Error("Doctor seed: failed to start doctor module: %v", err)
+	if err := m.StartModule(ctx, module.Id); err != nil {
+		m.logger.Error("%s seed: failed to start module: %v", seed.Name, err)
 	}
 }
 

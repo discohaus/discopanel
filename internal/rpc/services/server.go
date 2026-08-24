@@ -1105,6 +1105,22 @@ func (s *ServerService) SendCommand(ctx context.Context, req *connect.Request[v1
 	}), nil
 }
 
+// Broadcasts a chat line in game under the given sender
+func (s *ServerService) SendChat(ctx context.Context, req *connect.Request[v1.SendChatRequest]) (*connect.Response[v1.SendChatResponse], error) {
+	err := s.sender.Chat(ctx, req.Msg.Id, req.Msg.Sender, req.Msg.Message)
+	switch {
+	case errors.Is(err, command.ErrEmptyMessage):
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	case errors.Is(err, command.ErrServerNotFound):
+		return nil, connect.NewError(connect.CodeNotFound, err)
+	case errors.Is(err, command.ErrNoContainer), errors.Is(err, command.ErrNotRunning):
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	case err != nil:
+		return nil, connect.NewError(connect.CodeUnavailable, err)
+	}
+	return connect.NewResponse(&v1.SendChatResponse{}), nil
+}
+
 // Reads the server's latest.log and uploads it to mclo.gs
 func (s *ServerService) UploadToMCLogs(ctx context.Context, req *connect.Request[v1.UploadToMCLogsRequest]) (*connect.Response[v1.UploadToMCLogsResponse], error) {
 	server, err := getServer(ctx, s.store, req.Msg.Id)

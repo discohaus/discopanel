@@ -141,6 +141,15 @@ func (e *Enforcer) SeedDefaultPolicies(anonymousEnabled bool) error {
 			optionsv1.ResourceType_RESOURCE_TYPE_SETTINGS,
 			optionsv1.ResourceType_RESOURCE_TYPE_MODPACKS,
 		), serverOps...),
+		// Bot relays chat, runs commands, reads crash reports, answers prompts
+		"bot": append(append(readGrants(
+			optionsv1.ResourceType_RESOURCE_TYPE_SERVERS,
+			optionsv1.ResourceType_RESOURCE_TYPE_MODULES,
+			optionsv1.ResourceType_RESOURCE_TYPE_FILES,
+		), serverOps...),
+			grant{optionsv1.ResourceType_RESOURCE_TYPE_SERVERS, optionsv1.ActionType_ACTION_TYPE_COMMAND},
+			grant{optionsv1.ResourceType_RESOURCE_TYPE_MODULES, optionsv1.ActionType_ACTION_TYPE_UPDATE},
+		),
 		"anonymous": readGrants(browse...),
 	}
 

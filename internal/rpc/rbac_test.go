@@ -159,6 +159,7 @@ func TestSeededDefaultRoleMatrix(t *testing.T) {
 		"user":      append(append(slices.Clone(browse), ops...), "servers:command"),
 		"module":    {"servers:read", "server_properties:read", "modpacks:read"},
 		"doctor":    append([]string{"servers:read", "server_properties:read", "settings:read", "modpacks:read"}, ops...),
+		"bot":       append([]string{"servers:read", "servers:command", "modules:read", "modules:update", "files:read"}, ops...),
 		"anonymous": browse,
 	}
 
@@ -203,6 +204,10 @@ func TestSeededDefaultRoleMatrix(t *testing.T) {
 		{"module cannot read files", []string{"module"}, rFiles, aRead, "*", false},
 		{"doctor reads settings", []string{"doctor"}, rSettings, aRead, "*", true},
 		{"doctor cannot command servers", []string{"doctor"}, rServers, aCommand, "*", false},
+		{"bot commands servers", []string{"bot"}, rServers, aCommand, "srv-1", true},
+		{"bot reads crash reports", []string{"bot"}, rFiles, aRead, "srv-1", true},
+		{"bot cannot read settings", []string{"bot"}, rSettings, aRead, "*", false},
+		{"bot cannot create servers", []string{"bot"}, rServers, aCreate, "*", false},
 		{"role union grants settings", []string{"user", "doctor"}, rSettings, aRead, "*", true},
 		{"unknown role denied", []string{"ghost"}, rServers, aRead, "*", false},
 		{"no roles denied", nil, rServers, aRead, "*", false},

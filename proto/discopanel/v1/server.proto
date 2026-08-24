@@ -126,6 +126,14 @@ service ServerService {
       object_id_field: "id"
     };
   }
+  // Show a chat line in game under a display name
+  rpc SendChat(SendChatRequest) returns (SendChatResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_COMMAND
+      object_id_field: "id"
+    };
+  }
   // Upload server logs to mclo.gs
   rpc UploadToMCLogs(UploadToMCLogsRequest) returns (UploadToMCLogsResponse) {
     option (discopanel.options.v1.perm) = {
@@ -397,6 +405,16 @@ message SendCommandResponse {
   string output = 2;
   string error = 3;
 }
+
+// Chat line to broadcast in game
+message SendChatRequest {
+  string id = 1;
+  string sender = 2; // Display name shown before the text
+  string message = 3;
+}
+
+// Empty chat ack
+message SendChatResponse {}
 
 // Server to upload logs for
 message UploadToMCLogsRequest {
