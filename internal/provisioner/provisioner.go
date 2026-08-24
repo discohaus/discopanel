@@ -4,6 +4,7 @@ package provisioner
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -467,6 +468,11 @@ func (p *Provisioner) runInstallerContainer(ctx context.Context, server *v1.Serv
 		gid = int(*cfg.Gid)
 	}
 
+	// Root panels hand the tree to the installer user first
+	if os.Getuid() == 0 && uid > 0 {
+		chownTree(server.DataPath, uid, gid)
+	}
+
 	opts := docker.OneShotOptions{
 		Image:      image,
 		Cmd:        cmd,
@@ -483,6 +489,16 @@ func (p *Provisioner) runInstallerContainer(ctx context.Context, server *v1.Serv
 
 	return p.docker.RunOneShot(ctx, opts, func(line string) {
 		p.progress(server, "[installer] %s", line)
+	})
+}
+
+// Chowns a whole tree best effort, like the runtime does
+func chownTree(dir string, uid, gid int) {
+	_ = filepath.WalkDir(dir, func(name string, _ fs.DirEntry, err error) error {
+		if err == nil {
+			_ = os.Lchown(name, uid, gid)
+		}
+		return nil
 	})
 }
 

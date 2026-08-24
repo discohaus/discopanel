@@ -125,6 +125,11 @@ func (c *Client) CreateModuleContainer(ctx context.Context, module *v1.Module, t
 		},
 	}
 
+	// Apply global labels from config
+	if c.config.Labels != nil {
+		maps.Copy(config.Labels, c.config.Labels)
+	}
+
 	// Set uid + gid
 	uid, gid := alias.Substitute(module.Uid, aliasCtx), alias.Substitute(module.Gid, aliasCtx)
 	if uid != "" || gid != "" {

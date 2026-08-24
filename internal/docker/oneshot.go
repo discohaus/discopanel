@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
@@ -32,12 +33,17 @@ func (c *Client) RunOneShot(ctx context.Context, opts OneShotOptions, logFn func
 		_ = c.docker.ContainerRemove(ctx, opts.Name, container.RemoveOptions{Force: true})
 	}
 
+	// Apply global labels from config
+	labels := map[string]string{}
+	maps.Copy(labels, c.config.Labels)
+	maps.Copy(labels, opts.Labels)
+
 	config := &container.Config{
 		Image:      opts.Image,
 		Entrypoint: opts.Cmd,
 		WorkingDir: opts.WorkingDir,
 		User:       opts.User,
-		Labels:     opts.Labels,
+		Labels:     labels,
 	}
 	hostConfig := &container.HostConfig{
 		Mounts: []mount.Mount{
