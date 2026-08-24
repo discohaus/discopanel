@@ -90,6 +90,7 @@
 		server?: Server;
 		templates?: ModuleTemplate[];
 		module?: Module;
+		section?: ConfigSection;
 		onSuccess: () => void;
 		onTemplateDeleted?: () => void;
 	}
@@ -108,6 +109,7 @@
 		server,
 		templates,
 		module,
+		section,
 		onSuccess,
 		onTemplateDeleted
 	}: Props = $props();
@@ -158,7 +160,7 @@
 	);
 	let activeTemplate = $derived(mode === 'create' ? selectedTemplate : editTemplate);
 	let configFields = $derived(activeTemplate?.configFields ?? []);
-	// Panel owned modules only take network and resource edits
+	// Panel owned modules take config, network and resource edits
 	let systemLocked = $derived(mode === 'edit' && !module?.serverId);
 
 	let configIssues = $derived.by(() => {
@@ -427,6 +429,7 @@
 				healthCheckRetries = module.healthCheckRetries || 3;
 				eventHooks = module.eventHooks.map((h) => clone(ModuleEventHookSchema, h));
 				metadata = mapToKv(module.metadata);
+				activeSection = section ?? 'general';
 				loadServerModules();
 				loadEditTemplate(module);
 			});
@@ -572,6 +575,7 @@
 				// Panel owns everything else on a system module
 				await rpcClient.module.updateModule({
 					id: module.id,
+					envOverrides: envPayload(),
 					memory,
 					cpuLimit,
 					ports: portsPayload,
@@ -793,7 +797,12 @@
 						<div class="flex items-center gap-2 border-b bg-primary/[0.04] px-6 py-2.5">
 							<ShieldCheck class="size-4 shrink-0 text-primary" />
 							<p class="text-xs text-muted-foreground">
-								Managed by DiscoPanel. Only network settings and resource limits can change.
+								{#if configFields.length > 0}
+									Managed by DiscoPanel. Only its configuration, network settings and resource
+									limits can change.
+								{:else}
+									Managed by DiscoPanel. Only network settings and resource limits can change.
+								{/if}
 							</p>
 						</div>
 					{/if}

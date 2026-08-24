@@ -6,11 +6,12 @@
 	import { EmptyState, ConfirmDialog, AddressSelect } from '$lib/components/app';
 	import { rpcClient, rpcErrorMessage, silentCallOptions } from '$lib/api/rpc-client';
 	import { notify } from '$lib/stores/activity.svelte';
-	import type { Module } from '$lib/proto/discopanel/v1/storage_pb';
-	import { ModuleStatus } from '$lib/proto/discopanel/v1/storage_pb';
+	import type { Module, ModuleTemplate } from '$lib/proto/discopanel/v1/storage_pb';
+	import { ModuleStatus, ModuleConfigSeverity } from '$lib/proto/discopanel/v1/storage_pb';
 	import { TONE_BADGE, TONE_BG } from '$lib/server-status';
 	import { moduleStatusMeta } from '$lib/module-status';
 	import { moduleUrls } from '$lib/module-urls';
+	import { evaluateConfigField } from '$lib/module-config';
 	import { cn } from '$lib/utils';
 	import {
 		Loader2,
@@ -32,12 +33,14 @@
 	import { registerRefresh } from '$lib/stores/refresh';
 
 	let modules = $state<Module[]>([]);
+	let templates = $state<Record<string, ModuleTemplate>>({});
 	let loading = $state(true);
 	let actionLoading = $state<string | null>(null);
 	let aliasValues = $state<Record<string, Record<string, string>>>({});
 	let aliasKey = '';
 
 	let editDialogOpen = $state(false);
+	let editSection = $state<'general' | 'configuration'>('general');
 	let logsDialogOpen = $state(false);
 	let selectedModule = $state<Module | null>(null);
 	let deleteTarget = $state<Module | null>(null);
@@ -53,8 +56,31 @@
 		[...modules].sort((a, b) => Number(Boolean(a.serverId)) - Number(Boolean(b.serverId)))
 	);
 
+	// Required template settings a system module still lacks
+	function setupIssues(module: Module): string[] {
+		const template = templates[module.templateId];
+		if (module.serverId || !template) return [];
+		const values: Record<string, string> = {};
+		for (const field of template.configFields) {
+			if (field.env) values[field.env] = module.envOverrides[field.env] ?? field.defaultValue;
+		}
+		const issues: string[] = [];
+		for (const field of template.configFields) {
+			if (!field.env) continue;
+			const issue = evaluateConfigField(field, values);
+			if (issue?.severity === ModuleConfigSeverity.DENY) issues.push(issue.message);
+		}
+		return issues;
+	}
+
 	// Auto start is the persisted enable bit for system modules
 	async function handleToggleSystem(module: Module, enabled: boolean) {
+		// Deny gate would refuse the save, open the fields
+		if (enabled && setupIssues(module).length > 0) {
+			notify.info(`${module.name} needs its configuration filled in first`);
+			openEditDialog(module, 'configuration');
+			return;
+		}
 		actionLoading = module.id;
 		const running =
 			module.status === ModuleStatus.RUNNING || moduleStatusMeta(module.status).transitional;
@@ -79,8 +105,12 @@
 
 	onMount(() => {
 		pageVisible = document.visibilityState === 'visible';
+		loadTemplates();
 		loadModules();
-		return registerRefresh(() => loadModules(true));
+		return registerRefresh(() => {
+			loadTemplates();
+			loadModules(true);
+		});
 	});
 
 	// Polls while the page stays visible
@@ -115,6 +145,16 @@
 			if (!silent) notify.error('Failed to load modules');
 		} finally {
 			if (!silent) loading = false;
+		}
+	}
+
+	// Templates carry the config fields system modules are gated on
+	async function loadTemplates() {
+		try {
+			const response = await rpcClient.module.listModuleTemplates({}, silentCallOptions);
+			templates = Object.fromEntries(response.templates.map((t) => [t.id, t]));
+		} catch {
+			/* Cards fall back to plain enable and disable */
 		}
 	}
 
@@ -195,8 +235,9 @@
 		}
 	}
 
-	function openEditDialog(module: Module) {
+	function openEditDialog(module: Module, section: 'general' | 'configuration' = 'general') {
 		selectedModule = module;
+		editSection = section;
 		editDialogOpen = true;
 	}
 
@@ -230,9 +271,12 @@
 				{@const meta = moduleStatusMeta(module.status)}
 				{@const isSystem = !module.serverId}
 				{@const disabled = isSystem && !module.autoStart && !meta.transitional}
-				{@const badge = disabled
-					? { label: 'Disabled', tone: 'sleep' as const }
-					: { label: meta.label, tone: meta.tone }}
+				{@const needsSetup = disabled && setupIssues(module).length > 0}
+				{@const badge = needsSetup
+					? { label: 'Needs setup', tone: 'warn' as const }
+					: disabled
+						? { label: 'Disabled', tone: 'sleep' as const }
+						: { label: meta.label, tone: meta.tone }}
 				<div
 					class={cn(
 						'group flex flex-col rounded-lg border bg-card p-4 transition-colors hover:border-primary/20',
@@ -449,6 +493,7 @@
 		bind:open={editDialogOpen}
 		mode="edit"
 		module={selectedModule}
+		section={editSection}
 		onSuccess={() => loadModules(true)}
 	/>
 

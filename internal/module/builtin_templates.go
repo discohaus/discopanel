@@ -451,7 +451,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 				{
 					Env:         "DISCORD_TOKEN",
 					Label:       "Bot token",
-					Description: "From the Bot page of your application at discord.com/developers",
+					Description: "Reset Token on the Bot page of your application at discord.com/developers, saved here and never shown again",
 					Group:       "Discord",
 					Type:        v1.ModuleConfigFieldType_MODULE_CONFIG_FIELD_TYPE_PASSWORD,
 					Required:    true,
@@ -490,7 +490,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			DefaultUid:      hostUID,
 			DefaultGid:      hostGID,
 			Metadata:        map[string]string{"module_role": "bot", "status_path": "/status"},
-			Documentation:   "Runs as a single global module for the whole panel. Create an application at discord.com/developers, add a Bot, copy its token into Bot token, and enable the Message Content intent under Privileged Gateway Intents so Discord messages can be relayed into the game. Invite it with the bot and applications.commands scopes plus Send Messages, Embed Links, Attach Files, Read Message History and Manage Webhooks permissions, then enable the module. In Discord run /link in a channel to bind it to a server, choosing which streams it carries (chat, player events, lifecycle and crash announcements, or the full console). /board posts a status embed the bot keeps updated, /status, /players and /health answer on demand, and /start, /stop, /restart, /cmd, /backups and /answer stay behind the Manage Server permission, which server admins can retarget per role under Integrations. Chat typed in a linked channel shows in game as <name> text, and in-game chat posts back through a channel webhook with the player's head when Player heads is on.",
+			Documentation:   "Runs as a single global module for the whole panel. Create an application at discord.com/developers, add a Bot, and enable the Message Content intent under Privileged Gateway Intents so Discord messages can be relayed into the game. Invite it with the bot and applications.commands scopes plus Send Messages, Embed Links, Attach Files, Read Message History and Manage Webhooks permissions. On the Modules page open the bot's settings, paste the token under Configuration and save, then flip Enabled. In Discord run /link in a channel to bind it to a server, choosing which streams it carries (chat, player events, lifecycle and crash announcements, or the full console). /board posts a status embed the bot keeps updated, /status, /players and /health answer on demand, and /start, /stop, /restart, /cmd, /backups and /answer stay behind the Manage Server permission, which server admins can retarget per role under Integrations. Chat typed in a linked channel shows in game as <name> text, and in-game chat posts back through a channel webhook with the player's head when Player heads is on.",
 			DefaultMemory:   256,
 		},
 	}

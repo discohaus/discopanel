@@ -9,6 +9,7 @@ import exporter from '../../../../../../../identity/assets/exporter/chip.svg';
 import playit from '../../../../../../../identity/assets/playit/chip.svg';
 import steambridge from '../../../../../../../identity/assets/steambridge/chip.svg';
 import doctor from '../../../../../../../identity/assets/doctor/chip.svg';
+import bot from '../../../../../../../identity/assets/bot/chip.svg';
 
 Modules are add-ons that run in their own little container next to a Minecraft server. Each server has a **Modules** tab where you can add them, start and stop them, and find their addresses. Modules can auto-start with the server, and DiscoPanel picks their ports for you.
 
@@ -21,6 +22,7 @@ Modules are add-ons that run in their own little container next to a Minecraft s
 - <img class="module-chip-inline" src={playit.src} alt="" /> **[Playit.gg](/guides/modules/playit/)** - a free public address without port forwarding.
 - <img class="module-chip-inline" src={steambridge.src} alt="" /> **[Steam Bridge](/guides/modules/steambridge/)** - friends join through Steam's network.
 - <img class="module-chip-inline" src={doctor.src} alt="" /> **[Doctor](/guides/modules/doctor/)** - automatic crash repair for modded servers.
+- <img class="module-chip-inline" src={bot.src} alt="" /> **[Discord Bot](/guides/modules/bot/)** - chat bridge, announcements and slash commands for every server.
 
 ## Modules that ask for input
 
@@ -31,5 +33,5 @@ Building your own module? Serve `GET /prompt` returning the pending prompt as JS
 ## Good to know
 
 - Modules get their web ports assigned automatically (from the range in the panel's `module` config, `8100-8199` by default). The exact URL for each module is shown in its details.
-- A module belongs to one server. Two servers that both want BlueMap each get their own copy. Doctor is the exception, it watches the whole panel.
+- A module belongs to one server. Two servers that both want BlueMap each get their own copy. Doctor and the Discord Bot are the exceptions, they work across the whole panel and live on the **Modules** page.
 - Module files live inside the server's folder under `modules/`, so they're covered by whatever you do with the server folder.

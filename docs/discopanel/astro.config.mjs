@@ -54,6 +54,7 @@ export default defineConfig({
 								{ label: 'Playit.gg', slug: 'guides/modules/playit' },
 								{ label: 'Steam Bridge', slug: 'guides/modules/steambridge' },
 								{ label: 'Doctor', slug: 'guides/modules/doctor' },
+								{ label: 'Discord Bot', slug: 'guides/modules/bot' },
 							],
 						},
 						{
