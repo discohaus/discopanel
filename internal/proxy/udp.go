@@ -10,19 +10,28 @@ import (
 	"github.com/nickheyer/discopanel/pkg/logger"
 )
 
+// RakNet sends connection traffic in bursts, so repeated packets from one join
+// must not queue duplicate server lifecycle calls.
+const lazyWakeRetryInterval = 5 * time.Second
+
 // UDPProxy handles UDP forwarding for modules like Geyser
 // Implements the Proxier interface
 type UDPProxy struct {
-	listenAddr  string
-	backendHost string
-	backendPort int
-	serverID    string
-	conn        *net.UDPConn
-	logger      *logger.Logger
-	running     bool
-	mu          sync.RWMutex
-	ctx         context.Context
-	cancel      context.CancelFunc
+	listenAddr      string
+	backendHost     string
+	backendPort     int
+	serverID        string
+	conn            *net.UDPConn
+	logger          *logger.Logger
+	running         bool
+	mu              sync.RWMutex
+	ctx             context.Context
+	cancel          context.CancelFunc
+	lazyServerID    string
+	isLazyServer    func(string) bool
+	wakeServer      func(context.Context, string) error
+	wakeInFlight    bool
+	lastWakeAttempt time.Time
 
 	// Client session tracking - maintains backend connection per client
 	sessions   map[string]*udpSession
@@ -46,6 +55,15 @@ func NewUDPProxy(cfg *Config) *UDPProxy {
 		cancel:     cancel,
 		sessions:   make(map[string]*udpSession),
 	}
+}
+
+func (p *UDPProxy) setLazyWakeHandler(serverID string, isLazyServer func(string) bool, wakeServer func(context.Context, string) error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.lazyServerID = serverID
+	p.isLazyServer = isLazyServer
+	p.wakeServer = wakeServer
 }
 
 // Start starts the UDP proxy
@@ -180,6 +198,10 @@ func (p *UDPProxy) proxyLoop() {
 			}
 		}
 
+		// RakNet discovery is forwarded to Geyser without waking Java. Connection
+		// traffic means a Bedrock client is actively trying to join.
+		p.wakeOnBedrockConnect(buf[:n])
+
 		// Get or create session for this client
 		session, err := p.getOrCreateSession(clientAddr)
 		if err != nil {
@@ -197,6 +219,48 @@ func (p *UDPProxy) proxyLoop() {
 			p.removeSession(clientAddr.String())
 		}
 	}
+}
+
+func (p *UDPProxy) wakeOnBedrockConnect(packet []byte) {
+	if !isRakNetConnectionTraffic(packet) {
+		return
+	}
+
+	p.mu.Lock()
+	serverID := p.lazyServerID
+	isLazyServer := p.isLazyServer
+	wakeServer := p.wakeServer
+	if serverID == "" || isLazyServer == nil || wakeServer == nil || p.wakeInFlight || time.Since(p.lastWakeAttempt) < lazyWakeRetryInterval {
+		p.mu.Unlock()
+		return
+	}
+	p.wakeInFlight = true
+	p.lastWakeAttempt = time.Now()
+	p.mu.Unlock()
+
+	go func() {
+		defer func() {
+			p.mu.Lock()
+			p.wakeInFlight = false
+			p.mu.Unlock()
+		}()
+
+		if !isLazyServer(serverID) {
+			return
+		}
+		if err := wakeServer(p.ctx, serverID); err != nil {
+			p.logger.Error("Failed to wake lazy server %s from Bedrock connection: %v", serverID, err)
+		}
+	}()
+}
+
+func isRakNetConnectionTraffic(packet []byte) bool {
+	if len(packet) == 0 {
+		return false
+	}
+
+	packetID := packet[0]
+	return packetID == 0x05 || packetID == 0x07 || packetID&0xf0 == 0x80
 }
 
 // getOrCreateSession gets an existing session or creates a new one

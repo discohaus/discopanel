@@ -509,6 +509,10 @@ func (m *Manager) AddModuleRoute(module *db.Module, server *db.Server) error {
 		if err := m.addPortRouteUnlocked(routeID, server.ProxyHostname, containerIP,
 			int(port.HostPort), int(port.ContainerPort), protocol, module.Name, port.Name); err != nil {
 			m.logger.Error("Failed to add port route for %s: %v", port.Name, err)
+		} else if module.TemplateID == "builtin-geyser" && protocol == "udp" {
+			if udpProxy, ok := m.proxies[int(port.HostPort)].(*UDPProxy); ok {
+				udpProxy.setLazyWakeHandler(server.ID, m.isLazyServer, m.wakeServer)
+			}
 		}
 	}
 
