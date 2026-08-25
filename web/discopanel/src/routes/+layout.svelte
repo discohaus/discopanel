@@ -453,20 +453,6 @@
 					{/if}
 				</div>
 				<div class="ml-auto flex flex-1 items-center justify-end gap-2">
-					{#if systemRunning.length > 0}
-						<Button
-							variant="ghost"
-							size="sm"
-							class="h-8 shrink-0 gap-1.5 px-2 text-muted-foreground"
-							onclick={() => goto(resolvePath('/modules') + '?tab=active')}
-							title={systemTitle}
-						>
-							<span class="glow-ok size-2 rounded-full bg-status-ok"></span>
-							<span class="hidden text-xs font-medium md:inline">
-								{systemRunning.map((m) => m.name).join(' · ')}
-							</span>
-						</Button>
-					{/if}
 					<Button
 						variant="outline"
 						size="sm"
