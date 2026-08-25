@@ -38,6 +38,16 @@ func (m *Manager) autoStartModules(ctx context.Context, serverID string) {
 			go func(mod *storage.Module) {
 				// Small delay to let the server settle before starting modules
 				time.Sleep(2 * time.Second)
+
+				// Geyser remains reachable while a lazy parent server sleeps, so a
+				// wake event must not try to start its running container again.
+				if mod.TemplateID == "builtin-geyser" {
+					status, err := m.GetModuleStatus(context.Background(), mod.ID)
+					if err == nil && (status == storage.ModuleStatusRunning || status == storage.ModuleStatusStarting) {
+						return
+					}
+				}
+
 				if err := m.StartModule(context.Background(), mod.ID); err != nil {
 					m.logger.Error("Failed to start module %s on server start: %v", mod.Name, err)
 				} else {

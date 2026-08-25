@@ -20,6 +20,8 @@ type Manager struct {
 	config      *config.ProxyConfig
 	logger      *logger.Logger
 	mu          sync.Mutex
+	wakeLocks   map[string]*sync.Mutex
+	wakeHandler func(context.Context, string) error
 	networkName string
 }
 
@@ -30,6 +32,7 @@ func NewManager(store *db.Store, cfg *config.Config, logger *logger.Logger) *Man
 		store:       store,
 		config:      &cfg.Proxy,
 		logger:      logger,
+		wakeLocks:   make(map[string]*sync.Mutex),
 		networkName: cfg.Docker.NetworkName,
 	}
 }
@@ -63,8 +66,10 @@ func (m *Manager) Start() error {
 
 		listenAddr := fmt.Sprintf(":%d", listener.Port)
 		proxy := NewMinecraftProxy(&Config{
-			ListenAddr: listenAddr,
-			Logger:     m.logger,
+			ListenAddr:          listenAddr,
+			Logger:              m.logger,
+			WakeServer:          m.wakeServer,
+			GetLazyServerConfig: m.getLazyServerConfig,
 		})
 
 		m.proxies[listener.Port] = proxy
@@ -97,6 +102,14 @@ func (m *Manager) Start() error {
 			proxy, ok := m.proxies[listener.Port]
 			if !ok {
 				m.logger.Error("No proxy instance for port %d", listener.Port)
+				continue
+			}
+
+			// Lazy routes stay registered without a backend while stopped so the
+			// proxy can answer status requests and wake the server on login.
+			if server.Status == db.StatusStopped && m.isLazyServer(server.ID) {
+				proxy.AddRoute(server.ID, server.ProxyHostname, "", 25565)
+				m.logger.Info("Added sleeping proxy route for lazy server %s on listener port %d", server.Name, listener.Port)
 				continue
 			}
 
@@ -206,8 +219,18 @@ func (m *Manager) UpdateServerRoute(server *db.Server) error {
 		}
 		m.logger.Info("Updated route for server %s on port %d", server.Name, listener.Port)
 	} else if server.Status == db.StatusStopped || server.Status == db.StatusStopping {
-		// Remove route if server is stopped or stopping
-		proxy.RemoveRoute(hostname)
+		if server.Status == db.StatusStopped && m.isLazyServer(server.ID) {
+			routes := proxy.GetRoutes()
+			if _, exists := routes[hostname]; exists {
+				proxy.UpdateRoute(hostname, "", 25565)
+			} else {
+				proxy.AddRoute(server.ID, hostname, "", 25565)
+			}
+			m.logger.Info("Kept sleeping proxy route for lazy server %s on port %d", server.Name, listener.Port)
+		} else {
+			// Remove route if server is stopped or stopping
+			proxy.RemoveRoute(hostname)
+		}
 	}
 
 	return nil
@@ -310,6 +333,67 @@ func (m *Manager) IsRunning() bool {
 	return false
 }
 
+// SetWakeHandler registers the server lifecycle operation used for lazy wake-ups.
+func (m *Manager) SetWakeHandler(handler func(context.Context, string) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.wakeHandler = handler
+}
+
+func (m *Manager) getWakeLock(serverID string) *sync.Mutex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	lock, ok := m.wakeLocks[serverID]
+	if !ok {
+		lock = &sync.Mutex{}
+		m.wakeLocks[serverID] = lock
+	}
+
+	return lock
+}
+
+func (m *Manager) isLazyServer(serverID string) bool {
+	return m.getLazyServerConfig(context.Background(), serverID).Enabled
+}
+
+func (m *Manager) getLazyServerConfig(ctx context.Context, serverID string) LazyServerConfig {
+	serverConfig, err := m.store.GetServerConfig(ctx, serverID)
+	if err != nil {
+		return LazyServerConfig{}
+	}
+
+	lazyConfig := LazyServerConfig{
+		Enabled: serverConfig.EnableAutostop != nil && *serverConfig.EnableAutostop && serverConfig.EnableLazyServer != nil && *serverConfig.EnableLazyServer,
+	}
+	if serverConfig.LazyServerMOTD != nil {
+		lazyConfig.MOTD = *serverConfig.LazyServerMOTD
+	}
+	if serverConfig.LazyServerStartingMessage != nil {
+		lazyConfig.StartingMessage = *serverConfig.LazyServerStartingMessage
+	}
+	return lazyConfig
+}
+
+func (m *Manager) wakeServer(ctx context.Context, serverID string) error {
+	wakeLock := m.getWakeLock(serverID)
+	wakeLock.Lock()
+	defer wakeLock.Unlock()
+
+	if !m.isLazyServer(serverID) {
+		return fmt.Errorf("server is not configured as lazy")
+	}
+
+	m.mu.Lock()
+	wakeHandler := m.wakeHandler
+	m.mu.Unlock()
+	if wakeHandler == nil {
+		return fmt.Errorf("server wake handler is not configured")
+	}
+
+	return wakeHandler(ctx, serverID)
+}
+
 // AddListener creates and starts a proxy instance for a new listener
 func (m *Manager) AddListener(listener *db.ProxyListener) error {
 	m.mu.Lock()
@@ -327,8 +411,10 @@ func (m *Manager) AddListener(listener *db.ProxyListener) error {
 	// Create new proxy instance
 	listenAddr := fmt.Sprintf(":%d", listener.Port)
 	proxy := NewMinecraftProxy(&Config{
-		ListenAddr: listenAddr,
-		Logger:     m.logger,
+		ListenAddr:          listenAddr,
+		Logger:              m.logger,
+		WakeServer:          m.wakeServer,
+		GetLazyServerConfig: m.getLazyServerConfig,
 	})
 
 	// Start the proxy
@@ -423,6 +509,10 @@ func (m *Manager) AddModuleRoute(module *db.Module, server *db.Server) error {
 		if err := m.addPortRouteUnlocked(routeID, server.ProxyHostname, containerIP,
 			int(port.HostPort), int(port.ContainerPort), protocol, module.Name, port.Name); err != nil {
 			m.logger.Error("Failed to add port route for %s: %v", port.Name, err)
+		} else if module.TemplateID == "builtin-geyser" && protocol == "udp" {
+			if udpProxy, ok := m.proxies[int(port.HostPort)].(*UDPProxy); ok {
+				udpProxy.setLazyWakeHandler(server.ID, m.isLazyServer, m.wakeServer)
+			}
 		}
 	}
 

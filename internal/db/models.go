@@ -262,11 +262,14 @@ type ServerConfig struct {
 	DebugAutopause          *bool   `json:"debugAutopause" env:"DEBUG_AUTOPAUSE" default:"false" desc:"Enable autopause debugging output" input:"checkbox" label:"Debug Auto-Pause"`
 
 	// Auto-Stop
-	EnableAutostop      *bool `json:"enableAutostop" env:"ENABLE_AUTOSTOP" default:"false" desc:"Enable autostop functionality" input:"checkbox" label:"Enable Auto-Stop"`
-	AutostopTimeoutEst  *int  `json:"autostopTimeoutEst" env:"AUTOSTOP_TIMEOUT_EST" default:"3600" desc:"Time between last disconnect and stopping (seconds)" input:"number" label:"Auto-Stop Timeout (Established)"`
-	AutostopTimeoutInit *int  `json:"autostopTimeoutInit" env:"AUTOSTOP_TIMEOUT_INIT" default:"1800" desc:"Time between server start and stopping if no client connects (seconds)" input:"number" label:"Auto-Stop Timeout (Initial)"`
-	AutostopPeriod      *int  `json:"autostopPeriod" env:"AUTOSTOP_PERIOD" default:"10" desc:"Period of the autostop state machine (seconds)" input:"number" label:"Auto-Stop Period"`
-	DebugAutostop       *bool `json:"debugAutostop" env:"DEBUG_AUTOSTOP" default:"false" desc:"Enable autostop debugging output" input:"checkbox" label:"Debug Auto-Stop"`
+	EnableAutostop            *bool   `json:"enableAutostop" env:"ENABLE_AUTOSTOP" default:"false" desc:"Enable autostop functionality" input:"checkbox" label:"Enable Auto-Stop"`
+	AutostopTimeoutEst        *int    `json:"autostopTimeoutEst" env:"AUTOSTOP_TIMEOUT_EST" default:"3600" desc:"Time between last disconnect and stopping (seconds)" input:"number" label:"Auto-Stop Timeout (Established)"`
+	AutostopTimeoutInit       *int    `json:"autostopTimeoutInit" env:"AUTOSTOP_TIMEOUT_INIT" default:"1800" desc:"Time between server start and stopping if no client connects (seconds)" input:"number" label:"Auto-Stop Timeout (Initial)"`
+	AutostopPeriod            *int    `json:"autostopPeriod" env:"AUTOSTOP_PERIOD" default:"10" desc:"Period of the autostop state machine (seconds)" input:"number" label:"Auto-Stop Period"`
+	EnableLazyServer          *bool   `json:"enableLazyServer" default:"false" desc:"Extends Auto-Stop with lazy-server behavior. While stopped, the proxy keeps the server visible in Minecraft's server list without running the Minecraft server. Connecting starts the server again. Requires Proxy System in Settings → Routing and a Custom Hostname in Server → Routing." input:"checkbox" label:"Enable Lazy Server"`
+	LazyServerMOTD            *string `json:"lazyServerMotd" default:"☾ Server is sleeping — connect to wake it up" desc:"Message shown in Minecraft's server list while the server is stopped." input:"text" label:"Lazy Server List Message"`
+	LazyServerStartingMessage *string `json:"lazyServerStartingMessage" default:"⌛ Server is starting — retry in a few seconds" desc:"Disconnect message shown when a player connection starts the stopped server." input:"text" label:"Lazy Server Starting Message"`
+	DebugAutostop             *bool   `json:"debugAutostop" env:"DEBUG_AUTOSTOP" default:"false" desc:"Enable autostop debugging output" input:"checkbox" label:"Debug Auto-Stop"`
 
 	// Forge Configuration
 	ForgeVersion      *string `json:"forgeVersion" env:"FORGE_VERSION" default:"" desc:"Specific Forge version to install" input:"text" label:"Forge Version"`

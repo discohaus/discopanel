@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"context"
+
 	"github.com/nickheyer/discopanel/pkg/logger"
 )
 
@@ -24,8 +26,22 @@ type Route struct {
 	Active      bool
 }
 
+const (
+	defaultLazyServerMOTD            = "☾ Server is sleeping — connect to wake it up"
+	defaultLazyServerStartingMessage = "⌛ Server is starting — retry in a few seconds"
+)
+
+// LazyServerConfig contains proxy behavior for a server configured to sleep while idle.
+type LazyServerConfig struct {
+	Enabled         bool
+	MOTD            string
+	StartingMessage string
+}
+
 // Config holds proxy configuration
 type Config struct {
-	ListenAddr string // Address to listen on (e.g., ":25565" or ":8080")
-	Logger     *logger.Logger
+	ListenAddr          string // Address to listen on (e.g., ":25565" or ":8080")
+	Logger              *logger.Logger
+	WakeServer          func(context.Context, string) error
+	GetLazyServerConfig func(context.Context, string) LazyServerConfig
 }

@@ -378,6 +378,7 @@ func (c *Client) CreateContainer(ctx context.Context, server *models.Server, ser
 
 	// Determine container port - proxy servers always use default port internally
 	useProxy := server.ProxyHostname != ""
+	lazyServer := useProxy && serverConfig.EnableAutostop != nil && *serverConfig.EnableAutostop && serverConfig.EnableLazyServer != nil && *serverConfig.EnableLazyServer
 	containerPort := server.Port
 	if useProxy {
 		containerPort = DefaultMinecraftPort
@@ -482,6 +483,12 @@ func (c *Client) CreateContainer(ctx context.Context, server *models.Server, ser
 
 	// Apply docker overrides
 	ApplyOverrides(server.DockerOverrides, config, hostConfig)
+
+	// Lazy servers rely on auto-stop leaving the container stopped until the
+	// proxy receives a player login and explicitly starts it again.
+	if lazyServer {
+		hostConfig.RestartPolicy = container.RestartPolicy{Name: "no"}
+	}
 
 	// Network configuration
 	networkConfig := &network.NetworkingConfig{}

@@ -12,6 +12,7 @@ import (
 	"github.com/nickheyer/discopanel/internal/config"
 	storage "github.com/nickheyer/discopanel/internal/db"
 	"github.com/nickheyer/discopanel/internal/docker"
+	"github.com/nickheyer/discopanel/internal/proxy"
 	"github.com/nickheyer/discopanel/pkg/logger"
 	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
 	"github.com/nickheyer/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
@@ -24,15 +25,17 @@ type ConfigService struct {
 	store  *storage.Store
 	config *config.Config
 	docker *docker.Client
+	proxy  *proxy.Manager
 	log    *logger.Logger
 }
 
 // Creates new config service
-func NewConfigService(store *storage.Store, cfg *config.Config, docker *docker.Client, log *logger.Logger) *ConfigService {
+func NewConfigService(store *storage.Store, cfg *config.Config, docker *docker.Client, proxy *proxy.Manager, log *logger.Logger) *ConfigService {
 	return &ConfigService{
 		store:  store,
 		config: cfg,
 		docker: docker,
+		proxy:  proxy,
 		log:    log,
 	}
 }
@@ -109,6 +112,14 @@ func (s *ConfigService) UpdateServerConfig(ctx context.Context, req *connect.Req
 	if server.ContainerID != "" && s.docker != nil {
 		if err := s.recreateContainer(ctx, server, config); err != nil {
 			s.log.Error("Config saved but container recreation failed: %v", err)
+		}
+	}
+
+	// A stopped server will not produce a status transition after a config save,
+	// so refresh its route explicitly to apply Lazy Server changes immediately.
+	if s.proxy != nil && server.ProxyHostname != "" && server.ContainerID != "" {
+		if err := s.proxy.UpdateServerRoute(server); err != nil {
+			s.log.Error("Config saved but proxy route update failed: %v", err)
 		}
 	}
 
@@ -492,7 +503,8 @@ func getCategoryIndex(key string) int {
 		return 9
 
 	// Auto-Stop (10)
-	case "enableAutostop", "autostopTimeoutEst", "autostopTimeoutInit", "autostopPeriod", "debugAutostop":
+	case "enableAutostop", "enableLazyServer", "lazyServerMotd", "lazyServerStartingMessage",
+		"autostopTimeoutEst", "autostopTimeoutInit", "autostopPeriod", "debugAutostop":
 		return 10
 
 	// CurseForge (11)
