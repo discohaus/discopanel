@@ -64,9 +64,64 @@ func (m *Manager) Start() error {
 		m.logger.Error("Failed to initialize built-in module templates: %v", err)
 	}
 
+	// Module proxy listeners live in the DiscoPanel process, while module
+	// containers can survive a panel restart. Restore routes for modules that
+	// are still running.
+	m.restoreProxyRoutes(context.Background())
+
 	m.running = true
 	m.logger.Info("Module manager started")
 	return nil
+}
+
+// restoreProxyRoutes restores proxy routes for module containers that survived
+// a DiscoPanel restart.
+func (m *Manager) restoreProxyRoutes(ctx context.Context) {
+	if m.proxyManager == nil {
+		return
+	}
+
+	modules, err := m.store.ListModules(ctx)
+	if err != nil {
+		m.logger.Error("Failed to restore module proxy routes: %v", err)
+		return
+	}
+
+	for _, module := range modules {
+		if module.ContainerID == "" {
+			continue
+		}
+
+		hasProxyPort := false
+		for _, port := range module.Ports {
+			if port != nil && port.ProxyEnabled && port.HostPort > 0 {
+				hasProxyPort = true
+				break
+			}
+		}
+		if !hasProxyPort {
+			continue
+		}
+
+		status, err := m.GetModuleStatus(ctx, module.ID)
+		if err != nil {
+			m.logger.Warn("Failed to get status for module %s while restoring proxy routes: %v", module.Name, err)
+			continue
+		}
+		if status != storage.ModuleStatusRunning && status != storage.ModuleStatusStarting {
+			continue
+		}
+
+		server, err := m.store.GetServer(ctx, module.ServerID)
+		if err != nil {
+			m.logger.Warn("Failed to get server for module %s while restoring proxy routes: %v", module.Name, err)
+			continue
+		}
+
+		if err := m.proxyManager.AddModuleRoute(module, server); err != nil {
+			m.logger.Error("Failed to restore proxy route for module %s: %v", module.Name, err)
+		}
+	}
 }
 
 // Stop gracefully stops all managed modules
