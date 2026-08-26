@@ -435,11 +435,13 @@ func launchTargetExists(dataPath string, spec *v1.LaunchSpec) bool {
 }
 
 // Pack metadata client flags add evidence beside jar metadata
+// User toggle rows always win over the sweep
 func (p *Provisioner) disableClientOnlyMods(ctx context.Context, server *v1.Server, forceIncludes, packFlagged []string) {
 	modsDir := minecraft.GetModsPath(server.DataPath, server.ModLoader)
 	if modsDir == "" {
 		return
 	}
+	choices := p.userModChoices(ctx, server.Id)
 	metas := slices.Clone(minecraft.ScanModsDir(modsDir))
 	for i := range metas {
 		if !metas[i].ClientOnly && minecraft.MatchesPatterns(metas[i].FileName, packFlagged) {
@@ -447,12 +449,40 @@ func (p *Provisioner) disableClientOnlyMods(ctx context.Context, server *v1.Serv
 		}
 	}
 	for _, meta := range minecraft.ClientOnlySweep(metas, forceIncludes) {
+		if enabled, chosen := choices[meta.FileName]; chosen && enabled {
+			continue
+		}
 		if err := minecraft.DisableModJar(modsDir, meta.FileName); err != nil {
 			p.progress(server, "could not disable client-only mod %s (%v)", meta.FileName, err)
 			continue
 		}
 		p.action(ctx, server, "mod check", v1.ServerActionKind_SERVER_ACTION_KIND_MOD_DISABLE, metrics.Attrs{"file": meta.FileName, "reason": "client-only"}, "disabled client-only mod %s", meta.FileName)
 	}
+	// Reinstalls must not resurrect files the user turned off
+	for name, enabled := range choices {
+		if enabled || !fileExists(filepath.Join(modsDir, name)) {
+			continue
+		}
+		if err := minecraft.DisableModJar(modsDir, name); err != nil {
+			p.progress(server, "could not disable mod %s (%v)", name, err)
+			continue
+		}
+		p.action(ctx, server, "mod check", v1.ServerActionKind_SERVER_ACTION_KIND_MOD_DISABLE, metrics.Attrs{"file": name, "reason": "user choice"}, "disabled mod %s per user choice", name)
+	}
+}
+
+// User toggle rows keyed by file name
+func (p *Provisioner) userModChoices(ctx context.Context, serverID string) map[string]bool {
+	rows, err := p.store.ListServerMods(ctx, serverID)
+	if err != nil {
+		p.log.Error("Failed to load user mod choices: %v", err)
+		return nil
+	}
+	choices := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		choices[row.FileName] = row.Enabled
+	}
+	return choices
 }
 
 func (p *Provisioner) runInstallerContainer(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, cmd []string) error {

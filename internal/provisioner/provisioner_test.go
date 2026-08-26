@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	storage "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/indexers/fuego"
 	"github.com/discohaus/discopanel/pkg/indexers/modrinth"
@@ -16,6 +17,20 @@ import (
 	"github.com/discohaus/discopanel/pkg/minecraft"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
+
+// Opens a throwaway store for sweep tests
+func testStore(t *testing.T) *storage.Store {
+	t.Helper()
+	cfg := &config.Config{}
+	cfg.Database.Path = filepath.Join(t.TempDir(), "test.db")
+	cfg.Database.AutoMigrate = true
+	store, err := storage.NewSQLiteStore(cfg)
+	if err != nil {
+		t.Fatalf("store open failed %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	return store
+}
 
 func writeClientJar(t *testing.T, dir, name, manifest string) {
 	t.Helper()
@@ -49,7 +64,7 @@ func TestDisableClientOnlyMods(t *testing.T) {
 	writeClientJar(t, modsDir, "supplementaries.jar", `{"id":"supplementaries","environment":"client"}`)
 	writeClientJar(t, modsDir, "needy.jar", `{"id":"needy","environment":"*","depends":{"supplementaries":"*"}}`)
 
-	p := &Provisioner{log: logger.New()}
+	p := &Provisioner{log: logger.New(), store: testStore(t)}
 	server := &v1.Server{DataPath: dataPath, ModLoader: v1.ModLoader_MOD_LOADER_MODRINTH}
 	p.disableClientOnlyMods(context.Background(), server, []string{"keepme"}, nil)
 
@@ -122,7 +137,7 @@ func TestPackFlaggedClientModsSweepKeepsDeps(t *testing.T) {
 	writeClientJar(t, modsDir, "fusion.jar", `{"id":"fusion","version":"1.2.12","environment":"*"}`)
 	writeClientJar(t, modsDir, "shaders.jar", `{"id":"shaders","version":"1.0.0","environment":"*"}`)
 
-	p := &Provisioner{log: logger.New()}
+	p := &Provisioner{log: logger.New(), store: testStore(t)}
 	server := &v1.Server{DataPath: dataPath, ModLoader: v1.ModLoader_MOD_LOADER_CURSEFORGE}
 
 	// Required flagged jars stay, nothing moves on disk
@@ -148,6 +163,44 @@ func TestPackFlaggedClientModsSweepKeepsDeps(t *testing.T) {
 	}
 	if !fileExists(filepath.Join(modsDir+"_disabled", "shaders.jar")) {
 		t.Fatal("disabled jar must land in the disabled dir")
+	}
+}
+
+func TestSweepRespectsUserModChoices(t *testing.T) {
+	dataPath := t.TempDir()
+	modsDir := filepath.Join(dataPath, "mods")
+	writeClientJar(t, modsDir, "clientmod.jar", `{"id":"clientmod","environment":"client"}`)
+	writeClientJar(t, modsDir, "unwanted.jar", `{"id":"unwanted","environment":"*"}`)
+
+	ctx := context.Background()
+	store := testStore(t)
+	server := &v1.Server{Id: "srv1", Name: "srv1", DataPath: dataPath, ModLoader: v1.ModLoader_MOD_LOADER_MODRINTH}
+	if err := store.CreateServer(ctx, server); err != nil {
+		t.Fatalf("server create failed %v", err)
+	}
+	rows := []*v1.Mod{
+		{Id: "m1", ServerId: "srv1", FileName: "clientmod.jar", DisplayName: "clientmod", Enabled: true},
+		{Id: "m2", ServerId: "srv1", FileName: "unwanted.jar", DisplayName: "unwanted", Enabled: false},
+	}
+	if err := store.CreateMod(ctx, rows...); err != nil {
+		t.Fatalf("mod rows failed %v", err)
+	}
+	// Map update dodges the gorm bool default skip
+	if err := store.UpdateModFields(ctx, "m2", map[string]any{"enabled": false}); err != nil {
+		t.Fatalf("mod row patch failed %v", err)
+	}
+
+	p := &Provisioner{log: logger.New(), store: store}
+	p.disableClientOnlyMods(ctx, server, nil, nil)
+
+	if !fileExists(filepath.Join(modsDir, "clientmod.jar")) {
+		t.Fatal("user enabled jar must survive the sweep")
+	}
+	if fileExists(filepath.Join(modsDir, "unwanted.jar")) {
+		t.Fatal("user disabled jar must not stay enabled")
+	}
+	if !fileExists(filepath.Join(modsDir+"_disabled", "unwanted.jar")) {
+		t.Fatal("user disabled jar must land in the disabled dir")
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 	"github.com/discohaus/discopanel/pkg/transfer"
 	utils "github.com/discohaus/discopanel/pkg/utils"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"gorm.io/gorm"
 )
 
 // Compile-time check that ModService implements the interface
@@ -379,6 +380,11 @@ func (s *ModService) ImportUploadedMod(ctx context.Context, req *connect.Request
 		UploadedAt:  timestamppb.New(info.ModTime()),
 	}
 
+	// Fresh upload clears any stored toggle for the name
+	if err := s.store.DeleteMod(ctx, mod.Id); err != nil {
+		s.log.Error("Failed to clear mod row: %v", err)
+	}
+
 	return connect.NewResponse(&v1.ImportUploadedModResponse{
 		Mod:     mod,
 		Message: "Mod uploaded successfully",
@@ -409,7 +415,8 @@ func (s *ModService) UpdateMod(ctx context.Context, req *connect.Request[v1.Upda
 
 	// Handle enabling/disabling
 	finalEnabled := currentlyEnabled
-	if msg.Enabled != nil && *msg.Enabled != currentlyEnabled {
+	toggled := msg.Enabled != nil && *msg.Enabled != currentlyEnabled
+	if toggled {
 		if *msg.Enabled {
 			// Move from disabled to mods directory
 			oldPath := filepath.Join(disabledDir, modFileName)
@@ -442,7 +449,29 @@ func (s *ModService) UpdateMod(ctx context.Context, req *connect.Request[v1.Upda
 	mod := modFromFile(msg.ServerId, finalDir, modFileName, finalEnabled, modInfo)
 	mod.UpdatedAt = timestamppb.Now()
 
+	// Row stores the choice, automated passes obey it
+	if toggled {
+		if err := s.saveModChoice(ctx, mod); err != nil {
+			s.log.Error("Failed to save mod choice for %s: %v", modFileName, err)
+			return nil, connect.NewError(connect.CodeInternal, errors.New("mod toggled but saving the choice failed"))
+		}
+	}
+
 	return connect.NewResponse(&v1.UpdateModResponse{Mod: mod}), nil
+}
+
+// Upserts the row holding one user toggle
+func (s *ModService) saveModChoice(ctx context.Context, mod *v1.Mod) error {
+	// Map update dodges the gorm bool default skip
+	fields := map[string]any{"enabled": mod.Enabled}
+	err := s.store.UpdateModFields(ctx, mod.Id, fields)
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	if err := s.store.CreateMod(ctx, mod); err != nil {
+		return err
+	}
+	return s.store.UpdateModFields(ctx, mod.Id, fields)
 }
 
 // DeleteMod deletes a mod
@@ -467,6 +496,10 @@ func (s *ModService) DeleteMod(ctx context.Context, req *connect.Request[v1.Dele
 	if err := os.Remove(filepath.Join(dir, deletedName)); err != nil {
 		s.log.Error("Failed to delete mod file: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete mod file"))
+	}
+	// Choice row goes with the file
+	if err := s.store.DeleteMod(ctx, msg.ModId); err != nil {
+		s.log.Error("Failed to delete mod row: %v", err)
 	}
 	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_MOD_DELETE, metrics.Attrs{"file": deletedName}, "deleted mod %s", deletedName)
 
