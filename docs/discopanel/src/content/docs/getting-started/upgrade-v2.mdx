@@ -21,7 +21,7 @@ The migration handles the database, not `config.yaml`. A few keys moved or went 
 
 | v2 | v3 |
 |---|---|
-| `proxy.base_url` | Gone. The base domain now lives in **Settings > Network**. |
+| `proxy.base_url` | Sets the base domain when none has been set in the database. |
 | `proxy.listen_ports`, `proxy.port_range_max` | Gone. Listeners are managed on the Network page. |
 | `server.read_timeout`, `server.write_timeout` | `server.read_header_timeout` |
 | `storage.max_upload_size` | `upload.max_upload_size` |

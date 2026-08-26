@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-
 	"github.com/discohaus/discopanel/internal/alias"
 	"github.com/discohaus/discopanel/internal/command"
 	storage "github.com/discohaus/discopanel/internal/db"
@@ -121,12 +120,24 @@ func main() {
 	} else {
 		if isNew {
 			proxyConfig.Enabled = cfg.Proxy.Enabled
+		} else {
+			cfg.Proxy.Enabled = proxyConfig.Enabled
+		}
+		// Config base domain applies when the db has none
+		seededBase := false
+		if base := proxy.NormalizeHostname(cfg.Proxy.BaseURL); base != "" && proxyConfig.BaseUrl == "" {
+			if proxy.ValidHostname(base) {
+				proxyConfig.BaseUrl = base
+				seededBase = true
+			} else {
+				log.Warn("Ignoring invalid proxy.base_url %q", cfg.Proxy.BaseURL)
+			}
+		}
+		if isNew || seededBase {
 			err = store.SaveProxyConfig(ctx, proxyConfig)
 			if err != nil {
 				log.Error("Failed to set proxy configs from startup configuration values: %v", err)
 			}
-		} else {
-			cfg.Proxy.Enabled = proxyConfig.Enabled
 		}
 
 		log.Info("Loaded proxy configuration from database: enabled=%v, hostnames=%v",

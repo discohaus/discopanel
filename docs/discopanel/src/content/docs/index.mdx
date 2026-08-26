@@ -6,8 +6,8 @@ head:
   - tag: title
     content: DiscoPanel Docs
 hero:
-  title: <span class="brand-wordmark">disco<span class="brand-suffix">panel</span></span>
-  tagline: A self-hosted Minecraft server + proxy + modpack manager. Docker-powered, easy to deploy, and it actually works.<a class="brand-byline" href="https://github.com/discohaus"><img src="/discohaus_favicon.svg" alt="" width="20" height="20" /><span>disco<span class="byline-haus">haus</span></span></a>
+  title: <span class="brand-wordmark">disco<span class="brand-suffix">panel</span><a class="brand-byline" href="https://github.com/discohaus"><span class="byline-by">by</span><img src="/discohaus_favicon.svg" alt="" width="18" height="18" /><span>disco<span class="byline-haus">haus</span></span></a></span>
+  tagline: A self-hosted Minecraft server + proxy + modpack manager. Docker-powered, easy to deploy, and it actually works.
   image:
     html: |
       <style>
@@ -16,13 +16,19 @@ hero:
           height: 460px;
           perspective: 1000px;
         }
+        .mc-tilt {
+          width: 220px;
+          height: 220px;
+          margin: 210px auto 0;
+          transform-style: preserve-3d;
+          will-change: transform;
+        }
         .mc-cube {
           width: 220px;
           height: 220px;
           position: relative;
           transform-style: preserve-3d;
           animation: mc-spin 14s linear infinite;
-          margin: 210px auto 0;
         }
         @keyframes mc-spin {
           from { transform: rotateX(-20deg) rotateY(45deg); }
@@ -119,19 +125,42 @@ hero:
       </style>
       <div class="mc-scene">
         <div class="mc-lava-glow"></div>
-        <div class="mc-cube">
-          <div class="mc-emblem">
-            <div class="mc-emblem-face"></div>
-            <div class="mc-emblem-face mc-emblem-back"></div>
+        <div class="mc-tilt">
+          <div class="mc-cube">
+            <div class="mc-emblem">
+              <div class="mc-emblem-face"></div>
+              <div class="mc-emblem-face mc-emblem-back"></div>
+            </div>
+            <div class="mc-face mc-top"></div>
+            <div class="mc-face mc-bottom"></div>
+            <div class="mc-face mc-front"></div>
+            <div class="mc-face mc-back"></div>
+            <div class="mc-face mc-left"></div>
+            <div class="mc-face mc-right"></div>
           </div>
-          <div class="mc-face mc-top"></div>
-          <div class="mc-face mc-bottom"></div>
-          <div class="mc-face mc-front"></div>
-          <div class="mc-face mc-back"></div>
-          <div class="mc-face mc-left"></div>
-          <div class="mc-face mc-right"></div>
         </div>
       </div>
+      <script>
+        // Leans cube toward the cursor
+        (() => {
+          const tilt = document.querySelector('.mc-tilt');
+          if (!tilt || !matchMedia('(hover: hover)').matches) return;
+          let tx = 0, ty = 0, cx = 0, cy = 0, raf = null;
+          const render = () => {
+            cx += (tx - cx) * 0.08;
+            cy += (ty - cy) * 0.08;
+            tilt.style.transform = `rotateX(${cy}deg) rotateY(${cx}deg)`;
+            raf = Math.abs(tx - cx) + Math.abs(ty - cy) > 0.01 ? requestAnimationFrame(render) : null;
+          };
+          const kick = () => { if (raf === null) raf = requestAnimationFrame(render); };
+          addEventListener('mousemove', (e) => {
+            tx = (e.clientX / innerWidth - 0.5) * 24;
+            ty = (0.5 - e.clientY / innerHeight) * 16;
+            kick();
+          });
+          document.documentElement.addEventListener('mouseleave', () => { tx = 0; ty = 0; kick(); });
+        })();
+      </script>
   actions:
     - text: Get Started
       link: /introduction/

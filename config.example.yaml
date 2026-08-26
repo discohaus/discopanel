@@ -95,6 +95,7 @@ module:
 proxy:
   enabled: true
   public_ip: "" # Public address for hostname suggestions
+  base_url: "" # Base domain seed, saved network settings win
   listen_port: 25565 # Primary port to listen on (can also use 443)
   port_range_min: 25565
   trusted_edge: false # For external proxy headers: X-Forwarded-Proto / X-Forwarded-For

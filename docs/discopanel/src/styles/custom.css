@@ -6,6 +6,8 @@
 /* Wordmark set lowercase in the identity mono stack */
 .brand-wordmark {
 	display: block;
+	width: fit-content;
+	margin-inline: auto;
 	font-family: 'JetBrains Mono', 'Cascadia Code', ui-monospace, Menlo, Consolas, monospace;
 	font-weight: 700;
 }
@@ -15,14 +17,15 @@
 	color: #55aa55;
 }
 
-/* Parent org mini lockup under the tagline */
+/* Parent org signature tucked under the wordmark */
 .brand-byline {
+	position: relative;
 	display: flex;
 	width: fit-content;
 	align-items: center;
-	gap: 0.5rem;
-	margin-top: 1.25rem;
-	margin-inline: auto;
+	gap: 0.4rem;
+	margin-left: auto;
+	margin-top: -0.25rem;
 	font-family: 'JetBrains Mono', 'Cascadia Code', ui-monospace, Menlo, Consolas, monospace;
 	font-size: 0.9rem;
 	font-weight: 700;
@@ -37,19 +40,29 @@
 	opacity: 1;
 }
 
+/* Softer lead-in word before the lockup */
+.byline-by {
+	font-weight: 400;
+	opacity: 0.8;
+}
+
 /* Haus suffix in discohaus purple */
 .byline-haus {
 	color: #8962e7;
 }
 
 .brand-byline img {
-	width: 20px;
-	height: 20px;
+	width: 18px;
+	height: 18px;
 }
 
 @media (min-width: 50rem) {
-	.brand-byline {
+	.brand-wordmark {
 		margin-inline: 0;
+	}
+
+	.brand-byline {
+		margin-top: -0.5rem;
 	}
 }
 
