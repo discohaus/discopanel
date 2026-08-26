@@ -96,7 +96,7 @@ proxy:
   enabled: true
   public_ip: "" # Public address for hostname suggestions
   base_url: "" # Base domain seed, saved network settings win
-  listen_port: 25565 # Primary port to listen on (can also use 443)
+  listen_port: 25565 # First run default listener port (can also use 443)
   port_range_min: 25565
   trusted_edge: false # For external proxy headers: X-Forwarded-Proto / X-Forwarded-For
   # Optional TLS for the panel ui
@@ -113,16 +113,17 @@ minecraft:
     # JVM Configuration
     uid: 1000
     gid: 1000
-    memory: "1G"
     initMemory: "1G"
     maxMemory: "1G"
     tz: "UTC"
     enableJmx: false
     jmxHost: ""
+    enableAgent: true  # DiscoPanel telemetry agent attached to server JVM
     useAikarFlags: false
     useMeowiceFlags: false
     useFlareFlags: false
     useSimdFlags: false
+    useZgcFlags: false  # Use generational ZGC instead of G1
     jvmOpts: ""
     jvmXxOpts: ""
     jvmDdOpts: ""
@@ -130,7 +131,9 @@ minecraft:
 
     # Server Configuration
     eula: "TRUE"
+    forceProvision: false  # Forces reprovision on next start then clears
     motd: ""
+    offlineMotd: ""  # MOTD line shown while server is offline
     difficulty: "easy"
     icon: ""
     overrideIcon: false
@@ -203,6 +206,12 @@ minecraft:
     autostopTimeoutEst: 3600
     autostopTimeoutInit: 1800
 
+    # Proxy (requires proxy enabled)
+    enableWakeOnConnect: false  # Joining a stopped server starts it up
+    enableOfflineStatus: false  # Answer status pings while server is stopped
+    enableProxyProtocol: false  # Send PROXY protocol v2 headers to server
+    proxyPreserveHostname: false  # Forward original client hostname to server
+
     # Forge Configuration
     forgeVersion: ""
     forgeInstaller: ""
@@ -253,11 +262,26 @@ minecraft:
     statusHeartbeatInterval: 0
     customServerProperties: ""
 
+    # Management Server
+    managementServerEnabled: false  # Enable management server interface
+    managementServerHost: "0.0.0.0"  # Host address for management server
+    managementServerPort: 0  # Port for management server
+    managementServerSecret: ""  # Shared secret for management server auth
+    managementServerTlsEnabled: false  # Enable TLS for management server
+    managementServerTlsKeystore: ""  # Path to TLS keystore
+    managementServerTlsKeystorePassword: ""  # Password for TLS keystore
+    managementServerAllowedOrigins: ""  # Allowed CORS origins for management server
+
     # Ops / Admins
     ops: ""
 
     # Additional Whitelist Options
     enforceWhitelist: false
+
+    # Doctor
+    doctorEnabled: true  # Doctor watches this server and reports findings
+    doctorMode: "repair"  # Repair crashes or observe and report only
+    doctorInstallDeps: true  # Doctor may download missing mod dependencies
 
 # Logging configuration
 logging:

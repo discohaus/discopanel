@@ -931,13 +931,24 @@ func (m *Manager) ensureListenerInvariantsLocked(ctx context.Context) error {
 
 	// First run bootstraps the primary listener
 	if nonPanel == 0 {
-		port, err := m.findFreePortLocked(ctx, FreePortOpts{
-			Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_TCP,
-			Start:    m.config.PortRangeMin,
-			End:      65535,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to find a port for the default listener: %w", err)
+		var port int
+		// Configured listen port wins when free
+		if m.config.ListenPort > 0 {
+			port, _ = m.findFreePortLocked(ctx, FreePortOpts{
+				Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT,
+				Start:    m.config.ListenPort,
+				End:      m.config.ListenPort,
+			})
+		}
+		if port == 0 {
+			port, err = m.findFreePortLocked(ctx, FreePortOpts{
+				Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT,
+				Start:    m.config.PortRangeMin,
+				End:      65535,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to find a port for the default listener: %w", err)
+			}
 		}
 		listener := &v1.ProxyListener{
 			Id:        "default",
