@@ -28,6 +28,7 @@ export default defineConfig({
 						{ label: 'Proxmox LXC', slug: 'getting-started/proxmox' },
 						{ label: 'Prebuilt Binaries', slug: 'getting-started/prebuilt-binaries' },
 						{ label: 'Building from Source', slug: 'getting-started/build-from-source' },
+						{ label: 'Upgrading from v2', slug: 'getting-started/upgrade-v2' },
 					],
 				},
 				{ label: 'Configuration', slug: 'configuration' },
@@ -39,6 +40,7 @@ export default defineConfig({
 						{ label: 'Server Performance', slug: 'guides/performance' },
 						{ label: 'Auto-Pause & Auto-Stop', slug: 'guides/autopause' },
 						{ label: 'Proxy & Domains', slug: 'guides/proxy' },
+						{ label: 'The Lobby', slug: 'guides/lobby' },
 						{ label: 'HTTPS & Certificates', slug: 'guides/tls' },
 						{ label: 'Server Files', slug: 'guides/server-files' },
 						{ label: 'Server Backups', slug: 'guides/backups' },
@@ -57,6 +59,7 @@ export default defineConfig({
 								{ label: 'Discord Bot', slug: 'guides/modules/bot' },
 							],
 						},
+						{ label: 'Users & Roles', slug: 'guides/users' },
 						{
 							label: 'OIDC',
 							items: [

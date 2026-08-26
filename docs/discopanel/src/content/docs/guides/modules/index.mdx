@@ -13,6 +13,8 @@ import bot from '../../../../../../../identity/assets/bot/chip.svg';
 
 Modules are add-ons that run in their own little container next to a Minecraft server. Each server has a **Modules** tab where you can add them, start and stop them, and find their addresses. Modules can auto-start with the server, and DiscoPanel picks their ports for you.
 
+![A server's Modules tab](../../../../assets/screenshots/server-modules.png)
+
 ## The modules
 
 - <img class="module-chip-inline" src={geyser.src} alt="" /> **[Geyser](/guides/modules/geyser/)** - Bedrock players join your Java server from phones and consoles.
@@ -29,6 +31,12 @@ Modules are add-ons that run in their own little container next to a Minecraft s
 Some modules need a value from you while they run, like a Steam Guard code. A module signals this by serving a small prompt endpoint on its health port, and the panel surfaces it as a card at the top of the module dialog. Type the value, hit submit, and the panel hands it back to the module.
 
 Building your own module? Serve `GET /prompt` returning the pending prompt as JSON (or `204` when nothing is waiting), and accept `POST /prompt` with `{"id","value"}`. The Go helper in `pkg/moduleprompt` does this for you. Set `supports_prompts` to `true` in the template metadata so the panel knows to poll.
+
+## Custom templates
+
+![The Modules page](../../../../assets/screenshots/modules-page.png)
+
+The built-in modules are templates, and admins can add their own: **Modules page > Templates > Create template**. A template is a Docker image plus everything an instance needs - the settings form its users fill in, default ports, environment, and volumes. Paths and values can use aliases like `{{server.data_path}}` and `{{module.data_path}}`, so one template works for every server. Anything that runs in a container and helps a Minecraft server is fair game.
 
 ## Good to know
 

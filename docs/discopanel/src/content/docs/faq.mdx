@@ -35,6 +35,13 @@ Stop DiscoPanel, replace the binary with the new one from the [releases page](ht
 </details>
 
 <details>
+  <summary>How do I upgrade from v2 to v3?</summary>
+
+Swap the binary or image and start it - the database migrates itself, with an automatic backup kept next to it. Come from v2.0.15 (boot that once first if you're older), and expect each server's first start to take longer while it reinstalls on the v3 runtime. Details in [Upgrading from v2](/getting-started/upgrade-v2/).
+
+</details>
+
+<details>
   <summary>I'm using host networking but something is already on port 8080. How do I change the port?</summary>
 
 If you're using `config.yaml`, set this option:

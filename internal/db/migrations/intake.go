@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/discohaus/discopanel/pkg/javaversions"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/protometa"
 	"github.com/nickheyer/protogorm/migrate"
@@ -157,6 +158,44 @@ func parseMemMB(s string) int32 {
 	return int32(n * mult)
 }
 
+// Carries a v2 tag onto the runtime tag vocabulary
+func mapRuntimeTag(tag string) string {
+	if javaversions.ValidTag(tag) {
+		return tag
+	}
+	if base, ok := strings.CutSuffix(tag, "-graalvm"); ok {
+		if candidate := base + "-graal"; javaversions.ValidTag(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// Rewrites one docker_image column onto runtime tags
+func normalizeRuntimeTags(tx *gorm.DB, table string) error {
+	var tags []string
+	q := fmt.Sprintf("SELECT DISTINCT docker_image FROM %s WHERE docker_image IS NOT NULL AND docker_image != ''", table)
+	if err := tx.Raw(q).Scan(&tags).Error; err != nil {
+		return err
+	}
+	for _, tag := range tags {
+		mapped := mapRuntimeTag(tag)
+		if mapped == tag {
+			continue
+		}
+		res := tx.Exec(fmt.Sprintf("UPDATE %s SET docker_image = ? WHERE docker_image = ?", table), mapped, tag)
+		if res.Error != nil {
+			return res.Error
+		}
+		if mapped == "" {
+			log.Printf("[migrate] %s docker_image %q cleared for %d rows, image resolves from java version", table, tag, res.RowsAffected)
+		} else {
+			log.Printf("[migrate] %s docker_image %q became %q for %d rows", table, tag, mapped, res.RowsAffected)
+		}
+	}
+	return nil
+}
+
 // Deletes child rows whose parents no longer exist
 func sweepOrphans(tx *gorm.DB, _ migrate.Dialect) error {
 	sweeps := []struct {
@@ -198,6 +237,9 @@ func normalizeServers(tx *gorm.DB, d migrate.Dialect) error {
 		return err
 	}
 	if err := tx.Exec("UPDATE servers SET java_version = CAST(java_version AS INTEGER)").Error; err != nil {
+		return err
+	}
+	if err := normalizeRuntimeTags(tx, "servers"); err != nil {
 		return err
 	}
 
@@ -284,7 +326,10 @@ func normalizeModpacks(tx *gorm.DB, _ migrate.Dialect) error {
 	if err := tx.Exec("UPDATE indexed_modpacks SET java_version = 0 WHERE java_version IS NULL OR java_version = ''").Error; err != nil {
 		return err
 	}
-	return tx.Exec("UPDATE indexed_modpacks SET java_version = CAST(java_version AS INTEGER)").Error
+	if err := tx.Exec("UPDATE indexed_modpacks SET java_version = CAST(java_version AS INTEGER)").Error; err != nil {
+		return err
+	}
+	return normalizeRuntimeTags(tx, "indexed_modpacks")
 }
 
 // Maps modpack file release channels onto enum numbers

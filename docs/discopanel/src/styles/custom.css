@@ -60,6 +60,12 @@
 		radial-gradient(circle at 88% 12%, rgba(79, 201, 232, 0.18), transparent 42%);
 }
 
+/* Framed UI screenshots in guides */
+.sl-markdown-content img[src*='screenshots'] {
+	border: 1px solid var(--sl-color-gray-5);
+	border-radius: 8px;
+}
+
 /* Identity chip on module pages */
 .module-mark {
 	float: right;

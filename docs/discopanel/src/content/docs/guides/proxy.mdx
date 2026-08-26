@@ -13,7 +13,7 @@ Without the proxy, every server needs its own port, and players connect with an 
 
 ## Setting it up
 
-Enable the proxy in `config.yaml` (or from the Network page):
+Enable the proxy in `config.yaml` (or with the **Proxy routing** toggle on the Network page):
 
 ```yaml
 proxy:
@@ -21,19 +21,28 @@ proxy:
   listen_port: 25565
 ```
 
-Hostnames live in the panel, not the config file. Every hostname field in DiscoPanel suggests ready-to-use names derived from one **base domain**, set on the Network page:
+Everything else lives on **Settings > Network** - a live map of your entire DiscoPanel network:
+
+![The Network page](../../../assets/screenshots/settings-network.png)
+
+Every hostname field in DiscoPanel suggests ready-to-use names derived from one **base domain**, set on that page:
 
 - **Leave it blank** and DiscoPanel picks a base from your machine's address that resolves with zero DNS setup. Great for LAN play or trying things out.
 - **Set your own domain** like `mc.example.com` and every suggestion becomes a subdomain of it. Point a wildcard DNS record (`*.mc.example.com`) at your public IP and forward the listen port on your router - one record, one port, unlimited servers.
 
 ## Server addresses
 
-A server called "Epic Survival" gets a suggestion like `epic-survival.mc.example.com` in its **Routing** tab. Pick it, type your own, or add several - a server can answer on as many hostnames as you like.
+Hostnames are added per server on its **Network** tab. A server called "Epic Survival" gets a suggestion like `epic-survival.mc.example.com` - pick it, type your own, or add several. A server can answer on as many hostnames as you like.
+
+![A server's Network tab](../../../assets/screenshots/server-network.png)
+
+The same tab picks the **listener** the server answers on, and has a **Catch all** switch: players whose address matches nothing else land on that server. Without a catch-all, unmatched joins either get a polite "unknown address" screen or, if you've enabled it, [the lobby](/guides/lobby/).
 
 ## What the proxy gets you
 
 - **One port for everything.** New servers are instantly reachable, no router changes.
 - **Wake on join.** [Auto-pause](/guides/autopause/) only works behind the proxy: it's the proxy that answers pings for a sleeping server and wakes it when someone actually joins.
+- **The lobby.** An optional panel-hosted [hub world](/guides/lobby/) where players pick a server by walking through a portal.
 - **No exposed ports per server.** Proxied servers don't open any ports on your machine. The proxy handles all the traffic.
 
 ## Without the proxy
@@ -41,5 +50,5 @@ A server called "Epic Survival" gets a suggestion like `epic-survival.mc.example
 Servers not behind the proxy bind their own port directly (DiscoPanel suggests the next free one, counting up from `25565`). Players connect with `your-ip:port`, and each server's port has to be forwarded on your router separately. On a home network your friends need your **public** IP - search "what is my IP" - and people on the same WiFi as you use your local IP instead.
 
 :::note
-Extra ports for things like Simple Voice Chat or map mods aren't routed through the proxy. Expose those with the **Additional Ports** section in the server's overview tab.
+Extra ports for things like Simple Voice Chat or map mods aren't routed through the proxy. Expose those with the **Exposed ports** section in the server's Network tab.
 :::

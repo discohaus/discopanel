@@ -71,3 +71,10 @@ make check    # svelte-check plus the private-import guard
 ## Docs
 
 This documentation site lives in `docs/discopanel/` (Astro + Starlight). `make dev-docs` serves it locally on `http://localhost:4321`. If something here is wrong or missing, open an issue or mention it in Discord.
+
+The UI screenshots are captured by `docs/discopanel/scripts/screenshots.mjs` against a running panel. Point it at one with a server or two and it refreshes every image in `src/assets/screenshots/`:
+
+```sh
+cd docs/discopanel
+PANEL_URL=http://localhost:8080 PANEL_USER=admin PANEL_PASS=... node scripts/screenshots.mjs
+```

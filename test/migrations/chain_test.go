@@ -53,7 +53,18 @@ func seedV2(t *testing.T, db *gorm.DB, dataPath string) {
 			ID: "s1", Name: "Fixture Survival", ModLoader: "forge", MCVersion: "1.20.1",
 			Status: "stopped", Port: 25565, ProxyHostname: "play.example.com",
 			MaxPlayers: 20, Memory: 4096, JavaVersion: "17", DataPath: dataPath,
+			DockerImage:     "stable",
 			AdditionalPorts: json.RawMessage(`[{"name":"map","container_port":8100,"host_port":8100,"protocol":"udp"}]`),
+		},
+		&v2schema.Server{
+			ID: "s2", Name: "Graal Pinned", ModLoader: "fabric", MCVersion: "1.21.1",
+			Status: "stopped", Port: 25566, MaxPlayers: 10, Memory: 4096,
+			JavaVersion: "21", DataPath: dataPath, DockerImage: "java21-graalvm",
+		},
+		&v2schema.Server{
+			ID: "s3", Name: "Plain Pinned", ModLoader: "paper", MCVersion: "1.21.1",
+			Status: "stopped", Port: 25567, MaxPlayers: 10, Memory: 4096,
+			JavaVersion: "21", DataPath: dataPath, DockerImage: "java21",
 		},
 		&v2schema.ServerConfig{
 			ID: "c1", ServerID: "s1",
@@ -93,7 +104,7 @@ func seedV2(t *testing.T, db *gorm.DB, dataPath string) {
 			TokenPlaintext: "sekrit",
 			Ports:          json.RawMessage(`[{"name":"sync","container_port":9000,"host_port":0,"protocol":"udp"}]`),
 		},
-		&v2schema.IndexedModpack{ID: "cf-1", IndexerID: "1", Indexer: "fuego", Name: "Pack", JavaVersion: "17", DownloadCount: 5},
+		&v2schema.IndexedModpack{ID: "cf-1", IndexerID: "1", Indexer: "fuego", Name: "Pack", JavaVersion: "17", DownloadCount: 5, DockerImage: "java17-alpine"},
 		&v2schema.IndexedModpackFile{ID: "f-1", ModpackID: "cf-1", FileName: "pack.zip", ReleaseType: "beta"},
 		&v2schema.ModpackFavorite{ID: "fav-1", ModpackID: "cf-1"},
 		&v2schema.ProxyConfig{ID: "default", Enabled: true, BaseURL: "mc.example.com"},
@@ -170,6 +181,12 @@ func TestIntakeCarriesV2Data(t *testing.T) {
 
 	// Single hostname became a list
 	assertString(t, db, "SELECT proxy_hostnames FROM servers WHERE id = 's1'", `["play.example.com"]`)
+
+	// Itzg era tags translate or clear for resolution
+	assertString(t, db, "SELECT docker_image FROM servers WHERE id = 's1'", "")
+	assertString(t, db, "SELECT docker_image FROM servers WHERE id = 's2'", "java21-graal")
+	assertString(t, db, "SELECT docker_image FROM servers WHERE id = 's3'", "java21")
+	assertString(t, db, "SELECT docker_image FROM indexed_modpacks WHERE id = 'cf-1'", "")
 
 	// Heap bounds derived and clamped to the container
 	assertInt(t, db, "SELECT memory_min FROM servers WHERE id = 's1'", 2048)

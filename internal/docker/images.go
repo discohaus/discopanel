@@ -48,12 +48,12 @@ func GetRequiredJavaVersion(mcVersion string, modLoader v1.ModLoader) int32 {
 
 // Returns the image tag for a Java major
 func RuntimeImageTag(javaMajor int) string {
-	return fmt.Sprintf("java%d", javaMajor)
+	return javaversions.Tag(javaMajor)
 }
 
 // Returns the GraalVM variant tag for a Java major
 func GraalRuntimeImageTag(javaMajor int) string {
-	return fmt.Sprintf("java%d-graal", javaMajor)
+	return javaversions.GraalTag(javaMajor)
 }
 
 // Returns the runtime image tag for a Minecraft version
@@ -92,17 +92,7 @@ func (c *Client) DesiredImage(server *v1.Server) string {
 
 // Reports whether a tag matches a published runtime image
 func IsValidRuntimeTag(tag string) bool {
-	for _, v := range SupportedJavaVersions {
-		if tag == RuntimeImageTag(v) {
-			return true
-		}
-	}
-	for _, v := range GraalJavaVersions {
-		if tag == GraalRuntimeImageTag(v) {
-			return true
-		}
-	}
-	return false
+	return javaversions.ValidTag(tag)
 }
 
 // Lists runtime image variants, newest first, GraalVM last

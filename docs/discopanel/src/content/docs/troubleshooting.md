@@ -18,6 +18,8 @@ description: What the status badges mean, common errors, and steps to try before
 
 Open the **Console** tab and read the last few `[provision]` lines. The usual causes:
 
+![The Console tab](../../assets/screenshots/server-console.png)
+
 - **"the Minecraft EULA must be accepted"** - turn on **Accept EULA** in the server properties.
 - **A CurseForge API key error** - CurseForge packs need an API key. See the [Modpacks guide](/guides/modpacks/). New keys sometimes take a day or two to start working.
 - **A list of mods with download links** - those mods must be downloaded manually. The [Modpacks guide](/guides/modpacks/#mods-that-need-a-manual-download) walks through it.

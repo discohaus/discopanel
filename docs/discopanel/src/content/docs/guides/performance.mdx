@@ -3,6 +3,8 @@ title: Server Performance
 description: The health check, memory, garbage collectors, and why servers restart fast.
 ---
 
+![A server's overview](../../../assets/screenshots/server-overview.png)
+
 ## The health check
 
 Every server's dashboard has a **Health** section at the bottom of its Server Status card. At a glance it tells you whether DiscoPanel found anything slowing your server down, like "CPU throttling detected" or "Heap exceeds the container memory limit". Click it for the full list of findings in plain language. When a finding has an obvious remedy, there's a button right next to it that applies the fix for you. Fixes take effect the next time the server starts.
@@ -16,6 +18,8 @@ While the server is stopped, the health check covers what it can tell from your 
 Give a server its memory when you create it (you can change it later in Settings). DiscoPanel splits it between Java and the overhead the server process needs, so the number you pick is the total the server gets. If you're not sure, 4 GB is fine for vanilla and small plugin servers, and 6 to 10 GB for modpacks.
 
 More isn't always better. Java's garbage collector works harder with a huge amount of memory, so don't hand a server 20 GB just because it's available.
+
+![The Properties tab](../../../assets/screenshots/server-properties.png)
 
 **Automatic Memory** (in the properties tab) sizes the Java heap from the server's memory for you, so the two can never disagree. It's the fix the health check offers when your heap and your memory limit don't fit each other. If you manage the heap yourself and it doesn't fit, DiscoPanel clamps it for that start so the server isn't killed mid-game, and says so in the console.
 
