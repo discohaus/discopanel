@@ -580,6 +580,7 @@ func (m *Manager) pause(ctx context.Context, serverID string) error {
 	if err := m.docker.PauseContainer(ctx, server.ContainerId); err != nil {
 		return fmt.Errorf("failed to pause container: %w", err)
 	}
+	m.markPaused(server.Id)
 	m.setPaused(server.Id, true)
 	m.setStatus(ctx, server, v1.ServerStatus_SERVER_STATUS_PAUSED)
 	m.rec.Announce(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_SERVER_PAUSE, nil, "paused the idle server")

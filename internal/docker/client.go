@@ -306,6 +306,12 @@ func (c *Client) CreateContainer(ctx context.Context, server *v1.Server, serverC
 		return "", fmt.Errorf("failed to create server data directory: %w", err)
 	}
 
+	// Docker initiated stops honor the configured save budget
+	stopTimeout := DefaultStopTimeoutSeconds
+	if serverConfig.StopDuration != nil && *serverConfig.StopDuration > 0 {
+		stopTimeout = int(*serverConfig.StopDuration)
+	}
+
 	config := &container.Config{
 		Image: imageName,
 		Env:   env,
@@ -313,6 +319,7 @@ func (c *Client) CreateContainer(ctx context.Context, server *v1.Server, serverC
 		Tty:          false,
 		AttachStdout: true,
 		AttachStderr: true,
+		StopTimeout:  &stopTimeout,
 		ExposedPorts: exposedPorts,
 		Labels: map[string]string{
 			"discopanel.server.id":      server.Id,

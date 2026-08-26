@@ -2619,6 +2619,7 @@ message ServerProperties {
     category: "server"
   }];
   optional int32 stop_duration = 81 [(discopanel.options.v1.prop) = {
+    env: "STOP_DURATION"
     default_value: "60"
     desc: "Seconds to wait for graceful shutdown before force kill"
     input: "number"
@@ -2855,14 +2856,14 @@ message ServerProperties {
   }];
   optional int32 autostop_timeout_est = 112 [(discopanel.options.v1.prop) = {
     default_value: "3600"
-    desc: "Time between last disconnect and stopping (seconds)"
+    desc: "Time between last disconnect (or pause) and stopping (seconds)"
     input: "number"
     label: "Auto-Stop Timeout (Established)"
     category: "autostop"
   }];
   optional int32 autostop_timeout_init = 113 [(discopanel.options.v1.prop) = {
     default_value: "1800"
-    desc: "Time between server start and stopping if no client connects (seconds)"
+    desc: "Time between server start (or pause) and stopping if no client connects (seconds)"
     input: "number"
     label: "Auto-Stop Timeout (Initial)"
     category: "autostop"

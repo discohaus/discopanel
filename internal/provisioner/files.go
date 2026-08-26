@@ -81,6 +81,11 @@ func (p *Provisioner) writeServerProperties(server *v1.Server, cfg *v1.ServerPro
 		props["accepts-transfers"] = "true"
 	}
 
+	// Waking from autopause trips the watchdog, disable it
+	if _, ok := props["max-tick-time"]; !ok && boolVal(cfg.EnableAutopause) {
+		props["max-tick-time"] = "-1"
+	}
+
 	// Sets management server defaults, loopback only, secret persists
 	agentEnabled := cfg == nil || cfg.EnableAgent == nil || *cfg.EnableAgent
 	if minecraft.SupportsManagementProtocol(mcVersion) {

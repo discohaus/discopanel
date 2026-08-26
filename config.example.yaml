@@ -196,14 +196,14 @@ minecraft:
     rconCmdsOnDisconnect: ""
     rconCmdsLastDisconnect: ""
 
-    # Auto-Pause (requires the server to be behind the DiscoPanel proxy)
-    enableAutopause: false
+    # Auto-Pause
+    enableAutopause: false # Requires the server to be behind the DiscoPanel proxy
     autopauseTimeoutEst: 3600
     autopauseTimeoutInit: 600
 
     # Auto-Stop
     enableAutostop: false
-    autostopTimeoutEst: 3600
+    autostopTimeoutEst: 3600 # Timers restart on autopause
     autostopTimeoutInit: 1800
 
     # Proxy (requires proxy enabled)

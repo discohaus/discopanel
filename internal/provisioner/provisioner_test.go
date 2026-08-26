@@ -309,6 +309,43 @@ func TestProxiedServersAcceptTransfers(t *testing.T) {
 	}
 }
 
+func TestAutopauseDisablesWatchdog(t *testing.T) {
+	p := testProvisioner(t)
+	readProp := func(server *v1.Server) string {
+		props, err := minecraft.LoadPropertiesFile(server.DataPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return props["max-tick-time"]
+	}
+
+	on := true
+	paused := &v1.Server{Id: "s1", Name: "s1", DataPath: t.TempDir(), Port: 25565}
+	if err := p.writeServerProperties(paused, &v1.ServerProperties{EnableAutopause: &on}, "1.21.1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := readProp(paused); got != "-1" {
+		t.Fatalf("autopause must disable the watchdog, got %q", got)
+	}
+
+	plain := &v1.Server{Id: "s2", Name: "s2", DataPath: t.TempDir(), Port: 25565}
+	if err := p.writeServerProperties(plain, &v1.ServerProperties{}, "1.21.1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := readProp(plain); got != "" {
+		t.Fatalf("no autopause must leave the watchdog alone, got %q", got)
+	}
+
+	custom := "max-tick-time=60000"
+	overridden := &v1.Server{Id: "s3", Name: "s3", DataPath: t.TempDir(), Port: 25565}
+	if err := p.writeServerProperties(overridden, &v1.ServerProperties{EnableAutopause: &on, CustomServerProperties: &custom}, "1.21.1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := readProp(overridden); got != "60000" {
+		t.Fatalf("custom properties must win, got %q", got)
+	}
+}
+
 func TestModrinthStateRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	state := readModrinthState(dir)

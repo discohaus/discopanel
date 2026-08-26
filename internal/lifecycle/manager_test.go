@@ -15,7 +15,6 @@ import (
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/logger"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Manager on a real store with docker left out
@@ -238,19 +237,21 @@ func TestIdleTimeouts(t *testing.T) {
 		t.Fatalf("set value must win, got %d", got)
 	}
 
-	server := &v1.Server{Id: "srv"}
-	if got := m.idleFor(server); got != 0 {
-		t.Fatalf("no state and no start time must read zero, got %v", got)
-	}
-	server.LastStarted = timestamppb.New(time.Now().Add(-time.Hour))
-	if got := m.idleFor(server); got < 59*time.Minute {
-		t.Fatalf("last started must seed idle time, got %v", got)
+	// Pause clock arms on first observation, counts from pause
+	if got := m.pausedFor("srv"); got != 0 {
+		t.Fatalf("first observation must arm the pause clock, got %v", got)
 	}
 	m.idleMu.Lock()
-	m.idle["srv"] = &idleState{lastActive: time.Now().Add(-time.Minute), hadPlayers: true}
+	m.idle["srv"].pausedAt = time.Now().Add(-time.Minute)
+	m.idle["srv"].hadPlayers = true
 	m.idleMu.Unlock()
-	if got := m.idleFor(server); got > 2*time.Minute {
-		t.Fatalf("tracked state must win over last started, got %v", got)
+	if got := m.pausedFor("srv"); got < time.Minute {
+		t.Fatalf("armed clock must keep counting, got %v", got)
+	}
+	// Fresh pause restarts the clock, keeps player history
+	m.markPaused("srv")
+	if got := m.pausedFor("srv"); got > time.Second {
+		t.Fatalf("fresh pause must restart the clock, got %v", got)
 	}
 
 	cfg := &v1.ServerProperties{}
