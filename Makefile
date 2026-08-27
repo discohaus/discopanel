@@ -1,4 +1,4 @@
-.PHONY: dev prod clean build build-frontend run deps test fmt lint check help kill-dev image dev-docker dev-auth proto proto-clean proto-lint proto-format proto-breaking gen dev-docs
+.PHONY: dev prod clean build build-frontend run deps test fmt lint check help kill-dev image dev-docker dev-auth proto proto-clean proto-lint proto-format proto-breaking gen dev-docs fixtures
 
 DATA_DIR := ./data
 DOCKER_DATA_DIR := /tmp/discopanel
@@ -162,6 +162,11 @@ proto-lint:
 gen: proto-clean proto
 	go generate ./...
 
+# Boots every released panel, seeds it, captures its database
+fixtures:
+	@echo "Capturing migration fixtures from every release..."
+	cd test/migrations && go run ./fixturegen -out fixtures $(FIXTURE_ARGS)
+
 proto-format:
 	@echo "Formatting proto files (using Docker)..."
 	$(BUF_RUN) format -w
@@ -192,6 +197,7 @@ help:
 	@echo "  make lint           - Lint code"
 	@echo "  make check          - Type check frontend"
 	@echo "  make gen            - Clean and regenerate proto code (via Docker)"
+	@echo "  make fixtures       - Capture migration fixtures from every release (FIXTURE_ARGS=-force)"
 	@echo "  make proto          - Generate Go and TypeScript code from proto files (via Docker)"
 	@echo "  make proto-clean    - Remove all generated proto files"
 	@echo "  make proto-lint     - Lint proto files for style and correctness (via Docker)"

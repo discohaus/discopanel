@@ -26,6 +26,7 @@ require (
 	golang.org/x/image v0.44.0
 	golang.org/x/oauth2 v0.35.0
 	golang.org/x/sync v0.22.0
+	google.golang.org/grpc v1.73.0
 	google.golang.org/protobuf v1.36.10
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
