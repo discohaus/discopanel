@@ -133,15 +133,11 @@ func parseATLInstance(data []byte) *atlInstance {
 // Loader facts an ATLauncher instance declares
 func atlEvidence(inst *atlInstance) packEvidence {
 	ev := packEvidence{}
-	if mcVersionLike(inst.ID) {
+	if minecraft.IsReleaseVersion(inst.ID) {
 		ev.mcVersion = inst.ID
 	}
 	if l := inst.Launcher.LoaderVersion; l != nil && l.Type != "" {
-		version := cleanLoaderVersion(l.Version, ev.mcVersion, l.Type)
-		ev.loaderID = strings.ToLower(l.Type) + "-" + version
-		if loader, v, ok := minecraft.CutPackLoaderID(ev.loaderID); ok {
-			ev.loader, ev.loaderVersion = loader, v
-		}
+		return loaderEvidence(l.Type, l.Version, ev.mcVersion)
 	}
 	return ev
 }
@@ -192,19 +188,14 @@ func readFTBServerManifest(reader *zip.Reader) (*ftbServerManifest, string) {
 
 // Loader facts an FTB server manifest declares
 func ftbServerManifestEvidence(m *ftbServerManifest) packEvidence {
-	ev := packEvidence{}
 	if m.ModPackTargets == nil {
-		return ev
+		return packEvidence{}
 	}
-	ev.mcVersion = m.ModPackTargets.McVersion
+	mc := m.ModPackTargets.McVersion
 	if name := m.ModPackTargets.ModLoader.Name; name != "" {
-		version := cleanLoaderVersion(m.ModPackTargets.ModLoader.Version, ev.mcVersion, name)
-		ev.loaderID = strings.ToLower(name) + "-" + version
-		if loader, v, ok := minecraft.CutPackLoaderID(ev.loaderID); ok {
-			ev.loader, ev.loaderVersion = loader, v
-		}
+		return loaderEvidence(name, m.ModPackTargets.ModLoader.Version, mc)
 	}
-	return ev
+	return packEvidence{mcVersion: mc}
 }
 
 // Extracts FTB server files then provisions the declared loader
@@ -213,9 +204,7 @@ func (p *Provisioner) installFromFTBServerManifest(ctx context.Context, server *
 	if err := p.extractZipFiltered(reader, prefix, server.DataPath, !opts.force, excludes, nil); err != nil {
 		return nil, err
 	}
-	ev := ftbServerManifestEvidence(manifest)
-	p.adoptMCVersion(ctx, server, ev.mcVersion)
-	return p.installPackRuntime(ctx, server, cfg, ev)
+	return p.installPackRuntime(ctx, server, cfg, ftbServerManifestEvidence(manifest))
 }
 
 // Components pin loader and game versions in MultiMC packs
@@ -249,22 +238,18 @@ func readMMCPack(reader *zip.Reader) (*mmcPack, string) {
 
 // Loader facts MultiMC components declare
 func mmcEvidence(pack *mmcPack) packEvidence {
-	ev := packEvidence{}
+	mc, loader, version := "", v1.ModLoader_MOD_LOADER_UNSPECIFIED, ""
 	for _, c := range pack.Components {
 		if c.UID == "net.minecraft" {
-			ev.mcVersion = c.Version
-			continue
-		}
-		if loader, ok := mmcComponentLoaders[c.UID]; ok {
-			ev.loader = loader
-			ev.loaderVersion = c.Version
+			mc = c.Version
+		} else if l, ok := mmcComponentLoaders[c.UID]; ok {
+			loader, version = l, c.Version
 		}
 	}
-	if ev.loader != v1.ModLoader_MOD_LOADER_UNSPECIFIED {
-		ev.loaderVersion = cleanLoaderVersion(ev.loaderVersion, ev.mcVersion, "")
-		ev.loaderID = protometa.Name(ev.loader) + "-" + ev.loaderVersion
+	if loader == v1.ModLoader_MOD_LOADER_UNSPECIFIED {
+		return packEvidence{mcVersion: mc}
 	}
-	return ev
+	return loaderEvidence(protometa.Name(loader), version, mc)
 }
 
 // Reads the instance display name from instance.cfg
@@ -327,13 +312,7 @@ func readGDLConfig(reader *zip.Reader) (*gdlConfig, string) {
 
 // Loader facts a GDLauncher config declares
 func gdlEvidence(gdl *gdlConfig) packEvidence {
-	ev := packEvidence{mcVersion: gdl.Loader.McVersion}
-	version := cleanLoaderVersion(gdl.Loader.LoaderVersion, ev.mcVersion, gdl.Loader.LoaderType)
-	ev.loaderID = strings.ToLower(gdl.Loader.LoaderType) + "-" + version
-	if loader, v, ok := minecraft.CutPackLoaderID(ev.loaderID); ok {
-		ev.loader, ev.loaderVersion = loader, v
-	}
-	return ev
+	return loaderEvidence(gdl.Loader.LoaderType, gdl.Loader.LoaderVersion, gdl.Loader.McVersion)
 }
 
 // Reports whether the zip carries a Technic pack layout
@@ -381,17 +360,11 @@ func technicEvidence(dataPath string) packEvidence {
 				continue
 			}
 			// Versions read mc dash forge with optional suffix
-			mc, forgeVersion, ok := strings.Cut(version, "-")
-			if !ok || !mcVersionLike(mc) {
+			mc, forgeVersion := splitMCPrefix(version)
+			if mc == "" {
 				continue
 			}
-			forgeVersion = strings.TrimSuffix(forgeVersion, "-"+mc)
-			return packEvidence{
-				loaderID:      "forge-" + forgeVersion,
-				loader:        v1.ModLoader_MOD_LOADER_FORGE,
-				loaderVersion: forgeVersion,
-				mcVersion:     mc,
-			}
+			return loaderEvidence("forge", strings.TrimSuffix(forgeVersion, "-"+mc), mc)
 		}
 	}
 	return packEvidence{}

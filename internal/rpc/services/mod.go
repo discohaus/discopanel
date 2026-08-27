@@ -24,7 +24,6 @@ import (
 	"github.com/discohaus/discopanel/pkg/transfer"
 	utils "github.com/discohaus/discopanel/pkg/utils"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"gorm.io/gorm"
 )
 
 // Compile-time check that ModService implements the interface
@@ -451,27 +450,13 @@ func (s *ModService) UpdateMod(ctx context.Context, req *connect.Request[v1.Upda
 
 	// Row stores the choice, automated passes obey it
 	if toggled {
-		if err := s.saveModChoice(ctx, mod); err != nil {
+		if err := s.store.SaveModChoice(ctx, mod); err != nil {
 			s.log.Error("Failed to save mod choice for %s: %v", modFileName, err)
 			return nil, connect.NewError(connect.CodeInternal, errors.New("mod toggled but saving the choice failed"))
 		}
 	}
 
 	return connect.NewResponse(&v1.UpdateModResponse{Mod: mod}), nil
-}
-
-// Upserts the row holding one user toggle
-func (s *ModService) saveModChoice(ctx context.Context, mod *v1.Mod) error {
-	// Map update dodges the gorm bool default skip
-	fields := map[string]any{"enabled": mod.Enabled}
-	err := s.store.UpdateModFields(ctx, mod.Id, fields)
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return err
-	}
-	if err := s.store.CreateMod(ctx, mod); err != nil {
-		return err
-	}
-	return s.store.UpdateModFields(ctx, mod.Id, fields)
 }
 
 // DeleteMod deletes a mod

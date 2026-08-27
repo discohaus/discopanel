@@ -179,10 +179,7 @@ func (p *Provisioner) installFTBPack(ctx context.Context, server *v1.Server, cfg
 
 	p.disableClientOnlyMods(ctx, server, forceIncludes, packFlagged)
 
-	// Adopted pack version keeps the server row coherent
-	ev := ftbEvidence(&manifest)
-	p.adoptMCVersion(ctx, server, ev.mcVersion)
-	return p.installPackRuntime(ctx, server, cfg, ev)
+	return p.installPackRuntime(ctx, server, cfg, ftbEvidence(&manifest))
 }
 
 // Tries the primary url then mirrors until one lands
@@ -205,20 +202,19 @@ func (p *Provisioner) downloadFTBFile(ctx context.Context, file *ftbFile, dest s
 
 // Loader facts an FTB manifest declares
 func ftbEvidence(manifest *ftbVersionManifest) packEvidence {
-	ev := packEvidence{}
+	mc, name, version := "", "", ""
 	for _, t := range manifest.Targets {
 		switch t.Type {
 		case "game":
-			ev.mcVersion = t.Version
+			mc = t.Version
 		case "modloader":
-			ev.loaderID = t.Name + "-" + t.Version
+			name, version = t.Name, t.Version
 		}
 	}
-	if loader, version, ok := minecraft.CutPackLoaderID(ev.loaderID); ok {
-		ev.loader = loader
-		ev.loaderVersion = version
+	if name == "" {
+		return packEvidence{mcVersion: mc}
 	}
-	return ev
+	return loaderEvidence(name, version, mc)
 }
 
 // Applies FTB side flags plus user include exclude rules

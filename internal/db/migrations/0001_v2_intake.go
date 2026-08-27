@@ -116,6 +116,9 @@ func init() {
 			migrate.CreateTable{Table: target.Table("server_actions")},
 			migrate.CreateTable{Table: target.Table("metrics_samples")},
 			migrate.CreateTable{Table: target.Table("finding_dismissals")},
+
+			// Lived in databases carry older era leftovers, settle them last
+			conformToTarget(target),
 		},
 	})
 }

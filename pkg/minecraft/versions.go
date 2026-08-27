@@ -270,21 +270,34 @@ func SupportsManagementProtocol(mcVersion string) bool {
 	return CompareGameVersions(mcVersion, managementProtocolRelease) >= 0
 }
 
+// Reports whether a version reads as a numeric release
+func IsReleaseVersion(v string) bool {
+	parts := strings.Split(strings.TrimSpace(v), ".")
+	if len(parts) < 2 || len(parts) > 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || strings.Trim(part, "0123456789") != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// Picks the highest release version, list order lies
 func FindMostRecentMinecraftVersion(versions []string) string {
-	for i := len(versions) - 1; i >= 0; i-- {
-		hasLetter := false
-		for _, ch := range versions[i] {
-			if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
-				hasLetter = true
-				break
-			}
+	best := ""
+	for _, v := range versions {
+		if !IsReleaseVersion(v) {
+			continue
 		}
-		if !hasLetter {
-			return versions[i]
+		if best == "" || CompareGameVersions(v, best) > 0 {
+			best = v
 		}
 	}
-	if len(versions) > 0 {
-		return versions[len(versions)-1] // Return last because we don't have a choice now
+	// No release at all, the last entry beats nothing
+	if best == "" && len(versions) > 0 {
+		return versions[len(versions)-1]
 	}
-	return ""
+	return best
 }

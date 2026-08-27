@@ -46,30 +46,69 @@ func TestDialectFacets(t *testing.T) {
 	}
 }
 
-func TestInferDialect(t *testing.T) {
-	fabricOnly := ModJarMeta{FileName: "a.jar", Mods: []ModInfo{{ID: "a", Dialect: "fabric"}}}
-	forgeOnly := ModJarMeta{FileName: "b.jar", Mods: []ModInfo{{ID: "b", Dialect: "forge"}}}
-	dual := ModJarMeta{FileName: "c.jar", Mods: []ModInfo{
-		{ID: "c", Dialect: "forge"}, {ID: "c", Dialect: "neoforge"},
-	}}
-	neoOnly := ModJarMeta{FileName: "d.jar", Mods: []ModInfo{{ID: "d", Dialect: "neoforge"}}}
+func TestInferLoader(t *testing.T) {
+	jar := func(name string, dialects ...string) ModJarMeta {
+		m := ModJarMeta{FileName: name + ".jar"}
+		for _, d := range dialects {
+			m.Mods = append(m.Mods, ModInfo{ID: name, Declared: true, Dialect: d})
+		}
+		return m
+	}
+	fabricOnly := jar("a", "fabric")
+	forgeOnly := jar("b", "forge")
+	dual := jar("c", "forge", "neoforge")
+	neoOnly := jar("d", "neoforge")
+	quiltOnly := jar("e", "quilt")
+	dualQuilt := jar("f", "fabric", "quilt")
+	nested := jar("g", "neoforge")
+	nested.Mods = append(nested.Mods, ModInfo{ID: "lib", Dialect: "forge"})
 
 	cases := []struct {
 		name  string
 		metas []ModJarMeta
-		want  string
+		want  v1.ModLoader
 	}{
-		{"empty", nil, ""},
-		{"exclusive fabric", []ModJarMeta{fabricOnly}, "fabric"},
-		{"exclusive neoforge beats dual", []ModJarMeta{dual, neoOnly}, "neoforge"},
-		{"dual jars settle on family base", []ModJarMeta{dual}, "forge"},
-		{"mixed families stay unknown", []ModJarMeta{fabricOnly, forgeOnly}, ""},
-		{"split exclusives settle on family", []ModJarMeta{forgeOnly, neoOnly}, "forge"},
+		{"empty", nil, v1.ModLoader_MOD_LOADER_UNSPECIFIED},
+		{"exclusive fabric", []ModJarMeta{fabricOnly}, v1.ModLoader_MOD_LOADER_FABRIC},
+		{"exclusive neoforge beats dual", []ModJarMeta{dual, neoOnly}, v1.ModLoader_MOD_LOADER_NEOFORGE},
+		{"dual jars settle on family base", []ModJarMeta{dual}, v1.ModLoader_MOD_LOADER_FORGE},
+		{"mixed families stay unknown", []ModJarMeta{fabricOnly, forgeOnly}, v1.ModLoader_MOD_LOADER_UNSPECIFIED},
+		{"split exclusives need the covering loader", []ModJarMeta{forgeOnly, neoOnly}, v1.ModLoader_MOD_LOADER_NEOFORGE},
+		{"dual quilt jars stay fabric", []ModJarMeta{fabricOnly, dualQuilt}, v1.ModLoader_MOD_LOADER_FABRIC},
+		{"quilt only jar forces quilt", []ModJarMeta{fabricOnly, dualQuilt, quiltOnly}, v1.ModLoader_MOD_LOADER_QUILT},
+		{"nested manifests never vote", []ModJarMeta{nested}, v1.ModLoader_MOD_LOADER_NEOFORGE},
 	}
 	for _, tc := range cases {
-		if got := inferDialect(tc.metas); got != tc.want {
-			t.Errorf("%s: inferDialect = %q, want %q", tc.name, got, tc.want)
+		got := v1.ModLoader_MOD_LOADER_UNSPECIFIED
+		if row := inferLoader(tc.metas); row != nil {
+			got = row.Loader()
 		}
+		if got != tc.want {
+			t.Errorf("%s: inferLoader = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestInferModsLoader(t *testing.T) {
+	mods := t.TempDir()
+	if got := InferModsLoader(mods); got != v1.ModLoader_MOD_LOADER_UNSPECIFIED {
+		t.Fatalf("empty dir must stay unknown, got %v", got)
+	}
+	writeTestJar(t, mods, "plain.jar", map[string]string{
+		"fabric.mod.json": `{"id":"plain","version":"1.0"}`,
+	})
+	writeTestJar(t, mods, "dual.jar", map[string]string{
+		"fabric.mod.json": `{"id":"dual","version":"1.0"}`,
+		"quilt.mod.json":  `{"quilt_loader":{"id":"dual","version":"1.0"}}`,
+	})
+	if got := InferModsLoader(mods); got != v1.ModLoader_MOD_LOADER_FABRIC {
+		t.Fatalf("dual jars must not force quilt, got %v", got)
+	}
+	writeTestJar(t, mods, "quiltish.jar", map[string]string{
+		"quilt.mod.json": `{"quilt_loader":{"id":"quiltish","version":"1.0"}}`,
+	})
+	if got := InferModsLoader(mods); got != v1.ModLoader_MOD_LOADER_QUILT {
+		t.Fatalf("quilt only jar must force quilt, got %v", got)
 	}
 }
 

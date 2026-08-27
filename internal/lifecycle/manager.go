@@ -447,15 +447,10 @@ func (m *Manager) stop(ctx context.Context, serverID string) error {
 	}
 
 	serverCfg, _ := m.store.GetServerProperties(ctx, serverID)
-	stopDuration := docker.DefaultStopTimeoutSeconds
+	stopDuration := docker.StopTimeoutFor(serverCfg)
 	announceDelay := 0
-	if serverCfg != nil {
-		if serverCfg.StopDuration != nil && *serverCfg.StopDuration > 0 {
-			stopDuration = int(*serverCfg.StopDuration)
-		}
-		if serverCfg.StopServerAnnounceDelay != nil {
-			announceDelay = int(min(*serverCfg.StopServerAnnounceDelay, 300))
-		}
+	if serverCfg != nil && serverCfg.StopServerAnnounceDelay != nil {
+		announceDelay = int(min(*serverCfg.StopServerAnnounceDelay, 300))
 	}
 
 	// Paused container cannot process signals, resume it first
@@ -580,7 +575,7 @@ func (m *Manager) pause(ctx context.Context, serverID string) error {
 	if err := m.docker.PauseContainer(ctx, server.ContainerId); err != nil {
 		return fmt.Errorf("failed to pause container: %w", err)
 	}
-	m.markPaused(server.Id)
+	m.touchIdle(server.Id)
 	m.setPaused(server.Id, true)
 	m.setStatus(ctx, server, v1.ServerStatus_SERVER_STATUS_PAUSED)
 	m.rec.Announce(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_SERVER_PAUSE, nil, "paused the idle server")

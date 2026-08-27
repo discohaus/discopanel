@@ -82,6 +82,30 @@ func TestDisableClientOnlyMods(t *testing.T) {
 	}
 }
 
+func TestKnownClientMod(t *testing.T) {
+	cases := map[string]bool{
+		"oculus-mc1.20.1-1.7.0.jar":                    true,
+		"Entity_Model_Features_forge_1.20.1-2.2.6.jar": true,
+		"skinlayers3d-forge-1.6.5.jar":                 true,
+		"AmbientSounds_FORGE_v6.0.1_mc1.20.1.jar":      true,
+		"sodium-fabric-0.5.8+mc1.20.4.jar":             true,
+		"blur-forge-1.20.1-3.1.0.jar":                  true,
+		"sodiumdynamiclights-forge-1.0.jar":            true,
+		"melody_forge-1.0.jar":                         true,
+		"fastquit-forge":                               true,
+		"entity-texture-features-fabric":               true,
+		"create-1.20.1-0.5.1.jar":                      false,
+		"lithium-fabric-0.11.jar":                      false,
+		"melodious-1.0.jar":                            false,
+		"jei":                                          false,
+	}
+	for name, want := range cases {
+		if got := knownClientMod(name); got != want {
+			t.Errorf("knownClientMod(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 func TestPackDownloadFlagsKnownClientMods(t *testing.T) {
 	slugged := &fuego.File{FileName: "some-shaders-1.0.jar", GameVersions: []string{"Client", "Server"}}
 	if wanted, flag := cfFileWanted(slugged, &fuego.Modpack{Slug: "oculus"}, 42, nil, nil); !wanted || flag == "" {
@@ -182,12 +206,10 @@ func TestSweepRespectsUserModChoices(t *testing.T) {
 		{Id: "m1", ServerId: "srv1", FileName: "clientmod.jar", DisplayName: "clientmod", Enabled: true},
 		{Id: "m2", ServerId: "srv1", FileName: "unwanted.jar", DisplayName: "unwanted", Enabled: false},
 	}
-	if err := store.CreateMod(ctx, rows...); err != nil {
-		t.Fatalf("mod rows failed %v", err)
-	}
-	// Map update dodges the gorm bool default skip
-	if err := store.UpdateModFields(ctx, "m2", map[string]any{"enabled": false}); err != nil {
-		t.Fatalf("mod row patch failed %v", err)
+	for _, row := range rows {
+		if err := store.SaveModChoice(ctx, row); err != nil {
+			t.Fatalf("mod choice save failed %v", err)
+		}
 	}
 
 	p := &Provisioner{log: logger.New(), store: store}
@@ -201,6 +223,15 @@ func TestSweepRespectsUserModChoices(t *testing.T) {
 	}
 	if !fileExists(filepath.Join(modsDir+"_disabled", "unwanted.jar")) {
 		t.Fatal("user disabled jar must land in the disabled dir")
+	}
+
+	// Saving again flips the stored choice in place
+	rows[1].Enabled = true
+	if err := store.SaveModChoice(ctx, rows[1]); err != nil {
+		t.Fatalf("mod choice resave failed %v", err)
+	}
+	if choices := p.userModChoices(ctx, "srv1"); len(choices) != 2 || !choices["unwanted.jar"] || !choices["clientmod.jar"] {
+		t.Fatalf("resave must update the row, got %v", choices)
 	}
 }
 
@@ -427,5 +458,96 @@ func TestServerPackMCVersionEvidence(t *testing.T) {
 	writeVersionJar(t, filepath.Join(dataPath, "forge.jar"), `{"id":"1.12.2-forge1.12.2-14.23.5.2860","inheritsFrom":"1.12.2"}`)
 	if v := jarMCVersion(filepath.Join(dataPath, "forge.jar")); v != "" {
 		t.Fatalf("forge profile must not testify, got %q", v)
+	}
+}
+
+func TestScriptVarIgnoresEchoedReferences(t *testing.T) {
+	startSH := "#!/usr/bin/env bash\n" +
+		"echo \"PREVIOUS_MINECRAFT_VERSION=${MINECRAFT_VERSION}\" >\"./.previousrun\"\n" +
+		"echo \"PREVIOUS_MODLOADER=${MODLOADER}\" >>\"./.previousrun\"\n" +
+		"echo \"PREVIOUS_MODLOADER_VERSION=${MODLOADER_VERSION}\" >>\"./.previousrun\"\n" +
+		"case ${MODLOADER} in\nesac\n"
+	if got := scriptVar(startSH, "MODLOADER"); got != "" {
+		t.Fatalf("echoed reference parsed as value %q", got)
+	}
+	if ev := scriptEvidence(startSH, ""); ev.loaderID != "" {
+		t.Fatalf("start script without pins gave evidence %q", ev.loaderID)
+	}
+
+	vars := "MINECRAFT_VERSION=1.20.1\nMODLOADER=Fabric\nMODLOADER_VERSION=0.19.3\n"
+	ev := scriptEvidence(vars, "")
+	if ev.loader != v1.ModLoader_MOD_LOADER_FABRIC || ev.loaderVersion != "0.19.3" || ev.mcVersion != "1.20.1" {
+		t.Fatalf("variables evidence wrong %+v", ev)
+	}
+
+	// Start script reads first yet must not shadow variables.txt
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "start.sh"), []byte(startSH), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "variables.txt"), []byte(vars), 0644); err != nil {
+		t.Fatal(err)
+	}
+	sev := scriptPackEvidence(dir, "")
+	if sev.loader != v1.ModLoader_MOD_LOADER_FABRIC || sev.mcVersion != "1.20.1" {
+		t.Fatalf("pack evidence wrong %+v", sev)
+	}
+}
+
+func TestDetectPackLaunchOrder(t *testing.T) {
+	dataPath := t.TempDir()
+	touch := func(rel string) {
+		t.Helper()
+		full := filepath.Join(dataPath, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pack := v1.ModLoader_MOD_LOADER_MODRINTH
+	if spec := detectPackLaunch(dataPath, pack); spec != nil {
+		t.Fatalf("empty dir must not launch, got %+v", spec)
+	}
+
+	// Lone root jar is the server when nothing else testifies
+	touch("minecraft_server.1.12.2.jar")
+	if spec := detectPackLaunch(dataPath, pack); spec == nil || spec.Jar != "minecraft_server.1.12.2.jar" {
+		t.Fatalf("lone jar must launch, got %+v", spec)
+	}
+
+	// Loader named jars outrank other root jars, installers never count
+	touch("forge-1.12.2-14.23.5.2860-installer.jar")
+	touch("forge-1.12.2-14.23.5.2860-universal.jar")
+	if spec := detectPackLaunch(dataPath, pack); spec == nil || spec.Jar != "forge-1.12.2-14.23.5.2860-universal.jar" {
+		t.Fatalf("legacy forge jar must launch, got %+v", spec)
+	}
+
+	// Registry markers beat root loader jars
+	args := "libraries/net/minecraftforge/forge/1.20.1-47.2.20/unix_args.txt"
+	touch(args)
+	if spec := detectPackLaunch(dataPath, pack); spec == nil || spec.Kind != v1.LaunchKind_LAUNCH_KIND_ARGS_FILE || spec.ArgsFile != args {
+		t.Fatalf("forge args file must launch, got %+v", spec)
+	}
+
+	// The declared loader claims its own jar over bundled trees
+	touch("mohist-1.20.1-500-server.jar")
+	if spec := detectPackLaunch(dataPath, v1.ModLoader_MOD_LOADER_MOHIST); spec == nil || spec.Jar != "mohist-1.20.1-500-server.jar" {
+		t.Fatalf("declared hybrid must launch its jar, got %+v", spec)
+	}
+	if spec := detectPackLaunch(dataPath, pack); spec == nil || spec.Kind != v1.LaunchKind_LAUNCH_KIND_ARGS_FILE {
+		t.Fatalf("pack platforms must still prefer the tree, got %+v", spec)
+	}
+
+	// Launch jar markers win over a plain server jar
+	fabric := t.TempDir()
+	for _, name := range []string{"fabric-server-launch.jar", "server.jar"} {
+		if err := os.WriteFile(filepath.Join(fabric, name), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if spec := detectPackLaunch(fabric, pack); spec == nil || spec.Jar != "fabric-server-launch.jar" {
+		t.Fatalf("fabric launch jar must win, got %+v", spec)
 	}
 }

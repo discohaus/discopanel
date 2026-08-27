@@ -252,33 +252,46 @@ func (p *Provisioner) fetchChecksumSidecar(ctx context.Context, artifactURL, alg
 
 // Locates the launch entry produced by a Forge installer
 func detectForgeLaunch(dataPath, vendorPath, version string) (*v1.LaunchSpec, error) {
-	pattern := filepath.Join(dataPath, "libraries", "net", filepath.FromSlash(vendorPath), "*", "unix_args.txt")
-	if matches, err := filepath.Glob(pattern); err == nil && len(matches) > 0 {
-		rel, err := filepath.Rel(dataPath, pickForgeArgs(matches, version))
-		if err == nil {
-			return &v1.LaunchSpec{
-				Kind:     v1.LaunchKind_LAUNCH_KIND_ARGS_FILE,
-				ArgsFile: filepath.ToSlash(rel),
-			}, nil
+	if spec := argsFileLaunch(dataPath, filepath.Join("libraries", "net", filepath.FromSlash(vendorPath)), version); spec != nil {
+		return spec, nil
+	}
+	// Legacy layout is a runnable forge jar in root
+	for _, name := range []string{"forge", "neoforge"} {
+		if jar := rootLoaderJar(dataPath, name); jar != "" {
+			return jarLaunch(jar), nil
 		}
 	}
+	return nil, fmt.Errorf("installer completed but no launchable server was found (expected libraries/net/%s/*/unix_args.txt or a forge server jar)", vendorPath)
+}
 
-	// Legacy layout is a runnable forge jar in root
-	for _, glob := range []string{"forge-*-universal.jar", "forge-*.jar", "neoforge-*-universal.jar"} {
-		matches, err := filepath.Glob(filepath.Join(dataPath, glob))
-		if err != nil {
+// Newest unix_args.txt below an artifact dir, pinned version first
+func argsFileLaunch(dataPath, artifactDir, version string) *v1.LaunchSpec {
+	matches, err := filepath.Glob(filepath.Join(dataPath, artifactDir, "*", "unix_args.txt"))
+	if err != nil || len(matches) == 0 {
+		return nil
+	}
+	rel, err := filepath.Rel(dataPath, pickForgeArgs(matches, version))
+	if err != nil {
+		return nil
+	}
+	return &v1.LaunchSpec{Kind: v1.LaunchKind_LAUNCH_KIND_ARGS_FILE, ArgsFile: filepath.ToSlash(rel)}
+}
+
+// Root jar named after a loader, universal builds preferred
+func rootLoaderJar(dataPath, loaderName string) string {
+	matches, _ := filepath.Glob(filepath.Join(dataPath, loaderName+"-*.jar"))
+	jar := ""
+	for _, m := range matches {
+		name := filepath.Base(m)
+		lower := strings.ToLower(name)
+		if strings.Contains(lower, "installer") {
 			continue
 		}
-		for _, m := range matches {
-			name := filepath.Base(m)
-			if strings.Contains(name, "installer") {
-				continue
-			}
-			return &v1.LaunchSpec{Kind: v1.LaunchKind_LAUNCH_KIND_JAR, Jar: name}, nil
+		if jar == "" || strings.Contains(lower, "universal") {
+			jar = name
 		}
 	}
-
-	return nil, fmt.Errorf("installer completed but no launchable server was found (expected libraries/net/%s/*/unix_args.txt or a forge server jar)", vendorPath)
+	return jar
 }
 
 // Prefers the requested version, else the newest install

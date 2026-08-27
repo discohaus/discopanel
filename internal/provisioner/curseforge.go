@@ -13,7 +13,6 @@ import (
 	"sync/atomic"
 
 	"github.com/discohaus/discopanel/pkg/indexers/fuego"
-	"github.com/discohaus/discopanel/pkg/minecraft"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"golang.org/x/sync/errgroup"
 )
@@ -233,11 +232,7 @@ func cfManifestEvidence(manifest *cfManifest) packEvidence {
 			loaderID = ml.ID
 		}
 	}
-	ev := packEvidence{loaderID: loaderID, mcVersion: manifest.Minecraft.Version}
-	if loader, version, ok := minecraft.CutPackLoaderID(loaderID); ok {
-		ev.loader, ev.loaderVersion = loader, version
-	}
-	return ev
+	return loaderIDEvidence(loaderID, manifest.Minecraft.Version)
 }
 
 // Performs manifest driven install of overrides, mods, and loader
@@ -391,7 +386,7 @@ func cfFileWanted(file *fuego.File, mod *fuego.Modpack, projectID int, excludes,
 	}
 
 	// Known client mods flag even without API environment flags
-	if defaultClientSlug(slug) || defaultClientFile(fileName) {
+	if knownClientMod(slug) || knownClientMod(fileName) {
 		return true, "known client-only mod"
 	}
 

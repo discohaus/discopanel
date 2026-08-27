@@ -160,6 +160,7 @@ proto-lint:
 	@echo "Proto linting complete!"
 
 gen: proto-clean proto
+	go generate ./...
 
 proto-format:
 	@echo "Formatting proto files (using Docker)..."

@@ -55,7 +55,6 @@ func ssEvidence(ssc *serverStarterConfig) packEvidence {
 	if version == "" {
 		version = ssc.Install.ForgeVersion
 	}
-	version = cleanLoaderVersion(version, ev.mcVersion, "")
 
 	// The installer url names the loader family
 	loader := v1.ModLoader_MOD_LOADER_UNSPECIFIED
@@ -72,12 +71,10 @@ func ssEvidence(ssc *serverStarterConfig) packEvidence {
 	case ssc.Install.ForgeVersion != "":
 		loader = v1.ModLoader_MOD_LOADER_FORGE
 	}
-	if loader != v1.ModLoader_MOD_LOADER_UNSPECIFIED {
-		ev.loader = loader
-		ev.loaderVersion = version
-		ev.loaderID = protometa.Name(loader) + "-" + version
+	if loader == v1.ModLoader_MOD_LOADER_UNSPECIFIED {
+		return ev
 	}
-	return ev
+	return loaderEvidence(protometa.Name(loader), version, ev.mcVersion)
 }
 
 // Extracts server files, installs the referenced pack, then the loader

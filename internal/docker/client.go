@@ -44,6 +44,14 @@ const (
 	DefaultStopTimeoutSeconds = 60
 )
 
+// Seconds a graceful stop may take, configured or default
+func StopTimeoutFor(cfg *v1.ServerProperties) int {
+	if cfg != nil && cfg.StopDuration != nil && *cfg.StopDuration > 0 {
+		return int(*cfg.StopDuration)
+	}
+	return DefaultStopTimeoutSeconds
+}
+
 type ContainerStats struct {
 	CpuPercent  float64 `json:"cpu_percent"`
 	CpuCount    int     `json:"cpu_count"`
@@ -307,10 +315,7 @@ func (c *Client) CreateContainer(ctx context.Context, server *v1.Server, serverC
 	}
 
 	// Docker initiated stops honor the configured save budget
-	stopTimeout := DefaultStopTimeoutSeconds
-	if serverConfig.StopDuration != nil && *serverConfig.StopDuration > 0 {
-		stopTimeout = int(*serverConfig.StopDuration)
-	}
+	stopTimeout := StopTimeoutFor(serverConfig)
 
 	config := &container.Config{
 		Image: imageName,

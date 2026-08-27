@@ -53,6 +53,29 @@ type packEvidence struct {
 	mcVersion     string
 }
 
+// Evidence from a manifest loader id like forge-47.2.0
+func loaderIDEvidence(loaderID, mcVersion string) packEvidence {
+	ev := packEvidence{loaderID: loaderID, mcVersion: mcVersion}
+	if loader, version, ok := minecraft.CutPackLoaderID(loaderID); ok {
+		ev.loader, ev.loaderVersion = loader, version
+	}
+	return ev
+}
+
+// Evidence from a loader name and version pin, prefixes stripped
+func loaderEvidence(name, version, mcVersion string) packEvidence {
+	name = strings.ToLower(name)
+	return loaderIDEvidence(name+"-"+cleanLoaderVersion(version, mcVersion, name), mcVersion)
+}
+
+// Splits an mc prefix off pins like 1.20.1-47.2.0
+func splitMCPrefix(version string) (string, string) {
+	if mc, rest, ok := strings.Cut(version, "-"); ok && minecraft.IsReleaseVersion(mc) {
+		return mc, rest
+	}
+	return "", version
+}
+
 // Install options threaded through pack format handlers
 type packInstallOpts struct {
 	force    bool
@@ -179,15 +202,13 @@ func resolveZipPayload(p *Provisioner, ctx context.Context, server *v1.Server, c
 
 // Provisions the runtime, declared loader first then disk evidence
 func (p *Provisioner) installPackRuntime(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, ev packEvidence) (*Result, error) {
-	mcVersion := ev.mcVersion
-	if mcVersion == "" {
-		mcVersion = server.McVersion
-	}
+	// Pack MC evidence beats the configured guess from here on
+	p.adoptMCVersion(ctx, server, ev.mcVersion)
 
 	// Declared loader installs natively when supported
 	if ev.loader != v1.ModLoader_MOD_LOADER_UNSPECIFIED {
 		if _, ok := packLoaderInstallers[ev.loader]; ok {
-			return p.installLoaderForPack(ctx, server, cfg, ev.loader, ev.loaderVersion, mcVersion)
+			return p.installLoaderForPack(ctx, server, cfg, ev.loader, ev.loaderVersion)
 		}
 		p.progress(server, "pack declares loader %s with no native installer, checking shipped server files...", ev.loaderID)
 	}
@@ -199,7 +220,7 @@ func (p *Provisioner) installPackRuntime(ctx context.Context, server *v1.Server,
 	}
 
 	// Pack may ship its runtime ready to launch
-	if spec := detectPackLaunch(server.DataPath); spec != nil {
+	if spec := detectPackLaunch(server.DataPath, server.ModLoader); spec != nil {
 		p.adoptServerPackVersion(ctx, server, spec)
 		return p.finishLaunch(server, spec, server.ModLoader, ev.loaderVersion, server.McVersion)
 	}
@@ -211,31 +232,27 @@ func (p *Provisioner) installPackRuntime(ctx context.Context, server *v1.Server,
 		if err := p.runInstallerContainer(ctx, server, cfg, cmd); err != nil {
 			return nil, fmt.Errorf("bundled installer failed: %w", err)
 		}
-		if spec := detectPackLaunch(server.DataPath); spec != nil {
+		if spec := detectPackLaunch(server.DataPath, server.ModLoader); spec != nil {
 			p.adoptServerPackVersion(ctx, server, spec)
 			return p.finishLaunch(server, spec, server.ModLoader, ev.loaderVersion, server.McVersion)
 		}
 	}
 
 	// Start scripts and vars files often pin a loader
-	if sev := scriptPackEvidence(server.DataPath, mcVersion); sev.loader != v1.ModLoader_MOD_LOADER_UNSPECIFIED {
+	if sev := scriptPackEvidence(server.DataPath, server.McVersion); sev.loader != v1.ModLoader_MOD_LOADER_UNSPECIFIED {
 		if _, ok := packLoaderInstallers[sev.loader]; ok {
-			mc := sev.mcVersion
-			if mc == "" {
-				mc = mcVersion
-			}
+			p.adoptMCVersion(ctx, server, sev.mcVersion)
 			p.progress(server, "pack scripts pin %s %s, installing...", protometa.Name(sev.loader), sev.loaderVersion)
-			return p.installLoaderForPack(ctx, server, cfg, sev.loader, sev.loaderVersion, mc)
+			return p.installLoaderForPack(ctx, server, cfg, sev.loader, sev.loaderVersion)
 		}
 	}
 
 	// Mod jars themselves testify a loader family last
 	if ev.loaderID == "" {
-		if loader := dialectLoaderFromMods(server.DataPath, server.ModLoader); loader != v1.ModLoader_MOD_LOADER_UNSPECIFIED {
-			if _, ok := packLoaderInstallers[loader]; ok {
-				p.progress(server, "mods declare %s, installing the latest for MC %s...", protometa.Name(loader), mcVersion)
-				return p.installLoaderForPack(ctx, server, cfg, loader, "", mcVersion)
-			}
+		loader := minecraft.InferModsLoader(minecraft.GetModsPath(server.DataPath, server.ModLoader))
+		if _, ok := packLoaderInstallers[loader]; ok {
+			p.progress(server, "mods declare %s, installing the latest for MC %s...", protometa.Name(loader), server.McVersion)
+			return p.installLoaderForPack(ctx, server, cfg, loader, "")
 		}
 	}
 
@@ -245,57 +262,52 @@ func (p *Provisioner) installPackRuntime(ctx context.Context, server *v1.Server,
 	return nil, errNoLaunchTarget
 }
 
-// Loader family the installed mod jars declare
-func dialectLoaderFromMods(dataPath string, loader v1.ModLoader) v1.ModLoader {
-	modsDir := minecraft.GetModsPath(dataPath, loader)
-	if modsDir == "" {
-		return v1.ModLoader_MOD_LOADER_UNSPECIFIED
-	}
-	counts := map[string]int{}
-	for _, meta := range minecraft.ScanModsDir(modsDir) {
-		seen := map[string]bool{}
-		for _, m := range meta.Mods {
-			if m.Declared && m.Dialect != "" && !seen[m.Dialect] {
-				seen[m.Dialect] = true
-				counts[m.Dialect]++
-			}
-		}
-	}
-	fabricish := counts["fabric"] + counts["quilt"]
-	forgeish := counts["forge"] + counts["neoforge"]
-	switch {
-	case fabricish == 0 && forgeish == 0:
-		return v1.ModLoader_MOD_LOADER_UNSPECIFIED
-	case fabricish > forgeish:
-		// Quilt loads fabric mods, the reverse never holds
-		if counts["quilt"] > 0 {
-			return v1.ModLoader_MOD_LOADER_QUILT
-		}
-		return v1.ModLoader_MOD_LOADER_FABRIC
-	default:
-		if counts["neoforge"] > 0 {
-			return v1.ModLoader_MOD_LOADER_NEOFORGE
-		}
-		return v1.ModLoader_MOD_LOADER_FORGE
-	}
-}
-
 // Finds a launchable server the data dir already ships
-func detectPackLaunch(dataPath string) *v1.LaunchSpec {
-	for _, vendor := range []string{"minecraftforge/forge", "neoforged/neoforge", "neoforged/forge"} {
-		if spec, err := detectForgeLaunch(dataPath, vendor, ""); err == nil {
+func detectPackLaunch(dataPath string, loader v1.ModLoader) *v1.LaunchSpec {
+	// A jar named after the declared loader outranks bundled trees
+	if jar := rootLoaderJar(dataPath, protometa.Name(loader)); jar != "" {
+		return jarLaunch(jar)
+	}
+	rows := minecraft.Loaders()
+	for _, row := range rows {
+		if spec := markerLaunch(dataPath, row.Markers); spec != nil {
 			return spec
 		}
 	}
-	for _, jar := range []string{"fabric-server-launch.jar", "quilt-server-launch.jar", "server.jar"} {
-		if fileExists(filepath.Join(dataPath, jar)) {
-			return &v1.LaunchSpec{Kind: v1.LaunchKind_LAUNCH_KIND_JAR, Jar: jar}
+	for _, row := range rows {
+		if jar := rootLoaderJar(dataPath, protometa.Name(row.Loader())); jar != "" {
+			return jarLaunch(jar)
 		}
 	}
+	if fileExists(filepath.Join(dataPath, "server.jar")) {
+		return jarLaunch("server.jar")
+	}
 	if jar := loneRootJar(dataPath); jar != "" {
-		return &v1.LaunchSpec{Kind: v1.LaunchKind_LAUNCH_KIND_JAR, Jar: jar}
+		return jarLaunch(jar)
 	}
 	return nil
+}
+
+// Launch entry the registry markers of one loader point at
+func markerLaunch(dataPath string, markers []string) *v1.LaunchSpec {
+	for _, marker := range markers {
+		if strings.HasSuffix(marker, ".jar") {
+			if fileExists(filepath.Join(dataPath, filepath.FromSlash(marker))) {
+				return jarLaunch(marker)
+			}
+			continue
+		}
+		// Library markers hold artifact/version/unix_args.txt
+		if spec := argsFileLaunch(dataPath, filepath.Join(filepath.FromSlash(marker), "*"), ""); spec != nil {
+			return spec
+		}
+	}
+	return nil
+}
+
+// Launch spec for a jar relative to the data dir
+func jarLaunch(jar string) *v1.LaunchSpec {
+	return &v1.LaunchSpec{Kind: v1.LaunchKind_LAUNCH_KIND_JAR, Jar: jar}
 }
 
 // Lone non installer root jar is the server
@@ -520,30 +532,8 @@ func forgeArgsMCVersion(argsFile string) string {
 	if len(segs) < 2 {
 		return ""
 	}
-	mc, _, ok := strings.Cut(segs[len(segs)-2], "-")
-	if !ok || !mcVersionLike(mc) {
-		return ""
-	}
+	mc, _ := splitMCPrefix(segs[len(segs)-2])
 	return mc
-}
-
-// Accepts only the numeric 1.x family shape
-func mcVersionLike(v string) bool {
-	parts := strings.Split(v, ".")
-	if parts[0] != "1" || len(parts) < 2 || len(parts) > 3 {
-		return false
-	}
-	for _, part := range parts[1:] {
-		if part == "" {
-			return false
-		}
-		for _, r := range part {
-			if r < '0' || r > '9' {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 // Pack format names inspection reports
@@ -665,53 +655,52 @@ var packScriptNames = map[string]bool{
 
 // Returns the value assigned to a shell style variable
 func scriptVar(s, key string) string {
-	i := strings.Index(s, key+"=")
-	if i < 0 {
-		return ""
+	for from := 0; ; {
+		i := strings.Index(s[from:], key+"=")
+		if i < 0 {
+			return ""
+		}
+		i += from
+		from = i + len(key) + 1
+		// Longer variable names also contain the key
+		if i > 0 && isShellWordChar(s[i-1]) {
+			continue
+		}
+		rest := s[from:]
+		// Quoted assignments open with a quote
+		rest = strings.TrimLeft(rest, "\"'")
+		if end := strings.IndexAny(rest, " \t\r\n\"'"); end >= 0 {
+			rest = rest[:end]
+		}
+		val := strings.TrimSpace(rest)
+		// Unexpanded references carry no literal value
+		if val == "" || strings.HasPrefix(val, "$") {
+			continue
+		}
+		return val
 	}
-	rest := s[i+len(key)+1:]
-	// Quoted assignments open with a quote
-	rest = strings.TrimLeft(rest, "\"'")
-	if end := strings.IndexAny(rest, " \t\r\n\"'"); end >= 0 {
-		rest = rest[:end]
-	}
-	return strings.TrimSpace(rest)
+}
+
+// Reports whether a byte can appear in a variable name
+func isShellWordChar(c byte) bool {
+	return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
 // Loader pins named inside one script's content
 func scriptEvidence(content, mcHint string) packEvidence {
-	if v := scriptVar(content, "NEOFORGE_VERSION"); v != "" {
-		return packEvidence{loaderID: "neoforge-" + v, loader: v1.ModLoader_MOD_LOADER_NEOFORGE, loaderVersion: v}
-	}
-	if v := scriptVar(content, "FORGE_VERSION"); v != "" {
-		ev := packEvidence{loader: v1.ModLoader_MOD_LOADER_FORGE}
-		v = strings.TrimPrefix(v, mcHint+"-")
-		// Values may embed the mc version as a prefix
-		if mc, rest, ok := strings.Cut(v, "-"); ok && mcVersionLike(mc) {
-			ev.mcVersion, v = mc, rest
+	for _, name := range minecraft.PackLoaderNames() {
+		if v := scriptVar(content, strings.ToUpper(name)+"_VERSION"); v != "" {
+			mc, v := splitMCPrefix(cleanLoaderVersion(v, mcHint, name))
+			return loaderEvidence(name, v, mc)
 		}
-		ev.loaderID, ev.loaderVersion = "forge-"+v, v
-		return ev
 	}
 	// ServerPackCreator vars carry loader name and versions
 	if ml := scriptVar(content, "MODLOADER"); ml != "" {
-		ev := packEvidence{
-			loaderID:  strings.ToLower(ml) + "-" + scriptVar(content, "MODLOADER_VERSION"),
-			mcVersion: scriptVar(content, "MINECRAFT_VERSION"),
-		}
-		if loader, version, ok := minecraft.CutPackLoaderID(ev.loaderID); ok {
-			ev.loader, ev.loaderVersion = loader, version
-		}
-		return ev
+		return loaderEvidence(ml, scriptVar(content, "MODLOADER_VERSION"), scriptVar(content, "MINECRAFT_VERSION"))
 	}
 	// Legacy FTB settings name forge and mc directly
 	if v := scriptVar(content, "FORGEVER"); v != "" {
-		return packEvidence{
-			loaderID:      "forge-" + v,
-			loader:        v1.ModLoader_MOD_LOADER_FORGE,
-			loaderVersion: v,
-			mcVersion:     scriptVar(content, "MCVER"),
-		}
+		return loaderEvidence("forge", v, scriptVar(content, "MCVER"))
 	}
 	return packEvidence{}
 }

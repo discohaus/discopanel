@@ -237,30 +237,34 @@ func TestIdleTimeouts(t *testing.T) {
 		t.Fatalf("set value must win, got %d", got)
 	}
 
-	// Pause clock arms on first observation, counts from pause
-	if got := m.pausedFor("srv"); got != 0 {
-		t.Fatalf("first observation must arm the pause clock, got %v", got)
-	}
+	// First observation takes the seed, later seeds never move it
+	seed := time.Now().Add(-time.Minute)
 	m.idleMu.Lock()
-	m.idle["srv"].pausedAt = time.Now().Add(-time.Minute)
-	m.idle["srv"].hadPlayers = true
+	st := m.idleStateFor("srv", seed)
+	st.hadPlayers = true
+	again := m.idleStateFor("srv", time.Now())
 	m.idleMu.Unlock()
-	if got := m.pausedFor("srv"); got < time.Minute {
-		t.Fatalf("armed clock must keep counting, got %v", got)
+	if !st.lastActive.Equal(seed) || again != st {
+		t.Fatalf("state must seed once, got %v and same=%v", st.lastActive, again == st)
 	}
-	// Fresh pause restarts the clock, keeps player history
-	m.markPaused("srv")
-	if got := m.pausedFor("srv"); got > time.Second {
-		t.Fatalf("fresh pause must restart the clock, got %v", got)
+	// Touch restarts the clock, keeps player history
+	m.touchIdle("srv")
+	m.idleMu.Lock()
+	restarted := *m.idle["srv"]
+	m.idleMu.Unlock()
+	if time.Since(restarted.lastActive) > time.Second || !restarted.hadPlayers {
+		t.Fatalf("touch must restart the clock and keep history, got %+v", restarted)
 	}
 
 	cfg := &v1.ServerProperties{}
-	if got := m.idleTimeout(cfg, "srv"); got != 3600*time.Second {
-		t.Fatalf("tracked players must pick established, got %v", got)
+	if got := m.autostopTimeout(cfg, true); got != 3600*time.Second {
+		t.Fatalf("seen players must pick established autostop, got %v", got)
 	}
-	m.resetIdle("srv")
-	if got := m.idleTimeout(cfg, "srv"); got != 1800*time.Second {
-		t.Fatalf("reset state must fall back to initial, got %v", got)
+	if got := m.autostopTimeout(cfg, false); got != 1800*time.Second {
+		t.Fatalf("no players must pick initial autostop, got %v", got)
+	}
+	if got := m.autopauseTimeout(cfg, false); got != 600*time.Second {
+		t.Fatalf("no players must pick initial autopause, got %v", got)
 	}
 }
 

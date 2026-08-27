@@ -222,16 +222,17 @@ func readMrpackIndex(reader *zip.Reader) (*mrpackIndex, string) {
 
 // Loader facts a Modrinth index declares
 func mrpackEvidence(index *mrpackIndex) packEvidence {
-	ev := packEvidence{mcVersion: index.Dependencies["minecraft"]}
-	for _, entry := range mrpackLoaderKeys {
-		if version := index.Dependencies[entry.key]; version != "" {
-			ev.loaderID = entry.key + "-" + version
-			ev.loader = entry.loader
-			ev.loaderVersion = version
-			return ev
+	mc := index.Dependencies["minecraft"]
+	// Dependency keys read the loader name, some add -loader
+	for _, name := range minecraft.PackLoaderNames() {
+		for _, key := range []string{name, name + "-loader"} {
+			if version := index.Dependencies[key]; version != "" {
+				return loaderEvidence(name, version, mc)
+			}
 		}
 	}
 	// Unknown dependency keys still name themselves in errors
+	ev := packEvidence{mcVersion: mc}
 	for key, version := range index.Dependencies {
 		if key != "minecraft" {
 			ev.loaderID = key + "-" + version
@@ -336,24 +337,13 @@ func mrpackFileWanted(file mrpackFile, excludes, forceIncludes []string) (bool, 
 		}
 	}
 	// Known client jars flag even without env metadata
-	if defaultClientFile(name) {
+	if knownClientMod(name) {
 		return true, "known client-only file"
 	}
 	if file.Env != nil && file.Env.Server == "unsupported" {
 		return true, "client-only file"
 	}
 	return true, ""
-}
-
-// Mrpack dependency keys and the loaders they pin
-var mrpackLoaderKeys = []struct {
-	key    string
-	loader v1.ModLoader
-}{
-	{"fabric-loader", v1.ModLoader_MOD_LOADER_FABRIC},
-	{"quilt-loader", v1.ModLoader_MOD_LOADER_QUILT},
-	{"forge", v1.ModLoader_MOD_LOADER_FORGE},
-	{"neoforge", v1.ModLoader_MOD_LOADER_NEOFORGE},
 }
 
 // Remembers what a project resolved to on a past boot

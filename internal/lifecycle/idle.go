@@ -14,7 +14,6 @@ const idleCheckInterval = 30 * time.Second
 type idleState struct {
 	lastActive time.Time
 	hadPlayers bool
-	pausedAt   time.Time
 }
 
 // Launches the autopause/autostop policy loop
@@ -62,6 +61,24 @@ func (m *Manager) resetIdle(serverID string) {
 	m.idleMu.Unlock()
 }
 
+// Tracked idle state, new entries start at the seed
+func (m *Manager) idleStateFor(serverID string, seed time.Time) *idleState {
+	st, ok := m.idle[serverID]
+	if !ok {
+		st = &idleState{lastActive: seed}
+		m.idle[serverID] = st
+	}
+	return st
+}
+
+// Restarts the idle clock, player history survives
+func (m *Manager) touchIdle(serverID string) {
+	now := time.Now()
+	m.idleMu.Lock()
+	m.idleStateFor(serverID, now).lastActive = now
+	m.idleMu.Unlock()
+}
+
 // Applies autopause/autostop policies to running servers
 func (m *Manager) checkIdleServers() {
 	ctx, cancel := context.WithTimeout(context.Background(), idleCheckInterval)
@@ -94,9 +111,18 @@ func (m *Manager) checkIdleServers() {
 			continue
 		}
 
-		// Paused servers can still be autostopped after stop timeout
+		now := time.Now()
+
+		// Paused servers autostop once the clock since pause runs out
 		if status == v1.ServerStatus_SERVER_STATUS_PAUSED {
-			if autostop && m.pausedFor(server.Id) >= m.idleTimeout(cfg, server.Id) {
+			if !autostop {
+				continue
+			}
+			m.idleMu.Lock()
+			st := m.idleStateFor(server.Id, now)
+			idleFor, hadPlayers := now.Sub(st.lastActive), st.hadPlayers
+			m.idleMu.Unlock()
+			if idleFor >= m.autostopTimeout(cfg, hadPlayers) {
 				m.log.Info("lifecycle: autostopping paused idle server %s", server.Name)
 				go m.stopIdle(server.Id)
 			}
@@ -117,18 +143,12 @@ func (m *Manager) checkIdleServers() {
 			continue
 		}
 
-		now := time.Now()
-		m.idleMu.Lock()
-		st, ok := m.idle[server.Id]
-		if !ok {
-			st = &idleState{lastActive: now}
-			if server.LastStarted != nil {
-				st.lastActive = server.LastStarted.AsTime()
-			}
-			m.idle[server.Id] = st
+		seed := now
+		if server.LastStarted != nil {
+			seed = server.LastStarted.AsTime()
 		}
-		// Manual unpause outside the panel leaves a stale clock
-		st.pausedAt = time.Time{}
+		m.idleMu.Lock()
+		st := m.idleStateFor(server.Id, seed)
 		if players > 0 {
 			st.lastActive = now
 			st.hadPlayers = true
@@ -141,56 +161,27 @@ func (m *Manager) checkIdleServers() {
 			continue
 		}
 
-		if autopause && idleFor >= m.timeoutFor(intOrDefault(cfg.AutopauseTimeoutEst, 3600), intOrDefault(cfg.AutopauseTimeoutInit, 600), hadPlayers) {
+		if autopause && idleFor >= m.autopauseTimeout(cfg, hadPlayers) {
 			if err := m.Pause(metrics.WithTrace(metrics.WithSource(ctx, "autopause")), server.Id); err != nil {
 				m.log.Error("lifecycle: autopause failed for %s: %v", server.Name, err)
 			}
 			continue
 		}
 
-		if autostop && idleFor >= m.timeoutFor(intOrDefault(cfg.AutostopTimeoutEst, 3600), intOrDefault(cfg.AutostopTimeoutInit, 1800), hadPlayers) {
+		if autostop && idleFor >= m.autostopTimeout(cfg, hadPlayers) {
 			m.log.Info("lifecycle: autostopping idle server %s", server.Name)
 			go m.stopIdle(server.Id)
 		}
 	}
 }
 
-// Records pause time so the stop clock restarts at pause
-func (m *Manager) markPaused(serverID string) {
-	m.idleMu.Lock()
-	defer m.idleMu.Unlock()
-	st, ok := m.idle[serverID]
-	if !ok {
-		st = &idleState{lastActive: time.Now()}
-		m.idle[serverID] = st
-	}
-	st.pausedAt = time.Now()
+// Autopause budget by player history
+func (m *Manager) autopauseTimeout(cfg *v1.ServerProperties, hadPlayers bool) time.Duration {
+	return m.timeoutFor(intOrDefault(cfg.AutopauseTimeoutEst, 3600), intOrDefault(cfg.AutopauseTimeoutInit, 600), hadPlayers)
 }
 
-// Returns time since pause, arms the clock when untracked
-func (m *Manager) pausedFor(serverID string) time.Duration {
-	m.idleMu.Lock()
-	defer m.idleMu.Unlock()
-	st, ok := m.idle[serverID]
-	if !ok {
-		st = &idleState{lastActive: time.Now()}
-		m.idle[serverID] = st
-	}
-	if st.pausedAt.IsZero() {
-		st.pausedAt = time.Now()
-		return 0
-	}
-	return time.Since(st.pausedAt)
-}
-
-// Resolves the applicable autostop timeout for a server
-func (m *Manager) idleTimeout(cfg *v1.ServerProperties, serverID string) time.Duration {
-	m.idleMu.Lock()
-	hadPlayers := false
-	if st, ok := m.idle[serverID]; ok {
-		hadPlayers = st.hadPlayers
-	}
-	m.idleMu.Unlock()
+// Autostop budget by player history
+func (m *Manager) autostopTimeout(cfg *v1.ServerProperties, hadPlayers bool) time.Duration {
 	return m.timeoutFor(intOrDefault(cfg.AutostopTimeoutEst, 3600), intOrDefault(cfg.AutostopTimeoutInit, 1800), hadPlayers)
 }
 

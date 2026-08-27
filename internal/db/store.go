@@ -775,3 +775,17 @@ func (s *Store) GetServerActions(ctx context.Context, serverID string, afterID u
 	err := q.Order("id asc").Limit(maxServerActions).Find(&actions).Error
 	return actions, err
 }
+
+// Upserts the row holding one user mod toggle, false included
+func (s *Store) SaveModChoice(ctx context.Context, mod *v1.Mod) error {
+	now := time.Now()
+	uploaded := now
+	if mod.UploadedAt != nil {
+		uploaded = mod.UploadedAt.AsTime()
+	}
+	return s.db.WithContext(ctx).Exec(
+		"INSERT INTO mods (id, server_id, file_name, name, version, mod_id, file_size, uploaded_at, updated_at, enabled) "+
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "+
+			"ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at",
+		mod.Id, mod.ServerId, mod.FileName, mod.DisplayName, mod.Version, mod.ModId, mod.FileSize, uploaded, now, mod.Enabled).Error
+}

@@ -29,7 +29,7 @@ func DetectDialects(dataPath, modsDir string) []string {
 			return slices.Clone(row.Dialects)
 		}
 	}
-	if row := definingLoader(inferDialect(ScanModsDir(modsDir))); row != nil {
+	if row := inferLoader(ScanModsDir(modsDir)); row != nil {
 		return slices.Clone(row.Dialects)
 	}
 	return nil
@@ -101,56 +101,56 @@ func DialectFacets(dialects []string) []string {
 	return out
 }
 
-// Votes the dialect from installed jar manifests
-func inferDialect(metas []ModJarMeta) string {
-	exclusive := make(map[string]int)
+// Loader whose dialect chain reads every exclusive jar
+func inferLoader(metas []ModJarMeta) *LoaderInfo {
+	exclusive := make(map[string]bool)
 	present := make(map[string]bool)
 	for i := range metas {
 		dialects := make(map[string]bool)
 		for _, mod := range metas[i].Mods {
-			if mod.Dialect != "" {
+			if mod.Declared && mod.Dialect != "" {
 				dialects[mod.Dialect] = true
 				present[mod.Dialect] = true
 			}
 		}
 		if len(dialects) == 1 {
 			for d := range dialects {
-				exclusive[d]++
+				exclusive[d] = true
 			}
 		}
 	}
-
-	winner := ""
-	for d, n := range exclusive {
-		if n == 0 {
+	// Shortest covering chain wins, ties fall to registry order
+	var best *LoaderInfo
+	for i := range registry {
+		row := &registry[i]
+		// Only rows defining a present dialect are candidates
+		if len(row.Dialects) == 0 || definingLoader(row.Dialects[0]) != row || !present[row.Dialects[0]] {
 			continue
 		}
-		if winner != "" && winner != d {
-			return dominantFamily(present)
+		if !coversDialects(row, exclusive) {
+			continue
 		}
-		winner = d
+		if best == nil || len(row.Dialects) < len(best.Dialects) {
+			best = row
+		}
 	}
-	if winner != "" {
-		return winner
-	}
-	return dominantFamily(present)
+	return best
 }
 
-// Base dialect wins when one family owns the dir
-func dominantFamily(present map[string]bool) string {
-	families := make(map[string]bool)
-	for d := range present {
-		base := d
-		if row := definingLoader(d); row != nil {
-			base = row.Dialects[len(row.Dialects)-1]
+// Reports whether a loader reads every listed dialect
+func coversDialects(row *LoaderInfo, dialects map[string]bool) bool {
+	for d := range dialects {
+		if !slices.Contains(row.Dialects, d) {
+			return false
 		}
-		families[base] = true
 	}
-	if len(families) != 1 {
-		return ""
+	return true
+}
+
+// Loader the installed jar manifests testify, unspecified when mixed
+func InferModsLoader(modsDir string) v1.ModLoader {
+	if row := inferLoader(ScanModsDir(modsDir)); row != nil {
+		return row.Loader()
 	}
-	for base := range families {
-		return base
-	}
-	return ""
+	return v1.ModLoader_MOD_LOADER_UNSPECIFIED
 }

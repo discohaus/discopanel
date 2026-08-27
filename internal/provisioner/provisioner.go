@@ -23,7 +23,6 @@ import (
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/protometa"
 	"github.com/discohaus/discopanel/pkg/runtimespec"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -340,17 +339,13 @@ var packLoaderInstallers = map[v1.ModLoader]func(p *Provisioner, ctx context.Con
 	},
 }
 
-// Installs a pack's pinned loader, the pack MC version wins
-func (p *Provisioner) installLoaderForPack(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, loader v1.ModLoader, version, mcVersion string) (*Result, error) {
+// Installs a pack's pinned loader under the pack platform's name
+func (p *Provisioner) installLoaderForPack(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, loader v1.ModLoader, version string) (*Result, error) {
 	fn, ok := packLoaderInstallers[loader]
 	if !ok {
 		return nil, fmt.Errorf("packs cannot install loader %q", protometa.Name(loader))
 	}
-	packServer, _ := proto.Clone(server).(*v1.Server)
-	if mcVersion != "" {
-		packServer.McVersion = mcVersion
-	}
-	result, err := fn(p, ctx, packServer, cfg, version)
+	result, err := fn(p, ctx, server, cfg, version)
 	if err != nil {
 		return nil, err
 	}
@@ -377,7 +372,7 @@ func (p *Provisioner) install(ctx context.Context, server *v1.Server, cfg *v1.Se
 		return p.installFTBPack(ctx, server, cfg, packID, versionID, force)
 	}
 	// User staged server files can still testify a launch
-	if spec := detectPackLaunch(server.DataPath); spec != nil {
+	if spec := detectPackLaunch(server.DataPath, server.ModLoader); spec != nil {
 		p.progress(server, "found launchable server files for %s", protometa.Name(server.ModLoader))
 		p.adoptServerPackVersion(ctx, server, spec)
 		return p.finishLaunch(server, spec, server.ModLoader, "", server.McVersion)
