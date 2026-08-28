@@ -1,3 +1,5 @@
+//go:build migrations
+
 // Shared plumbing for the fixture matrix
 package migrationtests
 
@@ -69,7 +71,7 @@ func fixtureFiles(t *testing.T) []string {
 		t.Fatalf("glob: %v", err)
 	}
 	if len(files) == 0 {
-		t.Skip("no fixtures captured, run go generate ./test/migrations first")
+		t.Skip("no fixtures captured, run make fixtures first")
 	}
 	sort.Strings(files)
 	return files

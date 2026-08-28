@@ -167,6 +167,10 @@ fixtures:
 	@echo "Capturing migration fixtures from every release..."
 	cd test/migrations && go run ./fixturegen -out fixtures $(FIXTURE_ARGS)
 
+# Runs migration matrix
+test-migrations:
+	go test -tags migrations ./test/migrations/...
+
 proto-format:
 	@echo "Formatting proto files (using Docker)..."
 	$(BUF_RUN) format -w

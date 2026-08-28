@@ -1,3 +1,5 @@
+//go:build migrations
+
 // Runs the engine across every captured release fixture
 package migrationtests
 

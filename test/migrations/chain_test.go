@@ -1,3 +1,5 @@
+//go:build migrations
+
 // Proves the committed chain is whole before any fixture runs
 package migrationtests
 
