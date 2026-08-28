@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"connectrpc.com/connect"
-	"github.com/google/uuid"
 	storage "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/rbac"
 	"github.com/discohaus/discopanel/pkg/logger"
@@ -13,6 +12,7 @@ import (
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
 	"github.com/discohaus/discopanel/pkg/protometa"
+	"github.com/google/uuid"
 )
 
 var _ discopanelv1connect.RoleServiceHandler = (*RoleService)(nil)

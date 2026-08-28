@@ -14,7 +14,13 @@
 		DropdownMenuSeparator,
 		DropdownMenuTrigger
 	} from '$lib/components/ui/dropdown-menu';
-	import { StatusBadge, ServerAvatar, ConfirmDialog, TabRail, EmptyState } from '$lib/components/app';
+	import {
+		StatusBadge,
+		ServerAvatar,
+		ConfirmDialog,
+		TabRail,
+		EmptyState
+	} from '$lib/components/app';
 	import { notify } from '$lib/stores/activity.svelte';
 	import {
 		Play,

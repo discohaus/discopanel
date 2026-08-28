@@ -83,7 +83,6 @@
 		notify.success('Logs downloaded');
 	}
 
-
 	onMount(() => {
 		loadLogs();
 		unregisterRefresh = registerRefresh(() => loadLogs(true));

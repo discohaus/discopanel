@@ -30,7 +30,7 @@ function createLoadingStore() {
 				state.global = state.operations.size > 0;
 				return state;
 			});
-		},
+		}
 	};
 }
 

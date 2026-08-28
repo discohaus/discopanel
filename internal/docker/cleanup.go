@@ -3,9 +3,9 @@ package docker
 import (
 	"context"
 
+	"github.com/discohaus/discopanel/pkg/logger"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
-	"github.com/discohaus/discopanel/pkg/logger"
 )
 
 // Removes containers no longer tracked in the database

@@ -4,8 +4,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/discohaus/discopanel/pkg/logger"
+	"github.com/google/uuid"
 )
 
 // A prepared download

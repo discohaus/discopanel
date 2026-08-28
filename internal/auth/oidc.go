@@ -15,11 +15,11 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
-	"github.com/google/uuid"
 	"github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/logger"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"golang.org/x/oauth2"
 	"google.golang.org/protobuf/types/known/timestamppb"

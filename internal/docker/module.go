@@ -10,16 +10,16 @@ import (
 	"strings"
 
 	shellparse "github.com/arkady-emelyanov/go-shellparse"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/go-connections/nat"
 	"github.com/discohaus/discopanel/internal/alias"
 	models "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/files"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/protometa"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/network"
+	"github.com/docker/go-connections/nat"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -338,4 +338,3 @@ func (c *Client) volumesToMounts(volumes []*v1.VolumeMount) []mount.Mount {
 
 	return mounts
 }
-

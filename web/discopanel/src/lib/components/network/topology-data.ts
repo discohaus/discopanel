@@ -634,7 +634,9 @@ export function buildGraph(
 	// One node per service, names collapse to a summary
 	const routedServices = services
 		.filter((svc) => !svc.relay)
-		.sort((a, b) => a.port - b.port || (a.hostnames[0] ?? '~').localeCompare(b.hostnames[0] ?? '~'));
+		.sort(
+			(a, b) => a.port - b.port || (a.hostnames[0] ?? '~').localeCompare(b.hostnames[0] ?? '~')
+		);
 	for (const svc of routedServices) {
 		const listenerNode = listenerNodeByPort.get(svc.port);
 		if (!listenerNode) continue;

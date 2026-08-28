@@ -284,7 +284,10 @@
 
 	async function deleteInvite(id: string) {
 		try {
-			await rpcClient.auth.deleteInvite(create(DeleteInviteRequestSchema, { id }), silentCallOptions);
+			await rpcClient.auth.deleteInvite(
+				create(DeleteInviteRequestSchema, { id }),
+				silentCallOptions
+			);
 			invites = invites.filter((i) => i.id !== id);
 			notify.success('Invite revoked');
 		} catch (error: unknown) {

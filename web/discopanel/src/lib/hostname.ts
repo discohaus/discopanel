@@ -68,7 +68,9 @@ function browserSecure(): boolean {
 export function webUrl(hostname: string, port: number): string {
 	const scheme = browserSecure() ? 'https' : 'http';
 	const defaultPort = browserSecure() ? 443 : 80;
-	return port && port !== defaultPort ? `${scheme}://${hostname}:${port}` : `${scheme}://${hostname}`;
+	return port && port !== defaultPort
+		? `${scheme}://${hostname}:${port}`
+		: `${scheme}://${hostname}`;
 }
 
 // Upgrades an http link when the browser rides https

@@ -35,7 +35,13 @@
 	import { runPageRefreshers } from '$lib/stores/refresh';
 	import { authStore, currentUser, canAccessSettings, authEnabled } from '$lib/stores/auth';
 	import { onMount } from 'svelte';
-	import { CommandPalette, StatusDot, ServerAvatar, DiscoLogo, StatusBar } from '$lib/components/app';
+	import {
+		CommandPalette,
+		StatusDot,
+		ServerAvatar,
+		DiscoLogo,
+		StatusBar
+	} from '$lib/components/app';
 	import {
 		House,
 		Server,

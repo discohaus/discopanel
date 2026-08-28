@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/discohaus/discopanel/pkg/logger"
+	"github.com/google/uuid"
 )
 
 // Represents an active upload session

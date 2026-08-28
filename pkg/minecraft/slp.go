@@ -245,4 +245,3 @@ func parseDescription(desc json.RawMessage) string {
 	// Strips JSON formatting and returns raw text
 	return strings.TrimSpace(string(desc))
 }
-

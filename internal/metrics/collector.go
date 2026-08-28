@@ -795,7 +795,6 @@ func (c *Collector) collectSLPData() {
 	}
 }
 
-
 // Compares each servers current health/player state against the previous state
 func (c *Collector) detectLifecycleEvents() {
 	if c.bus == nil {

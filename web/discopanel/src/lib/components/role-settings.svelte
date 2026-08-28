@@ -648,8 +648,7 @@
 									{@const isForeign = source !== res}
 									<button
 										onclick={() =>
-											(scopedResource =
-												scopedResource === res ? ResourceType.UNSPECIFIED : res)}
+											(scopedResource = scopedResource === res ? ResourceType.UNSPECIFIED : res)}
 										class="inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors {scopedResource ===
 										res
 											? 'border-primary/40 bg-primary/10 text-primary'

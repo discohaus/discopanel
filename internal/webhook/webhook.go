@@ -14,10 +14,10 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/discohaus/discopanel/internal/alias"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/protometa"
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )

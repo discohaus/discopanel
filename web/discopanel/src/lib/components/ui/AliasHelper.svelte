@@ -2,7 +2,11 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Popover, PopoverContent, PopoverTrigger } from '$lib/components/ui/popover';
 	import { rpcClient } from '$lib/api/rpc-client';
-	import { AliasCategory, AliasCategorySchema, type AliasInfo } from '$lib/proto/discopanel/v1/module_pb';
+	import {
+		AliasCategory,
+		AliasCategorySchema,
+		type AliasInfo
+	} from '$lib/proto/discopanel/v1/module_pb';
 	import { enumLabel } from '$lib/proto-meta';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { Braces, Server, Box, Sparkles, Loader2, Check, Copy } from '@lucide/svelte';
@@ -73,7 +77,10 @@
 	}
 
 	function getCategoryLabel(category: AliasCategory): string {
-		return enumLabel(AliasCategorySchema, category) || enumLabel(AliasCategorySchema, AliasCategory.UNSPECIFIED);
+		return (
+			enumLabel(AliasCategorySchema, category) ||
+			enumLabel(AliasCategorySchema, AliasCategory.UNSPECIFIED)
+		);
 	}
 
 	function getCategoryColor(category: AliasCategory): string {

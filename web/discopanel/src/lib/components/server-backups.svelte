@@ -61,7 +61,6 @@
 		}
 	}
 
-
 	function formatWhen(backup: Backup): string {
 		if (!backup.createdAt) return '';
 		return timestampDate(backup.createdAt).toLocaleString(undefined, {
@@ -115,7 +114,9 @@
 				<div class="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs">
 					<Archive class="size-3.5 shrink-0 text-muted-foreground" />
 					<span class="min-w-0 flex-1 truncate font-mono">{backup.fileName}</span>
-					<span class="tabular shrink-0 text-muted-foreground">{formatBytes(Number(backup.size), 1)}</span>
+					<span class="tabular shrink-0 text-muted-foreground"
+						>{formatBytes(Number(backup.size), 1)}</span
+					>
 					<span class="tabular shrink-0 text-muted-foreground">{formatWhen(backup)}</span>
 					<Button
 						variant="outline"

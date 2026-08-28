@@ -225,7 +225,9 @@
 				</div>
 
 				{#if showRouting && port.proxyEnabled && isRelayProtocol(port.protocol)}
-					<p class="text-xs text-muted-foreground">Forwards raw traffic through the listener port</p>
+					<p class="text-xs text-muted-foreground">
+						Forwards raw traffic through the listener port
+					</p>
 				{/if}
 
 				{#if showRouting && port.proxyEnabled && isHostnamed(port.protocol)}
@@ -284,7 +286,10 @@
 			{/if}
 
 			{#if errors[i]}
-				<div transition:slide={{ duration: 150 }} class="flex items-center gap-1.5 text-destructive">
+				<div
+					transition:slide={{ duration: 150 }}
+					class="flex items-center gap-1.5 text-destructive"
+				>
 					<AlertCircle class="size-3" />
 					<span class="text-xs">{errors[i]}</span>
 				</div>

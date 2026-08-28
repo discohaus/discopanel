@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/discohaus/discopanel/internal/auth"
 	"github.com/discohaus/discopanel/internal/command"
 	storage "github.com/discohaus/discopanel/internal/db"
@@ -18,6 +17,7 @@ import (
 	"github.com/discohaus/discopanel/pkg/logger"
 	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/proto"
 )
 

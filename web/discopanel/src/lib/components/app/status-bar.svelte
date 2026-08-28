@@ -67,10 +67,7 @@
 								class={cn('size-2 shrink-0 rounded-full', toneBg(current), !fresh && 'opacity-40')}
 							></span>
 							<span
-								class={cn(
-									'truncate text-xs',
-									fresh ? 'text-foreground' : 'text-muted-foreground'
-								)}
+								class={cn('truncate text-xs', fresh ? 'text-foreground' : 'text-muted-foreground')}
 							>
 								{current.message}
 							</span>

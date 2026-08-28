@@ -115,7 +115,11 @@
 									}}
 								/>
 							{/if}
-							<Button size="sm" disabled={busy || !values[entry.moduleId]} onclick={() => submit(entry)}>
+							<Button
+								size="sm"
+								disabled={busy || !values[entry.moduleId]}
+								onclick={() => submit(entry)}
+							>
 								{#if busy}
 									<Loader2 class="size-4 animate-spin" />
 								{:else}
