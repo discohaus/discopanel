@@ -229,7 +229,7 @@
 			<EmptyState
 				icon={ServerIcon}
 				title="Welcome to DiscoPanel"
-				description="Spin up your first Minecraft server, or browse modpacks to find something your friends will love."
+				description="Spin up your first Minecraft server, or browse modpacks to find something fun."
 				class="py-20"
 			>
 				<Button href={resolve('/servers/new')} class="glow-primary">
@@ -623,7 +623,7 @@
 							Report an issue
 						</a>
 						<a
-							href="https://github.com/discohaus/discopanel"
+							href="https://docs.discopanel.app"
 							target="_blank"
 							rel="noreferrer"
 							class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
