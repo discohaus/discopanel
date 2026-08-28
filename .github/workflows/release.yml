@@ -5,19 +5,27 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Dev version to build, vX.Y.Z-dev or vX.Y.Z-dev.N, image only'
+        required: true
+        default: 'v3.0.0-dev'
 
 jobs:
   classify:
     name: Classify Tag
     runs-on: ubuntu-latest
     outputs:
+      version: ${{ steps.parse.outputs.version }}
       stable: ${{ steps.parse.outputs.stable }}
       dev: ${{ steps.parse.outputs.dev }}
     steps:
       - name: Parse release tag
         id: parse
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
+          TAG="${INPUT_VERSION:-$GITHUB_REF_NAME}"
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]]; then
             echo "::error::Tag '$TAG' must be vX.Y.Z (stable) or vX.Y.Z-suffix (prerelease)"
             exit 1
@@ -28,6 +36,11 @@ jobs:
             *-dev|*-dev.*) STABLE=false; DEV=true ;;
             *-*) STABLE=false ;;
           esac
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$DEV" != "true" ]]; then
+            echo "::error::Manual runs only build dev images, push a tag for releases"
+            exit 1
+          fi
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
           echo "stable=$STABLE" >> "$GITHUB_OUTPUT"
           echo "dev=$DEV" >> "$GITHUB_OUTPUT"
 
@@ -122,7 +135,7 @@ jobs:
       - name: Build frontend
         run: |
           cd web/discopanel
-          APP_VERSION=${{ github.ref_name }} npm run build
+          APP_VERSION=${{ needs.classify.outputs.version }} npm run build
 
       - name: Upload frontend build
         uses: actions/upload-artifact@v4
@@ -213,7 +226,7 @@ jobs:
           CC: ${{ matrix.cc || '' }}
           CXX: ${{ matrix.cxx || '' }}
         run: |
-          go build -ldflags "-X github.com/discohaus/discopanel/pkg/config.Version=${{ github.ref_name }}" -o discopanel-${{ matrix.suffix }} ./cmd/discopanel
+          go build -ldflags "-X github.com/discohaus/discopanel/pkg/config.Version=${{ needs.classify.outputs.version }}" -o discopanel-${{ matrix.suffix }} ./cmd/discopanel
 
       - name: Compress binary (non-Windows)
         if: matrix.goos != 'windows'
@@ -283,7 +296,7 @@ jobs:
           images: |
             ghcr.io/discohaus/discopanel
           tags: |
-            type=ref,event=tag
+            type=raw,value=${{ needs.classify.outputs.version }}
             type=raw,value=dev
           flavor: |
             latest=false
@@ -299,7 +312,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels || steps.meta-dev.outputs.labels }}
           no-cache: true
           build-args: |
-            APP_VERSION=${{ github.ref_name }}
+            APP_VERSION=${{ needs.classify.outputs.version }}
 
   create-release:
     name: Create GitHub Release
@@ -324,11 +337,16 @@ jobs:
 
       - name: Generate changelog
         id: changelog
+        env:
+          VERSION: ${{ needs.classify.outputs.version }}
+          STABLE: ${{ needs.classify.outputs.stable }}
         run: |
-          VERSION="${GITHUB_REF_NAME}"
-          
+          # Stable notes reach back past betas to last stable
+          EXCLUDE=()
+          [ "$STABLE" = "true" ] && EXCLUDE=(--exclude 'v*-*')
+
           # Get the previous app tag, other tag families stay out
-          PREV_TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*' ${VERSION}^ 2>/dev/null || echo "")
+          PREV_TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "${EXCLUDE[@]}" "${VERSION}^" 2>/dev/null || echo "")
           
           if [ -z "$PREV_TAG" ]; then
             echo "No previous tag found"
@@ -348,8 +366,8 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ github.ref_name }}
-          name: DiscoPanel ${{ github.ref_name }}
+          tag_name: ${{ needs.classify.outputs.version }}
+          name: DiscoPanel ${{ needs.classify.outputs.version }}
           body_path: RELEASE_NOTES.md
           draft: false
           prerelease: ${{ needs.classify.outputs.stable == 'false' }}
@@ -359,7 +377,7 @@ jobs:
 
   notify-discord:
     name: Discord Notification
-    needs: [create-release]
+    needs: [classify, create-release]
     runs-on: ubuntu-latest
     if: ${{ needs.create-release.result == 'success' }}
     
@@ -368,19 +386,27 @@ jobs:
         if: success()
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          VERSION: ${{ needs.classify.outputs.version }}
+          STABLE: ${{ needs.classify.outputs.stable }}
         run: |
-          VERSION="${GITHUB_REF_NAME}"
           RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${VERSION}"
+          if [ "$STABLE" = "true" ]; then
+            TITLE="DiscoPanel ${VERSION} Released!"
+            DESC="A new version of DiscoPanel has been released."
+          else
+            TITLE="DiscoPanel ${VERSION} Pre-release!"
+            DESC="A new pre-release of DiscoPanel is available for testing. Stable installs and Proxmox updates are not affected."
+          fi
           
           curl -H "Content-Type: application/json" \
             -d '{
               "embeds": [{
-                "title": "DiscoPanel '"${VERSION}"' Released!",
-                "description": "A new version of DiscoPanel has been released.",
+                "title": "'"${TITLE}"'",
+                "description": "'"${DESC}"'",
                 "url": "'"${RELEASE_URL}"'",
                 "color": 5814783,
                 "image": {
-                  "url": "https://i.imgur.com/tqAz2h0.png"
+                  "url": "https://cdn.jsdelivr.net/gh/discohaus/identity@1.0.0/assets/discopanel/lockup.svg"
                 },
                 "fields": [
                   {
