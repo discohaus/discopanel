@@ -30,12 +30,6 @@ jobs:
       - name: Generate proto code
         run: make gen
 
-      - name: Vet
-        run: go vet ./...
-
-      - name: Test
-        run: go test ./...
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -47,6 +41,18 @@ jobs:
         run: |
           cd web/discopanel
           npm ci
+
+      # Go embeds web/discopanel/build, so vet and test need it first
+      - name: Build frontend
+        run: |
+          cd web/discopanel
+          npm run build
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
 
       - name: Frontend check
         run: |

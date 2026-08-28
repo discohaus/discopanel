@@ -6,7 +6,7 @@ ARG BUILDPLATFORM=linux/amd64
 # Generates proto code in-image matching make proto exactly
 FROM --platform=$BUILDPLATFORM golang:alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS proto-builder
 
-COPY --from=bufbuild/buf:latest /usr/local/bin/buf /usr/local/bin/buf
+COPY --from=bufbuild/buf:1.71.0 /usr/local/bin/buf /usr/local/bin/buf
 
 WORKDIR /app
 COPY go.mod go.sum buf.yaml buf.gen.yaml buf.lock ./
@@ -18,7 +18,7 @@ RUN mkdir -p web/discopanel/static pkg/proto web/discopanel/src/lib/proto \
     && buf generate --exclude-path proto/protogorm \
     && buf build -o - | go tool protogorm -support pkg/proto -store internal/db/store.gen.go:db -inject pkg/proto -spec internal/db/migrations/head.snapshot.json
 
-FROM --platform=$BUILDPLATFORM node:alpine AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-builder
 
 ARG APP_VERSION
 ENV APP_VERSION=${APP_VERSION}

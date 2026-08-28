@@ -12,20 +12,20 @@ plugins:
 
   # Generate Go code with protoc-gen-go
   # Open api pinned because gorm needs exported struct fields
-  - remote: buf.build/protocolbuffers/go
+  - remote: buf.build/protocolbuffers/go:v1.36.12
     out: pkg/proto
     opt:
       - paths=source_relative
       - default_api_level=API_OPEN
 
   # Generate Connect-Go
-  - remote: buf.build/connectrpc/go
+  - remote: buf.build/connectrpc/go:v1.19.1
     out: pkg/proto
     opt:
       - paths=source_relative
 
   # Generate TypeScript
-  - remote: buf.build/bufbuild/es
+  - remote: buf.build/bufbuild/es:v2.14.0
     out: web/discopanel/src/lib/proto
     opt:
       - target=ts

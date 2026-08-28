@@ -5,7 +5,7 @@ DOCKER_DATA_DIR := /tmp/discopanel
 DB_FILE := $(DATA_DIR)/discopanel.db
 FRONTEND_DIR := web/discopanel
 DISCOPANEL_BIN := build/discopanel
-BUF_IMAGE := bufbuild/buf:latest
+BUF_IMAGE := bufbuild/buf:1.71.0
 BUF_RUN := docker run --rm \
 	--volume "$(shell pwd):/workspace" \
 	--workdir /workspace \

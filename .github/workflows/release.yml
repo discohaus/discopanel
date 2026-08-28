@@ -364,7 +364,7 @@ jobs:
           EOF
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.classify.outputs.version }}
           name: DiscoPanel ${{ needs.classify.outputs.version }}
