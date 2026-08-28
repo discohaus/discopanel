@@ -10,6 +10,9 @@ import (
 //go:embed *.snapshot.json
 var snapshots embed.FS
 
+// Release the genesis snapshot was captured from
+const GenesisTag = "v2.0.15"
+
 // Chain every migration file registers into
 var Registry = &migrate.Registry{Genesis: mustSnapshot("genesis.snapshot.json")}
 

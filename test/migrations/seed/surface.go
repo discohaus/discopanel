@@ -1,4 +1,4 @@
-// Generic api surface model every discoverer feeds the seeder
+// Api surface model reflection feeds the seeder
 package seed
 
 import "strings"
@@ -45,24 +45,18 @@ type Field struct {
 
 // One callable procedure on the panel
 type Operation struct {
-	// Method or handler name
+	// Method name
 	Name string
-	// Http verb
-	Method string
 	// Url path under the panel base
 	Path string
 	// Body shape, nil when the call takes none
 	Input *Shape
-	// Reply shape when the discoverer knows it
+	// Reply shape
 	Output *Shape
-	// Entity the reply carries when the path says so
-	Entity string
 }
 
 // Everything one running panel exposes
 type Surface struct {
-	// Either rest or connect
-	Era string
 	Ops []*Operation
 }
 

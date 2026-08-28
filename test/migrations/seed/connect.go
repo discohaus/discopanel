@@ -39,7 +39,7 @@ func DiscoverConnect(ctx context.Context, base string) (*Surface, error) {
 	if err != nil {
 		return nil, err
 	}
-	surface := &Surface{Era: "connect"}
+	surface := &Surface{}
 	shapes := &shapeCache{done: map[protoreflect.FullName]*Shape{}}
 	for _, name := range services {
 		if strings.HasPrefix(name, "grpc.") {
@@ -60,7 +60,6 @@ func DiscoverConnect(ctx context.Context, base string) (*Surface, error) {
 			}
 			surface.Ops = append(surface.Ops, &Operation{
 				Name:   string(md.Name()),
-				Method: http.MethodPost,
 				Path:   "/" + string(sd.FullName()) + "/" + string(md.Name()),
 				Input:  shapes.message(md.Input()),
 				Output: shapes.message(md.Output()),

@@ -82,27 +82,27 @@ func fakeSurface() *Surface {
 	widget := msg("Widget", str("id"), str("name"))
 	gadget := msg("Gadget", str("id"))
 	role := msg("Role", str("id"), str("name"))
-	return &Surface{Era: "connect", Ops: []*Operation{
-		{Name: "Register", Method: "POST", Path: "/t.Auth/Register",
+	return &Surface{Ops: []*Operation{
+		{Name: "Register", Path: "/t.Auth/Register",
 			Input:  msg("RegisterRequest", str("username"), str("email"), str("password"), &Field{Name: "invite_code", Optional: true, Shape: &Shape{Kind: KindString}}),
 			Output: msg("RegisterResponse", &Field{Name: "user", Shape: msg("User", str("id"))})},
-		{Name: "Login", Method: "POST", Path: "/t.Auth/Login",
+		{Name: "Login", Path: "/t.Auth/Login",
 			Input:  msg("LoginRequest", str("username"), str("password")),
 			Output: msg("LoginResponse", str("token"))},
-		{Name: "ListRoles", Method: "POST", Path: "/t.Roles/ListRoles",
+		{Name: "ListRoles", Path: "/t.Roles/ListRoles",
 			Input:  msg("ListRolesRequest"),
 			Output: msg("ListRolesResponse", &Field{Name: "roles", Shape: &Shape{Kind: KindList, Elem: role}})},
 		// Declared before its producer to prove ordering is dependency driven
-		{Name: "CreateGadget", Method: "POST", Path: "/t.Gadgets/CreateGadget",
+		{Name: "CreateGadget", Path: "/t.Gadgets/CreateGadget",
 			Input:  msg("CreateGadgetRequest", str("widget_id"), str("name")),
 			Output: msg("CreateGadgetResponse", &Field{Name: "gadget", Shape: gadget})},
-		{Name: "CreateWidget", Method: "POST", Path: "/t.Widgets/CreateWidget",
+		{Name: "CreateWidget", Path: "/t.Widgets/CreateWidget",
 			Input: msg("CreateWidgetRequest", str("name"), num("port"), flag("enabled"),
 				&Field{Name: "kind", Shape: &Shape{Kind: KindEnum, Enum: []string{"KIND_A", "KIND_B"}}},
 				&Field{Name: "roles", Shape: &Shape{Kind: KindList, Elem: &Shape{Kind: KindString}}},
 				&Field{Name: "modpack_id", Shape: &Shape{Kind: KindString}}),
 			Output: msg("CreateWidgetResponse", &Field{Name: "widget", Shape: widget})},
-		{Name: "SyncWidgets", Method: "POST", Path: "/t.Widgets/SyncWidgets", Input: msg("SyncRequest")},
+		{Name: "SyncWidgets", Path: "/t.Widgets/SyncWidgets", Input: msg("SyncRequest")},
 	}}
 }
 

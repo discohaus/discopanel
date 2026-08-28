@@ -13,17 +13,13 @@ import (
 // One captured release
 type VersionEntry struct {
 	Tag string `json:"tag"`
-	// Either rest or connect
-	Era string `json:"era,omitempty"`
 	// Where the binary came from
 	Source string `json:"source,omitempty"`
 	// Reused from an earlier run
 	Cached     bool             `json:"cached,omitempty"`
 	Fixture    string           `json:"fixture"`
-	HopFixture string           `json:"hop_fixture,omitempty"`
 	Seed       *seed.Report     `json:"seed,omitempty"`
 	Tables     map[string]int64 `json:"tables,omitempty"`
-	HopTables  map[string]int64 `json:"hop_tables,omitempty"`
 	DurationMs int64            `json:"duration_ms,omitempty"`
 	Error      string           `json:"error,omitempty"`
 }
@@ -31,7 +27,6 @@ type VersionEntry struct {
 // Every fixture the generator produced
 type Manifest struct {
 	GeneratedAt time.Time       `json:"generated_at"`
-	Hop         string          `json:"hop,omitempty"`
 	Versions    []*VersionEntry `json:"versions"`
 }
 
@@ -68,6 +63,17 @@ func (m *Manifest) put(entry *VersionEntry) {
 	}
 	m.Versions = append(m.Versions, entry)
 	sort.Slice(m.Versions, func(i, j int) bool { return versionLess(m.Versions[i].Tag, m.Versions[j].Tag) })
+}
+
+// Drops entries older than the floor
+func (m *Manifest) prune(min string) {
+	kept := m.Versions[:0]
+	for _, v := range m.Versions {
+		if !versionLess(v.Tag, min) {
+			kept = append(kept, v)
+		}
+	}
+	m.Versions = kept
 }
 
 // Writes the manifest as indented json

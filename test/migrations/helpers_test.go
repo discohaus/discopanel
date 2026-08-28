@@ -4,11 +4,11 @@ package migrationtests
 import (
 	"compress/gzip"
 	"context"
-	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -75,37 +75,28 @@ func fixtureFiles(t *testing.T) []string {
 	return files
 }
 
-// Final v2 tag fixtures hop through, from the manifest
-func hopTag(t *testing.T) string {
-	t.Helper()
-	var manifest struct {
-		Hop string `json:"hop"`
-	}
-	if data, err := os.ReadFile(filepath.Join(fixtureDir, "manifest.json")); err == nil {
-		if json.Unmarshal(data, &manifest) == nil && manifest.Hop != "" {
-			return manifest.Hop
-		}
-	}
-	for _, f := range fixtureFiles(t) {
-		if i := strings.Index(f, ".via-"); i >= 0 {
-			return strings.TrimSuffix(f[i+len(".via-"):], ".db.gz")
-		}
-	}
-	return ""
-}
-
-// Whether a fixture already passed through the hop release
-func hopped(path string) bool {
-	return strings.Contains(filepath.Base(path), ".via-")
-}
-
 // Tag a fixture was captured from
 func fixtureTag(path string) string {
-	base := strings.TrimSuffix(filepath.Base(path), ".db.gz")
-	if i := strings.Index(base, ".via-"); i >= 0 {
-		base = base[:i]
+	return strings.TrimSuffix(filepath.Base(path), ".db.gz")
+}
+
+// Semver ordering over vX.Y.Z tags
+func versionLess(a, b string) bool {
+	pa, pb := versionParts(a), versionParts(b)
+	for i := range pa {
+		if pa[i] != pb[i] {
+			return pa[i] < pb[i]
+		}
 	}
-	return base
+	return false
+}
+
+func versionParts(tag string) [3]int {
+	var out [3]int
+	for i, part := range strings.SplitN(strings.TrimPrefix(tag, "v"), ".", 3) {
+		out[i], _ = strconv.Atoi(part)
+	}
+	return out
 }
 
 // Engine bookkeeping tables never count as data

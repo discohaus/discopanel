@@ -4,7 +4,6 @@ package seed
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"regexp"
 	"slices"
 	"sort"
@@ -28,7 +27,6 @@ type OpReport struct {
 
 // Everything one seeding run achieved
 type Report struct {
-	Era           string         `json:"era"`
 	Authenticated bool           `json:"authenticated"`
 	Ops           []OpReport     `json:"ops"`
 	Pools         map[string]int `json:"pools"`
@@ -151,9 +149,6 @@ func (s *Seeder) find(match func(string) bool) *Operation {
 // Whether a procedure reads rows without needing references
 func isList(op *Operation) bool {
 	n := Norm(op.Name)
-	if op.Method == http.MethodGet {
-		return true
-	}
 	if !strings.HasPrefix(n, "list") {
 		return false
 	}
@@ -174,9 +169,6 @@ func (s *Seeder) isCreate(op *Operation) bool {
 	if strings.Contains(n, "register") || strings.Contains(n, "login") || strings.Contains(n, "signup") {
 		return false
 	}
-	if s.Surface.Era == "rest" {
-		return op.Method == http.MethodPost && op.Input != nil && !strings.Contains(op.Path, "{")
-	}
 	return strings.HasPrefix(n, "create")
 }
 
@@ -188,7 +180,7 @@ func (s *Seeder) harvestLists(ctx context.Context) {
 		}
 		res := s.Client.Call(ctx, op, map[string]any{})
 		if res.OK() {
-			s.harvest(res.Body, op.Entity)
+			s.harvest(res.Body, "")
 		}
 	}
 }
@@ -236,7 +228,7 @@ func (s *Seeder) runCreate(ctx context.Context, op *Operation) {
 		res := s.call(ctx, op, false)
 		s.Log("create %s %s", op.Name, outcome(res))
 		if res.OK() {
-			s.harvest(res.Body, op.Entity)
+			s.harvest(res.Body, "")
 		}
 	}
 }
@@ -277,9 +269,6 @@ func (s *Seeder) producible() map[string]bool {
 // Entities one procedure's reply carries
 func produces(op *Operation) []string {
 	var out []string
-	if op.Entity != "" {
-		out = append(out, op.Entity)
-	}
 	for _, f := range shapeFields(op.Output) {
 		elem := f.Shape
 		if elem != nil && elem.Kind == KindList {
@@ -422,7 +411,6 @@ func outcome(res Result) string {
 // Snapshot of procedures and pools
 func (s *Seeder) report() *Report {
 	rep := &Report{
-		Era:           s.Surface.Era,
 		Authenticated: s.Client.Token != "",
 		Pools:         map[string]int{},
 	}

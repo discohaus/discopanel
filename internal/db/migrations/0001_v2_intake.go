@@ -1,4 +1,4 @@
-// Carries a v2.0.15 database onto the v3 schema
+// Carries any pre framework database onto the v3 schema
 package migrations
 
 import "github.com/nickheyer/protogorm/migrate"
@@ -10,6 +10,10 @@ func init() {
 		Name:    "v2_intake",
 		Target:  target,
 		Ops: []migrate.Op{
+			// Older databases first become exactly the genesis schema
+			enterGenesis(),
+			migrate.Transform{Name: "user_roles_backfill", Fn: backfillUserRoles},
+
 			// Gormigrate bookkeeping dies with v2
 			migrate.Exec{SQL: []string{"DROP TABLE IF EXISTS migrations"}},
 			migrate.Transform{Name: "sweep_orphans", Fn: sweepOrphans},
@@ -117,8 +121,8 @@ func init() {
 			migrate.CreateTable{Table: target.Table("metrics_samples")},
 			migrate.CreateTable{Table: target.Table("finding_dismissals")},
 
-			// Lived in databases carry older era leftovers, settle them last
-			conformToTarget(target),
+			// Whatever the explicit ops missed settles last
+			conformToTarget("conform_target", target),
 		},
 	})
 }

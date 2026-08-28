@@ -28,9 +28,6 @@ func TestDiscoverConnectReadsLiveDescriptors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}
-	if surface.Era != "connect" {
-		t.Fatalf("era %q", surface.Era)
-	}
 	var create *Operation
 	for _, op := range surface.Ops {
 		if op.Path == "/discopanel.v1.ServerService/CreateServer" {

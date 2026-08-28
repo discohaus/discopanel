@@ -1,4 +1,4 @@
-// Boots every released panel, seeds it, and captures its database
+// Boots every release since genesis, seeds it, and captures its database
 package main
 
 import (
@@ -20,42 +20,43 @@ import (
 	"github.com/discohaus/discopanel/test/migrations/seed"
 )
 
-// Release tags worth capturing, prereleases excluded
-var stablePattern = regexp.MustCompile(`^v[12]\.[0-9]+\.[0-9]+$`)
+// Release tags shaped like semver, prereleases excluded
+var releasePattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
+
+// Oldest release whose shipped binary boots, earlier ones lack sqlite
+const oldestBootable = "v1.0.34"
 
 // Everything the command line configured
 type options struct {
-	out          string
-	cache        string
-	repo         string
-	repoDir      string
-	tags         string
-	hop          string
-	jobs         int
-	repeat       int
-	force        bool
-	buildMissing bool
-	keepWork     bool
-	lenient      bool
-	timeout      time.Duration
-	skip         string
+	out      string
+	cache    string
+	repo     string
+	repoDir  string
+	tags     string
+	min      string
+	jobs     int
+	repeat   int
+	force    bool
+	keepWork bool
+	lenient  bool
+	timeout  time.Duration
+	skip     string
 }
 
 func main() {
 	var opt options
 	flag.StringVar(&opt.out, "out", "fixtures", "fixture output directory")
-	flag.StringVar(&opt.cache, "cache", "fixturegen/cache", "downloaded and built binary cache")
+	flag.StringVar(&opt.cache, "cache", "fixturegen/cache", "downloaded binary cache")
 	flag.StringVar(&opt.repo, "repo", "discohaus/discopanel", "github repository holding releases")
 	flag.StringVar(&opt.repoDir, "repo-dir", "", "git checkout holding the tags, default the enclosing repository")
-	flag.StringVar(&opt.tags, "tags", "", "comma separated tags, empty takes every stable v1 and v2 tag")
-	flag.StringVar(&opt.hop, "hop", "v2.0.15", "final v2 release every fixture also boots through, empty skips")
+	flag.StringVar(&opt.tags, "tags", "", "comma separated tags, empty takes every release since min")
+	flag.StringVar(&opt.min, "min", oldestBootable, "oldest tag captured")
 	flag.IntVar(&opt.jobs, "jobs", min(4, runtime.NumCPU()), "panels captured at once")
 	flag.IntVar(&opt.repeat, "repeat", 2, "attempts per create procedure")
 	flag.BoolVar(&opt.force, "force", false, "recapture fixtures that already exist")
-	flag.BoolVar(&opt.buildMissing, "build-missing", true, "build tags lacking a release binary from source")
 	flag.BoolVar(&opt.keepWork, "keep-work", false, "leave panel work directories behind")
 	flag.BoolVar(&opt.lenient, "lenient", false, "exit zero even when some tags failed")
-	flag.DurationVar(&opt.timeout, "timeout", 20*time.Minute, "budget per tag")
+	flag.DurationVar(&opt.timeout, "timeout", 5*time.Minute, "budget per tag")
 	flag.StringVar(&opt.skip, "skip", seed.DefaultSkip.String(), "regexp of procedure names never called")
 	flag.Parse()
 
@@ -71,12 +72,12 @@ func main() {
 		log.Fatalf("bad skip pattern: %v", err)
 	}
 
-	tags, err := resolveTags(opt.repoDir, opt.tags)
+	tags, err := resolveTags(opt.repoDir, opt.tags, opt.min)
 	if err != nil {
 		log.Fatalf("resolve tags: %v", err)
 	}
 	if len(tags) == 0 {
-		log.Fatal("no stable tags found")
+		log.Fatalf("no release tags since %s", opt.min)
 	}
 	if err := os.MkdirAll(opt.out, 0755); err != nil {
 		log.Fatalf("mkdir out: %v", err)
@@ -85,14 +86,7 @@ func main() {
 
 	manifestPath := filepath.Join(opt.out, "manifest.json")
 	manifest := loadManifest(manifestPath)
-	manifest.Hop = opt.hop
-
-	// Every job shares the hop binary, fetched once here
-	if opt.hop != "" {
-		if _, _, err := fetchBinary(context.Background(), opt, opt.hop); err != nil {
-			log.Fatalf("fetch hop %s: %v", opt.hop, err)
-		}
-	}
+	manifest.prune(opt.min)
 
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -138,8 +132,8 @@ func main() {
 	}
 }
 
-// Stable release tags in ascending version order
-func resolveTags(repoDir, override string) ([]string, error) {
+// Release tags from min onward in version order
+func resolveTags(repoDir, override, min string) ([]string, error) {
 	var raw []string
 	if override != "" {
 		raw = strings.Split(override, ",")
@@ -153,7 +147,7 @@ func resolveTags(repoDir, override string) ([]string, error) {
 	var tags []string
 	for _, tag := range raw {
 		tag = strings.TrimSpace(tag)
-		if stablePattern.MatchString(tag) {
+		if releasePattern.MatchString(tag) && !versionLess(tag, min) {
 			tags = append(tags, tag)
 		}
 	}
@@ -185,23 +179,13 @@ func fixtureName(tag string) string {
 	return tag + ".db.gz"
 }
 
-// Fixture file name for one tag booted through the hop
-func hopName(tag, hop string) string {
-	return tag + ".via-" + hop + ".db.gz"
-}
-
 // Captures one release end to end
 func capture(opt options, skip *regexp.Regexp, tag string, previous *VersionEntry) *VersionEntry {
 	start := time.Now()
 	entry := &VersionEntry{Tag: tag, Fixture: fixtureName(tag)}
-	wantHop := opt.hop != "" && tag != opt.hop
-	if wantHop {
-		entry.HopFixture = hopName(tag, opt.hop)
-	}
 	fixturePath := filepath.Join(opt.out, entry.Fixture)
-	hopPath := filepath.Join(opt.out, entry.HopFixture)
 
-	if !opt.force && exists(fixturePath) && (!wantHop || exists(hopPath)) {
+	if !opt.force && exists(fixturePath) {
 		if previous != nil && previous.Error == "" {
 			previous.Cached = true
 			return previous
@@ -209,11 +193,6 @@ func capture(opt options, skip *regexp.Regexp, tag string, previous *VersionEntr
 		entry.Cached = true
 		if tables, err := tableCountsGz(fixturePath); err == nil {
 			entry.Tables = tables
-		}
-		if wantHop {
-			if tables, err := tableCountsGz(hopPath); err == nil {
-				entry.HopTables = tables
-			}
 		}
 		return entry
 	}
@@ -243,29 +222,20 @@ func capture(opt options, skip *regexp.Regexp, tag string, previous *VersionEntr
 	}
 
 	panel, err := startPanel(ctx, bin, work, tag, logf)
-	if err != nil && source != "source" && opt.buildMissing {
-		// Some early releases shipped without cgo and cannot open sqlite
-		logf("release binary failed to boot, building from source (%v)", err)
-		if buildErr := buildFromSource(ctx, opt.repoDir, tag, bin); buildErr != nil {
-			entry.Error = fmt.Sprintf("boot: %v, rebuild: %v", err, buildErr)
-			return entry
-		}
-		entry.Source = "source"
-		panel, err = startPanel(ctx, bin, work, tag, logf)
-	}
 	if err != nil {
 		entry.Error = fmt.Sprintf("boot: %v", err)
 		return entry
 	}
 
-	surface, err := discover(ctx, opt.repoDir, tag, panel.Base, logf)
+	probe, cancelProbe := context.WithTimeout(ctx, 20*time.Second)
+	surface, err := seed.DiscoverConnect(probe, panel.Base)
+	cancelProbe()
 	if err != nil {
 		panel.Stop()
 		entry.Error = fmt.Sprintf("discover: %v", err)
 		return entry
 	}
-	entry.Era = surface.Era
-	logf("%s surface with %d procedures", surface.Era, len(surface.Ops))
+	logf("surface holds %d procedures", len(surface.Ops))
 
 	seeder := seed.New(surface, seed.NewClient(panel.Base))
 	seeder.Repeat = opt.repeat
@@ -291,45 +261,8 @@ func capture(opt options, skip *regexp.Regexp, tag string, previous *VersionEntr
 		entry.Error = fmt.Sprintf("count: %v", err)
 		return entry
 	}
-
-	if wantHop {
-		hopBin, _, err := fetchBinary(ctx, opt, opt.hop)
-		if err != nil {
-			entry.Error = fmt.Sprintf("fetch hop: %v", err)
-			return entry
-		}
-		hopPanel, err := startPanel(ctx, hopBin, work, opt.hop, logf)
-		if err != nil {
-			entry.Error = fmt.Sprintf("hop boot: %v", err)
-			return entry
-		}
-		if err := hopPanel.Stop(); err != nil {
-			entry.Error = fmt.Sprintf("hop stop: %v", err)
-			return entry
-		}
-		if err := captureDB(hopPanel.DBPath, hopPath); err != nil {
-			entry.Error = fmt.Sprintf("hop capture: %v", err)
-			return entry
-		}
-		if entry.HopTables, err = tableCounts(hopPanel.DBPath); err != nil {
-			entry.Error = fmt.Sprintf("hop count: %v", err)
-			return entry
-		}
-	}
 	entry.DurationMs = time.Since(start).Milliseconds()
 	return entry
-}
-
-// Reflection first, the release's own source when absent
-func discover(ctx context.Context, repoDir, tag, base string, logf func(string, ...any)) (*seed.Surface, error) {
-	probe, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	surface, err := seed.DiscoverConnect(probe, base)
-	if err == nil {
-		return surface, nil
-	}
-	logf("no reflection, reading rest routes from source (%v)", err)
-	return seed.DiscoverREST(ctx, repoDir, tag)
 }
 
 func exists(path string) bool {

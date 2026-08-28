@@ -1,4 +1,4 @@
-// Json transport shared by rest and connect procedures
+// Json transport for connect procedures
 package seed
 
 import (
@@ -55,34 +55,22 @@ func (r Result) Error() string {
 	return fmt.Sprintf("%d %s", r.Status, msg)
 }
 
-// Sends one json body and decodes whatever comes back
+// Posts one json body and decodes whatever comes back
 func (c *Client) Call(ctx context.Context, op *Operation, body any) Result {
-	var payload io.Reader
-	method := op.Method
-	if method == "" {
-		method = http.MethodPost
+	if body == nil {
+		body = map[string]any{}
 	}
-	if method != http.MethodGet {
-		if body == nil {
-			body = map[string]any{}
-		}
-		data, err := json.Marshal(body)
-		if err != nil {
-			return Result{Err: err}
-		}
-		payload = bytes.NewReader(data)
+	data, err := json.Marshal(body)
+	if err != nil {
+		return Result{Err: err}
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.Base+op.Path, payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Base+op.Path, bytes.NewReader(data))
 	if err != nil {
 		return Result{Err: err}
 	}
 	req.Header.Set("Accept", "application/json")
-	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if strings.HasPrefix(op.Path, "/") && strings.Contains(op.Path[1:], ".") && strings.Count(op.Path, "/") == 2 {
-		req.Header.Set("Connect-Protocol-Version", "1")
-	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Connect-Protocol-Version", "1")
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}

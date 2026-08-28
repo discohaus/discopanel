@@ -2,30 +2,45 @@ package migrations
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/nickheyer/protogorm/migrate"
 	"gorm.io/gorm"
 )
 
 // Maps unledgered pre framework databases onto the chain
+// Every panel database enters at ordinal zero, intake carries it
 type V2Baseline struct{}
 
-// Accepts a schema holding every genesis table and column
-// Leftovers on top pass, older data dirs boot v2.0.15 first
+// Accepts anything shaped like a panel database
+// Older schemas are noted, intake conforms them onto genesis
 func (V2Baseline) Detect(_ *gorm.DB, observed *migrate.Spec) (int, error) {
-	if observed.Table("server_configs") == nil || observed.Table("server_properties") != nil {
-		return 0, fmt.Errorf("database is not a v2 install, the upgrade path starts at v2.0.15")
+	if observed.Table("servers") == nil {
+		return 0, fmt.Errorf("database holds no servers table, not a discopanel database")
 	}
+	if observed.Table("server_properties") != nil {
+		return 0, fmt.Errorf("database holds v3 tables without a migration ledger, restore from backup")
+	}
+	if gaps := GenesisGaps(observed); len(gaps) > 0 {
+		log.Printf("[migrate] database predates %s, %d schema gaps close at intake", GenesisTag, len(gaps))
+	}
+	return 0, nil
+}
+
+// Genesis tables and columns the observed schema lacks
+func GenesisGaps(observed *migrate.Spec) []string {
+	var gaps []string
 	for _, want := range Registry.Genesis.Tables {
 		have := observed.Table(want.Name)
 		if have == nil {
-			return 0, fmt.Errorf("table %s predates v2.0.15, boot v2.0.15 once before upgrading", want.Name)
+			gaps = append(gaps, "table "+want.Name)
+			continue
 		}
 		for _, col := range want.Columns {
 			if have.Column(col.Name) == nil {
-				return 0, fmt.Errorf("%s.%s predates v2.0.15, boot v2.0.15 once before upgrading", want.Name, col.Name)
+				gaps = append(gaps, want.Name+"."+col.Name)
 			}
 		}
 	}
-	return 0, nil
+	return gaps
 }

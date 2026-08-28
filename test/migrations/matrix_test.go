@@ -5,7 +5,6 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/discohaus/discopanel/internal/db/migrations"
@@ -13,42 +12,32 @@ import (
 	"gorm.io/gorm"
 )
 
-var updateGenesis = flag.Bool("update-genesis", false, "rewrite the genesis snapshot from the final v2 fixture")
+var updateGenesis = flag.Bool("update-genesis", false, "rewrite the genesis snapshot from the genesis release fixture")
 
 const genesisPath = "../../internal/db/migrations/genesis.snapshot.json"
 
-// Every fixture must land on head or refuse honestly
-// Hopped fixtures sit on the final v2 schema, never refused
+// Every fixture must land on head with its rows intact
 func TestFixtureMatrix(t *testing.T) {
-	fixtures := fixtureFiles(t)
-	hop := hopTag(t)
 	headFP := fingerprint(t, migrations.Head())
 
-	for _, fixture := range fixtures {
+	for _, fixture := range fixtureFiles(t) {
 		t.Run(filepath.Base(fixture), func(t *testing.T) {
 			db := openDB(t, unpackFixture(t, fixture))
-			before := observedFingerprint(t, db)
 			preCounts := rowCounts(t, db)
 			preSpec, err := migrate.SpecOfDB(db)
 			if err != nil {
 				t.Fatalf("spec of db: %v", err)
 			}
+			gaps := migrations.GenesisGaps(preSpec)
+			if !versionLess(fixtureTag(fixture), migrations.GenesisTag) && len(gaps) > 0 {
+				t.Fatalf("release since %s lacks genesis schema: %v", migrations.GenesisTag, gaps)
+			}
+			t.Logf("%d genesis gaps before intake", len(gaps))
 
 			report, err := runEngine(t, db)
 			if err != nil {
-				if hopped(fixture) || fixtureTag(fixture) == hop {
-					t.Fatalf("fixture on the final v2 schema was refused: %v", err)
-				}
-				if hop != "" && !strings.Contains(err.Error(), hop) {
-					t.Fatalf("refusal must tell the user to boot %s first, got: %v", hop, err)
-				}
-				if observedFingerprint(t, db) != before {
-					t.Fatal("refused database was modified")
-				}
-				t.Logf("refused as expected: %v", err)
-				return
+				t.Fatalf("engine refused a release: %v", err)
 			}
-
 			if observedFingerprint(t, db) != headFP {
 				t.Fatalf("fixture landed off head, report %+v", report)
 			}
@@ -121,15 +110,11 @@ func checkStorageClasses(t *testing.T, db *gorm.DB, head *migrate.Spec) {
 	}
 }
 
-// The committed genesis must equal the real final v2 schema
-func TestGenesisMatchesFinalV2(t *testing.T) {
-	hop := hopTag(t)
-	if hop == "" {
-		t.Skip("no hop release recorded")
-	}
-	fixture := filepath.Join(fixtureDir, hop+".db.gz")
+// The committed genesis must equal the real genesis release schema
+func TestGenesisMatchesRelease(t *testing.T) {
+	fixture := filepath.Join(fixtureDir, migrations.GenesisTag+".db.gz")
 	if _, err := os.Stat(fixture); err != nil {
-		t.Skipf("no %s fixture captured", hop)
+		t.Skipf("no %s fixture captured", migrations.GenesisTag)
 	}
 	db := openDB(t, unpackFixture(t, fixture))
 	observed, err := migrate.SpecOfDB(db)
@@ -144,13 +129,13 @@ func TestGenesisMatchesFinalV2(t *testing.T) {
 		if err := os.WriteFile(genesisPath, data, 0644); err != nil {
 			t.Fatalf("write genesis: %v", err)
 		}
-		t.Logf("genesis snapshot written from %s, commit it", hop)
+		t.Logf("genesis snapshot written from %s, commit it", migrations.GenesisTag)
 		return
 	}
 	if migrations.Registry.Genesis == nil {
 		t.Fatal("registry has no genesis snapshot")
 	}
 	if fingerprint(t, observed) != fingerprint(t, migrations.Registry.Genesis) {
-		t.Fatalf("genesis snapshot differs from a real %s database, inspect then rerun with -update-genesis", hop)
+		t.Fatalf("genesis snapshot differs from a real %s database, inspect then rerun with -update-genesis", migrations.GenesisTag)
 	}
 }
