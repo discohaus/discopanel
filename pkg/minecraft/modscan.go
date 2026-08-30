@@ -215,14 +215,20 @@ func ReadModJar(jarPath string) (*ModJarMeta, error) {
 	return readModJarMeta(jarPath)
 }
 
-func readModJarMeta(jarPath string) (*ModJarMeta, error) {
+func readModJarMeta(jarPath string) (meta *ModJarMeta, err error) {
 	r, err := zip.OpenReader(jarPath)
 	if err != nil {
 		return nil, err
 	}
 	defer r.Close()
 
-	meta := &ModJarMeta{FileName: filepath.Base(jarPath)}
+	defer func() { // Turns parser panics on hostile jars into skips
+		if rec := recover(); rec != nil {
+			meta, err = nil, fmt.Errorf("parse %s: %v", filepath.Base(jarPath), rec)
+		}
+	}()
+
+	meta = &ModJarMeta{FileName: filepath.Base(jarPath)}
 	parseJarEntries(meta, &r.Reader, maxJarNesting, true)
 	return meta, nil
 }
@@ -559,7 +565,7 @@ func implementationVersion(f *zip.File) string {
 	if err != nil {
 		return ""
 	}
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		if v, ok := strings.CutPrefix(line, "Implementation-Version:"); ok {
 			return strings.TrimSpace(v)
 		}

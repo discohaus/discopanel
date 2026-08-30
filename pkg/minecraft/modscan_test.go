@@ -134,6 +134,33 @@ side = "CLIENT"
 	}
 }
 
+// Testing avoid toml parsing panic
+func TestModsTomlDeepDepTables(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJar(t, dir, "deepdeps.jar", map[string]string{
+		"META-INF/mods.toml": `[[mods]]
+modId = "deepdeps"
+
+[[dependencies.deepdeps.forge]]
+modId = "forge"
+mandatory = true
+`,
+	})
+
+	metas := ScanModsDir(dir)
+	if len(metas) != 1 {
+		t.Fatalf("expected 1 jar scanned, got %d", len(metas))
+	}
+	if !metas[0].HasModID("deepdeps") {
+		t.Fatalf("deepdeps.jar should declare deepdeps, got %+v", metas[0])
+	}
+	for _, d := range metas[0].Deps {
+		if d.ID == "" {
+			t.Fatalf("empty dep ids must be skipped, got %+v", metas[0].Deps)
+		}
+	}
+}
+
 func TestScanMcmodInfo(t *testing.T) {
 	dir := t.TempDir()
 	writeTestJar(t, dir, "legacy.jar", map[string]string{
