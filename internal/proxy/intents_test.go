@@ -59,7 +59,6 @@ func TestIntentTableIgnoresBlanks(t *testing.T) {
 }
 
 // Lobby enabled socket with a second plain target route
-// Also a sole route decoy so unmatched names reach the lobby
 func hubIntentSocket(t *testing.T, targetProto int32, targetVersion string) (*ListenerSocket, net.Listener, *IntentTable) {
 	t.Helper()
 	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
@@ -67,11 +66,6 @@ func hubIntentSocket(t *testing.T, targetProto int32, targetVersion string) (*Li
 		t.Fatalf("target listen failed %v", err)
 	}
 	t.Cleanup(func() { targetLn.Close() })
-	decoyLn, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("decoy listen failed %v", err)
-	}
-	t.Cleanup(func() { decoyLn.Close() })
 
 	sock, _, intents := hubSocket(t, false, nil, []Route{
 		{
@@ -85,16 +79,6 @@ func hubIntentSocket(t *testing.T, targetProto int32, targetVersion string) (*Li
 			BackendPort: targetLn.Addr().(*net.TCPAddr).Port,
 			McVersion:   targetVersion,
 			McProtocol:  targetProto,
-		},
-		{
-			ServerID:    "srv-decoy",
-			OwnerKind:   OwnerServer,
-			OwnerID:     "srv-decoy",
-			Protocol:    v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT,
-			Hostname:    "decoy.example.com",
-			State:       v1.ProxyRouteState_PROXY_ROUTE_STATE_ONLINE,
-			BackendHost: "127.0.0.1",
-			BackendPort: decoyLn.Addr().(*net.TCPAddr).Port,
 		},
 	})
 	return sock, targetLn, intents

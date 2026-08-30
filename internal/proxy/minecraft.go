@@ -140,26 +140,11 @@ func (s *ListenerSocket) lookupMCRoute(hostname string) (Route, bool) {
 	if route, exists := s.mcRoutes[hostname]; exists {
 		return *route, true
 	}
-	// Explicit catch all outranks the sole route fallback
+	// Explicit catch all takes unmatched names, nothing else does
 	if route, exists := s.mcRoutes[""]; exists {
 		return *route, true
 	}
-	return s.soleMCRouteLocked()
-}
-
-// Raw ip and typo joins land on the sole service
-func (s *ListenerSocket) soleMCRouteLocked() (Route, bool) {
-	var sole *Route
-	for _, route := range s.mcRoutes {
-		if sole != nil && route.ServerID != sole.ServerID {
-			return Route{}, false
-		}
-		sole = route
-	}
-	if sole == nil {
-		return Route{}, false
-	}
-	return *sole, true
+	return Route{}, false
 }
 
 // Finds backend for a parsed handshake, wakes sleepers, relays
@@ -558,7 +543,6 @@ func (s *ListenerSocket) legacyPingRoute(raw []byte) (Route, bool) {
 		return s.lookupMCRoute(normalizeWireHostname(hostname))
 	}
 
-	s.routesMu.RLock()
-	defer s.routesMu.RUnlock()
-	return s.soleMCRouteLocked()
+	// Hostnameless pings only ever see the catch all
+	return s.lookupMCRoute("")
 }

@@ -223,6 +223,53 @@ func TestMCLoginSplitHandshake(t *testing.T) {
 	assertRewrittenLogin(t, data, backendLn)
 }
 
+// Lone server without catch all never takes unmatched names
+func TestMCUnmatchedHostnameNeverFallsBack(t *testing.T) {
+	sock, backendLn := mcTestSocket(t, false)
+
+	var buf bytes.Buffer
+	err := mcproto.WriteHandshakePacket(&buf, &mcproto.HandshakePacket{
+		ProtocolVersion: 767,
+		ServerAddress:   "wrong.example.com",
+		ServerPort:      25565,
+		NextState:       mcproto.NextStateLogin,
+	})
+	if err != nil {
+		t.Fatalf("handshake build failed %v", err)
+	}
+	buf.WriteString("login-start-payload")
+
+	hit := make(chan struct{}, 1)
+	go func() {
+		if conn, err := backendLn.Accept(); err == nil {
+			conn.Close()
+			hit <- struct{}{}
+		}
+	}()
+
+	client, err := net.Dial("tcp", sock.listener.Addr().String())
+	if err != nil {
+		t.Fatalf("client dial failed %v", err)
+	}
+	defer client.Close()
+	if _, err := client.Write(buf.Bytes()); err != nil {
+		t.Fatalf("write failed %v", err)
+	}
+	client.(*net.TCPConn).CloseWrite()
+
+	client.SetReadDeadline(time.Now().Add(5 * time.Second))
+	data, _ := io.ReadAll(client)
+	if len(data) == 0 {
+		t.Fatal("client must get a kick, not silence")
+	}
+
+	select {
+	case <-hit:
+		t.Fatal("backend must never see unmatched hostnames")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 // Unmatched hostnames land on the catch all, exact names win
 func TestMCCatchAllRouting(t *testing.T) {
 	lobbyLn, err := net.Listen("tcp", "127.0.0.1:0")
@@ -270,7 +317,7 @@ func TestMCCatchAllRouting(t *testing.T) {
 		return buf.Bytes()
 	}
 
-	// Two owners exist so the sole route fallback is dead
+	// Unmatched names land only on the explicit catch all
 	data := roundTripMC(t, sock, lobbyLn, send("unknown.example.com"), false)
 	if len(data) == 0 {
 		t.Fatal("catch all backend saw nothing")
