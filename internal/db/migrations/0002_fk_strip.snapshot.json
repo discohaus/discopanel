@@ -1,0 +1,3482 @@
+{
+  "tables": [
+    {
+      "name": "api_tokens",
+      "columns": [
+        {
+          "name": "created_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "expires_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "is_module_token",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "default": "false"
+        },
+        {
+          "name": "last_used_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "module_role",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "default": "''"
+        },
+        {
+          "name": "name",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "token_hash",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "user_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_api_tokens_token_hash",
+          "columns": [
+            "token_hash"
+          ],
+          "unique": true
+        },
+        {
+          "name": "idx_api_tokens_user_id",
+          "columns": [
+            "user_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "casbin_rule",
+      "columns": [
+        {
+          "name": "id",
+          "types": {
+            "postgres": "bigserial",
+            "sqlite": "integer"
+          },
+          "not_null": true,
+          "pk": true,
+          "auto_inc": true
+        },
+        {
+          "name": "ptype",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "v0",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "v1",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "v2",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "v3",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "v4",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "v5",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_casbin_rule",
+          "columns": [
+            "ptype",
+            "v0",
+            "v1",
+            "v2",
+            "v3",
+            "v4",
+            "v5"
+          ],
+          "unique": true
+        }
+      ]
+    },
+    {
+      "name": "finding_dismissals",
+      "columns": [
+        {
+          "name": "content_hash",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "dismissed_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          },
+          "not_null": true
+        },
+        {
+          "name": "finding_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "server_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        }
+      ]
+    },
+    {
+      "name": "indexed_modpack_files",
+      "columns": [
+        {
+          "name": "display_name",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "download_url",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "file_date",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "file_length",
+          "types": {
+            "postgres": "bigint",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "file_name",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "game_versions",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "mod_loader",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modpack_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "release_type",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "server_pack_file_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_indexed_modpack_files_modpack_id",
+          "columns": [
+            "modpack_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "indexed_modpacks",
+      "columns": [
+        {
+          "name": "categories",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "date_created",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "date_modified",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "date_released",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "description",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "docker_image",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "download_count",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "game_versions",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "indexed_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "indexer",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "indexer_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "java_version",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "latest_file_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "logo_url",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "mc_version",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "mod_loaders",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "name",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "recommended_ram",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "slug",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "summary",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "website_url",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_indexed_modpacks_indexer",
+          "columns": [
+            "indexer"
+          ]
+        },
+        {
+          "name": "idx_indexed_modpacks_indexer_id",
+          "columns": [
+            "indexer_id"
+          ]
+        },
+        {
+          "name": "idx_indexed_modpacks_name",
+          "columns": [
+            "name"
+          ]
+        },
+        {
+          "name": "idx_indexed_modpacks_slug",
+          "columns": [
+            "slug"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "metrics_samples",
+      "columns": [
+        {
+          "name": "cpu_percent",
+          "types": {
+            "postgres": "decimal",
+            "sqlite": "real"
+          }
+        },
+        {
+          "name": "disk_bytes",
+          "types": {
+            "postgres": "bigint",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "gc_pause_count",
+          "types": {
+            "postgres": "bigint",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "gc_pause_max_ms",
+          "types": {
+            "postgres": "decimal",
+            "sqlite": "real"
+          }
+        },
+        {
+          "name": "gc_pause_total_ms",
+          "types": {
+            "postgres": "decimal",
+            "sqlite": "real"
+          }
+        },
+        {
+          "name": "heap_used_mb",
+          "types": {
+            "postgres": "decimal",
+            "sqlite": "real"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "bigserial",
+            "sqlite": "integer"
+          },
+          "not_null": true,
+          "pk": true,
+          "auto_inc": true
+        },
+        {
+          "name": "memory_mb",
+          "types": {
+            "postgres": "decimal",
+            "sqlite": "real"
+          }
+        },
+        {
+          "name": "mspt",
+          "types": {
+            "postgres": "decimal",
+            "sqlite": "real"
+          }
+        },
+        {
+          "name": "players",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "proxy_active_conns",
+          "types": {
+            "postgres": "bigint",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "proxy_bytes_in",
+          "types": {
+            "postgres": "bigint",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "proxy_bytes_out",
+          "types": {
+            "postgres": "bigint",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "proxy_logins",
+          "types": {
+            "postgres": "bigint",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "resolution",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "not_null": true,
+          "default": "0"
+        },
+        {
+          "name": "server_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "timestamp",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          },
+          "not_null": true
+        },
+        {
+          "name": "tps",
+          "types": {
+            "postgres": "decimal",
+            "sqlite": "real"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_metrics_lookup",
+          "columns": [
+            "server_id",
+            "resolution",
+            "timestamp"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "modpack_favorites",
+      "columns": [
+        {
+          "name": "created_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "modpack_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_modpack_favorites_modpack_id",
+          "columns": [
+            "modpack_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "mods",
+      "columns": [
+        {
+          "name": "enabled",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "default": "true"
+        },
+        {
+          "name": "file_name",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "file_size",
+          "types": {
+            "postgres": "bigint",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "mod_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "name",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "server_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "uploaded_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "version",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_mods_server_id",
+          "columns": [
+            "server_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "module_templates",
+      "columns": [
+        {
+          "name": "category",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cert_mount_path",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "config_fields",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "created_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "default_access_urls",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "default_cmd",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "default_env",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "default_gid",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "default": "''"
+        },
+        {
+          "name": "default_hooks",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "default_init_command",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "default": "''"
+        },
+        {
+          "name": "default_init_command_delay",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "default": "0"
+        },
+        {
+          "name": "default_memory",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "default": "512"
+        },
+        {
+          "name": "default_restart_after_init",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "default": "false"
+        },
+        {
+          "name": "default_security_opt",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "default_uid",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "default": "''"
+        },
+        {
+          "name": "default_volumes",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "description",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "docker_image",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "documentation",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "global",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "default": "false"
+        },
+        {
+          "name": "health_check_path",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "health_check_port",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "icon",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "metadata",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "name",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "ports",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "requires_server",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "default": "true"
+        },
+        {
+          "name": "suggested_dependencies",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "supports_proxy",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "default": "true"
+        },
+        {
+          "name": "type",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "not_null": true,
+          "default": "2"
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_module_templates_name",
+          "columns": [
+            "name"
+          ],
+          "unique": true
+        }
+      ]
+    },
+    {
+      "name": "modules",
+      "columns": [
+        {
+          "name": "access_urls",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "auto_start",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "default": "false"
+        },
+        {
+          "name": "cert_pem",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cmd_override",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "container_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cpu_limit",
+          "types": {
+            "postgres": "decimal",
+            "sqlite": "real"
+          }
+        },
+        {
+          "name": "created_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "created_by",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "dependencies",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "detached",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "default": "false"
+        },
+        {
+          "name": "env_overrides",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "event_hooks",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "follow_server_lifecycle",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "default": "true"
+        },
+        {
+          "name": "gid",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "default": "''"
+        },
+        {
+          "name": "health_check_interval",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "default": "30"
+        },
+        {
+          "name": "health_check_retries",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "default": "3"
+        },
+        {
+          "name": "health_check_timeout",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "default": "5"
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "init_command",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "default": "''"
+        },
+        {
+          "name": "init_command_delay",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "default": "0"
+        },
+        {
+          "name": "key_pem",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "last_started",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "memory",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "default": "512"
+        },
+        {
+          "name": "metadata",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "name",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "ports",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "restart_after_init",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "default": "false"
+        },
+        {
+          "name": "server_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "status",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "not_null": true,
+          "default": "1"
+        },
+        {
+          "name": "template_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "token_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "uid",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "default": "''"
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "volume_overrides",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_modules_server_id",
+          "columns": [
+            "server_id"
+          ]
+        },
+        {
+          "name": "idx_modules_template_id",
+          "columns": [
+            "template_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "proxy_configs",
+      "columns": [
+        {
+          "name": "base_url",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "catch_all",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "not_null": true,
+          "default": "false"
+        },
+        {
+          "name": "enabled",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "not_null": true,
+          "default": "false"
+        },
+        {
+          "name": "hostnames",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "lobby",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "not_null": true,
+          "default": "false"
+        },
+        {
+          "name": "lobby_online",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "not_null": true,
+          "default": "true"
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        }
+      ]
+    },
+    {
+      "name": "proxy_listeners",
+      "columns": [
+        {
+          "name": "auto_created",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "not_null": true,
+          "default": "false"
+        },
+        {
+          "name": "created_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "description",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "enabled",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "not_null": true,
+          "default": "true"
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "is_default",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "not_null": true,
+          "default": "false"
+        },
+        {
+          "name": "name",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "port",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "not_null": true
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_proxy_listeners_port",
+          "columns": [
+            "port"
+          ],
+          "unique": true
+        }
+      ]
+    },
+    {
+      "name": "registration_invites",
+      "columns": [
+        {
+          "name": "code",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "created_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "created_by",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "description",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "expires_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "max_uses",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "default": "0"
+        },
+        {
+          "name": "pin_hash",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "roles",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "use_count",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "default": "0"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_registration_invites_code",
+          "columns": [
+            "code"
+          ],
+          "unique": true
+        }
+      ]
+    },
+    {
+      "name": "roles",
+      "columns": [
+        {
+          "name": "created_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "description",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "is_default",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "not_null": true,
+          "default": "false"
+        },
+        {
+          "name": "is_system",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "not_null": true,
+          "default": "false"
+        },
+        {
+          "name": "name",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_roles_name",
+          "columns": [
+            "name"
+          ],
+          "unique": true
+        }
+      ]
+    },
+    {
+      "name": "scheduled_tasks",
+      "columns": [
+        {
+          "name": "backup_config",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "command_config",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "created_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "cron_expr",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "description",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "event_triggers",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "failure_notify",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "default": "false"
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "interval_secs",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "last_run",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "name",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "next_run",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "require_online",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "default": "true"
+        },
+        {
+          "name": "retry_count",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "default": "0"
+        },
+        {
+          "name": "retry_delay",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "default": "60"
+        },
+        {
+          "name": "run_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "schedule",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "not_null": true
+        },
+        {
+          "name": "script_config",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "server_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "status",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "not_null": true,
+          "default": "1"
+        },
+        {
+          "name": "task_type",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "not_null": true
+        },
+        {
+          "name": "timeout",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "default": "300"
+        },
+        {
+          "name": "timezone",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "default": "UTC"
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "webhook_config",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_scheduled_tasks_next_run",
+          "columns": [
+            "next_run"
+          ]
+        },
+        {
+          "name": "idx_scheduled_tasks_server_id",
+          "columns": [
+            "server_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "server_actions",
+      "columns": [
+        {
+          "name": "attrs",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "bigserial",
+            "sqlite": "integer"
+          },
+          "not_null": true,
+          "pk": true,
+          "auto_inc": true
+        },
+        {
+          "name": "kind",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "message",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "server_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "source",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "default": "''"
+        },
+        {
+          "name": "timestamp",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          },
+          "not_null": true
+        },
+        {
+          "name": "trace_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_server_actions_server_id",
+          "columns": [
+            "server_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "server_properties",
+      "columns": [
+        {
+          "name": "accepts_transfers",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "allow_flight",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "allow_nether",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "announce_player_achievements",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "autopause_timeout_est",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "autopause_timeout_init",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "autostop_timeout_est",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "autostop_timeout_init",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "broadcast_console_to_ops",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "broadcast_rcon_to_ops",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "bug_report_link",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cf_api_key",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cf_exclude_mods",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cf_file_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cf_force_include_mods",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cf_modpack_zip",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cf_page_url",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "cf_slug",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "custom_jar_exec",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "custom_server",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "custom_server_properties",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "difficulty",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "doctor_enabled",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "doctor_install_deps",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "doctor_mode",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "enable_agent",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enable_autopause",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enable_autostop",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enable_command_block",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enable_jmx",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enable_offline_status",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enable_proxy_protocol",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enable_query",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enable_rcon",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enable_status",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enable_wake_on_connect",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enable_whitelist",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enforce_secure_profile",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "enforce_whitelist",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "entity_broadcast_range_percentage",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "eula",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "extra_args",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "force_gamemode",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "force_provision",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "forge_installer",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "forge_installer_url",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "forge_version",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "function_permission_level",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "g_id",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "generate_structures",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "generator_settings",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "hardcore",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "hide_online_players",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "icon",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "init_memory",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "j_vm_dd_opts",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "j_vm_opts",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "j_vm_xx_opts",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "jmx_host",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "level",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "level_type",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "log_ips",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "management_server_allowed_origins",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "management_server_enabled",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "management_server_host",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "management_server_port",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "management_server_secret",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "management_server_tls_enabled",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "management_server_tls_keystore",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "management_server_tls_keystore_password",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "max_build_height",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "max_chained_neighbor_updates",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "max_memory",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "max_players",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "max_world_size",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "mode",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_download_dependencies",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_exclude_files",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_force_include_files",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_loader",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_modpack",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_modpack_version_type",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_projects",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_projects_default_version_type",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "modrinth_version",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "motd",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "network_compression_threshold",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "offline_motd",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "online_mode",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "op_permission_level",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "ops",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "override_icon",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "override_whitelist",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "pause_when_empty_seconds",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "player_idle_timeout",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "prevent_proxy_connections",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "proxy_preserve_hostname",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "pvp",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "query_port",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "rate_limit",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "rcon_cmds_first_connect",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "rcon_cmds_last_disconnect",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "rcon_cmds_on_connect",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "rcon_cmds_on_disconnect",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "rcon_cmds_startup",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "rcon_password",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "rcon_port",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "region_file_compression",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "resource_pack",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "resource_pack_enforce",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "resource_pack_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "resource_pack_prompt",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "resource_pack_sha1",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "seed",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "server_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "server_name",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "server_port",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "server_properties_escape_unicode",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "simulation_distance",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "snooper_enabled",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "spawn_animals",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "spawn_monsters",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "spawn_np_cs",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "spawn_protection",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "status_heartbeat_interval",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "stop_duration",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "stop_server_announce_delay",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "sync_chunk_writes",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "tz",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "uid",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "use_aikar_flags",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "use_flare_flags",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "use_meowice_flags",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "use_native_transport",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "use_simd_flags",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "use_zgc_flags",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          }
+        },
+        {
+          "name": "view_distance",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "whitelist",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_server_properties_server_id",
+          "columns": [
+            "server_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "servers",
+      "columns": [
+        {
+          "name": "additional_ports",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "agent_token_hash",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "auto_start",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "default": "false"
+        },
+        {
+          "name": "container_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "created_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "data_path",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "description",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "detached",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "default": "false"
+        },
+        {
+          "name": "docker_image",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "docker_overrides",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "icon_source",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "java_version",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "last_started",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "max_players",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "default": "20"
+        },
+        {
+          "name": "mc_version",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "memory",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "default": "4096"
+        },
+        {
+          "name": "memory_max",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "default": "0"
+        },
+        {
+          "name": "memory_min",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "default": "0"
+        },
+        {
+          "name": "mod_loader",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "not_null": true
+        },
+        {
+          "name": "name",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "port",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          }
+        },
+        {
+          "name": "proxy_catch_all",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "default": "false"
+        },
+        {
+          "name": "proxy_hostnames",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "proxy_listener_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "runtime_digest",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "status",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "not_null": true
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        }
+      ]
+    },
+    {
+      "name": "sessions",
+      "columns": [
+        {
+          "name": "created_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "expires_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          },
+          "not_null": true
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "token",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "user_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_sessions_expires_at",
+          "columns": [
+            "expires_at"
+          ]
+        },
+        {
+          "name": "idx_sessions_token",
+          "columns": [
+            "token"
+          ],
+          "unique": true
+        },
+        {
+          "name": "idx_sessions_user_id",
+          "columns": [
+            "user_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "system_settings",
+      "columns": [
+        {
+          "name": "key",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "value",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        }
+      ]
+    },
+    {
+      "name": "task_executions",
+      "columns": [
+        {
+          "name": "duration",
+          "types": {
+            "postgres": "bigint",
+            "sqlite": "integer"
+          },
+          "default": "0"
+        },
+        {
+          "name": "ended_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "error",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "output",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "retry_num",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "default": "0"
+        },
+        {
+          "name": "server_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "started_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          },
+          "not_null": true
+        },
+        {
+          "name": "status",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "not_null": true
+        },
+        {
+          "name": "task_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "trigger",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "not_null": true,
+          "default": "1"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_task_executions_server_id",
+          "columns": [
+            "server_id"
+          ]
+        },
+        {
+          "name": "idx_task_executions_task_id",
+          "columns": [
+            "task_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "user_roles",
+      "columns": [
+        {
+          "name": "created_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "role_name",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        },
+        {
+          "name": "source",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "not_null": true,
+          "default": "1"
+        },
+        {
+          "name": "user_id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_user_roles_role_name",
+          "columns": [
+            "role_name"
+          ]
+        },
+        {
+          "name": "idx_user_roles_user_id",
+          "columns": [
+            "user_id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "users",
+      "columns": [
+        {
+          "name": "auth_provider",
+          "types": {
+            "postgres": "integer",
+            "sqlite": "integer"
+          },
+          "not_null": true,
+          "default": "1"
+        },
+        {
+          "name": "created_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "email",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "id",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true,
+          "pk": true
+        },
+        {
+          "name": "is_active",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "not_null": true,
+          "default": "true"
+        },
+        {
+          "name": "last_login",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "oidc_issuer",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "oidc_subject",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "password_hash",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
+        },
+        {
+          "name": "updated_at",
+          "types": {
+            "postgres": "timestamptz",
+            "sqlite": "datetime"
+          }
+        },
+        {
+          "name": "username",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          },
+          "not_null": true
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_oidc_identity",
+          "columns": [
+            "oidc_subject",
+            "oidc_issuer"
+          ],
+          "unique": true,
+          "where": "oidc_subject != ''"
+        },
+        {
+          "name": "idx_user_provider",
+          "columns": [
+            "username",
+            "auth_provider"
+          ],
+          "unique": true
+        },
+        {
+          "name": "idx_users_email",
+          "columns": [
+            "email"
+          ]
+        }
+      ]
+    }
+  ]
+}

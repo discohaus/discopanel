@@ -45,6 +45,7 @@ func TestFixtureMatrix(t *testing.T) {
 			}
 			checkRowsSurvived(t, preSpec, preCounts, rowCounts(t, db))
 			checkStorageClasses(t, db, migrations.Head())
+			checkNoForeignKeys(t, db)
 
 			again, err := runEngine(t, db)
 			if err != nil {
@@ -77,6 +78,19 @@ func checkRowsSurvived(t *testing.T, pre *migrate.Spec, before, after map[string
 		if postN < preN {
 			t.Logf("table %s went from %d to %d rows", table.Name, preN, postN)
 		}
+	}
+}
+
+// Migrated tables must shed every v2 foreign key
+func checkNoForeignKeys(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	var names []string
+	q := "SELECT name FROM sqlite_master WHERE type = 'table' AND upper(sql) LIKE '%REFERENCES%'"
+	if err := db.Raw(q).Scan(&names).Error; err != nil {
+		t.Fatalf("fk scan: %v", err)
+	}
+	if len(names) > 0 {
+		t.Errorf("tables still hold foreign keys after migration: %v", names)
 	}
 }
 
