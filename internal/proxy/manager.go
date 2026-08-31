@@ -340,7 +340,8 @@ func (m *Manager) panelRoutesLocked(ctx context.Context) []Route {
 		Protocol:    v1.ModuleProtocol_MODULE_PROTOCOL_HTTP,
 	}
 	var routes []Route
-	if m.panelCatchAll {
+	// Hostless panel answers any name until named
+	if m.panelCatchAll || len(m.panelNames) == 0 {
 		routes = append(routes, base)
 	}
 	for _, name := range m.panelServedNamesLocked(ctx) {

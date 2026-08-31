@@ -94,6 +94,21 @@ func testManager(t *testing.T) (*Manager, *db.Store) {
 	return m, store
 }
 
+// Reports named and catch all panel routes on one socket
+func panelRouteShape(sock *ListenerSocket) (named, catchAll bool) {
+	for _, route := range sock.Routes() {
+		if route.OwnerKind != OwnerPanel {
+			continue
+		}
+		if route.Hostname == "" {
+			catchAll = true
+		} else {
+			named = true
+		}
+	}
+	return named, catchAll
+}
+
 // Default listener row after a reconcile pass
 func defaultListener(t *testing.T, store *db.Store) *v1.ProxyListener {
 	t.Helper()
@@ -155,23 +170,23 @@ func TestSyncListenersBootstrap(t *testing.T) {
 		t.Fatal("default socket must run")
 	}
 
-	// Named panel routes ride, catch all defaults off
-	named, catchAll := false, false
-	for _, route := range panelSock.Routes() {
-		if route.OwnerKind != OwnerPanel {
-			continue
-		}
-		if route.Hostname == "" {
-			catchAll = true
-		} else {
-			named = true
-		}
-	}
+	// Named routes ride, hostless bootstrap serves catch all
+	named, catchAll := panelRouteShape(panelSock)
 	if !named {
 		t.Fatal("named panel routes missing")
 	}
-	if catchAll {
-		t.Fatal("catch all must stay off by default")
+	if !catchAll {
+		t.Fatal("hostless bootstrap must serve catch all")
+	}
+
+	// First saved hostname retires the implicit catch all
+	applied := &v1.ProxyConfig{Enabled: true, Hostnames: []string{"panel.example.com"}}
+	if err := m.ApplyConfig(ctx, applied); err != nil {
+		t.Fatalf("apply config failed %v", err)
+	}
+	named, catchAll = panelRouteShape(lockedTCPSock(m, panelPort))
+	if !named || catchAll {
+		t.Fatal("named config must drop the catch all")
 	}
 
 	mustSync(t, m)
