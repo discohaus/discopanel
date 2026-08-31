@@ -1413,6 +1413,15 @@
           "pk": true
         },
         {
+          "name": "ingress_proxy_protocol",
+          "types": {
+            "postgres": "boolean",
+            "sqlite": "numeric"
+          },
+          "not_null": true,
+          "default": "false"
+        },
+        {
           "name": "is_default",
           "types": {
             "postgres": "boolean",
@@ -1435,6 +1444,13 @@
             "sqlite": "integer"
           },
           "not_null": true
+        },
+        {
+          "name": "trusted_proxies",
+          "types": {
+            "postgres": "text",
+            "sqlite": "text"
+          }
         },
         {
           "name": "updated_at",

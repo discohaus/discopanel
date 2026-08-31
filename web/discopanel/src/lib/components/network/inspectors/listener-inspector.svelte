@@ -51,6 +51,9 @@
 	let saving = $state(false);
 	let deleteOpen = $state(false);
 
+	let ingressProxyProtocol = $state(false);
+	let trustedProxiesStr = $state('');
+
 	// Sole default cannot be unset, another must take over
 	let defaultLocked = $derived(!!editing?.isDefault);
 
@@ -66,12 +69,16 @@
 			port = editing.port;
 			enabled = editing.enabled;
 			isDefault = editing.isDefault;
+			ingressProxyProtocol = editing.ingressProxyProtocol ?? false;
+			trustedProxiesStr = (editing.trustedProxies ?? []).join(', ');
 		} else {
 			name = '';
 			description = '';
 			port = nextFreePort();
 			enabled = true;
 			isDefault = listeners.length === 0;
+			ingressProxyProtocol = false;
+			trustedProxiesStr = '';
 		}
 		portError = '';
 	});
@@ -147,6 +154,13 @@
 		return true;
 	}
 
+	function parseTrustedProxies(): string[] {
+		return trustedProxiesStr
+			.split(',')
+			.map((s) => s.trim())
+			.filter((s) => s.length > 0);
+	}
+
 	async function submit() {
 		if (!name.trim()) {
 			notify.error('Listener name is required');
@@ -155,13 +169,16 @@
 		if (!editing && !validatePort(port)) return;
 		saving = true;
 		try {
+			const trustedProxies = parseTrustedProxies();
 			if (editing) {
 				await rpcClient.proxy.updateProxyListener({
 					id: editing.id,
 					name,
 					description,
 					enabled,
-					isDefault
+					isDefault,
+					ingressProxyProtocol,
+					trustedProxies
 				});
 				notify.success(`Listener "${name}" updated`);
 			} else {
@@ -170,7 +187,9 @@
 					name,
 					description,
 					enabled,
-					isDefault
+					isDefault,
+					ingressProxyProtocol,
+					trustedProxies
 				});
 				notify.success(`Listener "${name}" created`);
 			}
@@ -329,7 +348,33 @@
 						onCheckedChange={(v) => (isDefault = v)}
 					/>
 				</label>
+				<label class="flex cursor-pointer items-center justify-between gap-3 border-t pt-3 text-sm">
+					<span>
+						PROXY protocol (v1/v2) ingress
+						<span class="block text-xs font-normal text-muted-foreground">
+							Expect and parse PROXY headers from upstream edge proxies (Pangolin VPS)
+						</span>
+					</span>
+					<Switch
+						checked={ingressProxyProtocol}
+						onCheckedChange={(v) => (ingressProxyProtocol = v)}
+					/>
+				</label>
 			</div>
+
+			{#if ingressProxyProtocol}
+				<div class="space-y-2">
+					<Label for="trusted-proxies">Trusted upstream proxies (CIDRs)</Label>
+					<Input
+						id="trusted-proxies"
+						bind:value={trustedProxiesStr}
+						placeholder="Optional e.g. 172.19.0.0/16, 10.0.0.0/8"
+					/>
+					<p class="text-xs text-muted-foreground">
+						IP ranges allowed to send PROXY headers. PROXY headers sent by untrusted IPs are ignored to prevent IP spoofing.
+					</p>
+				</div>
+			{/if}
 
 			{#if editing}
 				<div class="rounded-lg border border-status-danger/20 p-3">

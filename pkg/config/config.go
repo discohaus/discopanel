@@ -93,13 +93,15 @@ type StorageConfig struct {
 }
 
 type ProxyConfig struct {
-	Enabled      bool           `mapstructure:"enabled" json:"enabled"`
-	PublicIp     string         `mapstructure:"public_ip" json:"public_ip"`     // Public address for hostname suggestions
-	BaseURL      string         `mapstructure:"base_url" json:"base_url"`       // Seeds the base domain when the db has none
-	ListenPort   int            `mapstructure:"listen_port" json:"listen_port"` // Primary listen port
-	PortRangeMin int            `mapstructure:"port_range_min" json:"port_range_min"`
-	TrustedEdge  bool           `mapstructure:"trusted_edge" json:"trusted_edge"` // Honor forwarded headers from an upstream edge
-	TLS          ProxyTLSConfig `mapstructure:"tls" json:"tls"`
+	Enabled              bool           `mapstructure:"enabled" json:"enabled"`
+	PublicIp             string         `mapstructure:"public_ip" json:"public_ip"`     // Public address for hostname suggestions
+	BaseURL              string         `mapstructure:"base_url" json:"base_url"`       // Seeds the base domain when the db has none
+	ListenPort           int            `mapstructure:"listen_port" json:"listen_port"` // Primary listen port
+	PortRangeMin         int            `mapstructure:"port_range_min" json:"port_range_min"`
+	TrustedEdge          bool           `mapstructure:"trusted_edge" json:"trusted_edge"` // Honor forwarded headers from an upstream edge
+	IngressProxyProtocol bool           `mapstructure:"ingress_proxy_protocol" json:"ingress_proxy_protocol"` // Parse PROXY protocol v1/v2 on ingress listeners
+	TrustedProxies       []string       `mapstructure:"trusted_proxies" json:"trusted_proxies"`             // Optional CIDR whitelist for PROXY protocol upstream addresses
+	TLS                  ProxyTLSConfig `mapstructure:"tls" json:"tls"`
 }
 
 // File configured certificates the proxy terminates with

@@ -1055,6 +1055,10 @@ message ProxyListener {
   google.protobuf.Timestamp updated_at = 8 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
   // Created on demand for a routed port, not by hand
   bool auto_created = 9 [(protogorm.v1.db) = {tag: "not null;default:false"}];
+  // Expect and parse PROXY protocol v1/v2 on ingress
+  bool ingress_proxy_protocol = 10 [(protogorm.v1.db) = {tag: "not null;default:false"}];
+  // CIDR whitelist allowed to send PROXY protocol headers
+  repeated string trusted_proxies = 11;
 }
 
 // A set of permissions and metadata
