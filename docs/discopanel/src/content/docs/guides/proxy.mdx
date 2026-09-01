@@ -55,39 +55,66 @@ Extra ports for things like Simple Voice Chat or map mods aren't routed through 
 
 ## PROXY Protocol & Real Player IPs
 
-When traffic passes through an external edge VPS or reverse proxy (such as Pangolin VPS, HAProxy, or FRP) before reaching DiscoPanel, standard TCP connections make player connections appear as coming from the proxy's IP address (e.g. `172.19.0.2`).
+When player traffic passes through an external edge VPS or reverse proxy (such as Pangolin VPS, HAProxy, or FRP) before reaching DiscoPanel, standard TCP connections make all players appear as connecting from the proxy's IP address (e.g. `172.19.0.2`).
 
-To preserve real player IP addresses in your server logs and ban lists, DiscoPanel supports **PROXY Protocol (v1 & v2)** on both ingress and egress connections.
+To preserve real player IP addresses in your server logs and ban lists, DiscoPanel supports **PROXY Protocol (v1 & v2)**. It is important to distinguish between **Ingress** and **Egress** PROXY Protocol settings:
 
-### 1. Ingress PROXY Protocol (VPS / Pangolin -> DiscoPanel)
+- **Ingress PROXY Protocol** (Panel Listener Inspector): Configured in **Settings > Network** on a panel listener (e.g. `:25565`). Controls whether DiscoPanel's proxy accepts incoming PROXY headers from an external edge proxy.
+- **Egress PROXY Protocol** (Server Network Tab): Configured per server under its own **Network** tab (**Send PROXY Protocol** toggle). Controls whether DiscoPanel forwards PROXY headers downstream to the Minecraft server container.
 
-If an external edge proxy (like Pangolin VPS) forwards player traffic to DiscoPanel on port `25565`:
+### Connection Architecture
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Player as Player
+    participant Edge as Edge Proxy
+    participant Panel as DiscoPanel Proxy (Listener :25565)
+    participant Server as Minecraft Server Container
+
+    Player->>Edge: Connects to play.example.com (Real IP: 203.0.113.45)
+    Note over Edge,Panel: Ingress PROXY Protocol
+    Edge->>Panel: Forwards TCP stream + PROXY header (IP: 203.0.113.45)
+    Note over Panel: Validates sender IP against Trusted Upstream Proxies
+    Note over Panel,Server: Egress PROXY Protocol
+    Panel->>Server: Forwards TCP stream + PROXY header to container
+    Note over Server: Unwraps PROXY header (Paper / HAProxyCompat)
+```
+
+### 1. Ingress PROXY Protocol (Edge Proxy -> DiscoPanel)
+
+If an external edge proxy forwards player traffic to DiscoPanel on port `25565`:
 
 1. Open **Settings > Network** in DiscoPanel.
 2. Click on **Listener :25565** to open the Listener Inspector drawer.
 3. Toggle **PROXY protocol (v1/v2) ingress** to **ON**.
 4. (Recommended) Set **Trusted upstream proxies (CIDRs)** to your VPS IP range (e.g. `172.19.0.0/16`).
 
-DiscoPanel will automatically unwrap the incoming PROXY header from Pangolin and extract the original player IP address.
+![Listener inspector with PROXY protocol settings](../../../assets/screenshots/listener-inspector.png)
+
+DiscoPanel will automatically unwrap incoming PROXY headers from the edge proxy and extract the original player IP address.
 
 :::note[What does Trusted Upstream Proxies mean?]
 Setting **Trusted upstream proxies** specifies which IP addresses are allowed to supply a PROXY header.
 
-If a connection arrives from an IP **within** the trusted CIDR list (e.g., your Pangolin VPS at `172.19.0.2`), DiscoPanel accepts and parses its PROXY header.
+If a connection arrives from an IP **within** the trusted CIDR list (e.g., your edge proxy at `172.19.0.2`), DiscoPanel accepts and parses its PROXY header.
 
-If a connection arrives from an untrusted IP address (such as a user connecting directly to DiscoPanel without going through Pangolin), any PROXY header sent by that untrusted IP is **ignored**. This prevents malicious clients from manually crafting a PROXY header to spoof their IP address.
+If a connection arrives from an untrusted IP address (such as a user connecting directly to DiscoPanel without going through the edge proxy), any PROXY header sent by that untrusted IP is **ignored**. This prevents malicious clients from manually crafting a PROXY header to spoof their IP address.
 :::
 
 ### 2. Egress PROXY Protocol (DiscoPanel -> Minecraft Server)
 
-To forward the real player IP address to your Minecraft server container:
+To forward real player IP addresses from DiscoPanel to your Minecraft server container (required for all server types):
 
-1. Open your server's **Network** tab in DiscoPanel.
-2. Toggle **Send PROXY Protocol** to **ON**.
+1. Open your server's **Properties** tab in DiscoPanel.
+2. Go into the **Proxy** category
+3. Toggle **Send PROXY Protocol** to **Enabled**.
+
+![Server Properties with Send PROXY Protocol Enabled](../../../assets/screenshots/server-properties-enableProxyProtocol.png)
 
 ### 3. Server Mod & Plugin Loader Setup
 
-For the Minecraft server engine to understand the PROXY protocol header sent by DiscoPanel and display real IPs in server logs, configure your mod/plugin loader:
+For the Minecraft server engine to understand the PROXY protocol header sent by DiscoPanel (Egress) and display real IPs in server logs, configure your mod/plugin loader:
 
 #### Paper / Purpur
 Paper has native support for PROXY protocol without needing any extra plugins:
@@ -98,24 +125,20 @@ Paper has native support for PROXY protocol without needing any extra plugins:
 #### Velocity Proxy
 Velocity supports PROXY protocol natively:
 1. Open `velocity.toml`.
-2. Set `player-info-mode = "proxy-protocol"`.
+2. Set `haproxy-protocol = true`.
 
 #### Fabric
 Fabric requires a PROXY protocol mod to parse the header:
-1. Download and install **HAProxyCompat (Fabric)** or **Proxy Protocol Support** into your server's `mods/` folder.
-2. Ensure **Send PROXY Protocol** is **ON** in DiscoPanel server settings.
+- Download and install **HAProxyCompat (Fabric)** or **Proxy Protocol Support** into your server's `mods/` folder.
 
 #### NeoForge
 NeoForge requires a PROXY protocol mod:
-1. Download and install **HAProxyCompat (NeoForge)** into your server's `mods/` folder.
-2. Ensure **Send PROXY Protocol** is **ON** in DiscoPanel server settings.
+- Download and install **HAProxyCompat (NeoForge)** into your server's `mods/` folder.
 
 #### Forge
 Forge requires a PROXY protocol mod:
-1. Download and install **HAProxyCompat (Forge)** or **Proxy Protocol** mod into your server's `mods/` folder.
-2. Ensure **Send PROXY Protocol** is **ON** in DiscoPanel server settings.
+- Download and install and **HAProxyCompat** or **Proxy Protocol** like mod into your server's `mods/` folder.
 
 #### Bukkit / Spigot
 For Bukkit/Spigot servers:
-- Download and install the **HAProxyCompat** plugin into your server's `plugins/` folder, **or**
-- Enable BungeeCord forwarding by setting `bungee: true` in `spigot.yml`.
+- Download and install the **SpigotProxy** plugin into your server's `plugins/` folder.

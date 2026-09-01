@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Captures UI screenshots from a running DiscoPanel for the docs
 // Usage PANEL_URL=http://localhost:8080 PANEL_USER=admin PANEL_PASS=secret node scripts/screenshots.mjs [name...]
-import puppeteer from 'puppeteer-core';
+import puppeteer, { Page } from 'puppeteer-core';
 import sharp from 'sharp';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -125,6 +125,13 @@ const shots = {
   async 'server-properties'(page, srv) {
     await goTab(page, srv, 'Properties');
   },
+  async 'server-properties-enableProxyProtocol'(page, srv) {
+    await goTab(page, srv, 'Properties');
+    await clickText(page, 'span', 'Proxy');
+    await sleep(1000);
+    await clickText(page, 'button#enableProxyProtocol', '')
+    await sleep(1000);
+  },
   async 'server-settings'(page, srv) {
     await goTab(page, srv, 'Settings');
   },
@@ -139,6 +146,17 @@ const shots = {
   async 'settings-network'(page) {
     await page.goto(BASE + '/settings?tab=network', { waitUntil: 'networkidle2' });
     await sleep(3000);
+  },
+  async 'listener-inspector'(page) {
+    await page.goto(BASE + '/settings?tab=network', { waitUntil: 'networkidle2' });
+    await sleep(2000);
+    await clickText(page, 'p', 'Primary');
+    await sleep(2000);
+    let element = await page.waitForSelector('label#use-ingress-proxy');
+    element.click()
+    element = await page.waitForSelector("div#trusted-proxies");
+    await element.scrollIntoView();
+    await sleep(1500);
   },
   async 'settings-users'(page) {
     await page.goto(BASE + '/settings?tab=users', { waitUntil: 'networkidle2' });
