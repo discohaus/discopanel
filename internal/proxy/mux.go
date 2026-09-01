@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -147,8 +148,8 @@ func (s *ListenerSocket) NeedsRebind(ingressProxyProtocol bool, trustedProxies [
 	if len(s.trustedProxies) != len(trustedProxies) {
 		return true
 	}
-	for i := range s.trustedProxies {
-		if s.trustedProxies[i] != trustedProxies[i] {
+	for i := range trustedProxies {
+		if !slices.Contains(s.trustedProxies, trustedProxies[i]) {
 			return true
 		}
 	}
