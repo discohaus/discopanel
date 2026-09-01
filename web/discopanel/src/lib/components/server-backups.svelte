@@ -5,11 +5,14 @@
 	import { Button } from '$lib/components/ui/button';
 	import { ConfirmDialog } from '$lib/components/app';
 	import { notify } from '$lib/stores/activity.svelte';
-	import { Archive, RotateCcw } from '@lucide/svelte';
+	import { Badge } from '$lib/components/ui/badge';
+	import { Archive, ChevronDown, RotateCcw } from '@lucide/svelte';
 	import type { Server } from '$lib/proto/discopanel/v1/storage_pb';
 	import type { Backup } from '$lib/proto/discopanel/v1/server_pb';
 	import { ServerStatus } from '$lib/proto/discopanel/v1/storage_pb';
 	import { timestampDate } from '@bufbuild/protobuf/wkt';
+
+	import { tick } from 'svelte';
 
 	let { server, active = false }: { server: Server; active?: boolean } = $props();
 
@@ -18,6 +21,8 @@
 	let restoreTarget = $state<Backup | null>(null);
 	let restoreOpen = $state(false);
 	let restoring = $state(false);
+	let expanded = $state(false);
+	let rootElement = $state<HTMLElement | null>(null);
 
 	let hasLoaded = false;
 	let previousServerId = $state(server.id);
@@ -25,6 +30,14 @@
 	let serverStopped = $derived(
 		server.status === ServerStatus.STOPPED || server.status === ServerStatus.ERROR
 	);
+
+	async function toggleExpanded() {
+		expanded = !expanded;
+		if (expanded) {
+			await tick();
+			rootElement?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+		}
+	}
 
 	async function loadBackups() {
 		try {
@@ -94,42 +107,73 @@
 	});
 </script>
 
-<div class="rounded-xl border bg-card p-4">
-	<div class="mb-3">
-		<h3 class="stat-label">World backups</h3>
-		<p class="mt-0.5 text-xs text-muted-foreground">
-			{serverStopped ? 'Restore rewinds the world' : 'Stop the server to restore'}
-		</p>
-	</div>
+<div
+	bind:this={rootElement}
+	class="shrink-0 overflow-hidden rounded-xl border bg-card transition-all"
+>
+	<button
+		type="button"
+		class="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40"
+		onclick={toggleExpanded}
+		aria-expanded={expanded}
+	>
+		<div class="flex min-w-0 flex-1 items-center gap-2.5">
+			<Archive class="size-4 shrink-0 text-muted-foreground" />
+			<div class="flex flex-wrap items-center gap-2">
+				<h3 class="stat-label">World backups</h3>
+				{#if !loading && backups.length > 0}
+					<Badge variant="secondary" class="h-5 px-1.5 text-[10px] font-medium">
+						{backups.length}
+					</Badge>
+				{/if}
+			</div>
+			<span class="hidden truncate text-xs text-muted-foreground sm:inline">
+				· {serverStopped ? 'Restore rewinds the world' : 'Stop the server to restore'}
+			</span>
+		</div>
+		<div class="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+			<span class="hidden sm:inline">{expanded ? 'Hide' : 'Show'}</span>
+			<ChevronDown
+				class="size-4 transition-transform duration-200 {expanded ? 'rotate-180' : ''}"
+			/>
+		</div>
+	</button>
 
-	{#if loading}
-		<p class="py-4 text-center text-xs text-muted-foreground">Loading...</p>
-	{:else if backups.length === 0}
-		<p class="py-4 text-center text-xs text-muted-foreground">
-			No backups yet, add a backup task to create them
-		</p>
-	{:else}
-		<div class="max-h-64 space-y-1 overflow-y-auto">
-			{#each backups as backup (backup.fileName)}
-				<div class="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs">
-					<Archive class="size-3.5 shrink-0 text-muted-foreground" />
-					<span class="min-w-0 flex-1 truncate font-mono">{backup.fileName}</span>
-					<span class="tabular shrink-0 text-muted-foreground"
-						>{formatBytes(Number(backup.size), 1)}</span
-					>
-					<span class="tabular shrink-0 text-muted-foreground">{formatWhen(backup)}</span>
-					<Button
-						variant="outline"
-						size="sm"
-						class="h-6 shrink-0 px-2 text-xs"
-						disabled={!serverStopped || restoring}
-						onclick={() => requestRestore(backup)}
-					>
-						<RotateCcw class="size-3" />
-						Restore
-					</Button>
+	{#if expanded}
+		<div class="border-t border-border/60 p-4 pt-3">
+			<p class="mb-3 text-xs text-muted-foreground sm:hidden">
+				{serverStopped ? 'Restore rewinds the world' : 'Stop the server to restore'}
+			</p>
+			{#if loading}
+				<p class="py-4 text-center text-xs text-muted-foreground">Loading...</p>
+			{:else if backups.length === 0}
+				<p class="py-4 text-center text-xs text-muted-foreground">
+					No backups yet, add a backup task to create them
+				</p>
+			{:else}
+				<div class="max-h-56 space-y-1 overflow-y-auto pr-1">
+					{#each backups as backup (backup.fileName)}
+						<div class="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs">
+							<Archive class="size-3.5 shrink-0 text-muted-foreground" />
+							<span class="min-w-0 flex-1 truncate font-mono">{backup.fileName}</span>
+							<span class="tabular shrink-0 text-muted-foreground"
+								>{formatBytes(Number(backup.size), 1)}</span
+							>
+							<span class="tabular shrink-0 text-muted-foreground">{formatWhen(backup)}</span>
+							<Button
+								variant="outline"
+								size="sm"
+								class="h-6 shrink-0 px-2 text-xs"
+								disabled={!serverStopped || restoring}
+								onclick={() => requestRestore(backup)}
+							>
+								<RotateCcw class="size-3" />
+								Restore
+							</Button>
+						</div>
+					{/each}
 				</div>
-			{/each}
+			{/if}
 		</div>
 	{/if}
 </div>
