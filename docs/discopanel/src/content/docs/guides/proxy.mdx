@@ -66,7 +66,7 @@ If an external edge proxy (like Pangolin VPS) forwards player traffic to DiscoPa
 1. Open **Settings > Network** in DiscoPanel.
 2. Click on **Listener :25565** to open the Listener Inspector drawer.
 3. Toggle **PROXY protocol (v1/v2) ingress** to **ON**.
-4. (Optional) Set **Trusted upstream proxies (CIDRs)** to your VPS IP range (e.g. `172.19.0.0/16`).
+4. (Recommended) Set **Trusted upstream proxies (CIDRs)** to your VPS IP range (e.g. `172.19.0.0/16`).
 
 DiscoPanel will automatically unwrap the incoming PROXY header from Pangolin and extract the original player IP address.
 
