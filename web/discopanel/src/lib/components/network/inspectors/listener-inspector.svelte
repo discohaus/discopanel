@@ -352,7 +352,7 @@
 					<span>
 						PROXY protocol (v1/v2) ingress
 						<span class="block text-xs font-normal text-muted-foreground">
-							Expect and parse PROXY headers from upstream edge proxies (Pangolin VPS)
+							Expect and parse PROXY headers from upstream edge proxies
 						</span>
 					</span>
 					<Switch
