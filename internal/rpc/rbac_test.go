@@ -43,7 +43,6 @@ func testRig(t *testing.T) *Server {
 	t.Helper()
 	cfg := &config.Config{}
 	cfg.Database.Path = filepath.Join(t.TempDir(), "rbac.db")
-	cfg.Database.AutoMigrate = true
 	cfg.Auth.SessionTimeout = 3600
 	cfg.Auth.Local.Enabled = true
 	store, err := storage.NewSQLiteStore(cfg)

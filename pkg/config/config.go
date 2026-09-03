@@ -127,7 +127,6 @@ type DatabaseConfig struct {
 	MaxConnections  int    `mapstructure:"max_connections" json:"max_connections"`
 	MaxIdleConns    int    `mapstructure:"max_idle_conns" json:"max_idle_conns"`
 	ConnMaxLifetime int    `mapstructure:"conn_max_lifetime" json:"conn_max_lifetime"`
-	AutoMigrate     bool   `mapstructure:"auto_migrate" json:"auto_migrate"`
 }
 
 type MinecraftConfig struct {
@@ -222,7 +221,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("database.max_connections", 25)
 	v.SetDefault("database.max_idle_conns", 5)
 	v.SetDefault("database.conn_max_lifetime", 300)
-	v.SetDefault("database.auto_migrate", true)
 
 	// Docker defaults
 	v.SetDefault("docker.sync_interval", 5)

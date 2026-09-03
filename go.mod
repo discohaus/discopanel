@@ -18,7 +18,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.1
 	github.com/mholt/archives v0.1.5
-	github.com/nickheyer/protogorm v0.0.6
+	github.com/nickheyer/protogorm v0.0.7
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/spf13/viper v1.20.1
 	github.com/tidwall/gjson v1.18.0
@@ -26,7 +26,6 @@ require (
 	golang.org/x/image v0.44.0
 	golang.org/x/oauth2 v0.35.0
 	golang.org/x/sync v0.22.0
-	google.golang.org/grpc v1.73.0
 	google.golang.org/protobuf v1.36.10
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1

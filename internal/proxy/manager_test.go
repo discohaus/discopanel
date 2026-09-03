@@ -75,7 +75,6 @@ func testManager(t *testing.T) (*Manager, *db.Store) {
 	t.Helper()
 	cfg := &config.Config{}
 	cfg.Database.Path = filepath.Join(t.TempDir(), "proxy.db")
-	cfg.Database.AutoMigrate = true
 	cfg.Server.Host = "127.0.0.1"
 	cfg.Server.Port = strconv.Itoa(freePort(t))
 	cfg.Proxy.Enabled = true

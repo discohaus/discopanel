@@ -22,7 +22,6 @@ func testManager(t *testing.T) (*Manager, *storage.Store) {
 	t.Helper()
 	cfg := &config.Config{}
 	cfg.Database.Path = filepath.Join(t.TempDir(), "lifecycle.db")
-	cfg.Database.AutoMigrate = true
 	store, err := storage.NewSQLiteStore(cfg)
 	if err != nil {
 		t.Fatalf("store open failed %v", err)

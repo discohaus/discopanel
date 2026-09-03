@@ -111,6 +111,7 @@ func NewSQLiteStore(cfg *config.Config) (*Store, error) {
 		NowFunc: func() time.Time {
 			return time.Now().UTC()
 		},
+		DisableForeignKeyConstraintWhenMigrating: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
@@ -133,9 +134,16 @@ func NewSQLiteStore(cfg *config.Config) (*Store, error) {
 
 	store := &Store{db: db, cfg: cfg}
 
-	// Verification always runs, auto migrate gates applying
-	if err := store.Migrate(); err != nil {
-		return nil, fmt.Errorf("failed to migrate database: %w", err)
+	if err := db.AutoMigrate(v1.AllModels()...); err != nil {
+		return nil, fmt.Errorf("failed to create schema: %w", err)
+	}
+	for _, seed := range []func() error{
+		store.SeedSystemRoles,
+		store.SeedGlobalSettings,
+	} {
+		if err := seed(); err != nil {
+			return nil, fmt.Errorf("seed failed: %w", err)
+		}
 	}
 
 	return store, nil
