@@ -1,8 +1,8 @@
 # DiscoPanel Configuration File
 # This file contains all configuration options for DiscoPanel
-# 
+#
 # These can all be set via env, like we do in our docker compose example(s). For example:
-# 
+#
 # server:
 #   port: "8080"
 #
@@ -99,6 +99,9 @@ proxy:
   listen_port: 25565 # First run default listener port (can also use 443)
   port_range_min: 25565
   trusted_edge: false # For external proxy headers: X-Forwarded-Proto / X-Forwarded-For
+  ingress_proxy_protocol: false # Enable parsing PROXY protocol v1/v2 on ingress listeners (VPS tunnel / Pangolin)
+  # trusted_proxies: # Optional CIDR whitelist for PROXY protocol upstream IP addresses
+  #   - "10.0.0.0/8"
   # Optional TLS for the panel ui
   # tls:
   #   certificates:

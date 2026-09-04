@@ -623,12 +623,25 @@ func (m *Manager) syncListenersLocked(ctx context.Context) error {
 	// Sockets for removed or disabled listeners stop first
 	m.reapSocketsLocked(func(port int) bool { return desired[port] != nil })
 
-	// Missing sockets start, running ones stay untouched
+	// Missing or updated sockets start, running matching ones stay untouched
 	for port, listener := range desired {
 		m.listenerIDs[port] = listener.Id
 		sock, ok := m.tcpSockets[port]
+		desiredIngress := listener.IngressProxyProtocol || m.config.IngressProxyProtocol
+		desiredTrusted := listener.TrustedProxies
+		if len(desiredTrusted) == 0 {
+			desiredTrusted = m.config.TrustedProxies
+		}
+
+		if ok && sock.NeedsRebind(desiredIngress, desiredTrusted) {
+			m.logger.Info("Rebinding listener %s on port %d due to proxy protocol setting change", listener.Name, port)
+			_ = sock.Stop()
+			delete(m.tcpSockets, port)
+			ok = false
+		}
+
 		if !ok {
-			sock = m.newSocketLocked(fmt.Sprintf(":%d", port))
+			sock = m.newSocketForListenerLocked(fmt.Sprintf(":%d", port), listener)
 			if err := sock.Start(); err != nil {
 				m.logger.Error("Failed to start listener %s on port %d: %v", listener.Name, port, err)
 				continue
@@ -685,17 +698,33 @@ func (m *Manager) syncDisabledLocked(ctx context.Context) error {
 	return nil
 }
 
-// Builds a listener socket bound to one address
-func (m *Manager) newSocketLocked(addr string) *ListenerSocket {
+// Builds a listener socket bound to one address for a specific ProxyListener
+func (m *Manager) newSocketForListenerLocked(addr string, l *v1.ProxyListener) *ListenerSocket {
+	ingressPP := m.config.IngressProxyProtocol
+	trustedP := m.config.TrustedProxies
+	if l != nil {
+		if l.IngressProxyProtocol {
+			ingressPP = true
+		}
+		if len(l.TrustedProxies) > 0 {
+			trustedP = l.TrustedProxies
+		}
+	}
 	return NewListenerSocket(&Config{
-		ListenAddr:  addr,
-		Logger:      m.logger,
-		Gate:        m.gate,
-		Certs:       m.certs,
-		TrustedEdge: m.config.TrustedEdge,
-		Intents:     m.intents,
-		Hub:         m.hub,
+		ListenAddr:           addr,
+		Logger:               m.logger,
+		Gate:                 m.gate,
+		Certs:                m.certs,
+		TrustedEdge:          m.config.TrustedEdge,
+		IngressProxyProtocol: ingressPP,
+		TrustedProxies:       trustedP,
+		Intents:              m.intents,
+		Hub:                  m.hub,
 	})
+}
+
+func (m *Manager) newSocketLocked(addr string) *ListenerSocket {
+	return m.newSocketForListenerLocked(addr, nil)
 }
 
 // Stops and forgets every socket the keep test rejects

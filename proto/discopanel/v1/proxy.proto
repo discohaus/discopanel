@@ -312,6 +312,8 @@ message CreateProxyListenerRequest {
   int32 port = 3;
   bool enabled = 4;
   bool is_default = 5;
+  bool ingress_proxy_protocol = 6;
+  repeated string trusted_proxies = 7;
 }
 
 // Created listener
@@ -327,6 +329,8 @@ message UpdateProxyListenerRequest {
   int32 port = 4;
   bool enabled = 5;
   bool is_default = 6;
+  bool ingress_proxy_protocol = 7;
+  repeated string trusted_proxies = 8;
 }
 
 // Updated listener
