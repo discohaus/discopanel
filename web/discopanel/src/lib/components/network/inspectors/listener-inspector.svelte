@@ -11,11 +11,13 @@
 	import { Label } from '$lib/components/ui/label';
 	import { Button } from '$lib/components/ui/button';
 	import { Switch } from '$lib/components/ui/switch';
-	import { ConfirmDialog } from '$lib/components/app';
+	import { Checkbox } from '$lib/components/ui/checkbox';
+	import * as AlertDialog from '$lib/components/ui/alert-dialog';
+	import { ConfirmDialog, ListInput } from '$lib/components/app';
 	import InspectorHeader from './inspector-header.svelte';
 	import { notify } from '$lib/stores/activity.svelte';
 	import { groupServices, laneLabel } from '../topology-data';
-	import { ArrowUpRight, Loader2, Network, Plus, Save, Trash2, Zap } from '@lucide/svelte';
+	import { AlertTriangle, ArrowUpRight, Loader2, Network, Plus, Save, Trash2, Zap } from '@lucide/svelte';
 
 	let {
 		target,
@@ -47,9 +49,16 @@
 	let port = $state(25565);
 	let enabled = $state(true);
 	let isDefault = $state(false);
+	const DISMISS_CIDR_WARNING_KEY = 'discopanel:dismiss_proxy_cidr_warning';
+
 	let portError = $state('');
 	let saving = $state(false);
 	let deleteOpen = $state(false);
+	let proxyWarningOpen = $state(false);
+	let dontWarnAgain = $state(false);
+
+	let ingressProxyProtocol = $state(false);
+	let trustedProxies = $state<string[]>([]);
 
 	// Sole default cannot be unset, another must take over
 	let defaultLocked = $derived(!!editing?.isDefault);
@@ -66,12 +75,16 @@
 			port = editing.port;
 			enabled = editing.enabled;
 			isDefault = editing.isDefault;
+			ingressProxyProtocol = editing.ingressProxyProtocol ?? false;
+			trustedProxies = editing.trustedProxies ? [...editing.trustedProxies] : [];
 		} else {
 			name = '';
 			description = '';
 			port = nextFreePort();
 			enabled = true;
 			isDefault = listeners.length === 0;
+			ingressProxyProtocol = false;
+			trustedProxies = [];
 		}
 		portError = '';
 	});
@@ -147,12 +160,34 @@
 		return true;
 	}
 
-	async function submit() {
-		if (!name.trim()) {
-			notify.error('Listener name is required');
-			return;
+	function validCIDR(str: string): boolean {
+		const trimmed = str.trim();
+		if (!trimmed) return false;
+		const parts = trimmed.split('/');
+		if (parts.length > 2) return false;
+		const ip = parts[0];
+		const mask = parts[1];
+
+		if (mask !== undefined) {
+			if (!/^\d+$/.test(mask)) return false;
+			const num = parseInt(mask, 10);
+			if (ip.includes(':')) {
+				if (num < 0 || num > 128) return false;
+			} else {
+				if (num < 0 || num > 32) return false;
+			}
 		}
-		if (!editing && !validatePort(port)) return;
+
+		if (ip.includes(':')) {
+			return /^[0-9a-fA-F:]+$/.test(ip) && (ip.includes('::') || ip.split(':').length === 8);
+		} else {
+			const octets = ip.split('.');
+			if (octets.length !== 4) return false;
+			return octets.every((o) => /^\d+$/.test(o) && parseInt(o, 10) >= 0 && parseInt(o, 10) <= 255);
+		}
+	}
+
+	async function doSubmit() {
 		saving = true;
 		try {
 			if (editing) {
@@ -161,7 +196,9 @@
 					name,
 					description,
 					enabled,
-					isDefault
+					isDefault,
+					ingressProxyProtocol,
+					trustedProxies
 				});
 				notify.success(`Listener "${name}" updated`);
 			} else {
@@ -170,7 +207,9 @@
 					name,
 					description,
 					enabled,
-					isDefault
+					isDefault,
+					ingressProxyProtocol,
+					trustedProxies
 				});
 				notify.success(`Listener "${name}" created`);
 			}
@@ -178,8 +217,34 @@
 		} catch (error: unknown) {
 			notify.error(error instanceof Error ? error.message : 'Failed to save listener');
 		} finally {
+			proxyWarningOpen = false;
 			saving = false;
 		}
+	}
+
+	function submit() {
+		if (!name.trim()) {
+			notify.error('Listener name is required');
+			return;
+		}
+		if (!editing && !validatePort(port)) return;
+
+		const dismissed =
+			typeof localStorage !== 'undefined' &&
+			localStorage.getItem(DISMISS_CIDR_WARNING_KEY) === 'true';
+		if (ingressProxyProtocol && trustedProxies.length === 0 && !dismissed) {
+			proxyWarningOpen = true;
+			return;
+		}
+		doSubmit();
+	}
+
+	async function handleWarningConfirm() {
+		if (dontWarnAgain && typeof localStorage !== 'undefined') {
+			localStorage.setItem(DISMISS_CIDR_WARNING_KEY, 'true');
+		}
+		console.log("Submit")
+		await doSubmit();
 	}
 
 	async function confirmDelete() {
@@ -329,7 +394,38 @@
 						onCheckedChange={(v) => (isDefault = v)}
 					/>
 				</label>
+				<label class="flex cursor-pointer items-center justify-between gap-3 border-t pt-3 text-sm" id="use-ingress-proxy">
+					<span>
+						PROXY protocol (v1/v2) ingress
+						<span class="block text-xs font-normal text-muted-foreground">
+							Expect and parse PROXY headers from upstream edge proxies
+						</span>
+					</span>
+					<Switch
+						checked={ingressProxyProtocol}
+						onCheckedChange={(v) => (ingressProxyProtocol = v)}
+					/>
+				</label>
 			</div>
+
+			{#if ingressProxyProtocol}
+				<div class="space-y-2" id="trusted-proxies">
+					<Label for="trusted-proxies">Trusted upstream proxies (CIDRs)</Label>
+					<ListInput
+						inputId="trusted-proxies"
+						bind:items={trustedProxies}
+						placeholder="e.g. 172.19.0.0/16, 10.0.0.0/8"
+						disabled={saving}
+						emptyText="No trusted proxies configured (all IPs allowed)"
+						removeTitle="Remove proxy CIDR"
+						validate={(cidr) =>
+							validCIDR(cidr) ? undefined : `${cidr} is not a valid IP or CIDR network`}
+					/>
+					<p class="text-xs text-muted-foreground">
+						IP ranges allowed to send PROXY headers. PROXY headers sent by untrusted IPs are ignored to prevent IP spoofing.
+					</p>
+				</div>
+			{/if}
 
 			{#if editing}
 				<div class="rounded-lg border border-status-danger/20 p-3">
@@ -377,3 +473,45 @@
 	destructive
 	onConfirm={confirmDelete}
 />
+
+<AlertDialog.Root
+	open={proxyWarningOpen}
+	onOpenChange={(o) => {
+		if (!o) proxyWarningOpen = false;
+	}}
+>
+	<AlertDialog.Content>
+		<AlertDialog.Header>
+			<AlertDialog.Title class="flex items-center gap-2">
+				<AlertTriangle class="size-5 text-status-warn" />
+				Review warning
+			</AlertDialog.Title>
+			<AlertDialog.Description>
+				The following issue was detected. You can still proceed, but you may want to review it
+				first.
+			</AlertDialog.Description>
+		</AlertDialog.Header>
+		<div class="space-y-2 py-2">
+			<div
+				class="flex items-start gap-2 rounded-md border border-status-warn/30 bg-status-warn/10 p-3 text-sm text-status-warn"
+			>
+				<AlertTriangle class="mt-0.5 size-4 shrink-0" />
+				<span>
+					PROXY protocol (v1/v2) ingress is enabled, but no trusted proxy CIDRs are set. Any IP
+					address will be allowed to send PROXY headers and potentially spoof client IP
+					addresses.
+				</span>
+			</div>
+			<label class="flex cursor-pointer items-center gap-2 pt-2 text-xs text-muted-foreground">
+				<Checkbox bind:checked={dontWarnAgain} />
+				<span>Don't warn me again on this device</span>
+			</label>
+		</div>
+		<AlertDialog.Footer>
+			<AlertDialog.Cancel onclick={() => (proxyWarningOpen = false)}>Go back</AlertDialog.Cancel>
+			<AlertDialog.Action onclick={handleWarningConfirm}>
+				{editing ? 'Save anyway' : 'Add anyway'}
+			</AlertDialog.Action>
+		</AlertDialog.Footer>
+	</AlertDialog.Content>
+</AlertDialog.Root>

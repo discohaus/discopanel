@@ -741,10 +741,6 @@
 		}
 	}
 
-	function getScheduleTypeLabel(s: ScheduleType): string {
-		return enumLabelOr(ScheduleTypeSchema, s);
-	}
-
 	function getScheduleLabel(task: ScheduledTask): string {
 		switch (task.schedule) {
 			case ScheduleType.CRON:
@@ -1212,7 +1208,7 @@
 							bind:value={cronExpr}
 							placeholder="0 0 * * *"
 							class="font-mono"
-							hint={'Format: minute hour day month weekday (e.g., "0 0 * * *" for daily at midnight)'}
+							hint="Format: minute hour day month weekday, so 0 0 * * * runs daily at midnight"
 						/>
 					{:else if scheduleType === ScheduleType.INTERVAL}
 						<LabeledInput

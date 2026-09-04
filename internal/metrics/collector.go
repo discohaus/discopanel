@@ -2,6 +2,8 @@ package metrics
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"slices"
 	"sync"
 	"time"
@@ -80,6 +82,9 @@ type ServerMetrics struct {
 
 	// Live proxied connection count from the routing layer
 	ProxyActiveConns int64
+
+	// Data dir gone, disk sampling waits for the next start
+	DataPathMissing bool
 }
 
 // Renders the sampled subset as one telemetry point
@@ -533,8 +538,18 @@ func (c *Collector) collectDiskUsage() {
 	}
 
 	for _, server := range servers {
+		if c.dataPathMissing(server.Id) {
+			continue
+		}
 		c.sampleDiskUsage(server.Id, server.DataPath)
 	}
+}
+
+func (c *Collector) dataPathMissing(serverID string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	m := c.metrics[serverID]
+	return m != nil && m.DataPathMissing
 }
 
 // Samples one server data dir and its volume
@@ -544,6 +559,13 @@ func (c *Collector) sampleDiskUsage(serverID, dataPath string) {
 	}
 
 	diskTotal, diskUsed, err := files.GetDiskSpace(dataPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		c.log.Warn("Metrics collector: server %s data path %s is missing, disk sampling paused until next start", serverID, dataPath)
+		c.updateMetrics(serverID, func(m *ServerMetrics) {
+			m.DataPathMissing = true
+		})
+		return
+	}
 	if err != nil {
 		c.log.Debug("Metrics collector: failed to get disk space: %v", err)
 		diskTotal, diskUsed = 0, 0
@@ -571,6 +593,7 @@ func (c *Collector) sampleDiskUsage(serverID, dataPath string) {
 		m.DiskTotal = diskTotal
 		m.DiskUsed = diskUsed
 		m.WorldSize = totalWorldSize
+		m.DataPathMissing = false
 		m.LastUpdated = time.Now()
 	})
 }

@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+
+	"github.com/pires/go-proxyproto"
 )
 
 // Opens every PROXY protocol v2 header
@@ -52,4 +54,44 @@ func WriteProxyV2Header(w io.Writer, clientAddr, listenerAddr net.Addr) error {
 	binary.Write(&buf, binary.BigEndian, uint16(dst.Port))
 	_, err := w.Write(buf.Bytes())
 	return err
+}
+
+// Wraps an ingress net.Listener to parse PROXY protocol v1/v2 headers
+func WrapIngressListener(base net.Listener, trustedCIDRs []string) (net.Listener, error) {
+	var connPolicyFunc proxyproto.ConnPolicyFunc
+
+	if len(trustedCIDRs) > 0 {
+		var nets []*net.IPNet
+		for _, cidr := range trustedCIDRs {
+			_, ipNet, err := net.ParseCIDR(cidr)
+			if err != nil {
+				return nil, err
+			}
+			nets = append(nets, ipNet)
+		}
+
+		connPolicyFunc = func(connPolicyOptions proxyproto.ConnPolicyOptions) (proxyproto.Policy, error) {
+			tcpAddr, ok := connPolicyOptions.Upstream.(*net.TCPAddr)
+			if !ok {
+				return proxyproto.REJECT, nil
+			}
+
+			for _, n := range nets {
+				if n.Contains(tcpAddr.IP) {
+					return proxyproto.USE, nil
+				}
+			}
+
+			return proxyproto.IGNORE, nil
+		}
+	} else {
+		connPolicyFunc = func(connPolicyOptions proxyproto.ConnPolicyOptions) (proxyproto.Policy, error) {
+			return proxyproto.USE, nil
+		}
+	}
+
+	return &proxyproto.Listener{
+		Listener:   base,
+		ConnPolicy: connPolicyFunc,
+	}, nil
 }

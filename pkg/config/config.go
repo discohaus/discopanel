@@ -93,13 +93,15 @@ type StorageConfig struct {
 }
 
 type ProxyConfig struct {
-	Enabled      bool           `mapstructure:"enabled" json:"enabled"`
-	PublicIp     string         `mapstructure:"public_ip" json:"public_ip"`     // Public address for hostname suggestions
-	BaseURL      string         `mapstructure:"base_url" json:"base_url"`       // Seeds the base domain when the db has none
-	ListenPort   int            `mapstructure:"listen_port" json:"listen_port"` // Primary listen port
-	PortRangeMin int            `mapstructure:"port_range_min" json:"port_range_min"`
-	TrustedEdge  bool           `mapstructure:"trusted_edge" json:"trusted_edge"` // Honor forwarded headers from an upstream edge
-	TLS          ProxyTLSConfig `mapstructure:"tls" json:"tls"`
+	Enabled              bool           `mapstructure:"enabled" json:"enabled"`
+	PublicIp             string         `mapstructure:"public_ip" json:"public_ip"`     // Public address for hostname suggestions
+	BaseURL              string         `mapstructure:"base_url" json:"base_url"`       // Seeds the base domain when the db has none
+	ListenPort           int            `mapstructure:"listen_port" json:"listen_port"` // Primary listen port
+	PortRangeMin         int            `mapstructure:"port_range_min" json:"port_range_min"`
+	TrustedEdge          bool           `mapstructure:"trusted_edge" json:"trusted_edge"` // Honor forwarded headers from an upstream edge
+	IngressProxyProtocol bool           `mapstructure:"ingress_proxy_protocol" json:"ingress_proxy_protocol"` // Parse PROXY protocol v1/v2 on ingress listeners
+	TrustedProxies       []string       `mapstructure:"trusted_proxies" json:"trusted_proxies"`             // Optional CIDR whitelist for PROXY protocol upstream addresses
+	TLS                  ProxyTLSConfig `mapstructure:"tls" json:"tls"`
 }
 
 // File configured certificates the proxy terminates with
@@ -124,6 +126,7 @@ type ModuleConfig struct {
 
 type DatabaseConfig struct {
 	Path            string `mapstructure:"path" json:"path"`
+	AutoMigrate     bool   `mapstructure:"auto_migrate" json:"auto_migrate"`
 	MaxConnections  int    `mapstructure:"max_connections" json:"max_connections"`
 	MaxIdleConns    int    `mapstructure:"max_idle_conns" json:"max_idle_conns"`
 	ConnMaxLifetime int    `mapstructure:"conn_max_lifetime" json:"conn_max_lifetime"`
@@ -218,6 +221,7 @@ func setDefaults(v *viper.Viper) {
 
 	// Database defaults
 	v.SetDefault("database.path", "./data/discopanel.db")
+	v.SetDefault("database.auto_migrate", true)
 	v.SetDefault("database.max_connections", 25)
 	v.SetDefault("database.max_idle_conns", 5)
 	v.SetDefault("database.conn_max_lifetime", 300)

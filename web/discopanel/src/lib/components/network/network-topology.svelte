@@ -239,15 +239,8 @@
 	let panelHosts = $derived.by(() => {
 		if (panelHostnames.length > 0) return panelHostnames;
 		if (!proxyStatus) return [];
-		const out: string[] = [];
-		const seen = new Set<string>();
 		const hosts = [proxyStatus.lanIp, proxyStatus.publicIp, proxyStatus.effectiveBaseUrl];
-		for (const host of hosts) {
-			if (!host || seen.has(host)) continue;
-			seen.add(host);
-			out.push(host);
-		}
-		return out;
+		return [...new Set(hosts.filter(Boolean))];
 	});
 
 	let selectedService = $derived.by(() => {

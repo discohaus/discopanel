@@ -736,12 +736,14 @@ func (s *ProxyService) CreateProxyListener(ctx context.Context, req *connect.Req
 	defer netClaim.Release()
 
 	listener := &v1.ProxyListener{
-		Id:          listenerID,
-		Name:        msg.Name,
-		Description: msg.Description,
-		Port:        msg.Port,
-		Enabled:     msg.Enabled,
-		IsDefault:   msg.IsDefault,
+		Id:                   listenerID,
+		Name:                 msg.Name,
+		Description:          msg.Description,
+		Port:                 msg.Port,
+		Enabled:              msg.Enabled,
+		IsDefault:            msg.IsDefault,
+		IngressProxyProtocol: msg.IngressProxyProtocol,
+		TrustedProxies:       msg.TrustedProxies,
 	}
 
 	if err := s.store.CreateProxyListener(ctx, listener); err != nil {
@@ -864,6 +866,8 @@ func (s *ProxyService) UpdateProxyListener(ctx context.Context, req *connect.Req
 	listener.Description = msg.Description
 	listener.Enabled = msg.Enabled
 	listener.IsDefault = msg.IsDefault
+	listener.IngressProxyProtocol = msg.IngressProxyProtocol
+	listener.TrustedProxies = msg.TrustedProxies
 
 	// If setting as default, unset other defaults
 	if msg.IsDefault {

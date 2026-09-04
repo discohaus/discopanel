@@ -11,12 +11,14 @@ COPY --from=bufbuild/buf:1.71.0 /usr/local/bin/buf /usr/local/bin/buf
 WORKDIR /app
 COPY go.mod go.sum buf.yaml buf.gen.yaml buf.lock ./
 COPY proto/ ./proto/
+COPY scripts/diffsql/ ./scripts/diffsql/
 
-# Materializes schema, generates, injects gorm tags and store
-RUN mkdir -p web/discopanel/static pkg/proto web/discopanel/src/lib/proto \
+# Materializes options, generates code, injects tags, loads schema
+RUN mkdir -p web/discopanel/static pkg/proto web/discopanel/src/lib/proto internal/db \
     && go tool protogorm -options proto \
     && buf generate --exclude-path proto/protogorm \
-    && buf build -o - | go tool protogorm -support pkg/proto -store internal/db/store.gen.go:db -inject pkg/proto -spec internal/db/migrations/head.snapshot.json
+    && buf build -o - | go tool protogorm -support pkg/proto -store internal/db/store.gen.go:db -inject pkg/proto \
+    && go run ./scripts/diffsql -out internal/db/schema.sql
 
 FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-builder
 
@@ -50,7 +52,7 @@ RUN go mod download
 COPY . .
 COPY --from=proto-builder /app/pkg/proto ./pkg/proto/
 COPY --from=proto-builder /app/internal/db/store.gen.go ./internal/db/store.gen.go
-COPY --from=proto-builder /app/internal/db/migrations/head.snapshot.json ./internal/db/migrations/head.snapshot.json
+COPY --from=proto-builder /app/internal/db/schema.sql ./internal/db/schema.sql
 COPY --from=frontend-builder /app/web/discopanel/build ./web/discopanel/build
 
 RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o discopanel ./cmd/discopanel

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -38,6 +39,9 @@ type ListenerSocket struct {
 	gate   ServerGate
 	gateMu sync.RWMutex
 
+	ingressProxyProtocol bool
+	trustedProxies       []string
+
 	listener net.Listener
 	feed     *connFeed
 	running  bool
@@ -50,16 +54,18 @@ type ListenerSocket struct {
 func NewListenerSocket(cfg *Config) *ListenerSocket {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &ListenerSocket{
-		mcRoutes:   make(map[string]*Route),
-		stats:      make(map[string]*RouteStats),
-		logger:     cfg.Logger,
-		listenAddr: cfg.ListenAddr,
-		ctx:        ctx,
-		cancel:     cancel,
-		gate:       cfg.Gate,
-		certs:      cfg.Certs,
-		intents:    cfg.Intents,
-		hub:        cfg.Hub,
+		mcRoutes:             make(map[string]*Route),
+		stats:                make(map[string]*RouteStats),
+		logger:               cfg.Logger,
+		listenAddr:           cfg.ListenAddr,
+		ctx:                  ctx,
+		cancel:               cancel,
+		gate:                 cfg.Gate,
+		certs:                cfg.Certs,
+		intents:              cfg.Intents,
+		hub:                  cfg.Hub,
+		ingressProxyProtocol: cfg.IngressProxyProtocol,
+		trustedProxies:       cfg.TrustedProxies,
 	}
 	s.httpLane = newHTTPLane(cfg.Logger, cfg.TrustedEdge, s.statsFor)
 	return s
@@ -77,6 +83,15 @@ func (s *ListenerSocket) Start() error {
 	listener, err := net.Listen("tcp", s.listenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", s.listenAddr, err)
+	}
+
+	if s.ingressProxyProtocol {
+		wrapped, err := WrapIngressListener(listener, s.trustedProxies)
+		if err != nil {
+			listener.Close()
+			return fmt.Errorf("failed to wrap ingress listener with PROXY protocol: %w", err)
+		}
+		listener = wrapped
 	}
 
 	s.listener = listener
@@ -121,6 +136,24 @@ func (s *ListenerSocket) IsRunning() bool {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
 	return s.running
+}
+
+// Reports whether socket configuration has drifted from desired listener settings
+func (s *ListenerSocket) NeedsRebind(ingressProxyProtocol bool, trustedProxies []string) bool {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	if s.ingressProxyProtocol != ingressProxyProtocol {
+		return true
+	}
+	if len(s.trustedProxies) != len(trustedProxies) {
+		return true
+	}
+	for i := range trustedProxies {
+		if !slices.Contains(s.trustedProxies, trustedProxies[i]) {
+			return true
+		}
+	}
+	return false
 }
 
 // Registers the wake gate for paused servers

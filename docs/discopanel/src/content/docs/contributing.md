@@ -49,8 +49,22 @@ make dev      # backend (go run) + frontend (vite dev) together
 The `.proto` files in `proto/discopanel/` are the source of truth for the entire API and every persisted data model - `storage.proto` holds all of the latter. `make gen` regenerates everything: the Go server code (`pkg/proto`), the TypeScript clients (`web/discopanel/src/lib/proto`), and the GORM storage layer (protogorm generates `internal/db/store.gen.go` from the same protos). None of it is ever edited by hand.
 
 - After changing a proto, run `make gen` (cleans and regenerates all of it).
+- If the change touched a persisted model, follow it with `make migrate-diff NAME=<short_name>` (see below).
 - `make proto-lint` and `make proto-format` keep the definitions tidy.
 - `make proto-breaking` checks your branch against `main` for breaking API changes.
+
+## Database migrations
+
+Schema changes ship as versioned SQL files in `internal/db/migrations/`, authored with [Atlas](https://atlasgo.io) and applied by the panel itself at startup. `make gen` also loads the GORM models into `internal/db/schema.sql` (generated, not committed), which is the desired state Atlas diffs against. Atlas runs in a container like buf, so Docker is the only requirement.
+
+```sh
+make migrate-diff NAME=add_server_notes   # write a migration for whatever the protos changed
+make migrate-new NAME=backfill_notes      # open an empty file for hand written SQL, then make migrate-hash
+make migrate-validate                     # replay the directory on a dev database and check atlas.sum
+make migrate-status                       # applied and pending files for ./data/discopanel.db
+```
+
+Commit the new `.sql` file together with the updated `atlas.sum`. Setting `database.auto_migrate: false` makes the panel refuse to start when an existing database has pending work instead of applying it. Fresh database always initializes.
 
 ## Tests and checks
 

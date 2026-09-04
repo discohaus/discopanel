@@ -445,6 +445,7 @@ proto/protogorm/
 pkg/proto/
 web/discopanel/src/lib/proto/
 internal/db/store.gen.go
+internal/db/schema.sql
 web/discopanel/static/schemav1.yaml
 docs/discopanel/public/schemav1.yaml
 

@@ -15,6 +15,7 @@ import (
 
 	"github.com/discohaus/discopanel/internal/auth"
 	storage "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/internal/module"
 	"github.com/discohaus/discopanel/internal/rbac"
 	"github.com/discohaus/discopanel/pkg/logger"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
@@ -25,23 +26,25 @@ import (
 var _ discopanelv1connect.AuthServiceHandler = (*AuthService)(nil)
 
 type AuthService struct {
-	store       *storage.Store
-	authManager *auth.Manager
-	enforcer    *rbac.Enforcer
-	oidcHandler *auth.OIDCHandler
-	log         *logger.Logger
+	store         *storage.Store
+	authManager   *auth.Manager
+	enforcer      *rbac.Enforcer
+	oidcHandler   *auth.OIDCHandler
+	moduleManager *module.Manager
+	log           *logger.Logger
 
 	// Serializes registration so first admin and invites race free
 	registerMu sync.Mutex
 }
 
-func NewAuthService(store *storage.Store, authManager *auth.Manager, enforcer *rbac.Enforcer, oidcHandler *auth.OIDCHandler, log *logger.Logger) *AuthService {
+func NewAuthService(store *storage.Store, authManager *auth.Manager, enforcer *rbac.Enforcer, oidcHandler *auth.OIDCHandler, moduleManager *module.Manager, log *logger.Logger) *AuthService {
 	return &AuthService{
-		store:       store,
-		authManager: authManager,
-		enforcer:    enforcer,
-		oidcHandler: oidcHandler,
-		log:         log,
+		store:         store,
+		authManager:   authManager,
+		enforcer:      enforcer,
+		oidcHandler:   oidcHandler,
+		moduleManager: moduleManager,
+		log:           log,
 	}
 }
 
@@ -539,9 +542,23 @@ func (s *AuthService) UseRecoveryKey(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodeInternal, errors.New("recovery reset failed"))
 	}
 
+	go s.reissueModuleTokens()
+
 	return connect.NewResponse(&v1.UseRecoveryKeyResponse{
 		Message: "panel reset to first-user setup",
 	}), nil
+}
+
+// Rebuilds module containers so each carries a fresh token
+func (s *AuthService) reissueModuleTokens() {
+	if s.moduleManager == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	if err := s.moduleManager.ReissueTokens(ctx); err != nil {
+		s.log.Error("Failed to reissue module tokens after recovery: %v", err)
+	}
 }
 
 // Optional deadline as a proto timestamp

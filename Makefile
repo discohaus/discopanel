@@ -1,4 +1,4 @@
-.PHONY: dev prod clean build build-frontend run deps test fmt lint check help kill-dev image dev-docker dev-auth proto proto-clean proto-lint proto-format proto-breaking gen dev-docs
+.PHONY: dev prod clean build build-frontend run deps test fmt lint check help kill-dev image dev-docker dev-auth proto proto-clean proto-lint proto-format proto-breaking gen dev-docs schema migrate-diff migrate-new migrate-hash migrate-validate migrate-status
 
 DATA_DIR := ./data
 DOCKER_DATA_DIR := /tmp/discopanel
@@ -12,6 +12,13 @@ BUF_RUN := docker run --rm \
 	--user "$(shell id -u):$(shell id -g)" \
 	--env HOME=/tmp \
 	$(BUF_IMAGE)
+ATLAS_IMAGE := arigaio/atlas:1.3.2-community
+ATLAS_RUN := docker run --rm \
+	--volume "$(shell pwd):/workspace" \
+	--workdir /workspace \
+	--user "$(shell id -u):$(shell id -g)" \
+	--env HOME=/tmp \
+	$(ATLAS_IMAGE)
 
 #DISCOSUPPORT_URL := http://localhost:8911
 
@@ -144,6 +151,7 @@ proto:
 	$(BUF_RUN) generate --exclude-path proto/protogorm
 	@echo "Injecting gorm tags and generating db wrappers..."
 	$(BUF_RUN) build -o - | go tool protogorm -support pkg/proto -store internal/db/store.gen.go:db -inject pkg/proto
+	@$(MAKE) --no-print-directory schema
 	@echo "Proto generation complete!"
 
 proto-clean:
@@ -151,6 +159,7 @@ proto-clean:
 	rm -rf pkg/proto
 	rm -rf web/discopanel/src/lib/proto
 	rm -rf proto/protogorm
+	rm -f internal/db/schema.sql
 	@echo "Proto files cleaned!"
 
 proto-lint:
@@ -170,6 +179,30 @@ proto-breaking:
 	@echo "Checking for breaking changes (using Docker)..."
 	$(BUF_RUN) breaking --against '.git#branch=main'
 	@echo "Breaking change check complete!"
+
+# Loads gorm models into the ddl atlas diffs against
+schema:
+	@echo "Loading gorm models into internal/db/schema.sql..."
+	go run ./scripts/diffsql -out internal/db/schema.sql
+
+# Writes a migration for whatever the proto changed
+migrate-diff: schema
+	@test -n "$(NAME)" || { echo "usage: make migrate-diff NAME=<name>"; exit 1; }
+	$(ATLAS_RUN) migrate diff $(NAME) --env local
+
+# Opens an empty migration for hand written sql
+migrate-new:
+	@test -n "$(NAME)" || { echo "usage: make migrate-new NAME=<name>"; exit 1; }
+	$(ATLAS_RUN) migrate new $(NAME) --env local
+
+migrate-hash:
+	$(ATLAS_RUN) migrate hash --env local
+
+migrate-validate: schema
+	$(ATLAS_RUN) migrate validate --env local
+
+migrate-status:
+	$(ATLAS_RUN) migrate status --env local --url "sqlite://$(patsubst ./%,%,$(DB_FILE))"
 
 # proto-install:
 # 	go install github.com/sudorandom/protoc-gen-connect-openapi@latest
@@ -196,4 +229,10 @@ help:
 	@echo "  make proto-lint     - Lint proto files for style and correctness (via Docker)"
 	@echo "  make proto-format   - Format proto files (via Docker)"
 	@echo "  make proto-breaking - Check for breaking changes against main (via Docker)"
+	@echo "  make schema         - Load gorm models into internal/db/schema.sql"
+	@echo "  make migrate-diff   - Write a migration for proto changes (NAME=<name>, via Docker)"
+	@echo "  make migrate-new    - Open an empty migration for hand written sql (NAME=<name>, via Docker)"
+	@echo "  make migrate-hash   - Refresh atlas.sum after editing migrations (via Docker)"
+	@echo "  make migrate-validate - Replay and checksum the migration directory (via Docker)"
+	@echo "  make migrate-status - Show applied and pending migrations for the dev db (via Docker)"
 	@echo "  make help           - Show this help message"
