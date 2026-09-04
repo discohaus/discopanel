@@ -91,8 +91,9 @@ func ForceIncludePatterns(cfg *v1.ServerProperties) []string {
 }
 
 type Store struct {
-	db  *gorm.DB
-	cfg *config.Config
+	db    *gorm.DB
+	cfg   *config.Config
+	drift []string
 }
 
 func NewSQLiteStore(cfg *config.Config) (*Store, error) {
@@ -133,9 +134,16 @@ func NewSQLiteStore(cfg *config.Config) (*Store, error) {
 
 	store := &Store{db: db, cfg: cfg}
 
-	// Verification always runs, auto migrate gates applying
-	if err := store.Migrate(); err != nil {
+	if err := store.migrate(context.Background()); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
+	}
+	for _, seed := range []func() error{
+		store.SeedSystemRoles,
+		store.SeedGlobalSettings,
+	} {
+		if err := seed(); err != nil {
+			return nil, fmt.Errorf("seed failed: %w", err)
+		}
 	}
 
 	return store, nil
@@ -143,6 +151,11 @@ func NewSQLiteStore(cfg *config.Config) (*Store, error) {
 
 func (s *Store) DB() *gorm.DB {
 	return s.db
+}
+
+// Lines describing where the live schema left the models
+func (s *Store) SchemaDrift() []string {
+	return s.drift
 }
 
 func (s *Store) Close() error {
@@ -173,14 +186,8 @@ func (s *Store) UpdateServer(ctx context.Context, server *v1.Server) error {
 // Sweeps every child row explicitly, old tables lack live cascades
 func (s *Store) DeleteServer(ctx context.Context, id string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var tokenIDs []string
-		if err := tx.Model(&v1.Module{}).Where("server_id = ? AND token_id != ''", id).Pluck("token_id", &tokenIDs).Error; err != nil {
+		if err := tx.Where("id IN (?)", tx.Model(&v1.Module{}).Select("token_id").Where("server_id = ? AND token_id != ''", id)).Delete(&v1.ApiToken{}).Error; err != nil {
 			return err
-		}
-		if len(tokenIDs) > 0 {
-			if err := tx.Where("id IN ?", tokenIDs).Delete(&v1.ApiToken{}).Error; err != nil {
-				return err
-			}
 		}
 		for _, child := range []any{
 			&v1.TaskExecution{},
@@ -228,15 +235,15 @@ func (s *Store) RollupMetricsSamples(ctx context.Context, olderThan time.Time, b
 	// Whole buckets only so reruns never split one
 	bucket := int64(bucketSeconds)
 	cutoff := time.Unix(olderThan.Unix()/bucket*bucket, 0).UTC()
+	var raw []*v1.MetricsSample // Rows under the cutoff never change, read outside the lock
+	if err := s.db.WithContext(ctx).Where("resolution = 0 AND timestamp < ?", cutoff).Find(&raw).Error; err != nil {
+		return err
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	rolled := rollupSamples(raw, bucket, 1)
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var raw []*v1.MetricsSample
-		if err := tx.Where("resolution = 0 AND timestamp < ?", cutoff).Find(&raw).Error; err != nil {
-			return err
-		}
-		if len(raw) == 0 {
-			return nil
-		}
-		rolled := rollupSamples(raw, bucket, 1)
 		if err := tx.Create(&rolled).Error; err != nil {
 			return err
 		}
@@ -687,7 +694,7 @@ func (s *Store) GetUserRoleNames(ctx context.Context, userID string) ([]string, 
 	return names, nil
 }
 
-// Deletes all sessions, tokens, roles, invites, and users
+// Deletes every account row and clears what pointed at them
 func (s *Store) ResetAllUsers(ctx context.Context) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("1 = 1").Delete(&v1.Session{}).Error; err != nil {
@@ -704,6 +711,11 @@ func (s *Store) ResetAllUsers(ctx context.Context) error {
 		}
 		if err := tx.Where("1 = 1").Delete(&v1.User{}).Error; err != nil {
 			return fmt.Errorf("failed to delete users: %w", err)
+		}
+
+		// Modules drop their owner and token, both just deleted
+		if err := tx.Model(&v1.Module{}).Where("1 = 1").Updates(map[string]any{"created_by": "", "token_id": ""}).Error; err != nil {
+			return fmt.Errorf("failed to clear module references: %w", err)
 		}
 		return nil
 	})

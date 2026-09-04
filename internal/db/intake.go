@@ -1,5 +1,5 @@
 // Data rewrites carrying v2 rows into the v3 schema
-package migrations
+package db
 
 import (
 	"encoding/json"
@@ -9,20 +9,60 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/discohaus/discopanel/pkg/javaversions"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/protometa"
-	"github.com/nickheyer/protogorm/migrate"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"gorm.io/gorm"
 )
 
-// Fixed id of the global settings row
+// Description of the file whose state v3 beta databases hold
+const intakeDesc = "v3_intake"
+
+// Hooks run inside the transaction right after their file
+var migrationHooks = map[string]func(*gorm.DB) error{
+	"v3_prepare": intakeV2,
+}
+
 const globalSettingsID = "global-settings"
 
 // Builtin templates v3 no longer ships
 var retiredBuiltins = []string{"builtin-mc-backup", "builtin-rcon-web"}
+
+// Carries v2 rows onto v3 meanings before v3_intake reshapes tables
+func intakeV2(tx *gorm.DB) error {
+	steps := []struct {
+		name string
+		fn   func(*gorm.DB) error
+	}{
+		{"user_roles_backfill", backfillUserRoles},
+		{"sweep_orphans", sweepOrphans},
+		{"servers_normalize", normalizeServers},
+		{"servers_backfill", backfillServers},
+		{"users_normalize", normalizeUsers},
+		{"user_roles_normalize", normalizeUserRoles},
+		{"modpacks_normalize", normalizeModpacks},
+		{"modpack_files_normalize", normalizeModpackFiles},
+		{"tasks_normalize", normalizeTasks},
+		{"executions_normalize", normalizeExecutions},
+		{"templates_normalize", normalizeTemplates},
+		{"modules_normalize", normalizeModules},
+		{"server_configs_copy", copyServerConfigs},
+		{"casbin_rename", renameCasbinResources},
+	}
+	for _, step := range steps {
+		if err := step.fn(tx); err != nil {
+			return fmt.Errorf("%s: %w", step.name, err)
+		}
+	}
+	return nil
+}
+
+func quoteIdent(ident string) string {
+	return "`" + ident + "`"
+}
 
 // Resolver from a v2 string onto an enum number
 func named[E interface {
@@ -33,19 +73,15 @@ func named[E interface {
 		if n, ok := aliases[s]; ok {
 			return n, true
 		}
-		if s == "" {
-			return 0, true
-		}
 		e, ok := protometa.FromName[E](s)
 		return int32(e), ok
 	}
 }
 
-// Rewrites one string enum column onto proto numbers
-// Numeric values pass through so reruns stay safe
-func mapEnumColumn(tx *gorm.DB, d migrate.Dialect, table, column string, resolve func(string) (int32, bool)) error {
-	col := d.Quote(column)
-	tbl := d.Quote(table)
+// Rewrites enum column onto proto numbers
+func mapEnumColumn(tx *gorm.DB, table, column string, resolve func(string) (int32, bool), fallback int32) error {
+	col := quoteIdent(column)
+	tbl := quoteIdent(table)
 	var values []string
 	if err := tx.Raw("SELECT DISTINCT " + col + " FROM " + tbl + " WHERE " + col + " IS NOT NULL").Scan(&values).Error; err != nil {
 		return err
@@ -56,7 +92,10 @@ func mapEnumColumn(tx *gorm.DB, d migrate.Dialect, table, column string, resolve
 		}
 		n, ok := resolve(v)
 		if !ok {
-			return fmt.Errorf("table %s has unknown %s value %q", table, column, v)
+			n = fallback
+			if v != "" {
+				log.Printf("[migrate] %s.%s value %q unknown, set to %d, original held in backup", table, column, v, fallback)
+			}
 		}
 		if err := tx.Exec("UPDATE "+tbl+" SET "+col+" = ? WHERE "+col+" = ?", n, v).Error; err != nil {
 			return err
@@ -66,27 +105,22 @@ func mapEnumColumn(tx *gorm.DB, d migrate.Dialect, table, column string, resolve
 }
 
 // Turns empty string json columns into real nulls
-func jsonEmptyToNull(tx *gorm.DB, d migrate.Dialect, table string, columns ...string) error {
-	tbl := d.Quote(table)
+func jsonEmptyToNull(tx *gorm.DB, table string, columns ...string) error {
+	tbl := quoteIdent(table)
 	for _, column := range columns {
-		col := d.Quote(column)
-		stmts := []string{
-			"UPDATE " + tbl + " SET " + col + " = NULL WHERE " + col + " = ''",
-			"UPDATE " + tbl + " SET " + col + " = NULL WHERE " + col + " = 'null'",
-		}
-		for _, sql := range stmts {
-			if err := tx.Exec(sql).Error; err != nil {
-				return err
-			}
+		col := quoteIdent(column)
+		if err := tx.Exec("UPDATE " + tbl + " SET " + col + " = NULL WHERE " + col + " IN ('', 'null')").Error; err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
 // Rewrites port json protocols from strings onto numbers
-func reshapePorts(tx *gorm.DB, d migrate.Dialect, table, column string) error {
-	tbl := d.Quote(table)
-	col := d.Quote(column)
+func reshapePorts(tx *gorm.DB, table, column string) error {
+	tbl := quoteIdent(table)
+	col := quoteIdent(column)
+	resolve := named[v1.ModuleProtocol](nil)
 	var rows []struct {
 		ID    string
 		Ports string
@@ -98,7 +132,11 @@ func reshapePorts(tx *gorm.DB, d migrate.Dialect, table, column string) error {
 	for _, row := range rows {
 		var ports []map[string]any
 		if err := json.Unmarshal([]byte(row.Ports), &ports); err != nil {
-			return fmt.Errorf("table %s row %s has bad %s json, %w", table, row.ID, column, err)
+			log.Printf("[migrate] %s row %s %s json unreadable, cleared, original held in backup", table, row.ID, column)
+			if err := tx.Exec("UPDATE "+tbl+" SET "+col+" = NULL WHERE id = ?", row.ID).Error; err != nil {
+				return err
+			}
+			continue
 		}
 		changed := false
 		for _, port := range ports {
@@ -106,15 +144,14 @@ func reshapePorts(tx *gorm.DB, d migrate.Dialect, table, column string) error {
 			if !ok {
 				continue
 			}
-			n, known := protometa.FromName[v1.ModuleProtocol](proto)
-			if !known {
-				if proto == "" {
-					n = v1.ModuleProtocol_MODULE_PROTOCOL_UNSPECIFIED
-				} else {
-					return fmt.Errorf("table %s row %s has unknown protocol %q", table, row.ID, proto)
+			n, ok := resolve(proto)
+			if !ok {
+				n = int32(v1.ModuleProtocol_MODULE_PROTOCOL_UNSPECIFIED)
+				if proto != "" {
+					log.Printf("[migrate] %s row %s protocol %q unknown, set unspecified", table, row.ID, proto)
 				}
 			}
-			port["protocol"] = int32(n)
+			port["protocol"] = n
 			changed = true
 		}
 		if !changed {
@@ -196,8 +233,39 @@ func normalizeRuntimeTags(tx *gorm.DB, table string) error {
 	return nil
 }
 
+// Gives roleless users a role, first becomes admin
+func backfillUserRoles(tx *gorm.DB) error {
+	var users []struct {
+		ID       string
+		Username string
+	}
+	q := "SELECT id AS id, username AS username FROM users WHERE id NOT IN (SELECT DISTINCT user_id FROM user_roles) ORDER BY created_at ASC"
+	if err := tx.Raw(q).Scan(&users).Error; err != nil {
+		return err
+	}
+	if len(users) == 0 {
+		return nil
+	}
+	var admins int64
+	if err := tx.Raw("SELECT COUNT(*) FROM user_roles WHERE role_name = 'admin'").Scan(&admins).Error; err != nil {
+		return err
+	}
+	for i, user := range users {
+		role := "user"
+		if i == 0 && admins == 0 {
+			role = "admin"
+		}
+		if err := tx.Exec("INSERT INTO user_roles (id, user_id, role_name, source, created_at) VALUES (?, ?, ?, 'migration', ?)",
+			user.ID+"-"+role, user.ID, role, time.Now().UTC()).Error; err != nil {
+			return err
+		}
+		log.Printf("[migrate] user %s assigned role %s", user.Username, role)
+	}
+	return nil
+}
+
 // Deletes child rows whose parents no longer exist
-func sweepOrphans(tx *gorm.DB, _ migrate.Dialect) error {
+func sweepOrphans(tx *gorm.DB) error {
 	sweeps := []struct {
 		table string
 		where string
@@ -226,11 +294,11 @@ func sweepOrphans(tx *gorm.DB, _ migrate.Dialect) error {
 }
 
 // Normalizes server rows while still in v2 shape
-func normalizeServers(tx *gorm.DB, d migrate.Dialect) error {
-	if err := mapEnumColumn(tx, d, "servers", "mod_loader", named[v1.ModLoader](nil)); err != nil {
+func normalizeServers(tx *gorm.DB) error {
+	if err := mapEnumColumn(tx, "servers", "mod_loader", named[v1.ModLoader](nil), int32(v1.ModLoader_MOD_LOADER_UNSPECIFIED)); err != nil {
 		return err
 	}
-	if err := mapEnumColumn(tx, d, "servers", "status", named[v1.ServerStatus](nil)); err != nil {
+	if err := mapEnumColumn(tx, "servers", "status", named[v1.ServerStatus](nil), int32(v1.ServerStatus_SERVER_STATUS_STOPPED)); err != nil {
 		return err
 	}
 	if err := tx.Exec("UPDATE servers SET java_version = 0 WHERE java_version IS NULL OR java_version = ''").Error; err != nil {
@@ -248,30 +316,33 @@ func normalizeServers(tx *gorm.DB, d migrate.Dialect) error {
 		ID       string
 		Hostname string
 	}
-	if err := tx.Raw("SELECT id AS id, proxy_hostname AS hostname FROM servers WHERE proxy_hostname IS NOT NULL AND proxy_hostname != ''").Scan(&rows).Error; err != nil {
+	if err := tx.Raw("SELECT id AS id, proxy_hostnames AS hostname FROM servers WHERE proxy_hostnames IS NOT NULL AND proxy_hostnames != ''").Scan(&rows).Error; err != nil {
 		return err
 	}
 	for _, row := range rows {
+		if strings.HasPrefix(row.Hostname, "[") {
+			continue
+		}
 		list, err := json.Marshal([]string{row.Hostname})
 		if err != nil {
 			return err
 		}
-		if err := tx.Exec("UPDATE servers SET proxy_hostname = ? WHERE id = ?", string(list), row.ID).Error; err != nil {
+		if err := tx.Exec("UPDATE servers SET proxy_hostnames = ? WHERE id = ?", string(list), row.ID).Error; err != nil {
 			return err
 		}
 	}
-	if err := tx.Exec("UPDATE servers SET proxy_hostname = NULL WHERE proxy_hostname = ''").Error; err != nil {
+	if err := tx.Exec("UPDATE servers SET proxy_hostnames = NULL WHERE proxy_hostnames = ''").Error; err != nil {
 		return err
 	}
 
-	if err := jsonEmptyToNull(tx, d, "servers", "additional_ports", "docker_overrides"); err != nil {
+	if err := jsonEmptyToNull(tx, "servers", "additional_ports", "docker_overrides"); err != nil {
 		return err
 	}
-	return reshapePorts(tx, d, "servers", "additional_ports")
+	return reshapePorts(tx, "servers", "additional_ports")
 }
 
-// Fills computed server columns after the reshape
-func backfillServers(tx *gorm.DB, _ migrate.Dialect) error {
+// Fills computed server columns from the old config rows
+func backfillServers(tx *gorm.DB) error {
 	var rows []struct {
 		ID       string
 		Memory   int32
@@ -310,19 +381,18 @@ func backfillServers(tx *gorm.DB, _ migrate.Dialect) error {
 	return nil
 }
 
-// Maps user provider strings onto enum numbers
-func normalizeUsers(tx *gorm.DB, d migrate.Dialect) error {
-	return mapEnumColumn(tx, d, "users", "auth_provider", named[v1.AuthProvider](nil))
+func normalizeUsers(tx *gorm.DB) error {
+	return mapEnumColumn(tx, "users", "auth_provider", named[v1.AuthProvider](nil), int32(v1.AuthProvider_AUTH_PROVIDER_LOCAL))
 }
 
 // Maps role sources, migration era rows count as local
-func normalizeUserRoles(tx *gorm.DB, d migrate.Dialect) error {
+func normalizeUserRoles(tx *gorm.DB) error {
 	aliases := map[string]int32{"migration": int32(v1.RoleSource_ROLE_SOURCE_LOCAL)}
-	return mapEnumColumn(tx, d, "user_roles", "source", named[v1.RoleSource](aliases))
+	return mapEnumColumn(tx, "user_roles", "source", named[v1.RoleSource](aliases), int32(v1.RoleSource_ROLE_SOURCE_LOCAL))
 }
 
 // Casts modpack java versions onto integers
-func normalizeModpacks(tx *gorm.DB, _ migrate.Dialect) error {
+func normalizeModpacks(tx *gorm.DB) error {
 	if err := tx.Exec("UPDATE indexed_modpacks SET java_version = 0 WHERE java_version IS NULL OR java_version = ''").Error; err != nil {
 		return err
 	}
@@ -332,23 +402,22 @@ func normalizeModpacks(tx *gorm.DB, _ migrate.Dialect) error {
 	return normalizeRuntimeTags(tx, "indexed_modpacks")
 }
 
-// Maps modpack file release channels onto enum numbers
-func normalizeModpackFiles(tx *gorm.DB, d migrate.Dialect) error {
-	return mapEnumColumn(tx, d, "indexed_modpack_files", "release_type", named[v1.ReleaseType](nil))
+func normalizeModpackFiles(tx *gorm.DB) error {
+	return mapEnumColumn(tx, "indexed_modpack_files", "release_type", named[v1.ReleaseType](nil), int32(v1.ReleaseType_RELEASE_TYPE_UNSPECIFIED))
 }
 
 // Maps task enums and fans configs into typed columns
-func normalizeTasks(tx *gorm.DB, d migrate.Dialect) error {
-	if err := mapEnumColumn(tx, d, "scheduled_tasks", "task_type", named[v1.TaskType](nil)); err != nil {
+func normalizeTasks(tx *gorm.DB) error {
+	if err := mapEnumColumn(tx, "scheduled_tasks", "task_type", named[v1.TaskType](nil), int32(v1.TaskType_TASK_TYPE_UNSPECIFIED)); err != nil {
 		return err
 	}
-	if err := mapEnumColumn(tx, d, "scheduled_tasks", "status", named[v1.TaskStatus](nil)); err != nil {
+	if err := mapEnumColumn(tx, "scheduled_tasks", "status", named[v1.TaskStatus](nil), int32(v1.TaskStatus_TASK_STATUS_ENABLED)); err != nil {
 		return err
 	}
-	if err := mapEnumColumn(tx, d, "scheduled_tasks", "schedule", named[v1.ScheduleType](nil)); err != nil {
+	if err := mapEnumColumn(tx, "scheduled_tasks", "schedule", named[v1.ScheduleType](nil), int32(v1.ScheduleType_SCHEDULE_TYPE_UNSPECIFIED)); err != nil {
 		return err
 	}
-	if err := jsonEmptyToNull(tx, d, "scheduled_tasks", "event_triggers"); err != nil {
+	if err := jsonEmptyToNull(tx, "scheduled_tasks", "event_triggers"); err != nil {
 		return err
 	}
 
@@ -378,7 +447,7 @@ func normalizeTasks(tx *gorm.DB, d migrate.Dialect) error {
 			log.Printf("[migrate] task %s config dropped, invalid json", row.ID)
 			continue
 		}
-		if err := tx.Exec("UPDATE scheduled_tasks SET "+d.Quote(column)+" = ? WHERE id = ?", row.Config, row.ID).Error; err != nil {
+		if err := tx.Exec("UPDATE scheduled_tasks SET "+quoteIdent(column)+" = ? WHERE id = ?", row.Config, row.ID).Error; err != nil {
 			return err
 		}
 	}
@@ -386,16 +455,16 @@ func normalizeTasks(tx *gorm.DB, d migrate.Dialect) error {
 }
 
 // Maps execution enums, startup runs count as scheduled
-func normalizeExecutions(tx *gorm.DB, d migrate.Dialect) error {
-	if err := mapEnumColumn(tx, d, "task_executions", "status", named[v1.ExecutionStatus](nil)); err != nil {
+func normalizeExecutions(tx *gorm.DB) error {
+	if err := mapEnumColumn(tx, "task_executions", "status", named[v1.ExecutionStatus](nil), int32(v1.ExecutionStatus_EXECUTION_STATUS_UNSPECIFIED)); err != nil {
 		return err
 	}
 	aliases := map[string]int32{"startup": int32(v1.TaskTrigger_TASK_TRIGGER_SCHEDULED)}
-	return mapEnumColumn(tx, d, "task_executions", "trigger", named[v1.TaskTrigger](aliases))
+	return mapEnumColumn(tx, "task_executions", "trigger", named[v1.TaskTrigger](aliases), int32(v1.TaskTrigger_TASK_TRIGGER_SCHEDULED))
 }
 
 // Retires dead builtins and normalizes template rows
-func normalizeTemplates(tx *gorm.DB, d migrate.Dialect) error {
+func normalizeTemplates(tx *gorm.DB) error {
 	for _, id := range retiredBuiltins {
 		var refs int64
 		if err := tx.Raw("SELECT COUNT(*) FROM modules WHERE template_id = ?", id).Scan(&refs).Error; err != nil {
@@ -407,82 +476,84 @@ func normalizeTemplates(tx *gorm.DB, d migrate.Dialect) error {
 			}
 			continue
 		}
-		log.Printf("[migrate] template %s kept as custom, %d modules use it", id, refs)
-	}
-	if err := mapEnumColumn(tx, d, "module_templates", "type", named[v1.ModuleTemplateType](nil)); err != nil {
-		return err
-	}
-	// Survivors stop pretending to be builtins
-	for _, id := range retiredBuiltins {
 		if err := tx.Exec("UPDATE module_templates SET type = ? WHERE id = ?",
 			int32(v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_CUSTOM), id).Error; err != nil {
 			return err
 		}
+		log.Printf("[migrate] template %s kept as custom, %d modules use it", id, refs)
 	}
-	if err := jsonEmptyToNull(tx, d, "module_templates",
+	if err := mapEnumColumn(tx, "module_templates", "type", named[v1.ModuleTemplateType](nil), int32(v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_CUSTOM)); err != nil {
+		return err
+	}
+	if err := jsonEmptyToNull(tx, "module_templates",
 		"default_env", "default_volumes", "ports", "suggested_dependencies",
 		"default_hooks", "metadata", "default_access_urls"); err != nil {
 		return err
 	}
-	return reshapePorts(tx, d, "module_templates", "ports")
+	return reshapePorts(tx, "module_templates", "ports")
 }
 
 // Normalizes module instance rows in place
-func normalizeModules(tx *gorm.DB, d migrate.Dialect) error {
-	if err := mapEnumColumn(tx, d, "modules", "status", named[v1.ModuleStatus](nil)); err != nil {
+func normalizeModules(tx *gorm.DB) error {
+	if err := mapEnumColumn(tx, "modules", "status", named[v1.ModuleStatus](nil), int32(v1.ModuleStatus_MODULE_STATUS_STOPPED)); err != nil {
 		return err
 	}
-	if err := jsonEmptyToNull(tx, d, "modules",
+	if err := jsonEmptyToNull(tx, "modules",
 		"env_overrides", "volume_overrides", "ports", "dependencies",
 		"event_hooks", "metadata", "access_urls"); err != nil {
 		return err
 	}
-	return reshapePorts(tx, d, "modules", "ports")
+	return reshapePorts(tx, "modules", "ports")
 }
 
 // Copies server_configs rows into server_properties
-// Columns pair up by their underscore free names
-func copyServerConfigs(target *migrate.Spec) func(tx *gorm.DB, d migrate.Dialect) error {
-	return func(tx *gorm.DB, _ migrate.Dialect) error {
-		props := target.Table("server_properties")
-		if props == nil {
-			return fmt.Errorf("target spec is missing server_properties")
-		}
-		byNorm := map[string]string{}
-		for _, col := range props.Columns {
-			byNorm[normName(col.Name)] = col.Name
-		}
-
-		var rows []map[string]any
-		if err := tx.Table("server_configs").Find(&rows).Error; err != nil {
-			return err
-		}
-		dropped := map[string]bool{}
-		for _, row := range rows {
-			out := map[string]any{}
-			for column, value := range row {
-				name, ok := byNorm[normName(column)]
-				if !ok {
-					if value != nil {
-						dropped[column] = true
-					}
-					continue
-				}
-				out[name] = value
-			}
-			if err := tx.Table("server_properties").Create(out).Error; err != nil {
-				return fmt.Errorf("copy config %v: %w", row["id"], err)
-			}
-		}
-		for column := range dropped {
-			log.Printf("[migrate] server_configs.%s dropped, held only in backup", column)
-		}
-		log.Printf("[migrate] carried %d config rows into server_properties", len(rows))
-		return nil
+func copyServerConfigs(tx *gorm.DB) error {
+	var cols []struct{ Name string }
+	if err := tx.Raw("PRAGMA table_info(`server_properties`)").Scan(&cols).Error; err != nil {
+		return err
 	}
+	if len(cols) == 0 {
+		return fmt.Errorf("server_properties table is missing")
+	}
+	byNorm := map[string]string{}
+	for _, col := range cols {
+		byNorm[normName(col.Name)] = col.Name
+	}
+
+	var rows []map[string]any
+	if err := tx.Table("server_configs").Find(&rows).Error; err != nil {
+		return err
+	}
+	dropped := map[string]bool{}
+	for _, row := range rows {
+		out := map[string]any{}
+		for column, value := range row {
+			name, ok := byNorm[normName(column)]
+			if !ok {
+				if value != nil {
+					dropped[column] = true
+				}
+				continue
+			}
+			out[name] = value
+		}
+		if err := tx.Table("server_properties").Create(out).Error; err != nil {
+			return fmt.Errorf("copy config %v: %w", row["id"], err)
+		}
+	}
+	for column := range dropped {
+		log.Printf("[migrate] server_configs.%s dropped, held only in backup", column)
+	}
+	if len(rows) > 0 {
+		log.Printf("[migrate] carried %d config rows into server_properties", len(rows))
+	}
+	return nil
 }
 
-// Underscore free lowercase form of a column name
+func renameCasbinResources(tx *gorm.DB) error {
+	return tx.Exec("UPDATE casbin_rule SET v1 = 'server_properties' WHERE v1 = 'server_config'").Error
+}
+
 func normName(s string) string {
 	return strings.ToLower(strings.ReplaceAll(s, "_", ""))
 }

@@ -382,8 +382,10 @@
 				{#if activeTab === 'console'}
 					<ServerConsole {server} active={true} />
 				{:else if activeTab === 'files'}
-					<div class="flex min-h-0 flex-1 flex-col gap-4">
-						<ServerFiles {server} active={true} />
+					<div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+						<div class="flex min-h-[calc(100%-4rem)] flex-1 shrink-0 flex-col">
+							<ServerFiles {server} active={true} />
+						</div>
 						<ServerBackups {server} active={true} />
 					</div>
 				{:else if activeTab === 'mods'}

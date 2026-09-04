@@ -291,7 +291,7 @@
 		}
 
 		// Unknown hashes are property links, go to properties tab
-		goto(`${resolve(`/servers/${server.id}`)}?tab=properties#${hash}`, {
+		goto(resolve(`/servers/${server.id}?tab=properties#${hash}`), {
 			noScroll: true,
 			keepFocus: true
 		});

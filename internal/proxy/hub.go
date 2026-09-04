@@ -79,6 +79,7 @@ type HubRuntime struct {
 	grids      map[int32]*family.Grid
 	bundles    map[int32][][]byte
 	members    map[int64]*hubMember
+	claims     map[[16]byte]*hubMember
 	nextMember int64
 	nextEntity int32
 }
@@ -124,6 +125,7 @@ func NewHubRuntime(online bool, log *logger.Logger, intents *IntentTable) (*HubR
 		grids:      make(map[int32]*family.Grid),
 		bundles:    make(map[int32][][]byte),
 		members:    make(map[int64]*hubMember),
+		claims:     make(map[[16]byte]*hubMember),
 	}
 	go h.tickLoop()
 	return h, nil
@@ -359,9 +361,8 @@ func (h *HubRuntime) join(m *hubMember, seen *family.Grid) []family.Event {
 		if o.id == m.id {
 			continue
 		}
-		// Same account elsewhere gets dropped and hidden
+		// Same account elsewhere stays hidden, claim already dropped it
 		if o.entry.UUID == m.entry.UUID {
-			h.signal(o, memberSignal{drop: "you joined the lobby from somewhere else"})
 			continue
 		}
 		world = append(world,
@@ -381,6 +382,10 @@ func (h *HubRuntime) leave(m *hubMember) {
 	// Tab entry survives while the same account remains
 	keep := false
 	delete(h.members, m.id)
+	// Claim releases unless a newer session took it
+	if h.claims[m.entry.UUID] == m {
+		delete(h.claims, m.entry.UUID)
+	}
 	for _, o := range h.members {
 		if o.entry.UUID == m.entry.UUID {
 			keep = true
@@ -736,7 +741,24 @@ func (h *HubRuntime) serve(s *ListenerSocket, clientConn net.Conn, br *bufio.Rea
 		signals:  make(chan memberSignal, 256),
 		fate:     make(chan memberSignal, 1),
 	}
+	// Newest claim on an account drops the older session
+	if prev := h.claims[profile.UUID]; prev != nil {
+		h.signal(prev, memberSignal{drop: "you joined the lobby from somewhere else"})
+	}
+	h.claims[profile.UUID] = m
 	h.mu.Unlock()
+
+	// Failed walks hand the claim back
+	defer func() {
+		if joined {
+			return
+		}
+		h.mu.Lock()
+		if h.claims[profile.UUID] == m {
+			delete(h.claims, profile.UUID)
+		}
+		h.mu.Unlock()
+	}()
 
 	spawn := clientPos(m.pos, m.offset)
 	join := family.JoinData{
