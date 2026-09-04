@@ -411,7 +411,7 @@ func normalizeTasks(tx *gorm.DB) error {
 	if err := mapEnumColumn(tx, "scheduled_tasks", "task_type", named[v1.TaskType](nil), int32(v1.TaskType_TASK_TYPE_UNSPECIFIED)); err != nil {
 		return err
 	}
-	if err := mapEnumColumn(tx, "scheduleone string d_tasks", "status", named[v1.TaskStatus](nil), int32(v1.TaskStatus_TASK_STATUS_ENABLED)); err != nil {
+	if err := mapEnumColumn(tx, "scheduled_tasks", "status", named[v1.TaskStatus](nil), int32(v1.TaskStatus_TASK_STATUS_ENABLED)); err != nil {
 		return err
 	}
 	if err := mapEnumColumn(tx, "scheduled_tasks", "schedule", named[v1.ScheduleType](nil), int32(v1.ScheduleType_SCHEDULE_TYPE_UNSPECIFIED)); err != nil {

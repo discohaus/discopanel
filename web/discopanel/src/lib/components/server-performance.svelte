@@ -142,10 +142,10 @@
 	// Jumps to the console actions channel at the incident start
 	function viewLogs(finding: PerformanceFinding) {
 		detailsOpen = false;
-		const url =
-			resolve(`/servers/${server.id}`) +
-			`?tab=console&channel=actions&hl=${finding.actionLogStartMs}`;
-		goto(url, { noScroll: true });
+		const target = resolve(
+			`/servers/${server.id}?tab=console&channel=actions&hl=${finding.actionLogStartMs}`
+		);
+		goto(target, { noScroll: true });
 	}
 
 	// Refetch only when server or status actually changes

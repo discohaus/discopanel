@@ -80,11 +80,7 @@
 		'wake-on-connect'
 	]);
 
-	let actionSources = $derived.by(() => {
-		const seen = new Set<string>();
-		for (const a of actions) if (a.source) seen.add(a.source);
-		return [...seen].sort();
-	});
+	let actionSources = $derived([...new Set(actions.map((a) => a.source).filter(Boolean))].sort());
 	let traceFilter = $state('');
 	let visibleActions = $derived(
 		actions.filter(
