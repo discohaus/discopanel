@@ -79,7 +79,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	var pending []migrate.File
+	var (
+		pending []migrate.File
+		conform *migrate.Plan
+	)
 	if baseline == nil {
 		if err := ensureRevisionTable(ctx, conn); err != nil {
 			return err
@@ -87,16 +90,25 @@ func (s *Store) migrate(ctx context.Context) error {
 		if pending, err = pendingFiles(ctx, drv, dir, conn, operator); err != nil {
 			return err
 		}
-		if len(pending) == 0 {
-			return s.checkDrift(ctx, conn)
-		}
 	} else {
 		pending = filesAfter(files, baseline.Version())
+		if conform, err = conformPlan(ctx, drv, files, baseline.Version()); err != nil {
+			return err
+		}
+	}
+	if conform == nil && len(pending) == 0 {
+		// Matching untracked database only needs its baseline row
+		if baseline != nil {
+			if _, err := adopt(ctx, drv, dir, conn, baseline, operator); err != nil {
+				return err
+			}
+		}
+		return s.checkDrift(ctx, conn)
 	}
 	// Gate protects existing data, fresh databases always initialize
 	if !s.cfg.Database.AutoMigrate && len(tables) > 0 {
 		var names []string
-		if baseline != nil {
+		if conform != nil {
 			names = append(names, "conform to "+baseline.Name())
 		}
 		for _, f := range pending {
@@ -108,18 +120,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if baseline != nil {
-		if err := conformTo(ctx, conn, files, baseline.Version()); err != nil {
-			return fmt.Errorf("conform onto %s: %w", baseline.Name(), err)
+		if conform != nil {
+			if err := applyPlan(ctx, conn, conform); err != nil {
+				return fmt.Errorf("conform onto %s: %w", baseline.Name(), err)
+			}
 		}
-		if err := ensureRevisionTable(ctx, conn); err != nil {
+		if pending, err = adopt(ctx, drv, dir, conn, baseline, operator); err != nil {
 			return err
 		}
-		// Pending writes the baseline row before listing the rest
-		mark := migrate.WithBaselineVersion(baseline.Version())
-		if pending, err = pendingFiles(ctx, drv, dir, conn, operator, mark); err != nil {
-			return err
-		}
-		log.Printf("[migrate] Baselined at %s", baseline.Name())
 	}
 	for _, f := range pending {
 		if err := applyFile(ctx, conn, dir, f, operator); err != nil {
@@ -277,8 +285,9 @@ func beginMigrationTx(ctx context.Context, conn *sql.Conn) (*sqlclient.Tx, error
 	}, nil
 }
 
-// Reshapes an untracked database onto one chain version
-func conformTo(ctx context.Context, conn *sql.Conn, files []migrate.File, version string) error {
+// Plans reshaping an untracked database onto one chain version
+// Nil plan means the schema already matches
+func conformPlan(ctx context.Context, drv migrate.Driver, files []migrate.File, version string) (*migrate.Plan, error) {
 	var stmts []string
 	for _, f := range files {
 		if f.Version() > version {
@@ -286,30 +295,31 @@ func conformTo(ctx context.Context, conn *sql.Conn, files []migrate.File, versio
 		}
 		part, err := f.Stmts()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		stmts = append(stmts, part...)
 	}
 	want, err := inspectStatements(ctx, stmts)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return inMigrationTx(ctx, conn, func(tx *sqlclient.Tx, drv migrate.Driver) error {
-		have, err := drv.InspectRealm(ctx, nil)
-		if err != nil {
-			return err
-		}
-		changes, err := drv.RealmDiff(have, want)
-		if err != nil {
-			return err
-		}
-		if len(changes) == 0 {
-			return nil
-		}
-		plan, err := drv.PlanChanges(ctx, "conform", changes)
-		if err != nil {
-			return err
-		}
+	have, err := drv.InspectRealm(ctx, &schema.InspectRealmOption{Exclude: []string{"main." + revisionTable}})
+	if err != nil {
+		return nil, err
+	}
+	changes, err := drv.RealmDiff(have, want)
+	if err != nil {
+		return nil, err
+	}
+	if len(changes) == 0 {
+		return nil, nil
+	}
+	return drv.PlanChanges(ctx, "conform", changes)
+}
+
+// Executes a conform plan inside one migration transaction
+func applyPlan(ctx context.Context, conn *sql.Conn, plan *migrate.Plan) error {
+	return inMigrationTx(ctx, conn, func(tx *sqlclient.Tx, _ migrate.Driver) error {
 		for _, c := range plan.Changes {
 			log.Printf("[migrate] Conform %s", cmp.Or(c.Comment, c.Cmd))
 			if _, err := tx.ExecContext(ctx, c.Cmd, c.Args...); err != nil {
@@ -318,6 +328,21 @@ func conformTo(ctx context.Context, conn *sql.Conn, files []migrate.File, versio
 		}
 		return nil
 	})
+}
+
+// Records the baseline row and lists the files after it
+func adopt(ctx context.Context, drv migrate.Driver, dir migrate.Dir, conn *sql.Conn, baseline migrate.File, opts ...migrate.ExecutorOption) ([]migrate.File, error) {
+	if err := ensureRevisionTable(ctx, conn); err != nil {
+		return nil, err
+	}
+	// Pending writes the baseline row before listing the rest
+	opts = append(opts, migrate.WithBaselineVersion(baseline.Version()))
+	pending, err := pendingFiles(ctx, drv, dir, conn, opts...)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("[migrate] Baselined at %s", baseline.Name())
+	return pending, nil
 }
 
 // Builds a throwaway memory database from DDL and inspects it

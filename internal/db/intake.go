@@ -73,17 +73,13 @@ func named[E interface {
 		if n, ok := aliases[s]; ok {
 			return n, true
 		}
-		if s == "" {
-			return 0, true
-		}
 		e, ok := protometa.FromName[E](s)
 		return int32(e), ok
 	}
 }
 
-// Rewrites one string enum column onto proto numbers
-// Numeric values pass through so reruns stay safe
-func mapEnumColumn(tx *gorm.DB, table, column string, resolve func(string) (int32, bool)) error {
+// Rewrites enum column onto proto numbers
+func mapEnumColumn(tx *gorm.DB, table, column string, resolve func(string) (int32, bool), fallback int32) error {
 	col := quoteIdent(column)
 	tbl := quoteIdent(table)
 	var values []string
@@ -96,7 +92,10 @@ func mapEnumColumn(tx *gorm.DB, table, column string, resolve func(string) (int3
 		}
 		n, ok := resolve(v)
 		if !ok {
-			return fmt.Errorf("table %s has unknown %s value %q", table, column, v)
+			n = fallback
+			if v != "" {
+				log.Printf("[migrate] %s.%s value %q unknown, set to %d, original held in backup", table, column, v, fallback)
+			}
 		}
 		if err := tx.Exec("UPDATE "+tbl+" SET "+col+" = ? WHERE "+col+" = ?", n, v).Error; err != nil {
 			return err
@@ -133,7 +132,11 @@ func reshapePorts(tx *gorm.DB, table, column string) error {
 	for _, row := range rows {
 		var ports []map[string]any
 		if err := json.Unmarshal([]byte(row.Ports), &ports); err != nil {
-			return fmt.Errorf("table %s row %s has bad %s json, %w", table, row.ID, column, err)
+			log.Printf("[migrate] %s row %s %s json unreadable, cleared, original held in backup", table, row.ID, column)
+			if err := tx.Exec("UPDATE "+tbl+" SET "+col+" = NULL WHERE id = ?", row.ID).Error; err != nil {
+				return err
+			}
+			continue
 		}
 		changed := false
 		for _, port := range ports {
@@ -143,7 +146,10 @@ func reshapePorts(tx *gorm.DB, table, column string) error {
 			}
 			n, ok := resolve(proto)
 			if !ok {
-				return fmt.Errorf("table %s row %s has unknown protocol %q", table, row.ID, proto)
+				n = int32(v1.ModuleProtocol_MODULE_PROTOCOL_UNSPECIFIED)
+				if proto != "" {
+					log.Printf("[migrate] %s row %s protocol %q unknown, set unspecified", table, row.ID, proto)
+				}
 			}
 			port["protocol"] = n
 			changed = true
@@ -289,10 +295,10 @@ func sweepOrphans(tx *gorm.DB) error {
 
 // Normalizes server rows while still in v2 shape
 func normalizeServers(tx *gorm.DB) error {
-	if err := mapEnumColumn(tx, "servers", "mod_loader", named[v1.ModLoader](nil)); err != nil {
+	if err := mapEnumColumn(tx, "servers", "mod_loader", named[v1.ModLoader](nil), int32(v1.ModLoader_MOD_LOADER_UNSPECIFIED)); err != nil {
 		return err
 	}
-	if err := mapEnumColumn(tx, "servers", "status", named[v1.ServerStatus](nil)); err != nil {
+	if err := mapEnumColumn(tx, "servers", "status", named[v1.ServerStatus](nil), int32(v1.ServerStatus_SERVER_STATUS_STOPPED)); err != nil {
 		return err
 	}
 	if err := tx.Exec("UPDATE servers SET java_version = 0 WHERE java_version IS NULL OR java_version = ''").Error; err != nil {
@@ -376,13 +382,13 @@ func backfillServers(tx *gorm.DB) error {
 }
 
 func normalizeUsers(tx *gorm.DB) error {
-	return mapEnumColumn(tx, "users", "auth_provider", named[v1.AuthProvider](nil))
+	return mapEnumColumn(tx, "users", "auth_provider", named[v1.AuthProvider](nil), int32(v1.AuthProvider_AUTH_PROVIDER_LOCAL))
 }
 
 // Maps role sources, migration era rows count as local
 func normalizeUserRoles(tx *gorm.DB) error {
 	aliases := map[string]int32{"migration": int32(v1.RoleSource_ROLE_SOURCE_LOCAL)}
-	return mapEnumColumn(tx, "user_roles", "source", named[v1.RoleSource](aliases))
+	return mapEnumColumn(tx, "user_roles", "source", named[v1.RoleSource](aliases), int32(v1.RoleSource_ROLE_SOURCE_LOCAL))
 }
 
 // Casts modpack java versions onto integers
@@ -397,18 +403,18 @@ func normalizeModpacks(tx *gorm.DB) error {
 }
 
 func normalizeModpackFiles(tx *gorm.DB) error {
-	return mapEnumColumn(tx, "indexed_modpack_files", "release_type", named[v1.ReleaseType](nil))
+	return mapEnumColumn(tx, "indexed_modpack_files", "release_type", named[v1.ReleaseType](nil), int32(v1.ReleaseType_RELEASE_TYPE_UNSPECIFIED))
 }
 
 // Maps task enums and fans configs into typed columns
 func normalizeTasks(tx *gorm.DB) error {
-	if err := mapEnumColumn(tx, "scheduled_tasks", "task_type", named[v1.TaskType](nil)); err != nil {
+	if err := mapEnumColumn(tx, "scheduled_tasks", "task_type", named[v1.TaskType](nil), int32(v1.TaskType_TASK_TYPE_UNSPECIFIED)); err != nil {
 		return err
 	}
-	if err := mapEnumColumn(tx, "scheduled_tasks", "status", named[v1.TaskStatus](nil)); err != nil {
+	if err := mapEnumColumn(tx, "scheduleone string d_tasks", "status", named[v1.TaskStatus](nil), int32(v1.TaskStatus_TASK_STATUS_ENABLED)); err != nil {
 		return err
 	}
-	if err := mapEnumColumn(tx, "scheduled_tasks", "schedule", named[v1.ScheduleType](nil)); err != nil {
+	if err := mapEnumColumn(tx, "scheduled_tasks", "schedule", named[v1.ScheduleType](nil), int32(v1.ScheduleType_SCHEDULE_TYPE_UNSPECIFIED)); err != nil {
 		return err
 	}
 	if err := jsonEmptyToNull(tx, "scheduled_tasks", "event_triggers"); err != nil {
@@ -450,11 +456,11 @@ func normalizeTasks(tx *gorm.DB) error {
 
 // Maps execution enums, startup runs count as scheduled
 func normalizeExecutions(tx *gorm.DB) error {
-	if err := mapEnumColumn(tx, "task_executions", "status", named[v1.ExecutionStatus](nil)); err != nil {
+	if err := mapEnumColumn(tx, "task_executions", "status", named[v1.ExecutionStatus](nil), int32(v1.ExecutionStatus_EXECUTION_STATUS_UNSPECIFIED)); err != nil {
 		return err
 	}
 	aliases := map[string]int32{"startup": int32(v1.TaskTrigger_TASK_TRIGGER_SCHEDULED)}
-	return mapEnumColumn(tx, "task_executions", "trigger", named[v1.TaskTrigger](aliases))
+	return mapEnumColumn(tx, "task_executions", "trigger", named[v1.TaskTrigger](aliases), int32(v1.TaskTrigger_TASK_TRIGGER_SCHEDULED))
 }
 
 // Retires dead builtins and normalizes template rows
@@ -476,7 +482,7 @@ func normalizeTemplates(tx *gorm.DB) error {
 		}
 		log.Printf("[migrate] template %s kept as custom, %d modules use it", id, refs)
 	}
-	if err := mapEnumColumn(tx, "module_templates", "type", named[v1.ModuleTemplateType](nil)); err != nil {
+	if err := mapEnumColumn(tx, "module_templates", "type", named[v1.ModuleTemplateType](nil), int32(v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_CUSTOM)); err != nil {
 		return err
 	}
 	if err := jsonEmptyToNull(tx, "module_templates",
@@ -489,7 +495,7 @@ func normalizeTemplates(tx *gorm.DB) error {
 
 // Normalizes module instance rows in place
 func normalizeModules(tx *gorm.DB) error {
-	if err := mapEnumColumn(tx, "modules", "status", named[v1.ModuleStatus](nil)); err != nil {
+	if err := mapEnumColumn(tx, "modules", "status", named[v1.ModuleStatus](nil), int32(v1.ModuleStatus_MODULE_STATUS_STOPPED)); err != nil {
 		return err
 	}
 	if err := jsonEmptyToNull(tx, "modules",
@@ -501,7 +507,6 @@ func normalizeModules(tx *gorm.DB) error {
 }
 
 // Copies server_configs rows into server_properties
-// Columns pair up by their underscore free names
 func copyServerConfigs(tx *gorm.DB) error {
 	var cols []struct{ Name string }
 	if err := tx.Raw("PRAGMA table_info(`server_properties`)").Scan(&cols).Error; err != nil {
