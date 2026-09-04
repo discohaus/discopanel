@@ -124,6 +124,7 @@ type ModuleConfig struct {
 
 type DatabaseConfig struct {
 	Path            string `mapstructure:"path" json:"path"`
+	AutoMigrate     bool   `mapstructure:"auto_migrate" json:"auto_migrate"`
 	MaxConnections  int    `mapstructure:"max_connections" json:"max_connections"`
 	MaxIdleConns    int    `mapstructure:"max_idle_conns" json:"max_idle_conns"`
 	ConnMaxLifetime int    `mapstructure:"conn_max_lifetime" json:"conn_max_lifetime"`
@@ -218,6 +219,7 @@ func setDefaults(v *viper.Viper) {
 
 	// Database defaults
 	v.SetDefault("database.path", "./data/discopanel.db")
+	v.SetDefault("database.auto_migrate", true)
 	v.SetDefault("database.max_connections", 25)
 	v.SetDefault("database.max_idle_conns", 5)
 	v.SetDefault("database.conn_max_lifetime", 300)

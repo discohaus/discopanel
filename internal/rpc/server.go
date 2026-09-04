@@ -203,7 +203,7 @@ func (s *Server) setupHandler() {
 // Registers all Connect RPC service handlers
 func (s *Server) registerServices(mux *http.ServeMux, opts []connect.HandlerOption) {
 	// Create service instances
-	authService := services.NewAuthService(s.store, s.authManager, s.enforcer, s.oidcHandler, s.log)
+	authService := services.NewAuthService(s.store, s.authManager, s.enforcer, s.oidcHandler, s.moduleManager, s.log)
 	propertiesService := services.NewPropertiesService(s.store, s.config, s.docker, s.lifecycle, s.rec, s.log)
 	fileService := services.NewFileService(s.store, s.docker, s.uploadManager, s.downloadManager, s.rec, s.log)
 	minecraftService := services.NewMinecraftService(s.store, s.docker, s.log)

@@ -2,6 +2,7 @@ package module
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -200,22 +201,20 @@ func (m *Manager) CreateAndStartModule(ctx context.Context, moduleID string, sta
 	}
 
 	// Fresh scoped token each create, plaintext lives only in env
-	if moduleRequiresToken(module, template) {
-		if m.tokenMinter == nil {
-			return fmt.Errorf("module %s requires an api token but minter is not ready", module.Name)
-		}
-		if module.TokenId != "" {
-			if err := m.store.DeleteApiToken(ctx, module.TokenId); err != nil {
-				m.logger.Warn("Failed to delete stale module token: %v", err)
-			}
-		}
-		plaintext, token, err := m.tokenMinter.GenerateModuleToken(ctx, module.CreatedByUserId, module.Name, module.Id, template.Metadata["module_role"])
-		if err != nil {
-			return fmt.Errorf("failed to mint module token: %w", err)
-		}
-		module.TokenId = token.Id
-		module.TokenPlaintext = plaintext
+	if m.tokenMinter == nil {
+		return fmt.Errorf("module %s requires an api token but minter is not ready", module.Name)
 	}
+	if module.TokenId != "" {
+		if err := m.store.DeleteApiToken(ctx, module.TokenId); err != nil {
+			m.logger.Warn("Failed to delete stale module token: %v", err)
+		}
+	}
+	plaintext, token, err := m.tokenMinter.GenerateModuleToken(ctx, module.CreatedByUserId, module.Name, module.Id, moduleTokenRole(template))
+	if err != nil {
+		return fmt.Errorf("failed to mint module token: %w", err)
+	}
+	module.TokenId = token.Id
+	module.TokenPlaintext = plaintext
 
 	// Update status to creating
 	module.Status = v1.ModuleStatus_MODULE_STATUS_CREATING
@@ -253,32 +252,49 @@ func (m *Manager) CreateAndStartModule(ctx context.Context, moduleID string, sta
 	return nil
 }
 
-// True when module runs with a scoped or supermodule token
-func moduleRequiresToken(module *v1.Module, template *v1.ModuleTemplate) bool {
-	if module.CreatedByUserId != "" {
-		return true
+// Token role from template metadata, module when unset
+func moduleTokenRole(template *v1.ModuleTemplate) string {
+	if role := template.Metadata["module_role"]; role != "" {
+		return role
 	}
-	return template.Type == v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_BUILTIN &&
-		template.Metadata["module_role"] != ""
+	return "module"
 }
 
-// True when module should hold a token but none exists
+// True when module holds no live token
 func (m *Manager) moduleTokenMissing(ctx context.Context, module *v1.Module) bool {
 	if m.tokenMinter == nil {
-		return false
-	}
-	template, err := m.store.GetModuleTemplate(ctx, module.TemplateId)
-	if err != nil {
-		return false
-	}
-	if !moduleRequiresToken(module, template) {
 		return false
 	}
 	if module.TokenId == "" {
 		return true
 	}
-	_, err = m.store.GetApiToken(ctx, module.TokenId)
+	_, err := m.store.GetApiToken(ctx, module.TokenId)
 	return err != nil
+}
+
+// Rebuilds every live module container onto a fresh token
+func (m *Manager) ReissueTokens(ctx context.Context) error {
+	modules, err := m.store.ListModules(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list modules: %w", err)
+	}
+	var errs []error
+	for _, module := range modules {
+		if module.ContainerId == "" {
+			continue
+		}
+		// Gone containers mint on their next start
+		if _, err := m.docker.GetContainerStatus(ctx, module.ContainerId); err != nil {
+			m.logger.Info("Module %s has no container to rebuild, token mints on next start", module.Name)
+			continue
+		}
+		if err := m.RecreateModule(ctx, module.Id); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", module.Name, err))
+			continue
+		}
+		m.logger.Info("Reissued token to module %s", module.Name)
+	}
+	return errors.Join(errs...)
 }
 
 // Loads a server with transient proxy port filled
