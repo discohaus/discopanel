@@ -79,7 +79,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: store-gen
-          path: internal/db/store.gen.go
+          path: |
+            internal/db/store.gen.go
+            internal/db/schema.sql
           retention-days: 1
 
       - name: Upload generated TypeScript proto code
