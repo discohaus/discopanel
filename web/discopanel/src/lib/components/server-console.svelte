@@ -31,7 +31,7 @@
 	} from '@lucide/svelte';
 	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
 	import { mode } from 'mode-watcher';
-	import { themedAnsiConverter } from '$lib/ansi-console';
+	import { parseMinecraftColors, themedAnsiConverter } from '$lib/ansi-console';
 	import { statusMeta, isUp, TONE_BG } from '$lib/server-status';
 	import { wsClient } from '$lib/stores/websocket.svelte';
 	import { registerRefresh } from '$lib/stores/refresh';
@@ -743,7 +743,7 @@
 								: entry.level}
 						>
 							<!-- eslint-disable-next-line svelte/no-at-html-tags -->
-							{@html ansiConverter.toHtml(entry.message)}
+							{@html ansiConverter.toHtml(parseMinecraftColors(entry.message))}
 						</div>
 					{/each}
 				</div>
