@@ -7,6 +7,10 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+/**
+ * @typedef {import('puppeteer-core').Page} Page
+ */
+
 const BASE = process.env.PANEL_URL || 'http://localhost:8080';
 const USER = process.env.PANEL_USER || 'admin';
 const PASS = process.env.PANEL_PASS || '';
@@ -16,6 +20,14 @@ const OUT = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'assets',
 const only = process.argv.slice(2);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Clicks a text element matching the given selector and text.
+ * @param {Page} page The Puppeteer page object.
+ * @param {string} selector The CSS selector to match elements.
+ * @param {string} text The text to match within the elements.
+ * @returns {Promise<void>}
+ * @throws {Error} if no matching element is found
+ */
 async function clickText(page, selector, text) {
   for (const h of await page.$$(selector)) {
     const t = await h.evaluate((e) => e.textContent.trim());
@@ -29,6 +41,12 @@ async function clickText(page, selector, text) {
   throw new Error(`no ${selector} matching "${text}"`);
 }
 
+/**
+ * Navigate to a server tab and wait for it to load
+ * @param {Page} page The Puppeteer page object.
+ * @param {string} serverUrl The URL of the server page.
+ * @param {string} tab The name of the tab to navigate to.
+ */
 async function goTab(page, serverUrl, tab) {
   await page.goto(serverUrl, { waitUntil: 'networkidle2' });
   await sleep(1200);
@@ -36,6 +54,11 @@ async function goTab(page, serverUrl, tab) {
   await sleep(1800);
 }
 
+/**
+ * Login to the panel, creating an admin account if necessary
+ * @param {Page} page The Puppeteer page object.
+ * @returns {Promise<void>}
+ */
 async function login(page) {
   await page.goto(BASE + '/login', { waitUntil: 'networkidle2' });
   await sleep(800);
@@ -55,6 +78,11 @@ async function login(page) {
   await sleep(1000);
 }
 
+/**
+ * Returns the URL of the first server in the list, or throws if none exist
+ * @param {Page} page The Puppeteer page object.
+ * @returns {Promise<string|null>}
+ */
 async function firstServerUrl(page) {
   await page.goto(BASE + '/servers', { waitUntil: 'networkidle2' });
   await sleep(1500);
@@ -68,6 +96,10 @@ async function firstServerUrl(page) {
   return BASE + href;
 }
 
+/**
+ * Collection of screenshot capture functions for different pages and states of the DiscoPanel UI.
+ * @type {Record<string, (page: Page, srv: string) => Promise<void>}
+ */
 const shots = {
   async home(page) {
     await page.goto(BASE + '/', { waitUntil: 'networkidle2' });
@@ -178,7 +210,10 @@ const shots = {
   },
 };
 
-// Swaps public IPv4s for a documentation address before capture
+/**
+ * Swaps public IPv4s for a documentation address before capture
+ * @param {Page} page The Puppeteer page object.
+ */
 async function scrubPublicIPs(page) {
   await page.evaluate(() => {
     const priv = /^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|0\.)/;
