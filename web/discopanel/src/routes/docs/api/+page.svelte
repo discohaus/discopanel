@@ -20,7 +20,7 @@
 		asset('/scalar.js' as Asset) +
 		`">${'<'}/script>
         <style>
-          /* Hide "Powered by Scalar" link... */
+          /* Hides the powered by scalar link */
           a[href="https://www.scalar.com"] {
             display: none !important;
           }
@@ -100,23 +100,15 @@
 	});
 </script>
 
-<div class="flex h-full w-full flex-col overflow-hidden">
-	<div class="flex shrink-0 items-center justify-between border-b-2 border-border/50 p-6">
-		<div class="flex items-center gap-4">
-			<div
-				class="flex h-16 w-16 items-center justify-center rounded-2xl bg-linear-to-br from-primary/20 to-primary/10 shadow-lg"
-			>
-				<FileText class="h-8 w-8 text-primary" />
-			</div>
-			<div class="space-y-1">
-				<h2
-					class="bg-linear-to-r from-foreground to-foreground/70 bg-clip-text text-4xl font-bold tracking-tight text-transparent"
-				>
-					API
-				</h2>
-				<p class="text-base text-muted-foreground">Explore the Discopanel API</p>
-			</div>
-		</div>
+<svelte:head>
+	<title>API reference · DiscoPanel</title>
+</svelte:head>
+
+<div class="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
+	<div class="flex shrink-0 items-center gap-2.5 border-b px-4 py-3 sm:px-6">
+		<FileText class="size-4 text-muted-foreground" />
+		<h1 class="text-sm font-semibold">API reference</h1>
+		<span class="text-xs text-muted-foreground">Every panel feature is available over the API</span>
 	</div>
 
 	<div class="relative min-h-0 flex-1">
@@ -124,7 +116,7 @@
 			<div class="absolute inset-0 z-10 flex items-center justify-center bg-background/80">
 				<div class="w-full max-w-md px-8">
 					<div class="mb-4 text-center">
-						<p class="text-sm text-muted-foreground">Loading API Documentation...</p>
+						<p class="text-sm text-muted-foreground">Loading API reference...</p>
 					</div>
 					<Progress value={loadingProgress} max={100} class="h-2" />
 				</div>

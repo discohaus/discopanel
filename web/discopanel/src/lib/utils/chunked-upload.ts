@@ -19,13 +19,11 @@ export interface ChunkedUploadOptions {
 
 export interface UploadResult {
 	sessionId: string;
-	tempPath: string;
 }
 
 export interface UploadStatus extends UploadProgress {
 	missingChunks: number[];
 	completed: boolean;
-	tempPath?: string;
 }
 
 const SESSION_STORAGE_KEY = 'chunked_upload_sessions';
@@ -45,7 +43,7 @@ function getSessionFromStorage(filename: string, totalSize: number): string | nu
 	try {
 		const sessions = JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) || '{}');
 		const session = sessions[filename];
-		// Check if session exists, matches size, and isn't too old (4 hours)
+		// Session must exist, match size, and be fresh
 		if (
 			session &&
 			session.totalSize === totalSize &&
@@ -69,9 +67,7 @@ function removeSessionFromStorage(filename: string): void {
 	}
 }
 
-/**
- * Upload a file using streamed upload with resumability support
- */
+// Streams a file upload with resume support
 export async function uploadFile(
 	file: File,
 	options?: ChunkedUploadOptions
@@ -87,13 +83,13 @@ export async function uploadFile(
 		sessionId = getSessionFromStorage(file.name, file.size) || undefined;
 	}
 
-	// If we have an existing session, check its status for resume
+	// Existing sessions get a status check for resume
 	if (sessionId) {
 		try {
 			const status = await getUploadStatus(sessionId);
 			if (status.completed) {
 				removeSessionFromStorage(file.name);
-				return { sessionId, tempPath: status.tempPath || '' };
+				return { sessionId };
 			}
 			offset = status.bytesUploaded;
 		} catch {
@@ -136,9 +132,7 @@ export async function uploadFile(
 	return result;
 }
 
-/**
- * The actual streaming upload via XHR
- */
+// Streams the upload bytes via xhr
 function streamUpload(
 	sessionId: string,
 	file: File,
@@ -180,11 +174,8 @@ function streamUpload(
 		xhr.onload = () => {
 			if (xhr.status >= 200 && xhr.status < 300) {
 				try {
-					const result = JSON.parse(xhr.responseText);
-					resolve({
-						sessionId,
-						tempPath: result.temp_path || ''
-					});
+					JSON.parse(xhr.responseText);
+					resolve({ sessionId });
 				} catch {
 					reject(new Error('Invalid upload response'));
 				}
@@ -211,9 +202,7 @@ function streamUpload(
 	});
 }
 
-/**
- * Check the status of an upload session
- */
+// Checks the status of an upload session
 export async function getUploadStatus(sessionId: string): Promise<UploadStatus> {
 	const response = await rpcClient.upload.getUploadStatus({ sessionId }, silentCallOptions);
 
@@ -225,14 +214,11 @@ export async function getUploadStatus(sessionId: string): Promise<UploadStatus> 
 		totalChunks: response.totalChunks,
 		percentComplete: (Number(response.bytesReceived) / Number(response.totalBytes)) * 100,
 		missingChunks: response.missingChunks,
-		completed: response.completed,
-		tempPath: response.tempPath
+		completed: response.completed
 	};
 }
 
-/**
- * Cancel an upload session
- */
+// Cancels an upload session
 export async function cancelUpload(sessionId: string): Promise<void> {
 	await rpcClient.upload.cancelUpload({ sessionId }, silentCallOptions);
 }

@@ -2,32 +2,160 @@ package command
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strconv"
+	"strings"
 	"time"
 
-	"github.com/nickheyer/discopanel/internal/config"
-	storage "github.com/nickheyer/discopanel/internal/db"
-	"github.com/nickheyer/discopanel/internal/proxy"
-	rcon "github.com/nickheyer/discopanel/internal/rcon"
+	storage "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/internal/docker"
+	"github.com/discohaus/discopanel/internal/metrics"
+	"github.com/discohaus/discopanel/pkg/config"
+	"github.com/discohaus/discopanel/pkg/logger"
+	"github.com/discohaus/discopanel/pkg/mcconsole"
+
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/go-rcon"
 )
 
-type DockerExecutor interface {
-	ExecCommand(ctx context.Context, containerID string, command string) (string, error)
+var (
+	ErrEmptyCommand   = errors.New("command is required")
+	ErrEmptyMessage   = errors.New("message is required")
+	ErrServerNotFound = errors.New("server not found")
+	ErrNoContainer    = errors.New("server has no container")
+	ErrNotRunning     = errors.New("server is not running")
+)
+
+// Runtime agent hub's console path, used when RCON cannot serve
+type ConsoleAgent interface {
+	Connected(serverID string) bool
+	SendConsole(ctx context.Context, serverID, command string) error
+	SendChat(ctx context.Context, serverID, sender, message string) error
 }
 
 type Sender struct {
-	store  *storage.Store
-	config *config.Config
-	docker DockerExecutor
+	store    *storage.Store
+	docker   *docker.Client
+	config   *config.Config
+	agent    ConsoleAgent
+	rec      *metrics.Recorder
+	streamer *logger.LogStreamer
 }
 
-func NewSender(store *storage.Store, cfg *config.Config, docker DockerExecutor) *Sender {
+func NewSender(store *storage.Store, dockerClient *docker.Client, cfg *config.Config) *Sender {
 	return &Sender{
 		store:  store,
+		docker: dockerClient,
 		config: cfg,
-		docker: docker,
 	}
+}
+
+// Wires agent hub after construction due to dependency order
+func (s *Sender) SetAgent(agent ConsoleAgent) {
+	s.agent = agent
+}
+
+// Wires ledger and console echo after construction
+func (s *Sender) SetJournal(rec *metrics.Recorder, streamer *logger.LogStreamer) {
+	s.rec = rec
+	s.streamer = streamer
+}
+
+type rconResult struct {
+	output string
+	err    error
+}
+
+func SendCommand(ctx context.Context, RCONHost string, RCONPort int, RCONPassword string, command string) (string, error) {
+	// initialize Client
+	rconClient := rcon.NewClient(fmt.Sprintf("rcon://%s:%d", RCONHost, RCONPort), RCONPassword, rcon.WithOptions(rcon.CharSetLatin1))
+
+	// run Command in a goroutine to allow for timeout handling
+	resultCh := make(chan rconResult, 1)
+	go func() {
+		output, sendErr := rconClient.Send(command)
+		resultCh <- rconResult{output: output, err: sendErr}
+	}()
+
+	// wait for either the command result or a timeout
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case result := <-resultCh:
+		if result.err != nil {
+			return "", result.err
+		}
+		return result.output, nil
+	}
+}
+
+// Loads a server and refuses anything not running
+func (s *Sender) runningServer(ctx context.Context, serverID string) (*v1.Server, error) {
+	server, err := s.store.GetServer(ctx, serverID)
+	if err != nil {
+		return nil, ErrServerNotFound
+	}
+	if server.ContainerId == "" {
+		return nil, ErrNoContainer
+	}
+	status, err := s.docker.GetContainerStatus(ctx, server.ContainerId)
+	if err != nil || (status != v1.ServerStatus_SERVER_STATUS_RUNNING && status != v1.ServerStatus_SERVER_STATUS_UNHEALTHY) {
+		return nil, ErrNotRunning
+	}
+	return server, nil
+}
+
+// Gates, echoes, sends, and records one console command
+func (s *Sender) Run(ctx context.Context, serverID, cmd string, silent bool) (string, error) {
+	if cmd == "" {
+		return "", ErrEmptyCommand
+	}
+	server, err := s.runningServer(ctx, serverID)
+	if err != nil {
+		return "", err
+	}
+
+	commandTime := time.Now()
+	if !silent && s.streamer != nil {
+		s.streamer.AddCommandEntry(server.Id, cmd, commandTime)
+	}
+
+	output, err := s.SendCommand(ctx, server.Id, cmd)
+	if err == nil {
+		s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_COMMAND_RUN, metrics.Attrs{"command": cmd}, "ran command %q", cmd)
+	}
+	if !silent && s.streamer != nil && (output != "" || err != nil) {
+		s.streamer.AddCommandOutput(server.Id, output, err == nil, commandTime)
+	}
+	return output, err
+}
+
+// Shows a chat line in game without echo or ledger
+func (s *Sender) Chat(ctx context.Context, serverID, sender, message string) error {
+	if strings.TrimSpace(message) == "" {
+		return ErrEmptyMessage
+	}
+	if sender == "" {
+		sender = "Panel"
+	}
+	server, err := s.runningServer(ctx, serverID)
+	if err != nil {
+		return err
+	}
+	// Supervisor tellraw skips RCON and its connection spam
+	if s.agent != nil && s.agent.Connected(server.Id) {
+		return s.agent.SendChat(ctx, server.Id, sender, message)
+	}
+	_, err = s.SendCommand(ctx, server.Id, mcconsole.TellrawCommand(sender, message))
+	return err
+}
+
+// Falls back to agent console, stdin has no captured response
+func (s *Sender) sendViaAgent(ctx context.Context, serverID, command string) (string, error) {
+	if err := s.agent.SendConsole(ctx, serverID, command); err != nil {
+		return "", err
+	}
+	return "", nil
 }
 
 func (s *Sender) SendCommand(ctx context.Context, serverID string, command string) (string, error) {
@@ -36,71 +164,60 @@ func (s *Sender) SendCommand(ctx context.Context, serverID string, command strin
 	if err != nil {
 		return "", fmt.Errorf("server container not found")
 	}
-	if server.ContainerID == "" {
+	if server.ContainerId == "" {
 		return "", fmt.Errorf("server container not found")
 	}
 
-	// old docker exec command
-	dockerExec := func(cause error) (string, error) {
-		output, err := s.docker.ExecCommand(ctx, server.ContainerID, command)
-		if err != nil {
-			return "", fmt.Errorf("rcon path failed: %w; fallback exec failed: %v", cause, err)
-		}
-		return output, nil
-	}
-
-	serverCfg, err := s.store.GetServerConfig(ctx, serverID)
+	serverCfg, err := s.store.GetServerProperties(ctx, serverID)
 	if err != nil {
-		return dockerExec(fmt.Errorf("failed to load server config: %w", err))
+		return "", fmt.Errorf("failed to load server config: %w", err)
 	}
 
-	if serverCfg.EnableRCON != nil && *serverCfg.EnableRCON == false {
-		return dockerExec(fmt.Errorf("rcon is disabled for this server"))
-	}
+	agentAvailable := s.agent != nil && s.agent.Connected(serverID)
 
-	var rconPort int
-	if v, ok := s.config.Minecraft.GlobalConfig["rconPort"]; ok && v != nil {
-		switch t := v.(type) {
-		case int:
-			rconPort = t
-		case int64:
-			rconPort = int(t)
-		case float64:
-			rconPort = int(t)
-		case string:
-			if p, err := strconv.Atoi(t); err == nil {
-				rconPort = p
-			}
+	if serverCfg.EnableRcon != nil && !*serverCfg.EnableRcon {
+		if agentAvailable {
+			return s.sendViaAgent(ctx, serverID, command)
 		}
-	}
-	if serverCfg.RCONPort != nil {
-		rconPort = *serverCfg.RCONPort
+		return "", fmt.Errorf("rcon is disabled for this server")
 	}
 
+	// Decoded global row backs any unset per server values
+	rconPort := 25575
 	var rconPassword string
-	if v, ok := s.config.Minecraft.GlobalConfig["rconPassword"]; ok && v != nil {
-		if p, ok := v.(string); ok {
-			rconPassword = p
-		} else {
-			rconPassword = fmt.Sprint(v)
+	if global, _, gerr := s.store.GetGlobalSettings(ctx); gerr == nil && global != nil {
+		if global.RconPort != nil {
+			rconPort = int(*global.RconPort)
+		}
+		if global.RconPassword != nil {
+			rconPassword = *global.RconPassword
 		}
 	}
-	if serverCfg.RCONPassword != nil {
-		rconPassword = *serverCfg.RCONPassword
+	if serverCfg.RconPort != nil {
+		rconPort = int(*serverCfg.RconPort)
+	}
+	if serverCfg.RconPassword != nil {
+		rconPassword = *serverCfg.RconPassword
 	}
 
-	ip, err := proxy.GetContainerIP(server.ContainerID, s.config.Docker.NetworkName)
+	ip, err := s.docker.ContainerIP(ctx, server.ContainerId)
 	if err != nil {
-		return dockerExec(fmt.Errorf("failed to resolve container ip: %w", err))
+		if agentAvailable {
+			return s.sendViaAgent(ctx, serverID, command)
+		}
+		return "", fmt.Errorf("failed to resolve container ip: %w", err)
 	}
 
-	// run comamand in dedicated context with timeout
-	rconCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+	// Run command in dedicated context with timeout
+	rconCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	output, err := rcon.SendCommand(rconCtx, ip, rconPort, rconPassword, command)
-
+	output, err := SendCommand(rconCtx, ip, rconPort, rconPassword, command)
 	if err != nil {
-		return dockerExec(fmt.Errorf("rcon command failed: %w", err))
+		// RCON preferred but a booting server falls back to stdin
+		if agentAvailable {
+			return s.sendViaAgent(ctx, serverID, command)
+		}
+		return "", fmt.Errorf("rcon command failed: %w", err)
 	}
 
 	return output, nil

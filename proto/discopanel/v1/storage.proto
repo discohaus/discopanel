@@ -1,0 +1,3076 @@
+syntax = "proto3";
+
+// Every persisted data model lives in this file
+package discopanel.v1;
+
+import "discopanel/options/v1/options.proto";
+import "google/protobuf/timestamp.proto";
+import "protogorm/v1/options.proto";
+
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+
+// Container runtime state
+enum ServerStatus {
+  option (discopanel.options.v1.enum_type) = {label: "Server Status"};
+  SERVER_STATUS_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {
+    label: "Unknown"
+    desc: "Status unknown"
+  }];
+  SERVER_STATUS_CREATING = 1 [(discopanel.options.v1.value) = {
+    label: "Creating"
+    desc: "Setting up the server container"
+  }];
+  SERVER_STATUS_STARTING = 2 [(discopanel.options.v1.value) = {
+    label: "Starting"
+    desc: "Booting up, hang tight"
+  }];
+  SERVER_STATUS_RUNNING = 3 [(discopanel.options.v1.value) = {
+    label: "Running"
+    desc: "Online and accepting players"
+  }];
+  SERVER_STATUS_STOPPING = 4 [(discopanel.options.v1.value) = {
+    label: "Stopping"
+    desc: "Saving the world and shutting down"
+  }];
+  SERVER_STATUS_STOPPED = 5 [(discopanel.options.v1.value) = {
+    label: "Stopped"
+    desc: "Offline, start it to play"
+  }];
+  SERVER_STATUS_ERROR = 7 [(discopanel.options.v1.value) = {
+    label: "Error"
+    desc: "Something went wrong, check the console"
+  }];
+  SERVER_STATUS_UNHEALTHY = 8 [(discopanel.options.v1.value) = {
+    label: "Unhealthy"
+    desc: "Up but not responding normally"
+  }];
+  SERVER_STATUS_PROVISIONING = 9 [(discopanel.options.v1.value) = {
+    label: "Provisioning"
+    desc: "Installing server files and mods"
+  }];
+  SERVER_STATUS_PAUSED = 10 [(discopanel.options.v1.value) = {
+    label: "Sleeping"
+    desc: "Paused while idle, joins wake it up"
+  }];
+}
+
+// Minecraft server software type
+enum ModLoader {
+  option (discopanel.options.v1.enum_type) = {label: "Mod Loader"};
+  MOD_LOADER_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  MOD_LOADER_VANILLA = 1 [
+    (discopanel.options.v1.value) = {
+      label: "Vanilla"
+      desc: "Vanilla Minecraft server without mod support"
+    },
+    (discopanel.options.v1.loader) = {category: MOD_LOADER_CATEGORY_VANILLA}
+  ];
+  MOD_LOADER_FORGE = 2 [
+    (discopanel.options.v1.value) = {
+      label: "Minecraft Forge"
+      desc: "The original and most widely used modding platform"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_FORGE
+      mods_directory: "mods"
+      dialects: ["forge"]
+      builtins: [
+        "forge",
+        "fml",
+        "minecraft",
+        "java",
+        "mixin"
+      ]
+      maven_ranges: true
+      facets: ["forge"]
+      markers: ["libraries/net/minecraftforge"]
+    }
+  ];
+  MOD_LOADER_FABRIC = 3 [
+    (discopanel.options.v1.value) = {
+      label: "Fabric"
+      desc: "Lightweight and fast modding platform"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_FABRIC
+      mods_directory: "mods"
+      dialects: ["fabric"]
+      builtins: [
+        "fabricloader",
+        "minecraft",
+        "java",
+        "mixin"
+      ]
+      facets: ["fabric"]
+      markers: [
+        "libraries/net/fabricmc/fabric-loader",
+        "fabric-server-launch.jar"
+      ]
+    }
+  ];
+  MOD_LOADER_QUILT = 4 [
+    (discopanel.options.v1.value) = {
+      label: "Quilt"
+      desc: "Fork of Fabric with additional features"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_FABRIC
+      mods_directory: "mods"
+      dialects: [
+        "quilt",
+        "fabric"
+      ]
+      builtins: [
+        "quilt_loader",
+        "quilt_base"
+      ]
+      facets: [
+        "quilt",
+        "fabric"
+      ]
+      markers: [
+        "libraries/org/quiltmc/quilt-loader",
+        "quilt-server-launch.jar"
+      ]
+    }
+  ];
+  MOD_LOADER_PAPER = 5 [
+    (discopanel.options.v1.value) = {
+      label: "Paper"
+      desc: "Performance-optimized fork of Spigot"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_PAPER
+      mods_directory: "plugins"
+    }
+  ];
+  MOD_LOADER_SPIGOT = 6 [
+    (discopanel.options.v1.value) = {
+      label: "Spigot"
+      desc: "High-performance fork of Bukkit"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_BUKKIT
+      mods_directory: "plugins"
+    }
+  ];
+  MOD_LOADER_BUKKIT = 7 [
+    (discopanel.options.v1.value) = {
+      label: "Bukkit"
+      desc: "The original plugin API for Minecraft servers"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_BUKKIT
+      mods_directory: "plugins"
+    }
+  ];
+  MOD_LOADER_PURPUR = 8 [
+    (discopanel.options.v1.value) = {
+      label: "Purpur"
+      desc: "Fork of Paper with additional gameplay features"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_PAPER
+      mods_directory: "plugins"
+    }
+  ];
+  MOD_LOADER_SPONGE_VANILLA = 9 [
+    (discopanel.options.v1.value) = {
+      name: "spongevanilla"
+      label: "SpongeVanilla"
+      desc: "Plugin platform with advanced API"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_SPONGE
+      mods_directory: "mods"
+    }
+  ];
+  MOD_LOADER_SPONGE_FORGE = 10 [
+    (discopanel.options.v1.value) = {
+      name: "spongeforge"
+      label: "SpongeForge"
+      desc: "Sponge plugin platform on top of Forge"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_SPONGE
+      mods_directory: "mods"
+      dialects: ["forge"]
+    }
+  ];
+  MOD_LOADER_MOHIST = 11 [
+    (discopanel.options.v1.value) = {
+      label: "Mohist"
+      desc: "Hybrid server combining Forge and Paper"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_HYBRID
+      mods_directory: "mods"
+      dialects: ["forge"]
+    }
+  ];
+  MOD_LOADER_CATSERVER = 12 [
+    (discopanel.options.v1.value) = {
+      label: "Catserver"
+      desc: "Hybrid server implementation"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_HYBRID
+      mods_directory: "mods"
+      dialects: ["forge"]
+    }
+  ];
+  MOD_LOADER_ARCLIGHT = 13 [
+    (discopanel.options.v1.value) = {
+      label: "Arclight"
+      desc: "Modern hybrid implementation for Forge, NeoForge, and Fabric"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_HYBRID
+      mods_directory: "mods"
+    }
+  ];
+  MOD_LOADER_AUTO_CURSEFORGE = 14 [
+    (discopanel.options.v1.value) = {
+      label: "Auto CurseForge"
+      desc: "Automatic CurseForge modpack installer"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_MODPACK
+      mods_directory: "mods"
+      pack_source: PACK_SOURCE_CURSEFORGE
+    }
+  ];
+  MOD_LOADER_MODRINTH = 15 [
+    (discopanel.options.v1.value) = {
+      label: "Modrinth"
+      desc: "Modern open-source modpack platform"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_MODPACK
+      mods_directory: "mods"
+      pack_source: PACK_SOURCE_MODRINTH
+    }
+  ];
+  MOD_LOADER_NEOFORGE = 16 [
+    (discopanel.options.v1.value) = {
+      label: "NeoForge"
+      desc: "Modern fork of Forge with improved features"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_FORGE
+      mods_directory: "mods"
+      dialects: [
+        "neoforge",
+        "forge"
+      ]
+      builtins: ["neoforge"]
+      maven_ranges: true
+      facets: ["neoforge"]
+      markers: ["libraries/net/neoforged"]
+    }
+  ];
+  MOD_LOADER_FOLIA = 17 [
+    (discopanel.options.v1.value) = {
+      label: "Folia"
+      desc: "Regionized multithreaded fork of Paper"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_PAPER
+      mods_directory: "plugins"
+    }
+  ];
+  MOD_LOADER_CUSTOM = 18 [
+    (discopanel.options.v1.value) = {
+      label: "Custom"
+      desc: "Custom server implementation"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_OTHER
+      mods_directory: "mods"
+    }
+  ];
+  MOD_LOADER_PUFFERFISH = 19 [
+    (discopanel.options.v1.value) = {
+      label: "Pufferfish"
+      desc: "Performance-focused fork of Paper"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_PAPER
+      mods_directory: "plugins"
+    }
+  ];
+  MOD_LOADER_MAGMA = 20 [
+    (discopanel.options.v1.value) = {
+      label: "Magma"
+      desc: "Hybrid server supporting both Forge mods and Bukkit plugins"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_HYBRID
+      mods_directory: "mods"
+      dialects: ["forge"]
+    }
+  ];
+  MOD_LOADER_MAGMA_MAINTAINED = 21 [
+    (discopanel.options.v1.value) = {
+      label: "Magma Maintained"
+      desc: "Maintained fork of Magma hybrid server"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_HYBRID
+      mods_directory: "mods"
+      dialects: ["forge"]
+    }
+  ];
+  MOD_LOADER_KETTING = 22 [
+    (discopanel.options.v1.value) = {
+      label: "Ketting"
+      desc: "Modern hybrid server for Forge and Bukkit"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_HYBRID
+      mods_directory: "mods"
+      dialects: ["forge"]
+    }
+  ];
+  MOD_LOADER_YOUER = 23 [
+    (discopanel.options.v1.value) = {
+      label: "Youer"
+      desc: "NeoForge hybrid server by the Mohist team"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_HYBRID
+      mods_directory: "mods"
+      dialects: [
+        "neoforge",
+        "forge"
+      ]
+    }
+  ];
+  MOD_LOADER_BANNER = 24 [
+    (discopanel.options.v1.value) = {
+      label: "Banner"
+      desc: "Fabric hybrid server by the Mohist team"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_HYBRID
+      mods_directory: "mods"
+      dialects: ["fabric"]
+    }
+  ];
+  MOD_LOADER_LIMBO = 25 [
+    (discopanel.options.v1.value) = {
+      label: "Limbo"
+      desc: "Lightweight server for holding players"
+    },
+    (discopanel.options.v1.loader) = {category: MOD_LOADER_CATEGORY_LIGHTWEIGHT}
+  ];
+  MOD_LOADER_NANO_LIMBO = 26 [
+    (discopanel.options.v1.value) = {
+      name: "nanolimbo"
+      label: "NanoLimbo"
+      desc: "Ultra-lightweight server for holding players"
+    },
+    (discopanel.options.v1.loader) = {category: MOD_LOADER_CATEGORY_LIGHTWEIGHT}
+  ];
+  MOD_LOADER_CRUCIBLE = 27 [
+    (discopanel.options.v1.value) = {
+      label: "Crucible"
+      desc: "Legacy hybrid server implementation"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_OTHER
+      mods_directory: "mods"
+      dialects: ["forge"]
+    }
+  ];
+  MOD_LOADER_GLOWSTONE = 28 [
+    (discopanel.options.v1.value) = {
+      label: "Glowstone"
+      desc: "Open-source Minecraft server implementation"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_OTHER
+      mods_directory: "plugins"
+    }
+  ];
+  MOD_LOADER_FTBA = 29 [
+    (discopanel.options.v1.value) = {
+      label: "Feed The Beast"
+      desc: "FTB modpack platform, upload the server files yourself"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_MODPACK
+      mods_directory: "mods"
+    }
+  ];
+  MOD_LOADER_CURSEFORGE = 30 [
+    (discopanel.options.v1.value) = {
+      label: "CurseForge"
+      desc: "Popular modpack platform"
+    },
+    (discopanel.options.v1.loader) = {
+      category: MOD_LOADER_CATEGORY_MODPACK
+      mods_directory: "mods"
+      pack_source: PACK_SOURCE_CURSEFORGE
+    }
+  ];
+}
+
+// Task type enumeration
+enum TaskType {
+  option (discopanel.options.v1.enum_type) = {label: "Task Type"};
+  TASK_TYPE_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  TASK_TYPE_COMMAND = 1 [(discopanel.options.v1.value) = {
+    label: "Command"
+    desc: "Execute an RCON command"
+  }];
+  TASK_TYPE_BACKUP = 2 [(discopanel.options.v1.value) = {
+    label: "Backup"
+    desc: "Create a backup"
+  }];
+  TASK_TYPE_RESTART = 3 [(discopanel.options.v1.value) = {
+    label: "Restart"
+    desc: "Restart the server"
+  }];
+  TASK_TYPE_START = 4 [(discopanel.options.v1.value) = {
+    label: "Start"
+    desc: "Start the server"
+  }];
+  TASK_TYPE_STOP = 5 [(discopanel.options.v1.value) = {
+    label: "Stop"
+    desc: "Stop the server"
+  }];
+  TASK_TYPE_SCRIPT = 6 [(discopanel.options.v1.value) = {
+    label: "Script"
+    desc: "Run a custom script"
+  }];
+  TASK_TYPE_WEBHOOK = 7 [(discopanel.options.v1.value) = {
+    label: "Webhook"
+    desc: "Send an HTTP webhook"
+  }];
+}
+
+// Task status enumeration
+enum TaskStatus {
+  option (discopanel.options.v1.enum_type) = {label: "Task Status"};
+  TASK_STATUS_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  TASK_STATUS_ENABLED = 1 [(discopanel.options.v1.value) = {label: "Enabled"}];
+  TASK_STATUS_DISABLED = 2 [(discopanel.options.v1.value) = {label: "Disabled"}];
+  TASK_STATUS_PAUSED = 3 [(discopanel.options.v1.value) = {label: "Paused"}];
+}
+
+// Schedule type enumeration
+enum ScheduleType {
+  option (discopanel.options.v1.enum_type) = {label: "Schedule Type"};
+  SCHEDULE_TYPE_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  SCHEDULE_TYPE_CRON = 1 [(discopanel.options.v1.value) = {label: "Cron expression"}];
+  SCHEDULE_TYPE_INTERVAL = 2 [(discopanel.options.v1.value) = {label: "Fixed interval"}];
+  SCHEDULE_TYPE_ONCE = 3 [(discopanel.options.v1.value) = {label: "Run once"}];
+  SCHEDULE_TYPE_EVENT = 4 [(discopanel.options.v1.value) = {label: "On event"}];
+}
+
+// Execution status enumeration
+enum ExecutionStatus {
+  option (discopanel.options.v1.enum_type) = {label: "Execution Status"};
+  EXECUTION_STATUS_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  EXECUTION_STATUS_PENDING = 1 [(discopanel.options.v1.value) = {label: "Pending"}];
+  EXECUTION_STATUS_RUNNING = 2 [(discopanel.options.v1.value) = {label: "Running"}];
+  EXECUTION_STATUS_COMPLETED = 3 [(discopanel.options.v1.value) = {label: "Completed"}];
+  EXECUTION_STATUS_FAILED = 4 [(discopanel.options.v1.value) = {label: "Failed"}];
+  EXECUTION_STATUS_SKIPPED = 5 [(discopanel.options.v1.value) = {label: "Skipped"}];
+  EXECUTION_STATUS_CANCELLED = 6 [(discopanel.options.v1.value) = {label: "Cancelled"}];
+  EXECUTION_STATUS_TIMEOUT = 7 [(discopanel.options.v1.value) = {label: "Timeout"}];
+}
+
+// All-encompassing catalog of events
+enum TriggeredEventType {
+  option (discopanel.options.v1.enum_type) = {label: "Server Event"};
+  TRIGGERED_EVENT_TYPE_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  // The parent server container started
+  TRIGGERED_EVENT_TYPE_SERVER_START = 1 [(discopanel.options.v1.value) = {
+    label: "Server Start"
+    desc: "When the server starts"
+  }];
+  // The parent server container stopped
+  TRIGGERED_EVENT_TYPE_SERVER_STOP = 2 [(discopanel.options.v1.value) = {
+    label: "Server Stop"
+    desc: "When the server stops"
+  }];
+  // The parent server passed its health check
+  TRIGGERED_EVENT_TYPE_SERVER_HEALTHY = 3 [(discopanel.options.v1.value) = {
+    label: "Server Healthy"
+    desc: "When the server passes its health check"
+  }];
+  // A player joined the server
+  TRIGGERED_EVENT_TYPE_PLAYER_JOIN = 4 [(discopanel.options.v1.value) = {
+    label: "Player Join"
+    desc: "When a player joins (the player name is available as {{.player}})"
+  }];
+  // A player left the server
+  TRIGGERED_EVENT_TYPE_PLAYER_LEAVE = 5 [(discopanel.options.v1.value) = {
+    label: "Player Leave"
+    desc: "When a player leaves (the player name is available as {{.player}})"
+  }];
+  // The parent server was restarted
+  TRIGGERED_EVENT_TYPE_SERVER_RESTART = 6 [(discopanel.options.v1.value) = {
+    label: "Server Restart"
+    desc: "When the server restarts"
+  }];
+  // A player died, agent-sourced, data carries death message
+  TRIGGERED_EVENT_TYPE_PLAYER_DEATH = 7 [(discopanel.options.v1.value) = {
+    label: "Player Death"
+    desc: "When a player dies ({{.player}}, death message as {{.detail}})"
+  }];
+  // A player completed an advancement (agent-sourced)
+  TRIGGERED_EVENT_TYPE_PLAYER_ADVANCEMENT = 8 [(discopanel.options.v1.value) = {
+    label: "Player Advancement"
+    desc: "When a player earns an advancement ({{.player}}, advancement as {{.detail}})"
+  }];
+  // A player sent a chat message (agent-sourced)
+  TRIGGERED_EVENT_TYPE_PLAYER_CHAT = 9 [(discopanel.options.v1.value) = {
+    label: "Player Chat"
+    desc: "When a player chats ({{.player}}, message as {{.detail}})"
+  }];
+}
+
+// Template origin kind
+enum ModuleTemplateType {
+  option (discopanel.options.v1.enum_type) = {label: "Template Type"};
+  MODULE_TEMPLATE_TYPE_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  // Built-in templates shipped with DiscoPanel.
+  MODULE_TEMPLATE_TYPE_BUILTIN = 1 [(discopanel.options.v1.value) = {label: "Built-in"}];
+  // User-created custom templates.
+  MODULE_TEMPLATE_TYPE_CUSTOM = 2 [(discopanel.options.v1.value) = {label: "Custom"}];
+}
+
+// ModuleStatus represents the runtime state of a module instance.
+enum ModuleStatus {
+  option (discopanel.options.v1.enum_type) = {label: "Module Status"};
+  MODULE_STATUS_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  // Container is not running.
+  MODULE_STATUS_STOPPED = 1 [(discopanel.options.v1.value) = {label: "Stopped"}];
+  // Container is starting up.
+  MODULE_STATUS_STARTING = 2 [(discopanel.options.v1.value) = {label: "Starting"}];
+  // Container is running and healthy.
+  MODULE_STATUS_RUNNING = 3 [(discopanel.options.v1.value) = {label: "Running"}];
+  // Container is shutting down.
+  MODULE_STATUS_STOPPING = 4 [(discopanel.options.v1.value) = {label: "Stopping"}];
+  // Container encountered an error.
+  MODULE_STATUS_ERROR = 5 [(discopanel.options.v1.value) = {label: "Error"}];
+  // Container is being created.
+  MODULE_STATUS_CREATING = 6 [(discopanel.options.v1.value) = {label: "Creating"}];
+}
+
+// Actions module event hooks can trigger
+enum ModuleEventAction {
+  option (discopanel.options.v1.enum_type) = {label: "Event Action"};
+  MODULE_EVENT_ACTION_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  // Start this module's container.
+  MODULE_EVENT_ACTION_START = 1 [(discopanel.options.v1.value) = {
+    label: "Start"
+    desc: "Start this module's container"
+  }];
+  // Stop this module's container.
+  MODULE_EVENT_ACTION_STOP = 2 [(discopanel.options.v1.value) = {
+    label: "Stop"
+    desc: "Stop this module's container"
+  }];
+  // Restart this module's container.
+  MODULE_EVENT_ACTION_RESTART = 3 [(discopanel.options.v1.value) = {
+    label: "Restart"
+    desc: "Restart this module's container"
+  }];
+  // Execute a command inside this module's container.
+  MODULE_EVENT_ACTION_EXEC = 4 [(discopanel.options.v1.value) = {
+    label: "Exec"
+    desc: "Execute a command inside this module's container"
+  }];
+  // Send an RCON command to the parent server.
+  MODULE_EVENT_ACTION_RCON = 5 [(discopanel.options.v1.value) = {
+    label: "RCON"
+    desc: "Send an RCON command to the parent server"
+  }];
+}
+
+// What caused a task execution
+enum TaskTrigger {
+  option (discopanel.options.v1.enum_type) = {label: "Task Trigger"};
+  TASK_TRIGGER_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  TASK_TRIGGER_SCHEDULED = 1 [(discopanel.options.v1.value) = {label: "Scheduled"}];
+  TASK_TRIGGER_MANUAL = 2 [(discopanel.options.v1.value) = {label: "Manual"}];
+  TASK_TRIGGER_EVENT = 3 [(discopanel.options.v1.value) = {label: "Event"}];
+}
+
+// Identity backend an account or role assignment came from
+enum AuthProvider {
+  option (discopanel.options.v1.enum_type) = {label: "Auth Provider"};
+  AUTH_PROVIDER_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  AUTH_PROVIDER_LOCAL = 1 [(discopanel.options.v1.value) = {label: "Local"}];
+  AUTH_PROVIDER_OIDC = 2 [(discopanel.options.v1.value) = {label: "OIDC"}];
+  // Synthetic admin identity while auth is disabled
+  AUTH_PROVIDER_NONE = 3 [(discopanel.options.v1.value) = {label: "None"}];
+  AUTH_PROVIDER_ANONYMOUS = 4 [(discopanel.options.v1.value) = {label: "Anonymous"}];
+  // Module container identity minted per api token
+  AUTH_PROVIDER_MODULE = 5 [(discopanel.options.v1.value) = {label: "Module"}];
+}
+
+// How a role assignment came to exist
+enum RoleSource {
+  option (discopanel.options.v1.enum_type) = {label: "Role Source"};
+  ROLE_SOURCE_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  ROLE_SOURCE_LOCAL = 1 [(discopanel.options.v1.value) = {label: "Local"}];
+  ROLE_SOURCE_OIDC = 2 [(discopanel.options.v1.value) = {label: "OIDC"}];
+  ROLE_SOURCE_INVITE = 3 [(discopanel.options.v1.value) = {label: "Invite"}];
+}
+
+// Who wrote the server icon
+enum IconSource {
+  option (discopanel.options.v1.enum_type) = {label: "Icon Source"};
+  ICON_SOURCE_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  ICON_SOURCE_UPLOAD = 1 [(discopanel.options.v1.value) = {label: "Upload"}];
+  ICON_SOURCE_MODPACK = 2 [(discopanel.options.v1.value) = {label: "Modpack"}];
+}
+
+// Stability channel of a modpack file
+enum ReleaseType {
+  option (discopanel.options.v1.enum_type) = {label: "Release Type"};
+  RELEASE_TYPE_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  RELEASE_TYPE_RELEASE = 1 [(discopanel.options.v1.value) = {label: "Release"}];
+  RELEASE_TYPE_BETA = 2 [(discopanel.options.v1.value) = {label: "Beta"}];
+  RELEASE_TYPE_ALPHA = 3 [(discopanel.options.v1.value) = {label: "Alpha"}];
+}
+
+// Transport protocol for a mapped port
+enum ModuleProtocol {
+  option (discopanel.options.v1.enum_type) = {label: "Protocol"};
+  MODULE_PROTOCOL_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  // Raw TCP forwarding without protocol parsing
+  MODULE_PROTOCOL_TCP = 1 [(discopanel.options.v1.value) = {label: "TCP"}];
+  MODULE_PROTOCOL_UDP = 2 [(discopanel.options.v1.value) = {label: "UDP"}];
+  // Minecraft handshake parsing for hostname routing
+  MODULE_PROTOCOL_MINECRAFT = 3 [(discopanel.options.v1.value) = {label: "Minecraft"}];
+  // HTTP reverse proxy with Host header routing
+  MODULE_PROTOCOL_HTTP = 4 [(discopanel.options.v1.value) = {label: "HTTP"}];
+}
+
+// Wire transport a port rides on
+enum NetworkTransport {
+  option (discopanel.options.v1.enum_type) = {label: "Transport"};
+  NETWORK_TRANSPORT_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  NETWORK_TRANSPORT_TCP = 1 [(discopanel.options.v1.value) = {label: "TCP"}];
+  NETWORK_TRANSPORT_UDP = 2 [(discopanel.options.v1.value) = {label: "UDP"}];
+}
+
+// How a failed config field check is treated
+enum ModuleConfigSeverity {
+  option (discopanel.options.v1.enum_type) = {label: "Severity"};
+  MODULE_CONFIG_SEVERITY_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  // Prompt the user but allow proceeding
+  MODULE_CONFIG_SEVERITY_WARN = 1 [(discopanel.options.v1.value) = {label: "Warning"}];
+  // Block create and update until fixed
+  MODULE_CONFIG_SEVERITY_DENY = 2 [(discopanel.options.v1.value) = {label: "Deny"}];
+}
+
+// Input widget and value kind for a config field
+enum ModuleConfigFieldType {
+  option (discopanel.options.v1.enum_type) = {label: "Field Type"};
+  MODULE_CONFIG_FIELD_TYPE_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  MODULE_CONFIG_FIELD_TYPE_STRING = 1 [(discopanel.options.v1.value) = {label: "Text"}];
+  MODULE_CONFIG_FIELD_TYPE_PASSWORD = 2 [(discopanel.options.v1.value) = {label: "Password"}];
+  MODULE_CONFIG_FIELD_TYPE_INT = 3 [(discopanel.options.v1.value) = {label: "Number"}];
+  MODULE_CONFIG_FIELD_TYPE_BOOL = 4 [(discopanel.options.v1.value) = {label: "Toggle"}];
+  MODULE_CONFIG_FIELD_TYPE_SELECT = 5 [(discopanel.options.v1.value) = {label: "Select"}];
+  MODULE_CONFIG_FIELD_TYPE_MULTILINE = 6 [(discopanel.options.v1.value) = {label: "Multiline"}];
+}
+
+// Every action the activity ledger records
+enum ServerActionKind {
+  option (discopanel.options.v1.enum_type) = {label: "Server Action"};
+  SERVER_ACTION_KIND_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  SERVER_ACTION_KIND_SERVER_CREATE = 1 [(discopanel.options.v1.value) = {label: "Server Created"}];
+  SERVER_ACTION_KIND_SERVER_START = 2 [(discopanel.options.v1.value) = {label: "Server Started"}];
+  SERVER_ACTION_KIND_SERVER_STOP = 3 [(discopanel.options.v1.value) = {label: "Server Stopped"}];
+  SERVER_ACTION_KIND_SERVER_PAUSE = 4 [(discopanel.options.v1.value) = {label: "Server Paused"}];
+  SERVER_ACTION_KIND_SERVER_WAKE = 5 [(discopanel.options.v1.value) = {label: "Server Woken"}];
+  SERVER_ACTION_KIND_SERVER_CRASH = 6 [(discopanel.options.v1.value) = {label: "Server Crashed"}];
+  SERVER_ACTION_KIND_SERVER_OOM = 7 [(discopanel.options.v1.value) = {label: "Out Of Memory"}];
+  SERVER_ACTION_KIND_SERVER_BOOT_FAILED = 8 [(discopanel.options.v1.value) = {label: "Boot Failed"}];
+  SERVER_ACTION_KIND_CONTAINER_RECREATE = 9 [(discopanel.options.v1.value) = {label: "Container Recreated"}];
+  SERVER_ACTION_KIND_CONTAINER_REMOVE = 10 [(discopanel.options.v1.value) = {label: "Container Removed"}];
+  SERVER_ACTION_KIND_RUNTIME_UPDATE = 11 [(discopanel.options.v1.value) = {label: "Runtime Updated"}];
+  SERVER_ACTION_KIND_COMMAND_RUN = 12 [(discopanel.options.v1.value) = {label: "Command Run"}];
+  SERVER_ACTION_KIND_TASK_CREATE = 13 [(discopanel.options.v1.value) = {label: "Task Created"}];
+  SERVER_ACTION_KIND_TASK_UPDATE = 14 [(discopanel.options.v1.value) = {label: "Task Updated"}];
+  SERVER_ACTION_KIND_TASK_DELETE = 15 [(discopanel.options.v1.value) = {label: "Task Deleted"}];
+  SERVER_ACTION_KIND_TASK_TOGGLE = 16 [(discopanel.options.v1.value) = {label: "Task Toggled"}];
+  SERVER_ACTION_KIND_TASK_COMMAND = 17 [(discopanel.options.v1.value) = {label: "Task Command"}];
+  SERVER_ACTION_KIND_TASK_SCRIPT = 18 [(discopanel.options.v1.value) = {label: "Task Script"}];
+  SERVER_ACTION_KIND_BACKUP_CREATE = 19 [(discopanel.options.v1.value) = {label: "Backup Created"}];
+  SERVER_ACTION_KIND_BACKUP_RESTORE = 20 [(discopanel.options.v1.value) = {label: "Backup Restored"}];
+  SERVER_ACTION_KIND_MOD_INSTALL = 21 [(discopanel.options.v1.value) = {label: "Mod Installed"}];
+  SERVER_ACTION_KIND_MOD_ENABLE = 22 [(discopanel.options.v1.value) = {label: "Mod Enabled"}];
+  SERVER_ACTION_KIND_MOD_DISABLE = 23 [(discopanel.options.v1.value) = {label: "Mod Disabled"}];
+  SERVER_ACTION_KIND_MOD_DELETE = 24 [(discopanel.options.v1.value) = {label: "Mod Deleted"}];
+  SERVER_ACTION_KIND_MODULE_CREATE = 25 [(discopanel.options.v1.value) = {label: "Module Created"}];
+  SERVER_ACTION_KIND_MODULE_START = 26 [(discopanel.options.v1.value) = {label: "Module Started"}];
+  SERVER_ACTION_KIND_MODULE_STOP = 27 [(discopanel.options.v1.value) = {label: "Module Stopped"}];
+  SERVER_ACTION_KIND_MODULE_RESTART = 28 [(discopanel.options.v1.value) = {label: "Module Restarted"}];
+  SERVER_ACTION_KIND_MODULE_DELETE = 29 [(discopanel.options.v1.value) = {label: "Module Deleted"}];
+  SERVER_ACTION_KIND_FILE_UPLOAD = 30 [(discopanel.options.v1.value) = {label: "File Uploaded"}];
+  SERVER_ACTION_KIND_FILE_EDIT = 31 [(discopanel.options.v1.value) = {label: "File Edited"}];
+  SERVER_ACTION_KIND_FILE_DELETE = 32 [(discopanel.options.v1.value) = {label: "File Deleted"}];
+  SERVER_ACTION_KIND_FILE_MOVE = 33 [(discopanel.options.v1.value) = {label: "File Moved"}];
+  SERVER_ACTION_KIND_FILE_RENAME = 34 [(discopanel.options.v1.value) = {label: "File Renamed"}];
+  SERVER_ACTION_KIND_FILE_MKDIR = 35 [(discopanel.options.v1.value) = {label: "Folder Created"}];
+  SERVER_ACTION_KIND_FILE_ARCHIVE = 36 [(discopanel.options.v1.value) = {label: "Archive Created"}];
+  SERVER_ACTION_KIND_FILE_EXTRACT = 37 [(discopanel.options.v1.value) = {label: "Archive Extracted"}];
+  SERVER_ACTION_KIND_ICON_UPLOAD = 38 [(discopanel.options.v1.value) = {label: "Icon Uploaded"}];
+  SERVER_ACTION_KIND_MODPACK_SELECT = 39 [(discopanel.options.v1.value) = {label: "Modpack Selected"}];
+  SERVER_ACTION_KIND_PROPERTIES_UPDATE = 40 [(discopanel.options.v1.value) = {label: "Properties Updated"}];
+  SERVER_ACTION_KIND_ROUTING_UPDATE = 41 [(discopanel.options.v1.value) = {label: "Routing Updated"}];
+  SERVER_ACTION_KIND_PROVISION_INSTALL = 42 [(discopanel.options.v1.value) = {label: "Provisioned"}];
+  SERVER_ACTION_KIND_PROVISION_MC_VERSION = 43 [(discopanel.options.v1.value) = {label: "Version Pinned"}];
+}
+
+// One container port for servers and modules alike
+message NetworkPort {
+  // Display name for the port
+  string name = 1;
+  // Port inside the container
+  int32 container_port = 2;
+  // Port on the host, zero auto allocates
+  int32 host_port = 3;
+  // Defaults to tcp when unspecified
+  ModuleProtocol protocol = 4;
+  // Routes through the proxy instead of a host bind
+  bool proxy_enabled = 5;
+  // Override the owning server hostnames for routed ports
+  repeated string hostnames = 6;
+  // Also answers unmatched hostnames, http ports only
+  bool catch_all = 7;
+}
+
+// Volume mount configuration for container
+message VolumeMount {
+  string source = 1; // Host path or volume name
+  string target = 2; // Container path
+  bool read_only = 3; // Mount as read-only
+  string type = 4; // One of "bind" or "volume", defaults to "bind"
+  bool create_dir = 5; // Pre-create source dir
+}
+
+// Container runtime customization
+message DockerOverrides {
+  map<string, string> environment = 1; // Additional environment variables
+  repeated VolumeMount volumes = 2; // Additional volume mounts
+  string network_mode = 3; // Override network mode
+  string restart_policy = 4; // Override restart policy
+  double cpu_limit = 5; // CPU limit (e.g., 1.5 for 1.5 cores)
+  int64 memory_limit = 6; // Override memory limit in MB
+  map<string, string> labels = 7; // Additional labels
+  repeated string cap_add = 8; // Linux capabilities to add
+  repeated string cap_drop = 9; // Linux capabilities to drop
+  repeated string devices = 10; // Device mappings, e.g. "/dev/ttyUSB0" to "/dev/ttyUSB0"
+  repeated string extra_hosts = 11; // Extra entries for /etc/hosts
+  bool privileged = 12; // Run container in privileged mode
+  bool read_only = 13; // Mount root filesystem as read-only
+  repeated string security_opt = 14; // Security options
+  int64 shm_size = 15; // Size of /dev/shm in bytes
+  string user = 16; // User to run commands as
+  string working_dir = 17; // Working directory inside container
+  repeated string entrypoint = 18; // Override default entrypoint
+  repeated string command = 19; // Override default command
+  repeated string dns = 20; // Custom DNS servers
+}
+
+// One RBAC permission entry
+message Permission {
+  discopanel.options.v1.ResourceType resource = 1;
+  discopanel.options.v1.ActionType action = 2;
+  string object_id = 3;
+}
+
+// ModuleConfigOption is one choice for a select config field.
+message ModuleConfigOption {
+  // Stored env value.
+  string value = 1;
+  // Display label. Falls back to value when empty.
+  string label = 2;
+}
+
+// ModuleConfigField is a typed config input declared by a template.
+message ModuleConfigField {
+  // Env variable name. Also the field identity.
+  string env = 1;
+  // Display label. Falls back to env when empty.
+  string label = 2;
+  // Help text shown under the input.
+  string description = 3;
+  // Input widget and value kind.
+  ModuleConfigFieldType type = 4;
+  // Value must be non-empty.
+  bool required = 5;
+  // Requirement waived while this env key is truthy.
+  string required_unless = 6;
+  // Initial value. Supports alias substitution.
+  string default_value = 7;
+  // RE2 pattern the value must match.
+  string regex = 8;
+  // Message shown when the regex fails.
+  string regex_message = 9;
+  // Minimum numeric value for number fields.
+  optional int32 min = 10;
+  // Maximum numeric value for number fields.
+  optional int32 max = 11;
+  // Choices for select fields.
+  repeated ModuleConfigOption options = 12;
+  // Input placeholder hint.
+  string placeholder = 13;
+  // Optional subsection heading in the form.
+  string group = 14;
+  // Violation handling. Defaults to warn when unspecified.
+  ModuleConfigSeverity severity = 15;
+}
+
+// ModuleDependency declares a dependency on another module.
+message ModuleDependency {
+  // ID of the module this module depends on.
+  string module_id = 1;
+  // Wait for dependency health check before starting.
+  bool wait_for_healthy = 2;
+  // Max seconds to wait, 0 means 60.
+  int32 timeout_seconds = 3;
+}
+
+// Action to take when a server event occurs
+message ModuleEventHook {
+  // The event that triggers this hook.
+  TriggeredEventType event = 1;
+  // The action to perform when triggered.
+  ModuleEventAction action = 2;
+  // Command to execute for EXEC or RCON actions.
+  string command = 3;
+  // Seconds to wait before executing the action.
+  int32 delay_seconds = 4;
+  // Optional condition expression (e.g., "{{server.players_online}} == 0").
+  string condition = 5;
+}
+
+// Task configuration for different task types
+message CommandTaskConfig {
+  string command = 1; // RCON command to execute
+}
+
+// Configuration for backup tasks
+message BackupTaskConfig {
+  string backup_name = 1; // Name pattern for backup (empty = task name)
+  repeated string paths = 2; // Server-relative paths, empty means world directory
+  bool compress = 3; // Whether to compress archive contents
+  int32 retention_days = 4; // Days to keep backups (0 = forever)
+  int32 max_backups = 5; // Max backups kept, 0 unlimited, beats min_backups
+  int32 min_backups = 6; // Never let retention_days expiry reduce the backup count below this
+}
+
+// Configuration for script execution tasks
+message ScriptTaskConfig {
+  string script_path = 1; // Path to script file
+  repeated string args = 2; // Script arguments
+}
+
+// Configuration for webhook tasks. Stored serialized as JSON in ScheduledTask.config.
+message WebhookTaskConfig {
+  string url = 1; // Webhook destination URL
+  string secret = 2; // Optional HMAC signing secret
+  string payload_template = 3; // Go template for request body, empty uses generic JSON
+  map<string, string> headers = 4; // Custom request headers
+  int32 max_retries = 5; // Retries on delivery failure (default 3)
+  int32 retry_delay_ms = 6; // Initial retry delay in ms (default 1000)
+  int32 timeout_ms = 7; // HTTP timeout in ms (default 5000)
+}
+
+// System user account
+message User {
+  option (protogorm.v1.model) = {
+    table: "users"
+    order_by: "created_at DESC"
+    cascades: [
+      {
+        model: "Session"
+        fk: "user_id"
+      },
+      {
+        model: "ApiToken"
+        fk: "user_id"
+      },
+      {
+        model: "UserRole"
+        fk: "user_id"
+      }
+    ]
+    queries: [
+      {
+        name: "GetUserByUsernameAndProvider"
+        kind: QUERY_KIND_GET
+        where: "username = ? AND auth_provider = ?"
+        params: [
+          "username string",
+          "provider AuthProvider"
+        ]
+      },
+      {
+        name: "GetUserByOIDCSubject"
+        kind: QUERY_KIND_GET
+        where: "oidc_subject = ? AND oidc_subject != ''"
+        params: ["subject string"]
+      }
+    ]
+  };
+  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  string username = 2 [(protogorm.v1.db) = {tag: "not null;uniqueIndex:idx_user_provider"}];
+  optional string email = 3 [(protogorm.v1.db) = {tag: "index"}];
+  AuthProvider auth_provider = 4 [(protogorm.v1.db) = {tag: "not null;default:1;uniqueIndex:idx_user_provider"}];
+  bool is_active = 5 [(protogorm.v1.db) = {tag: "not null;default:true"}];
+  repeated string roles = 6 [(protogorm.v1.db) = {skip: true}];
+  google.protobuf.Timestamp created_at = 7 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
+  google.protobuf.Timestamp updated_at = 8 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
+  optional google.protobuf.Timestamp last_login = 9;
+  string password_hash = 10 [(protogorm.v1.db) = {redact: true}];
+  string oidc_subject = 11 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_oidc_identity,where:oidc_subject != ''"}];
+  string oidc_issuer = 12 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_oidc_identity,where:oidc_subject != ''"}];
+}
+
+// Minecraft server instance
+message Server {
+  option (protogorm.v1.model) = {
+    table: "servers"
+    order_by: "created_at DESC"
+    skip: [
+      "create",
+      "update",
+      "delete"
+    ]
+    queries: [
+      {
+        name: "GetServerByAgentTokenHash"
+        kind: QUERY_KIND_GET
+        where: "agent_token_hash = ? AND agent_token_hash != ''"
+        params: ["hash string"]
+      }
+    ]
+  };
+  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  string name = 2 [(protogorm.v1.db) = {tag: "not null"}];
+  string description = 3;
+  ModLoader mod_loader = 4 [(protogorm.v1.db) = {tag: "not null"}];
+  string mc_version = 5 [(protogorm.v1.db) = {tag: "not null"}];
+  ServerStatus status = 6 [(protogorm.v1.db) = {tag: "not null"}];
+  int32 port = 7;
+  // Hostnames this server serves on its listener
+  repeated string proxy_hostnames = 8;
+  string proxy_listener_id = 9;
+  // Listener host port, computed at read time
+  int32 proxy_port = 10 [(protogorm.v1.db) = {skip: true}];
+  // Unknown hostname joins on the listener land here
+  bool proxy_catch_all = 54 [(protogorm.v1.db) = {tag: "default:false"}];
+  int32 max_players = 11 [(protogorm.v1.db) = {tag: "default:20"}];
+  int32 memory = 12 [(protogorm.v1.db) = {tag: "default:4096"}]; // Container memory limit in MB
+  int32 memory_min = 49 [(protogorm.v1.db) = {tag: "default:0"}]; // JVM initial heap (Xms) in MB
+  int32 memory_max = 50 [(protogorm.v1.db) = {tag: "default:0"}]; // JVM max heap (Xmx) in MB
+  string data_path = 13 [(protogorm.v1.db) = {tag: "not null"}];
+  string container_id = 14;
+  optional google.protobuf.Timestamp last_started = 15;
+  int32 java_version = 16;
+  string docker_image = 17;
+  bool auto_start = 18 [(protogorm.v1.db) = {tag: "default:false"}];
+  bool detached = 19 [(protogorm.v1.db) = {tag: "default:false"}];
+
+  // Runtime stats
+
+  int32 cpu_cores = 20 [(protogorm.v1.db) = {skip: true}];
+  int64 memory_usage = 21 [(protogorm.v1.db) = {skip: true}];
+  double cpu_percent = 22 [(protogorm.v1.db) = {skip: true}];
+  int64 disk_usage = 23 [(protogorm.v1.db) = {skip: true}]; // Bytes this server's data dir occupies
+  int64 disk_total = 24 [(protogorm.v1.db) = {skip: true}]; // Bytes the volume holds in total
+  int64 disk_used = 47 [(protogorm.v1.db) = {skip: true}]; // Bytes used on the volume by everything
+  int32 players_online = 25 [(protogorm.v1.db) = {skip: true}];
+  int64 world_size = 39 [(protogorm.v1.db) = {skip: true}]; // Bytes of the world directories alone
+  double tps = 26 [(protogorm.v1.db) = {skip: true}];
+
+  // Additional container settings
+  repeated NetworkPort additional_ports = 27;
+  DockerOverrides docker_overrides = 28 [(protogorm.v1.db) = {tag: "type:text"}];
+
+  google.protobuf.Timestamp created_at = 29 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
+  google.protobuf.Timestamp updated_at = 30 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
+
+  // SLP
+  bool slp_available = 31 [(protogorm.v1.db) = {skip: true}];
+  int64 slp_latency_ms = 32 [(protogorm.v1.db) = {skip: true}];
+  string motd = 33 [(protogorm.v1.db) = {skip: true}];
+  string server_version = 34 [(protogorm.v1.db) = {skip: true}];
+  int32 protocol_version = 35 [(protogorm.v1.db) = {skip: true}];
+  repeated string player_sample = 36 [(protogorm.v1.db) = {skip: true}];
+  int32 max_players_slp = 37 [(protogorm.v1.db) = {skip: true}];
+  string favicon = 38 [(protogorm.v1.db) = {skip: true}]; // Base64 PNG
+
+  // Agent-sourced runtime stats (present when the disco-agent channel is live)
+  bool agent_connected = 41 [(protogorm.v1.db) = {skip: true}];
+  double mspt = 42 [(protogorm.v1.db) = {skip: true}]; // Mean milliseconds per tick (agent-sourced)
+  double heap_used_mb = 43 [(protogorm.v1.db) = {skip: true}];
+  double heap_max_mb = 44 [(protogorm.v1.db) = {skip: true}];
+  double cpu_throttle_percent = 45 [(protogorm.v1.db) = {skip: true}]; // Share of CFS periods throttled (0-100)
+  int32 class_count = 46 [(protogorm.v1.db) = {skip: true}]; // Loaded JVM classes (agent-sourced)
+
+  // Runtime image digest recorded at container create
+  string runtime_digest = 48;
+
+  // In-container listen port, computed at read time
+  int32 container_port = 51 [(protogorm.v1.db) = {skip: true}];
+
+  // SHA-256 of the runtime agent's bearer token
+  string agent_token_hash = 52 [(protogorm.v1.db) = {redact: true}];
+  // Who wrote server-icon.png
+  IconSource icon_source = 53;
+}
+
+// TCP proxy listener endpoint
+message ProxyListener {
+  option (protogorm.v1.model) = {
+    table: "proxy_listeners"
+    order_by: "is_default DESC, port ASC"
+    guards: [
+      {
+        model: "Server"
+        fk: "proxy_listener_id"
+      }
+    ]
+  };
+  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  string name = 2;
+  string description = 3;
+  int32 port = 4 [(protogorm.v1.db) = {tag: "not null;uniqueIndex"}];
+  bool enabled = 5 [(protogorm.v1.db) = {tag: "not null;default:true"}];
+  bool is_default = 6 [(protogorm.v1.db) = {tag: "not null;default:false"}];
+  google.protobuf.Timestamp created_at = 7 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
+  google.protobuf.Timestamp updated_at = 8 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
+  // Created on demand for a routed port, not by hand
+  bool auto_created = 9 [(protogorm.v1.db) = {tag: "not null;default:false"}];
+  // Expect and parse PROXY protocol v1/v2 on ingress
+  bool ingress_proxy_protocol = 10 [(protogorm.v1.db) = {tag: "not null;default:false"}];
+  // CIDR whitelist allowed to send PROXY protocol headers
+  repeated string trusted_proxies = 11;
+}
+
+// A set of permissions and metadata
+message Role {
+  option (protogorm.v1.model) = {
+    table: "roles"
+    order_by: "is_system DESC, name ASC"
+    skip: ["delete"]
+    queries: [
+      {
+        name: "GetDefaultRoles"
+        kind: QUERY_KIND_LIST
+        where: "is_default = true"
+      },
+      {
+        name: "GetRoleByName"
+        kind: QUERY_KIND_GET
+        where: "name = ?"
+        params: ["name string"]
+      }
+    ]
+  };
+  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  string name = 2 [(protogorm.v1.db) = {tag: "not null;uniqueIndex"}];
+  string description = 3;
+  bool is_system = 4 [(protogorm.v1.db) = {tag: "not null;default:false"}];
+  bool is_default = 5 [(protogorm.v1.db) = {tag: "not null;default:false"}];
+  repeated Permission permissions = 6 [(protogorm.v1.db) = {skip: true}];
+  google.protobuf.Timestamp created_at = 7 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
+  google.protobuf.Timestamp updated_at = 8 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
+}
+
+// One role assignment row
+message UserRole {
+  option (protogorm.v1.model) = {
+    table: "user_roles"
+    queries: [
+      {
+        name: "UnassignRole"
+        kind: QUERY_KIND_DELETE
+        where: "user_id = ? AND role_name = ?"
+        params: [
+          "userID string",
+          "roleName string"
+        ]
+      },
+      {
+        name: "GetUserRoleAssignment"
+        kind: QUERY_KIND_GET
+        where: "user_id = ? AND role_name = ?"
+        params: [
+          "userID string",
+          "roleName string"
+        ]
+        not_found_nil: true
+      },
+      {
+        name: "ListUserRolesByUser"
+        kind: QUERY_KIND_LIST
+        where: "user_id = ?"
+        params: ["userID string"]
+      }
+    ]
+  };
+  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  string user_id = 2 [(protogorm.v1.db) = {tag: "not null;index"}];
+  string role_name = 3 [(protogorm.v1.db) = {tag: "not null;index"}];
+  RoleSource source = 4 [(protogorm.v1.db) = {tag: "not null;default:1"}];
+  google.protobuf.Timestamp created_at = 5 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
+}
+
+// One login session row
+message Session {
+  option (protogorm.v1.model) = {
+    table: "sessions"
+    skip: [
+      "get",
+      "delete"
+    ]
+    queries: [
+      {
+        name: "GetSession"
+        kind: QUERY_KIND_GET
+        where: "token = ? AND datetime(expires_at) > datetime(?)"
+        params: [
+          "token string",
+          "now time.Time"
+        ]
+        preload: ["User"]
+      },
+      {
+        name: "DeleteSession"
+        kind: QUERY_KIND_DELETE
+        where: "token = ?"
+        params: ["token string"]
+      },
+      {
+        name: "CleanExpiredSessions"
+        kind: QUERY_KIND_DELETE
+        where: "datetime(expires_at) < datetime(?)"
+        params: ["now time.Time"]
+      },
+      {
+        name: "CleanAllSessions"
+        kind: QUERY_KIND_DELETE
+        where: "1 = 1"
+      }
+    ]
+  };
+  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  string user_id = 2 [(protogorm.v1.db) = {tag: "not null;index"}];
+  string token = 3 [(protogorm.v1.db) = {
+    tag: "not null;uniqueIndex"
+    redact: true
+  }];
+  google.protobuf.Timestamp expires_at = 4 [(protogorm.v1.db) = {tag: "not null;index"}];
+  google.protobuf.Timestamp created_at = 5 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
+  User user = 6 [(protogorm.v1.db) = {tag: "constraint:OnDelete:CASCADE"}];
+}
+
+// API Token metadata (never includes the token value)
+message ApiToken {
+  option (protogorm.v1.model) = {
+    table: "api_tokens"
+    order_by: "created_at DESC"
+    queries: [
+      {
+        name: "GetApiTokenByHash"
+        kind: QUERY_KIND_GET
+        where: "token_hash = ?"
+        params: ["hash string"]
+      },
+      {
+        name: "ListApiTokensByUser"
+        kind: QUERY_KIND_LIST
+        where: "user_id = ? AND (is_module_token = false OR is_module_token IS NULL)"
+        params: ["userID string"]
+      },
+      {
+        name: "DeleteUserApiToken"
+        kind: QUERY_KIND_DELETE
+        where: "id = ? AND user_id = ?"
+        params: [
+          "id string",
+          "userID string"
+        ]
+        require_row: true
+      },
+      {
+        name: "UpdateApiTokenLastUsed"
+        kind: QUERY_KIND_UPDATE
+        set: "last_used_at = ?"
+        where: "id = ?"
+        params: [
+          "t time.Time",
+          "id string"
+        ]
+      }
+    ]
+  };
+  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  string name = 2 [(protogorm.v1.db) = {tag: "not null"}];
+  google.protobuf.Timestamp expires_at = 3;
+  google.protobuf.Timestamp last_used_at = 4;
+  google.protobuf.Timestamp created_at = 5 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
+  string user_id = 6 [(protogorm.v1.db) = {tag: "not null;index"}];
+  string token_hash = 7 [(protogorm.v1.db) = {
+    tag: "not null;uniqueIndex"
+    redact: true
+  }];
+  bool is_module_token = 8 [(protogorm.v1.db) = {tag: "default:false"}];
+  string module_role = 9 [(protogorm.v1.db) = {tag: "default:''"}];
+}
+
+// Registration invite link
+message RegistrationInvite {
+  option (protogorm.v1.model) = {
+    table: "registration_invites"
+    order_by: "created_at DESC"
+    queries: [
+      {
+        name: "GetRegistrationInviteByCode"
+        kind: QUERY_KIND_GET
+        where: "code = ?"
+        params: ["code string"]
+      },
+      {
+        name: "IncrementInviteUseCount"
+        kind: QUERY_KIND_UPDATE
+        set: "use_count = use_count + 1"
+        where: "id = ?"
+        params: ["id string"]
+      }
+    ]
+  };
+  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  string code = 2 [(protogorm.v1.db) = {tag: "not null;uniqueIndex"}];
+  string description = 3;
+  repeated string roles = 4;
+  bool has_pin = 5 [(protogorm.v1.db) = {skip: true}];
+  int32 max_uses = 6 [(protogorm.v1.db) = {tag: "default:0"}];
+  int32 use_count = 7 [(protogorm.v1.db) = {tag: "default:0"}];
+  google.protobuf.Timestamp expires_at = 8;
+  string created_by = 9 [(protogorm.v1.db) = {tag: "not null"}];
+  google.protobuf.Timestamp created_at = 10 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
+  string pin_hash = 11 [(protogorm.v1.db) = {redact: true}];
+}
+
+// One key value settings row
+message SystemSetting {
+  option (protogorm.v1.model) = {table: "system_settings"};
+  string key = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  string value = 2 [(protogorm.v1.db) = {tag: "not null"}];
+}
+
+// Casbin policy row, schema declaration only
+// The casbin gorm adapter owns reads and writes
+message CasbinRule {
+  option (protogorm.v1.model) = {
+    table: "casbin_rule"
+    skip: [
+      "create",
+      "get",
+      "list",
+      "update",
+      "update_fields",
+      "delete",
+      "count"
+    ]
+  };
+  uint64 id = 1 [(protogorm.v1.db) = {tag: "primaryKey;autoIncrement"}];
+  string ptype = 2 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_casbin_rule,priority:1"}];
+  string v0 = 3 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_casbin_rule,priority:2"}];
+  string v1 = 4 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_casbin_rule,priority:3"}];
+  string v2 = 5 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_casbin_rule,priority:4"}];
+  string v3 = 6 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_casbin_rule,priority:5"}];
+  string v4 = 7 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_casbin_rule,priority:6"}];
+  string v5 = 8 [(protogorm.v1.db) = {tag: "uniqueIndex:idx_casbin_rule,priority:7"}];
+}
+
+// Server mod metadata
+message Mod {
+  option (protogorm.v1.model) = {
+    table: "mods"
+    order_by: "name"
+    queries: [
+      {
+        name: "ListServerMods"
+        kind: QUERY_KIND_LIST
+        where: "server_id = ?"
+        params: ["serverID string"]
+      }
+    ]
+  };
+  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  string server_id = 2 [(protogorm.v1.db) = {tag: "not null;index"}];
+  string file_name = 3 [(protogorm.v1.db) = {tag: "not null"}];
+  string display_name = 4 [(protogorm.v1.db) = {tag: "column:name;not null"}];
+  string version = 6; // From jar metadata when the jar declares it
+  string mod_id = 7; // Declared mod id from jar metadata
+  int64 file_size = 10;
+  google.protobuf.Timestamp uploaded_at = 11 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
+  google.protobuf.Timestamp updated_at = 12 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
+  bool enabled = 13 [(protogorm.v1.db) = {tag: "default:true"}];
+  Server server = 14 [(protogorm.v1.db) = {tag: "constraint:OnDelete:CASCADE"}];
+}
+
+// Scheduled task definition
+message ScheduledTask {
+  option (protogorm.v1.model) = {
+    table: "scheduled_tasks"
+    order_by: "datetime(next_run) ASC NULLS LAST"
+    cascades: [
+      {
+        model: "TaskExecution"
+        fk: "task_id"
+      }
+    ]
+    queries: [
+      {
+        name: "ListServerScheduledTasks"
+        kind: QUERY_KIND_LIST
+        where: "server_id = ?"
+        order_by: "created_at DESC"
+        params: ["serverID string"]
+      },
+      {
+        name: "ListDueScheduledTasks"
+        kind: QUERY_KIND_LIST
+        where: "status = ? AND next_run IS NOT NULL AND datetime(next_run) <= datetime(?)"
+        order_by: "datetime(next_run) ASC"
+        params: [
+          "status TaskStatus",
+          "before time.Time"
+        ]
+      },
+      {
+        name: "ListEventScheduledTasks"
+        kind: QUERY_KIND_LIST
+        where: "server_id = ? AND status = ? AND schedule = ?"
+        params: [
+          "serverID string",
+          "status TaskStatus",
+          "schedule ScheduleType"
+        ]
+      }
+    ]
+  };
+  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  string server_id = 2 [(protogorm.v1.db) = {tag: "not null;index"}];
+  string name = 3 [(protogorm.v1.db) = {tag: "not null"}];
+  string description = 4;
+  TaskType task_type = 5 [(protogorm.v1.db) = {tag: "not null"}];
+  TaskStatus status = 6 [(protogorm.v1.db) = {tag: "not null;default:1"}];
+  ScheduleType schedule = 7 [(protogorm.v1.db) = {tag: "not null"}];
+
+  // Schedule configuration
+  string cron_expr = 8;
+  int32 interval_secs = 9;
+  google.protobuf.Timestamp run_at = 10;
+  google.protobuf.Timestamp next_run = 11 [(protogorm.v1.db) = {tag: "index"}];
+  google.protobuf.Timestamp last_run = 12;
+  string timezone = 13 [(protogorm.v1.db) = {tag: "default:UTC"}];
+
+  // Typed config, the field matching task_type is set
+  CommandTaskConfig command_config = 14;
+  BackupTaskConfig backup_config = 24;
+  ScriptTaskConfig script_config = 25;
+  WebhookTaskConfig webhook_config = 26;
+
+  // Execution settings
+  int32 timeout = 15 [(protogorm.v1.db) = {tag: "default:300"}];
+  int32 retry_count = 16 [(protogorm.v1.db) = {tag: "default:0"}];
+  int32 retry_delay = 17 [(protogorm.v1.db) = {tag: "default:60"}];
+  bool require_online = 18 [(protogorm.v1.db) = {tag: "default:true"}];
+  bool failure_notify = 19 [(protogorm.v1.db) = {tag: "default:false"}];
+
+  google.protobuf.Timestamp created_at = 20 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
+  google.protobuf.Timestamp updated_at = 21 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
+
+  // Events that trigger event scheduled tasks.
+  repeated TriggeredEventType event_triggers = 22;
+  Server server = 23 [(protogorm.v1.db) = {tag: "constraint:OnDelete:CASCADE"}];
+}
+
+// Task execution record
+message TaskExecution {
+  option (protogorm.v1.model) = {
+    table: "task_executions"
+    order_by: "started_at DESC"
+    skip: ["list"]
+    queries: [
+      {
+        name: "ListTaskExecutions"
+        kind: QUERY_KIND_LIST
+        where: "task_id = ?"
+        params: ["taskID string"]
+        limit_arg: true
+      },
+      {
+        name: "ListServerTaskExecutions"
+        kind: QUERY_KIND_LIST
+        where: "server_id = ?"
+        params: ["serverID string"]
+        limit_arg: true
+      },
+      {
+        name: "DeleteTaskExecutions"
+        kind: QUERY_KIND_DELETE
+        where: "task_id = ?"
+        params: ["taskID string"]
+      }
+    ]
+  };
+  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  string task_id = 2 [(protogorm.v1.db) = {tag: "not null;index"}];
+  string server_id = 3 [(protogorm.v1.db) = {tag: "not null;index"}];
+  ExecutionStatus status = 4 [(protogorm.v1.db) = {tag: "not null"}];
+  google.protobuf.Timestamp started_at = 5 [(protogorm.v1.db) = {tag: "not null"}];
+  google.protobuf.Timestamp ended_at = 6;
+  int64 duration = 7 [(protogorm.v1.db) = {tag: "default:0"}]; // Duration in milliseconds
+  string output = 8 [(protogorm.v1.db) = {tag: "type:text"}];
+  string error = 9 [(protogorm.v1.db) = {tag: "type:text"}];
+  int32 retry_num = 10 [(protogorm.v1.db) = {tag: "default:0"}];
+  TaskTrigger trigger = 11 [(protogorm.v1.db) = {tag: "not null;default:1"}];
+  ScheduledTask task = 12 [(protogorm.v1.db) = {tag: "constraint:OnDelete:CASCADE"}];
+  Server server = 13 [(protogorm.v1.db) = {tag: "constraint:OnDelete:CASCADE"}];
+}
+
+// One recorded action DiscoPanel took on the server
+message ServerAction {
+  option (protogorm.v1.model) = {
+    table: "server_actions"
+    skip: ["list"]
+  };
+  int64 id = 1 [(protogorm.v1.db) = {tag: "primaryKey;autoIncrement"}];
+  google.protobuf.Timestamp timestamp = 2 [(protogorm.v1.db) = {tag: "not null"}];
+  string source = 3 [(protogorm.v1.db) = {tag: "not null;default:''"}]; // Username or subsystem like crash doctor, scheduler, runtime
+  string message = 4 [(protogorm.v1.db) = {tag: "not null"}];
+  ServerActionKind kind = 5;
+  map<string, string> attrs = 6; // Structured details for drill-down
+  string trace_id = 7; // Shared by every action of one operation
+  string server_id = 8 [(protogorm.v1.db) = {tag: "not null;index"}];
+}
+
+// One telemetry point for charts
+message MetricsSample {
+  option (protogorm.v1.model) = {
+    table: "metrics_samples"
+    skip: [
+      "list",
+      "update",
+      "update_fields"
+    ]
+    queries: [
+      {
+        name: "PruneMetricsSamples"
+        kind: QUERY_KIND_DELETE
+        where: "resolution = ? AND timestamp < ?"
+        params: [
+          "resolution int",
+          "olderThan time.Time"
+        ]
+      }
+    ]
+  };
+  google.protobuf.Timestamp timestamp = 1 [(protogorm.v1.db) = {tag: "not null;index:idx_metrics_lookup,priority:3"}];
+  double tps = 2;
+  double mspt = 3;
+  int32 players = 4;
+  double cpu_percent = 5;
+  double memory_mb = 6;
+  int64 disk_bytes = 7;
+  double heap_used_mb = 8; // JVM heap in use, zero without agent
+  int64 proxy_active_conns = 9; // Live proxied connections at sample time
+  int64 proxy_bytes_in = 10; // Client to backend bytes this window
+  int64 proxy_bytes_out = 11; // Backend to client bytes this window
+  int64 proxy_logins = 12; // Login handshakes this window
+  int64 id = 13 [(protogorm.v1.db) = {tag: "primaryKey;autoIncrement"}];
+  string server_id = 14 [(protogorm.v1.db) = {tag: "not null;index:idx_metrics_lookup,priority:1"}];
+  int32 resolution = 15 [(protogorm.v1.db) = {tag: "not null;default:0;index:idx_metrics_lookup,priority:2"}];
+  int64 gc_pause_count = 16; // GC pauses observed this window
+  double gc_pause_total_ms = 17; // Summed GC pause ms this window
+  double gc_pause_max_ms = 18; // Longest GC pause ms this window
+}
+
+// ModuleTemplate defines a reusable blueprint for creating module instances.
+message ModuleTemplate {
+  option (protogorm.v1.model) = {
+    table: "module_templates"
+    order_by: "type ASC, name ASC"
+    guards: [
+      {
+        model: "Module"
+        fk: "template_id"
+      }
+    ]
+    queries: [
+      {
+        name: "GetModuleTemplateByName"
+        kind: QUERY_KIND_GET
+        where: "name = ?"
+        params: ["name string"]
+      },
+      {
+        name: "ListModuleTemplatesByType"
+        kind: QUERY_KIND_LIST
+        where: "type = ?"
+        order_by: "name ASC"
+        params: ["t ModuleTemplateType"]
+      }
+    ]
+  };
+  // Unique identifier.
+  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  // Display name.
+  string name = 2 [(protogorm.v1.db) = {tag: "not null;uniqueIndex"}];
+  // Human-readable description.
+  string description = 3;
+  // Whether this is a built-in or custom template.
+  ModuleTemplateType type = 4 [(protogorm.v1.db) = {tag: "not null;default:2"}];
+  // Docker image reference to run.
+  string docker_image = 5 [(protogorm.v1.db) = {tag: "not null"}];
+  // Typed config inputs shown when creating instances.
+  repeated ModuleConfigField config_fields = 6;
+  // Default environment variables.
+  map<string, string> default_env = 7;
+  // Default volume mounts.
+  repeated VolumeMount default_volumes = 8;
+  // HTTP path for health checks (e.g., "/health").
+  string health_check_path = 9;
+  // Health check port, 0 uses first configured port.
+  int32 health_check_port = 10;
+  // Whether instances must be attached to a server.
+  bool requires_server = 11 [(protogorm.v1.db) = {tag: "default:true"}];
+  // Whether instances can be proxied through the server's hostname.
+  bool supports_proxy = 12 [(protogorm.v1.db) = {tag: "default:true"}];
+  // Lucide icon name for UI display.
+  string icon = 13;
+  // Category for grouping templates (e.g., "monitoring", "maps").
+  string category = 14;
+  // Usage instructions and notes.
+  string documentation = 15;
+  // When this template was created.
+  google.protobuf.Timestamp created_at = 16 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
+  // When this template was last updated.
+  google.protobuf.Timestamp updated_at = 17 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
+  // Default port configurations.
+  repeated NetworkPort ports = 18;
+  // Template IDs this module commonly depends on.
+  repeated string suggested_dependencies = 19;
+  // Default event hooks for server lifecycle integration.
+  repeated ModuleEventHook default_hooks = 20;
+  // Custom key-value metadata. Values support alias substitution.
+  map<string, string> metadata = 21;
+  // Optional CMD override to run in the container
+  string default_cmd = 22;
+  // Default access URL templates
+  repeated string default_access_urls = 23;
+  // Default memory allocation in MB
+  int32 default_memory = 24 [(protogorm.v1.db) = {tag: "default:512"}];
+  // Default UID to run the container
+  string default_uid = 25 [(protogorm.v1.db) = {tag: "default:''"}];
+  // Default GID to run the container
+  string default_gid = 26 [(protogorm.v1.db) = {tag: "default:''"}];
+  // Command execd in the container after start
+  string default_init_command = 27 [(protogorm.v1.db) = {tag: "default:''"}];
+  // Delay after healthy before init command runs
+  int32 default_init_command_delay = 28 [(protogorm.v1.db) = {tag: "default:0"}];
+  // Whether to restart the container after init command completes
+  bool default_restart_after_init = 29 [(protogorm.v1.db) = {tag: "default:false"}];
+  // Container security options (e.g., "seccomp=unconfined")
+  repeated string default_security_opt = 30;
+  // Whether instances run panel wide without a server.
+  bool global = 31 [(protogorm.v1.db) = {tag: "default:false"}];
+  // Container dir an uploaded cert pair mounts into
+  string cert_mount_path = 32;
+}
+
+// Module represents a running module instance attached to a server.
+message Module {
+  option (protogorm.v1.model) = {
+    table: "modules"
+    order_by: "created_at DESC"
+    queries: [
+      {
+        name: "ListServerModules"
+        kind: QUERY_KIND_LIST
+        where: "server_id = ?"
+        order_by: "name ASC"
+        params: ["serverID string"]
+      },
+      {
+        name: "ListModulesByTemplate"
+        kind: QUERY_KIND_LIST
+        where: "template_id = ?"
+        params: ["templateID string"]
+      },
+      {
+        name: "GetModuleByContainerID"
+        kind: QUERY_KIND_GET
+        where: "container_id = ? AND container_id != ''"
+        params: ["containerID string"]
+        not_found_nil: true
+      },
+      {
+        name: "ListAutoStartModules"
+        kind: QUERY_KIND_LIST
+        where: "auto_start = true AND detached = false"
+      },
+      {
+        name: "ListModulesFollowingServerLifecycle"
+        kind: QUERY_KIND_LIST
+        where: "server_id = ? AND follow_server_lifecycle = true"
+        params: ["serverID string"]
+      }
+    ]
+  };
+  // Unique identifier.
+  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  // Display name.
+  string name = 2 [(protogorm.v1.db) = {tag: "not null"}];
+  // ID of the server this module is attached to.
+  string server_id = 3 [(protogorm.v1.db) = {tag: "not null;index"}];
+  // ID of the template this module was created from.
+  string template_id = 4 [(protogorm.v1.db) = {tag: "not null;index"}];
+  // Docker container ID when running.
+  string container_id = 5;
+  // Current runtime status.
+  ModuleStatus status = 6 [(protogorm.v1.db) = {tag: "not null;default:1"}];
+  // Environment variable overrides.
+  map<string, string> env_overrides = 8;
+  // Volume mount overrides.
+  repeated VolumeMount volume_overrides = 9;
+  // Memory limit in MB.
+  int32 memory = 10 [(protogorm.v1.db) = {tag: "default:512"}];
+  // CPU limit as a fraction (e.g., 0.5 = 50%).
+  double cpu_limit = 11;
+  // Start automatically when the parent server starts.
+  bool auto_start = 12 [(protogorm.v1.db) = {tag: "default:false"}];
+  // Stop when the parent server stops.
+  bool follow_server_lifecycle = 13 [(protogorm.v1.db) = {tag: "default:true"}];
+  // Run independently of server lifecycle.
+  bool detached = 14 [(protogorm.v1.db) = {tag: "default:false"}];
+  // Path to module's persistent data directory.
+  string data_path = 15 [(protogorm.v1.db) = {skip: true}];
+  // When this module was created.
+  google.protobuf.Timestamp created_at = 16 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
+  // When this module was last updated.
+  google.protobuf.Timestamp updated_at = 17 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
+  // When this module was last started.
+  optional google.protobuf.Timestamp last_started = 18;
+  // Current memory usage in MB.
+  double memory_usage = 19 [(protogorm.v1.db) = {skip: true}];
+  // Current CPU usage as a percentage.
+  double cpu_percent = 20 [(protogorm.v1.db) = {skip: true}];
+  // Name of the parent server (for display).
+  string server_name = 21 [(protogorm.v1.db) = {skip: true}];
+  // Name of the source template (for display).
+  string template_name = 22 [(protogorm.v1.db) = {skip: true}];
+  // Parent server's proxy hostnames (for building access URLs).
+  repeated string server_proxy_hostnames = 23 [(protogorm.v1.db) = {skip: true}];
+  // Port configurations.
+  repeated NetworkPort ports = 24;
+  // Module dependencies.
+  repeated ModuleDependency dependencies = 25;
+  // Seconds between health checks.
+  int32 health_check_interval = 26 [(protogorm.v1.db) = {tag: "default:30"}];
+  // Seconds to wait for health check response.
+  int32 health_check_timeout = 27 [(protogorm.v1.db) = {tag: "default:5"}];
+  // Failed checks before marking unhealthy.
+  int32 health_check_retries = 28 [(protogorm.v1.db) = {tag: "default:3"}];
+  // Event hooks for server lifecycle integration.
+  repeated ModuleEventHook event_hooks = 29;
+  // Custom key-value metadata. Values support alias substitution.
+  map<string, string> metadata = 30;
+  // Optional CMD override to run in the container
+  string cmd_override = 31;
+  // Access URL templates
+  repeated string access_urls = 32;
+  // User ID of the user who created this module.
+  string created_by_user_id = 33 [(protogorm.v1.db) = {tag: "column:created_by"}];
+  // Username of the user who created this module (for display).
+  string created_by_username = 34 [(protogorm.v1.db) = {skip: true}];
+  // UID to run the container
+  string uid = 35 [(protogorm.v1.db) = {tag: "default:''"}];
+  // GID to run the container
+  string gid = 36 [(protogorm.v1.db) = {tag: "default:''"}];
+  // Command to exec inside the container after start
+  string init_command = 37 [(protogorm.v1.db) = {tag: "default:''"}];
+  // Delay after healthy before init command runs
+  int32 init_command_delay = 38 [(protogorm.v1.db) = {tag: "default:0"}];
+  // Whether to restart the container after init command completes
+  bool restart_after_init = 39 [(protogorm.v1.db) = {tag: "default:false"}];
+  // Api token minted for this module's container
+  string token_id = 40;
+  // Fresh plaintext token, only set on the create response
+  string token_plaintext = 41 [(protogorm.v1.db) = {
+    skip: true
+    redact: true
+  }];
+  ModuleTemplate template = 43 [(protogorm.v1.db) = {tag: "constraint:OnDelete:RESTRICT"}];
+  // Pem chain mounted into the container
+  string cert_pem = 44;
+  // Pem key mounted into the container, never listed back
+  string key_pem = 45 [(protogorm.v1.db) = {redact: true}];
+}
+
+// Indexed modpack metadata
+message IndexedModpack {
+  option (protogorm.v1.model) = {
+    table: "indexed_modpacks"
+    order_by: "download_count DESC"
+    upsert: true
+    skip: ["list"]
+    cascades: [
+      {
+        model: "IndexedModpackFile"
+        fk: "modpack_id"
+      },
+      {
+        model: "ModpackFavorite"
+        fk: "modpack_id"
+      }
+    ]
+    queries: [
+      {
+        name: "GetModpackBySlug"
+        kind: QUERY_KIND_GET
+        where: "slug = ?"
+        params: ["slug string"]
+        not_found_nil: true
+      },
+      {
+        name: "GetModpackByWebsiteURL"
+        kind: QUERY_KIND_GET
+        where: "website_url = ?"
+        params: ["url string"]
+        not_found_nil: true
+      },
+      {
+        name: "ListIndexedModpacks"
+        kind: QUERY_KIND_LIST
+        paginate: true
+      }
+    ]
+  };
+  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  string indexer_id = 2 [(protogorm.v1.db) = {tag: "index"}];
+  string indexer = 3 [(protogorm.v1.db) = {tag: "index"}];
+  string name = 4 [(protogorm.v1.db) = {tag: "not null;index"}];
+  string slug = 5 [(protogorm.v1.db) = {tag: "index"}];
+  string summary = 6;
+  string description = 7 [(protogorm.v1.db) = {tag: "type:text"}];
+  string logo_url = 8;
+  string website_url = 9;
+  int32 download_count = 10;
+  repeated string categories = 11;
+  repeated string game_versions = 12;
+  repeated string mod_loaders = 13;
+  string latest_file_id = 14;
+  google.protobuf.Timestamp date_created = 15;
+  google.protobuf.Timestamp date_modified = 16;
+  google.protobuf.Timestamp date_released = 17;
+  string mc_version = 18;
+  int32 java_version = 19;
+  string docker_image = 20;
+  int32 recommended_ram = 21;
+  bool is_favorited = 22 [(protogorm.v1.db) = {skip: true}];
+  google.protobuf.Timestamp updated_at = 23 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
+  google.protobuf.Timestamp indexed_at = 24 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
+}
+
+// One downloadable modpack file row
+message IndexedModpackFile {
+  option (protogorm.v1.model) = {
+    table: "indexed_modpack_files"
+    upsert: true
+    queries: [
+      {
+        name: "GetIndexedModpackFiles"
+        kind: QUERY_KIND_LIST
+        where: "modpack_id = ?"
+        order_by: "file_date DESC"
+        params: ["modpackID string"]
+      }
+    ]
+  };
+  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  string modpack_id = 2 [(protogorm.v1.db) = {tag: "index"}];
+  string display_name = 3;
+  string file_name = 4;
+  google.protobuf.Timestamp file_date = 5;
+  int64 file_length = 6;
+  ReleaseType release_type = 7;
+  string download_url = 8;
+  repeated string game_versions = 9;
+  string mod_loader = 10;
+  optional string server_pack_file_id = 11;
+  IndexedModpack modpack = 12 [(protogorm.v1.db) = {tag: "constraint:OnDelete:CASCADE"}];
+}
+
+// One favorited modpack row
+message ModpackFavorite {
+  option (protogorm.v1.model) = {
+    table: "modpack_favorites"
+    order_by: "created_at DESC"
+    queries: [
+      {
+        name: "RemoveModpackFavorite"
+        kind: QUERY_KIND_DELETE
+        where: "modpack_id = ?"
+        params: ["modpackID string"]
+      },
+      {
+        name: "IsModpackFavorited"
+        kind: QUERY_KIND_EXISTS
+        where: "modpack_id = ?"
+        params: ["modpackID string"]
+      },
+      {
+        name: "ListFavoriteModpacks"
+        kind: QUERY_KIND_LIST
+        preload: ["Modpack"]
+      }
+    ]
+  };
+  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  string modpack_id = 2 [(protogorm.v1.db) = {tag: "index"}];
+  google.protobuf.Timestamp created_at = 3 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
+  IndexedModpack modpack = 4 [(protogorm.v1.db) = {tag: "constraint:OnDelete:CASCADE"}];
+}
+
+// One dismissed performance finding row
+message FindingDismissal {
+  option (protogorm.v1.model) = {
+    table: "finding_dismissals"
+    upsert: true
+    queries: [
+      {
+        name: "GetFindingDismissals"
+        kind: QUERY_KIND_LIST
+        where: "server_id = ?"
+        params: ["serverID string"]
+      }
+    ]
+  };
+  string server_id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  string finding_id = 2 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  string content_hash = 3 [(protogorm.v1.db) = {tag: "not null"}];
+  google.protobuf.Timestamp dismissed_at = 4 [(protogorm.v1.db) = {tag: "not null"}];
+}
+
+// Proxy settings row
+message ProxyConfig {
+  option (protogorm.v1.model) = {
+    table: "proxy_configs"
+    skip: ["get"]
+  };
+  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  bool enabled = 2 [(protogorm.v1.db) = {tag: "not null;default:false"}];
+  // Hostnames the panel answers on
+  repeated string hostnames = 3;
+  google.protobuf.Timestamp updated_at = 4 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
+  // Panel also answers unmatched hostnames
+  bool catch_all = 5 [(protogorm.v1.db) = {tag: "not null;default:false"}];
+  // Panel lobby answers unrouted game joins
+  bool lobby = 6 [(protogorm.v1.db) = {tag: "not null;default:false"}];
+  // Lobby verifies joins against mojang
+  bool lobby_online = 7 [(protogorm.v1.db) = {tag: "not null;default:true"}];
+  // Base domain hostname suggestions derive under
+  string base_url = 8;
+}
+
+// All tunable server properties for one server
+message ServerProperties {
+  option (protogorm.v1.model) = {
+    table: "server_properties"
+    skip: ["get"]
+    queries: [
+      {
+        name: "GetServerProperties"
+        kind: QUERY_KIND_GET
+        where: "server_id = ?"
+        params: ["serverID string"]
+      }
+    ]
+  };
+  option (discopanel.options.v1.prop_categories) = {
+    categories: [
+      {
+        slug: "jvm"
+        label: "JVM"
+      },
+      {
+        slug: "server"
+        label: "Server Settings"
+      },
+      {
+        slug: "game"
+        label: "Game Settings"
+      },
+      {
+        slug: "world"
+        label: "World Generation"
+      },
+      {
+        slug: "rcon"
+        label: "RCON"
+      },
+      {
+        slug: "resourcepack"
+        label: "Resource Pack"
+      },
+      {
+        slug: "management"
+        label: "Management Server"
+      },
+      {
+        slug: "ops"
+        label: "Ops/Admins"
+      },
+      {
+        slug: "whitelist"
+        label: "Whitelist"
+      },
+      {
+        slug: "autopause"
+        label: "Auto-Pause"
+      },
+      {
+        slug: "autostop"
+        label: "Auto-Stop"
+      },
+      {
+        slug: "doctor"
+        label: "Doctor"
+      },
+      {
+        slug: "curseforge"
+        label: "CurseForge"
+      },
+      {
+        slug: "modrinth"
+        label: "Modrinth"
+      },
+      {
+        slug: "proxy"
+        label: "Proxy"
+      }
+    ]
+  };
+  string id = 1 [(protogorm.v1.db) = {tag: "primaryKey"}];
+  string server_id = 2 [(protogorm.v1.db) = {tag: "not null;index"}];
+  google.protobuf.Timestamp updated_at = 3 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
+  optional int32 uid = 4 [(discopanel.options.v1.prop) = {
+    env: "UID"
+    default_value: "1000"
+    desc: "The linux user id to run as"
+    input: "number"
+    label: "User ID"
+    category: "jvm"
+  }];
+  optional int32 gid = 5 [
+    (protogorm.v1.db) = {tag: "column:g_id"},
+    (discopanel.options.v1.prop) = {
+      env: "GID"
+      default_value: "1000"
+      desc: "The linux group id to run as"
+      input: "number"
+      label: "Group ID"
+      category: "jvm"
+    }
+  ];
+  optional string init_memory = 6 [(discopanel.options.v1.prop) = {
+    env: "INIT_MEMORY"
+    default_value: ""
+    desc: "Initial Java heap (Xms), computed from the server memory settings"
+    input: "text"
+    label: "Initial Memory"
+    category: "jvm"
+    system: true
+  }];
+  optional string max_memory = 7 [(discopanel.options.v1.prop) = {
+    env: "MAX_MEMORY"
+    default_value: ""
+    desc: "Maximum Java heap (Xmx), computed from the server memory settings"
+    input: "text"
+    label: "Maximum Memory"
+    category: "jvm"
+    system: true
+  }];
+  optional string tz = 8 [(discopanel.options.v1.prop) = {
+    env: "TZ"
+    default_value: "UTC"
+    desc: "Timezone configuration"
+    input: "text"
+    label: "Timezone"
+    category: "jvm"
+  }];
+  optional bool enable_jmx = 9 [(discopanel.options.v1.prop) = {
+    env: "ENABLE_JMX"
+    default_value: "false"
+    desc: "Enable remote JMX for profiling (port 7091)"
+    input: "checkbox"
+    label: "Enable JMX"
+    category: "jvm"
+  }];
+  optional bool enable_agent = 10 [(discopanel.options.v1.prop) = {
+    default_value: "true"
+    desc: "Enable the DiscoPanel agent (live telemetry, console during boot, crash reporting; attaches a telemetry javaagent to the server JVM, any loader or version)"
+    input: "checkbox"
+    label: "Enable DiscoPanel Agent"
+    category: "jvm"
+  }];
+  optional string jmx_host = 11 [(discopanel.options.v1.prop) = {
+    env: "JMX_HOST"
+    default_value: ""
+    desc: "IP/host running the Docker container for JMX"
+    input: "text"
+    label: "JMX Host"
+    category: "jvm"
+  }];
+  optional bool use_aikar_flags = 12 [(discopanel.options.v1.prop) = {
+    env: "USE_AIKAR_FLAGS"
+    default_value: "true"
+    desc: "Use Aikar's optimized JVM flags for GC tuning (applied by default unless disabled or MeowIce flags are enabled)"
+    input: "checkbox"
+    label: "Use Aikar Flags"
+    category: "jvm"
+  }];
+  optional bool use_meowice_flags = 13 [(discopanel.options.v1.prop) = {
+    env: "USE_MEOWICE_FLAGS"
+    default_value: "false"
+    desc: "Use MeowIce's JVM flags optimized for Java 17+"
+    input: "checkbox"
+    label: "Use MeowIce Flags"
+    category: "jvm"
+  }];
+  optional bool use_zgc_flags = 14 [(discopanel.options.v1.prop) = {
+    env: "USE_ZGC_FLAGS"
+    default_value: "false"
+    desc: "Use generational ZGC instead of G1 (Java 21+, sub-millisecond pauses; often better for large modpacks)"
+    input: "checkbox"
+    label: "Use ZGC Flags"
+    category: "jvm"
+  }];
+  optional bool use_flare_flags = 15 [(discopanel.options.v1.prop) = {
+    env: "USE_FLARE_FLAGS"
+    default_value: "false"
+    desc: "Enable JVM flags for Flare profiling suite"
+    input: "checkbox"
+    label: "Use Flare Flags"
+    category: "jvm"
+  }];
+  optional bool use_simd_flags = 16 [(discopanel.options.v1.prop) = {
+    env: "USE_SIMD_FLAGS"
+    default_value: "false"
+    desc: "Support for optimized SIMD operations (Java 16+)"
+    input: "checkbox"
+    label: "Use SIMD Flags"
+    category: "jvm"
+  }];
+  optional string jvm_opts = 17 [
+    (protogorm.v1.db) = {tag: "column:j_vm_opts"},
+    (discopanel.options.v1.prop) = {
+      env: "JVM_OPTS"
+      default_value: ""
+      desc: "General JVM options"
+      input: "text"
+      label: "JVM Options"
+      category: "jvm"
+    }
+  ];
+  optional string jvm_xx_opts = 18 [
+    (protogorm.v1.db) = {tag: "column:j_vm_xx_opts"},
+    (discopanel.options.v1.prop) = {
+      env: "JVM_XX_OPTS"
+      default_value: ""
+      desc: "JVM -XX options"
+      input: "text"
+      label: "JVM XX Options"
+      category: "jvm"
+    }
+  ];
+  optional string jvm_dd_opts = 19 [
+    (protogorm.v1.db) = {tag: "column:j_vm_dd_opts"},
+    (discopanel.options.v1.prop) = {
+      env: "JVM_DD_OPTS"
+      default_value: ""
+      desc: "Comma separated list of system properties as name=value pairs"
+      input: "text"
+      label: "JVM DD Options"
+      category: "jvm"
+    }
+  ];
+  optional string extra_args = 20 [(discopanel.options.v1.prop) = {
+    env: "EXTRA_ARGS"
+    default_value: ""
+    desc: "Arguments passed to the server after the jar/args file"
+    input: "text"
+    label: "Extra Arguments"
+    category: "jvm"
+  }];
+  optional string eula = 21 [(discopanel.options.v1.prop) = {
+    default_value: "TRUE"
+    desc: "This MUST be set to TRUE"
+    input: "checkbox"
+    label: "Accept EULA"
+    category: "server"
+    system: true
+    required: true
+  }];
+  optional string custom_server = 22 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "URL or data-dir path to a custom server jar"
+    input: "text"
+    label: "Custom Server JAR"
+    category: "server"
+  }];
+  optional string custom_jar_exec = 23 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "Custom jar execution command (e.g. -cp classpath MainClass or -jar file.jar)"
+    input: "text"
+    label: "Custom JAR Execution"
+    category: "server"
+  }];
+  optional string icon = 24 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "URL to a server icon image (converted to server-icon.png)"
+    input: "text"
+    label: "Server Icon"
+    category: "server"
+  }];
+  optional bool override_icon = 25 [(discopanel.options.v1.prop) = {
+    default_value: "false"
+    desc: "Override existing server icon"
+    input: "checkbox"
+    label: "Override Icon"
+    category: "server"
+  }];
+  optional bool force_provision = 26 [(discopanel.options.v1.prop) = {
+    default_value: "false"
+    desc: "Force full re-provisioning of server files on next start (cleared after start)"
+    input: "checkbox"
+    label: "Force Re-Provision"
+    category: "server"
+    ephemeral: true
+  }];
+  optional string motd = 27 [(discopanel.options.v1.prop) = {
+    prop: "motd"
+    default_value: "A DiscoPanel Server"
+    desc: "Server log in message"
+    input: "text"
+    label: "Message of the Day"
+    category: "server"
+  }];
+  optional string offline_motd = 139 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "Replaces the MOTD line while this server is offline"
+    input: "text"
+    label: "Offline Message of the Day"
+    category: "server"
+  }];
+  optional string difficulty = 28 [(discopanel.options.v1.prop) = {
+    prop: "difficulty"
+    default_value: "easy"
+    desc: "Difficulty level"
+    input: "select"
+    label: "Difficulty"
+    category: "game"
+    options: [
+      "peaceful",
+      "easy",
+      "normal",
+      "hard"
+    ]
+  }];
+  optional int32 max_players = 29 [(discopanel.options.v1.prop) = {
+    prop: "max-players"
+    default_value: "20"
+    desc: "Maximum number of players"
+    input: "number"
+    label: "Max Players"
+    category: "game"
+    system: true
+  }];
+  optional int32 max_world_size = 30 [(discopanel.options.v1.prop) = {
+    prop: "max-world-size"
+    default_value: "29999984"
+    desc: "Maximum world size in blocks (radius)"
+    input: "number"
+    label: "Max World Size"
+    category: "world"
+  }];
+  optional bool allow_nether = 31 [(discopanel.options.v1.prop) = {
+    prop: "allow-nether"
+    default_value: "true"
+    desc: "Allow players to travel to the Nether"
+    input: "checkbox"
+    label: "Allow Nether"
+    category: "game"
+  }];
+  optional bool announce_player_achievements = 32 [(discopanel.options.v1.prop) = {
+    prop: "announce-player-achievements"
+    default_value: "true"
+    desc: "Announce player achievements"
+    input: "checkbox"
+    label: "Announce Player Achievements"
+    category: "game"
+  }];
+  optional bool enable_command_block = 33 [(discopanel.options.v1.prop) = {
+    prop: "enable-command-block"
+    default_value: "false"
+    desc: "Enable command blocks"
+    input: "checkbox"
+    label: "Enable Command Blocks"
+    category: "game"
+  }];
+  optional bool force_gamemode = 34 [(discopanel.options.v1.prop) = {
+    prop: "force-gamemode"
+    default_value: "false"
+    desc: "Force players to join in default game mode"
+    input: "checkbox"
+    label: "Force Gamemode"
+    category: "game"
+  }];
+  optional bool generate_structures = 35 [(discopanel.options.v1.prop) = {
+    prop: "generate-structures"
+    default_value: "true"
+    desc: "Generate structures like villages"
+    input: "checkbox"
+    label: "Generate Structures"
+    category: "world"
+  }];
+  optional bool hardcore = 36 [(discopanel.options.v1.prop) = {
+    prop: "hardcore"
+    default_value: "false"
+    desc: "Players set to spectator mode on death"
+    input: "checkbox"
+    label: "Hardcore Mode"
+    category: "game"
+  }];
+  optional bool snooper_enabled = 37 [(discopanel.options.v1.prop) = {
+    prop: "snooper-enabled"
+    default_value: "true"
+    desc: "Send data to snoop.minecraft.net (legacy versions)"
+    input: "checkbox"
+    label: "Enable Snooper"
+    category: "game"
+  }];
+  optional int32 max_build_height = 38 [(discopanel.options.v1.prop) = {
+    prop: "max-build-height"
+    default_value: "256"
+    desc: "Maximum building height (legacy versions)"
+    input: "number"
+    label: "Max Build Height"
+    category: "game"
+  }];
+  optional bool spawn_animals = 39 [(discopanel.options.v1.prop) = {
+    prop: "spawn-animals"
+    default_value: "true"
+    desc: "Allow animals to spawn"
+    input: "checkbox"
+    label: "Spawn Animals"
+    category: "game"
+  }];
+  optional bool spawn_monsters = 40 [(discopanel.options.v1.prop) = {
+    prop: "spawn-monsters"
+    default_value: "true"
+    desc: "Allow monsters to spawn"
+    input: "checkbox"
+    label: "Spawn Monsters"
+    category: "game"
+  }];
+  optional bool spawn_npcs = 41 [
+    (protogorm.v1.db) = {tag: "column:spawn_np_cs"},
+    (discopanel.options.v1.prop) = {
+      prop: "spawn-npcs"
+      default_value: "true"
+      desc: "Allow villagers to spawn"
+      input: "checkbox"
+      label: "Spawn NPCs"
+      category: "game"
+    }
+  ];
+  optional int32 spawn_protection = 42 [(discopanel.options.v1.prop) = {
+    prop: "spawn-protection"
+    default_value: "16"
+    desc: "Area that non-ops cannot edit (0 to disable)"
+    input: "number"
+    label: "Spawn Protection"
+    category: "game"
+  }];
+  optional int32 view_distance = 43 [(discopanel.options.v1.prop) = {
+    prop: "view-distance"
+    default_value: "10"
+    desc: "Server-side viewing distance in chunks"
+    input: "number"
+    label: "View Distance"
+    category: "game"
+  }];
+  optional string seed = 44 [(discopanel.options.v1.prop) = {
+    prop: "level-seed"
+    default_value: ""
+    desc: "World generation seed"
+    input: "text"
+    label: "World Seed"
+    category: "world"
+  }];
+  optional string mode = 45 [(discopanel.options.v1.prop) = {
+    prop: "gamemode"
+    default_value: "survival"
+    desc: "Game mode"
+    input: "select"
+    label: "Game Mode"
+    category: "game"
+    options: [
+      "creative",
+      "survival",
+      "adventure",
+      "spectator"
+    ]
+  }];
+  optional bool pvp = 46 [(discopanel.options.v1.prop) = {
+    prop: "pvp"
+    default_value: "true"
+    desc: "Enable player-vs-player mode"
+    input: "checkbox"
+    label: "Enable PVP"
+    category: "game"
+  }];
+  optional string level_type = 47 [(discopanel.options.v1.prop) = {
+    prop: "level-type"
+    default_value: "minecraft:normal"
+    desc: "World generation type"
+    input: "text"
+    label: "Level Type"
+    category: "world"
+  }];
+  optional string generator_settings = 48 [(discopanel.options.v1.prop) = {
+    prop: "generator-settings"
+    default_value: ""
+    desc: "Additional world generation settings"
+    input: "text"
+    label: "Generator Settings"
+    category: "world"
+  }];
+  optional string level = 49 [(discopanel.options.v1.prop) = {
+    prop: "level-name"
+    default_value: "world"
+    desc: "World save name"
+    input: "text"
+    label: "World Name"
+    category: "world"
+  }];
+  optional bool online_mode = 50 [(discopanel.options.v1.prop) = {
+    prop: "online-mode"
+    default_value: "true"
+    desc: "Authenticate players against Minecraft account database"
+    input: "checkbox"
+    label: "Online Mode"
+    category: "game"
+  }];
+  optional bool allow_flight = 51 [(discopanel.options.v1.prop) = {
+    prop: "allow-flight"
+    default_value: "false"
+    desc: "Allow flight in survival mode with mods"
+    input: "checkbox"
+    label: "Allow Flight"
+    category: "game"
+  }];
+  optional string server_name = 52 [(discopanel.options.v1.prop) = {
+    prop: "server-name"
+    default_value: ""
+    desc: "The server name"
+    input: "text"
+    label: "Server Name"
+    category: "server"
+  }];
+  optional int32 server_port = 53 [(discopanel.options.v1.prop) = {
+    prop: "server-port"
+    default_value: "25565"
+    desc: "Server port (managed by DiscoPanel)"
+    input: "number"
+    label: "Server Port"
+    category: "server"
+    system: true
+  }];
+  optional int32 player_idle_timeout = 54 [(discopanel.options.v1.prop) = {
+    prop: "player-idle-timeout"
+    default_value: "0"
+    desc: "Player idle timeout"
+    input: "number"
+    label: "Player Idle Timeout"
+    category: "game"
+  }];
+  optional bool sync_chunk_writes = 55 [(discopanel.options.v1.prop) = {
+    prop: "sync-chunk-writes"
+    default_value: "true"
+    desc: "Sync chunk writes"
+    input: "checkbox"
+    label: "Sync Chunk Writes"
+    category: "game"
+  }];
+  optional bool enable_status = 56 [(discopanel.options.v1.prop) = {
+    prop: "enable-status"
+    default_value: "true"
+    desc: "Enable server status"
+    input: "checkbox"
+    label: "Enable Status"
+    category: "game"
+  }];
+  optional int32 entity_broadcast_range_percentage = 57 [(discopanel.options.v1.prop) = {
+    prop: "entity-broadcast-range-percentage"
+    default_value: "100"
+    desc: "Entity broadcast range percentage"
+    input: "number"
+    label: "Entity Broadcast Range Percentage"
+    category: "game"
+  }];
+  optional int32 function_permission_level = 58 [(discopanel.options.v1.prop) = {
+    prop: "function-permission-level"
+    default_value: "2"
+    desc: "Function permission level"
+    input: "number"
+    label: "Function Permission Level"
+    category: "game"
+  }];
+  optional int32 network_compression_threshold = 59 [(discopanel.options.v1.prop) = {
+    prop: "network-compression-threshold"
+    default_value: "256"
+    desc: "Network compression threshold"
+    input: "number"
+    label: "Network Compression Threshold"
+    category: "game"
+  }];
+  optional int32 op_permission_level = 60 [(discopanel.options.v1.prop) = {
+    prop: "op-permission-level"
+    default_value: "4"
+    desc: "OP permission level"
+    input: "number"
+    label: "OP Permission Level"
+    category: "game"
+  }];
+  optional bool prevent_proxy_connections = 61 [(discopanel.options.v1.prop) = {
+    prop: "prevent-proxy-connections"
+    default_value: "false"
+    desc: "Prevent proxy connections"
+    input: "checkbox"
+    label: "Prevent Proxy Connections"
+    category: "game"
+  }];
+  optional bool use_native_transport = 62 [(discopanel.options.v1.prop) = {
+    prop: "use-native-transport"
+    default_value: "true"
+    desc: "Use native transport"
+    input: "checkbox"
+    label: "Use Native Transport"
+    category: "game"
+  }];
+  optional int32 simulation_distance = 63 [(discopanel.options.v1.prop) = {
+    prop: "simulation-distance"
+    default_value: "10"
+    desc: "Simulation distance"
+    input: "number"
+    label: "Simulation Distance"
+    category: "game"
+  }];
+  optional bool enable_query = 64 [(discopanel.options.v1.prop) = {
+    prop: "enable-query"
+    default_value: "true"
+    desc: "Enable GameSpy query protocol"
+    input: "checkbox"
+    label: "Enable Query"
+    category: "game"
+  }];
+  optional int32 query_port = 65 [(discopanel.options.v1.prop) = {
+    prop: "query.port"
+    default_value: "25565"
+    desc: "UDP port for GameSpy query"
+    input: "number"
+    label: "Query Port"
+    category: "game"
+  }];
+  optional bool accepts_transfers = 66 [(discopanel.options.v1.prop) = {
+    prop: "accepts-transfers"
+    default_value: "true"
+    desc: "Allow player transfers between servers"
+    input: "checkbox"
+    label: "Accepts Transfers"
+    category: "game"
+  }];
+  optional bool broadcast_console_to_ops = 67 [(discopanel.options.v1.prop) = {
+    prop: "broadcast-console-to-ops"
+    default_value: "true"
+    desc: "Broadcast console messages to ops"
+    input: "checkbox"
+    label: "Broadcast Console to OPs"
+    category: "game"
+  }];
+  optional string bug_report_link = 68 [(discopanel.options.v1.prop) = {
+    prop: "bug-report-link"
+    default_value: ""
+    desc: "Custom bug report URL"
+    input: "text"
+    label: "Bug Report Link"
+    category: "server"
+  }];
+  optional bool enforce_secure_profile = 69 [(discopanel.options.v1.prop) = {
+    prop: "enforce-secure-profile"
+    default_value: "true"
+    desc: "Require secure chat/profile"
+    input: "checkbox"
+    label: "Enforce Secure Profile"
+    category: "game"
+  }];
+  optional bool hide_online_players = 70 [(discopanel.options.v1.prop) = {
+    prop: "hide-online-players"
+    default_value: "false"
+    desc: "Hide online players from the server list"
+    input: "checkbox"
+    label: "Hide Online Players"
+    category: "game"
+  }];
+  optional bool log_ips = 71 [(discopanel.options.v1.prop) = {
+    prop: "log-ips"
+    default_value: "true"
+    desc: "Log connecting player IPs"
+    input: "checkbox"
+    label: "Log Player IPs"
+    category: "game"
+  }];
+  optional int32 max_chained_neighbor_updates = 72 [(discopanel.options.v1.prop) = {
+    prop: "max-chained-neighbor-updates"
+    default_value: "1000000"
+    desc: "Maximum chained neighbor updates"
+    input: "number"
+    label: "Max Chained Neighbor Updates"
+    category: "game"
+  }];
+  optional int32 pause_when_empty_seconds = 73 [(discopanel.options.v1.prop) = {
+    prop: "pause-when-empty-seconds"
+    default_value: "0"
+    desc: "Pause game loop when server empty (seconds, 1.21.2+)"
+    input: "number"
+    label: "Pause When Empty"
+    category: "game"
+  }];
+  optional int32 rate_limit = 74 [(discopanel.options.v1.prop) = {
+    prop: "rate-limit"
+    default_value: "0"
+    desc: "Rate limit in packets per second"
+    input: "number"
+    label: "Rate Limit"
+    category: "game"
+  }];
+  optional string region_file_compression = 75 [(discopanel.options.v1.prop) = {
+    prop: "region-file-compression"
+    default_value: "deflate"
+    desc: "Compression type for region files"
+    input: "text"
+    label: "Region File Compression"
+    category: "world"
+  }];
+  optional string resource_pack_id = 76 [(discopanel.options.v1.prop) = {
+    prop: "resource-pack-id"
+    default_value: ""
+    desc: "Custom resource pack ID"
+    input: "text"
+    label: "Resource Pack ID"
+    category: "resourcepack"
+  }];
+  optional string resource_pack_prompt = 77 [(discopanel.options.v1.prop) = {
+    prop: "resource-pack-prompt"
+    default_value: ""
+    desc: "Prompt shown when resource pack offered"
+    input: "text"
+    label: "Resource Pack Prompt"
+    category: "resourcepack"
+  }];
+  optional int32 status_heartbeat_interval = 78 [(discopanel.options.v1.prop) = {
+    prop: "status-heartbeat-interval"
+    default_value: "0"
+    desc: "Status heartbeat interval (ms)"
+    input: "number"
+    label: "Status Heartbeat Interval"
+    category: "game"
+  }];
+  optional bool server_properties_escape_unicode = 79 [(discopanel.options.v1.prop) = {
+    default_value: "false"
+    desc: "Escape unicode in server.properties (pre-1.20 compatibility)"
+    input: "checkbox"
+    label: "Escape Unicode in Server Properties"
+    category: "server"
+  }];
+  optional string custom_server_properties = 80 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "Extra newline delimited name=value pairs to be added to \"server.properties\""
+    input: "text"
+    label: "Custom Server Properties"
+    category: "server"
+  }];
+  optional int32 stop_duration = 81 [(discopanel.options.v1.prop) = {
+    env: "STOP_DURATION"
+    default_value: "60"
+    desc: "Seconds to wait for graceful shutdown before force kill"
+    input: "number"
+    label: "Stop Duration"
+    category: "server"
+  }];
+  optional int32 stop_server_announce_delay = 82 [(discopanel.options.v1.prop) = {
+    default_value: "0"
+    desc: "Seconds between in-game shutdown announcement and stop"
+    input: "number"
+    label: "Stop Server Announce Delay"
+    category: "server"
+  }];
+  optional string resource_pack = 83 [(discopanel.options.v1.prop) = {
+    prop: "resource-pack"
+    default_value: ""
+    desc: "Link to custom resource pack"
+    input: "text"
+    label: "Resource Pack URL"
+    category: "resourcepack"
+  }];
+  optional string resource_pack_sha1 = 84 [(discopanel.options.v1.prop) = {
+    prop: "resource-pack-sha1"
+    default_value: ""
+    desc: "Checksum for custom resource pack"
+    input: "text"
+    label: "Resource Pack SHA1"
+    category: "resourcepack"
+  }];
+  optional bool resource_pack_enforce = 85 [(discopanel.options.v1.prop) = {
+    prop: "require-resource-pack"
+    default_value: "false"
+    desc: "Enforce resource pack on clients"
+    input: "checkbox"
+    label: "Enforce Resource Pack"
+    category: "resourcepack"
+  }];
+  optional string management_server_allowed_origins = 86 [(discopanel.options.v1.prop) = {
+    prop: "management-server-allowed-origins"
+    default_value: ""
+    desc: "Allowed CORS origins for management server"
+    input: "text"
+    label: "Management Server Allowed Origins"
+    category: "management"
+  }];
+  optional bool management_server_enabled = 87 [(discopanel.options.v1.prop) = {
+    prop: "management-server-enabled"
+    default_value: "false"
+    desc: "Enable management server interface"
+    input: "checkbox"
+    label: "Enable Management Server"
+    category: "management"
+  }];
+  optional string management_server_host = 88 [(discopanel.options.v1.prop) = {
+    prop: "management-server-host"
+    default_value: "0.0.0.0"
+    desc: "Host address for management server"
+    input: "text"
+    label: "Management Server Host"
+    category: "management"
+  }];
+  optional int32 management_server_port = 89 [(discopanel.options.v1.prop) = {
+    prop: "management-server-port"
+    default_value: "0"
+    desc: "Port for management server"
+    input: "number"
+    label: "Management Server Port"
+    category: "management"
+  }];
+  optional string management_server_secret = 90 [(discopanel.options.v1.prop) = {
+    prop: "management-server-secret"
+    default_value: ""
+    desc: "Shared secret for management server authentication"
+    input: "password"
+    label: "Management Server Secret"
+    category: "management"
+  }];
+  optional bool management_server_tls_enabled = 91 [(discopanel.options.v1.prop) = {
+    prop: "management-server-tls-enabled"
+    default_value: "false"
+    desc: "Enable TLS for management server"
+    input: "checkbox"
+    label: "Management Server TLS Enabled"
+    category: "management"
+  }];
+  optional string management_server_tls_keystore = 92 [(discopanel.options.v1.prop) = {
+    prop: "management-server-tls-keystore"
+    default_value: ""
+    desc: "Path to TLS keystore"
+    input: "text"
+    label: "Management Server TLS Keystore"
+    category: "management"
+  }];
+  optional string management_server_tls_keystore_password = 93 [(discopanel.options.v1.prop) = {
+    prop: "management-server-tls-keystore-password"
+    default_value: ""
+    desc: "Password for TLS keystore"
+    input: "password"
+    label: "Management Server TLS Keystore Password"
+    category: "management"
+  }];
+  optional string ops = 94 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "Comma-separated list of operator usernames/UUIDs"
+    input: "text"
+    label: "Operators"
+    category: "ops"
+  }];
+  optional bool enable_whitelist = 95 [(discopanel.options.v1.prop) = {
+    prop: "white-list"
+    default_value: "false"
+    desc: "Enable server whitelist"
+    input: "checkbox"
+    label: "Enable Whitelist"
+    category: "whitelist"
+  }];
+  optional string whitelist = 96 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "Comma-separated list of usernames/UUIDs"
+    input: "text"
+    label: "Whitelist Players"
+    category: "whitelist"
+  }];
+  optional bool override_whitelist = 97 [(discopanel.options.v1.prop) = {
+    default_value: "false"
+    desc: "Regenerate whitelist on each startup"
+    input: "checkbox"
+    label: "Override Whitelist"
+    category: "whitelist"
+  }];
+  optional bool enforce_whitelist = 98 [(discopanel.options.v1.prop) = {
+    prop: "enforce-whitelist"
+    default_value: "false"
+    desc: "Enforce whitelist changes immediately"
+    input: "checkbox"
+    label: "Enforce Whitelist"
+    category: "whitelist"
+  }];
+  optional bool enable_rcon = 99 [(discopanel.options.v1.prop) = {
+    prop: "enable-rcon"
+    default_value: "true"
+    desc: "Enable RCON support (required for console, metrics and backups)"
+    input: "checkbox"
+    label: "Enable RCON"
+    category: "rcon"
+  }];
+  optional string rcon_password = 100 [(discopanel.options.v1.prop) = {
+    prop: "rcon.password"
+    default_value: ""
+    desc: "RCON password (MUST be changed)"
+    input: "password"
+    label: "RCON Password"
+    category: "rcon"
+    required: true
+  }];
+  optional int32 rcon_port = 101 [(discopanel.options.v1.prop) = {
+    prop: "rcon.port"
+    default_value: "25575"
+    desc: "RCON port"
+    input: "number"
+    label: "RCON Port"
+    category: "rcon"
+  }];
+  optional bool broadcast_rcon_to_ops = 102 [(discopanel.options.v1.prop) = {
+    prop: "broadcast-rcon-to-ops"
+    default_value: "true"
+    desc: "Broadcast RCON to ops"
+    input: "checkbox"
+    label: "Broadcast RCON to OPs"
+    category: "rcon"
+  }];
+  optional string rcon_cmds_startup = 103 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "RCON commands to execute when the server becomes healthy"
+    input: "text"
+    label: "RCON Commands on Startup"
+    category: "rcon"
+  }];
+  optional string rcon_cmds_on_connect = 104 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "RCON commands to execute on client connect"
+    input: "text"
+    label: "RCON Commands on Connect"
+    category: "rcon"
+  }];
+  optional string rcon_cmds_first_connect = 105 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "RCON commands to execute on first client connect"
+    input: "text"
+    label: "RCON Commands on First Connect"
+    category: "rcon"
+  }];
+  optional string rcon_cmds_on_disconnect = 106 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "RCON commands to execute on client disconnect"
+    input: "text"
+    label: "RCON Commands on Disconnect"
+    category: "rcon"
+  }];
+  optional string rcon_cmds_last_disconnect = 107 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "RCON commands to execute on last client disconnect"
+    input: "text"
+    label: "RCON Commands on Last Disconnect"
+    category: "rcon"
+  }];
+  optional bool enable_autopause = 108 [(discopanel.options.v1.prop) = {
+    default_value: "false"
+    desc: "Pause the container when idle; wakes on player connect (proxied servers only)"
+    input: "checkbox"
+    label: "Enable Auto-Pause"
+    category: "autopause"
+  }];
+  optional int32 autopause_timeout_est = 109 [(discopanel.options.v1.prop) = {
+    default_value: "3600"
+    desc: "Time between last disconnect and pausing (seconds)"
+    input: "number"
+    label: "Auto-Pause Timeout (Established)"
+    category: "autopause"
+  }];
+  optional int32 autopause_timeout_init = 110 [(discopanel.options.v1.prop) = {
+    default_value: "600"
+    desc: "Time between server start and pausing if no client connects (seconds)"
+    input: "number"
+    label: "Auto-Pause Timeout (Initial)"
+    category: "autopause"
+  }];
+  optional bool enable_autostop = 111 [(discopanel.options.v1.prop) = {
+    default_value: "false"
+    desc: "Stop the server when idle"
+    input: "checkbox"
+    label: "Enable Auto-Stop"
+    category: "autostop"
+  }];
+  optional int32 autostop_timeout_est = 112 [(discopanel.options.v1.prop) = {
+    default_value: "3600"
+    desc: "Time between last disconnect (or pause) and stopping (seconds)"
+    input: "number"
+    label: "Auto-Stop Timeout (Established)"
+    category: "autostop"
+  }];
+  optional int32 autostop_timeout_init = 113 [(discopanel.options.v1.prop) = {
+    default_value: "1800"
+    desc: "Time between server start (or pause) and stopping if no client connects (seconds)"
+    input: "number"
+    label: "Auto-Stop Timeout (Initial)"
+    category: "autostop"
+  }];
+  optional bool enable_wake_on_connect = 114 [(discopanel.options.v1.prop) = {
+    default_value: "false"
+    desc: "Keep this server joinable while stopped; joining starts it up (proxied servers only)"
+    input: "checkbox"
+    label: "Wake on Connect"
+    category: "proxy"
+  }];
+  optional bool enable_offline_status = 140 [(discopanel.options.v1.prop) = {
+    default_value: "false"
+    desc: "Answer server list pings while stopped, showing the server icon and offline message"
+    input: "checkbox"
+    label: "Show Offline Status"
+    category: "proxy"
+  }];
+  optional bool enable_proxy_protocol = 115 [(discopanel.options.v1.prop) = {
+    default_value: "false"
+    desc: "Send PROXY protocol v2 headers so the server sees real client IPs; the server software must expect proxy protocol (e.g. Paper's proxy-protocol setting) or connections will fail"
+    input: "checkbox"
+    label: "Send PROXY Protocol"
+    category: "proxy"
+  }];
+  optional bool proxy_preserve_hostname = 116 [(discopanel.options.v1.prop) = {
+    default_value: "false"
+    desc: "Forward the hostname players connected with instead of rewriting it to localhost (needed by hostname-aware plugins and Floodgate)"
+    input: "checkbox"
+    label: "Preserve Client Hostname"
+    category: "proxy"
+  }];
+  optional string forge_version = 117 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "Specific Forge/NeoForge version to install"
+    input: "text"
+    label: "Forge Version"
+    category: "curseforge"
+  }];
+  optional string forge_installer = 118 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "Data-dir path to a pre-downloaded Forge installer"
+    input: "text"
+    label: "Forge Installer"
+    category: "curseforge"
+  }];
+  optional string forge_installer_url = 119 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "URL to download Forge installer"
+    input: "text"
+    label: "Forge Installer URL"
+    category: "curseforge"
+  }];
+  optional string cf_api_key = 120 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "CurseForge API Key (https://console.curseforge.com/#/api-keys)"
+    input: "password"
+    label: "CurseForge API Key"
+    category: "curseforge"
+  }];
+  optional string cf_page_url = 121 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "URL to modpack or specific file"
+    input: "text"
+    label: "CurseForge Page URL"
+    category: "curseforge"
+  }];
+  optional string cf_slug = 122 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "Modpack slug identifier"
+    input: "text"
+    label: "CurseForge Slug"
+    category: "curseforge"
+  }];
+  optional string cf_file_id = 123 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "Modpack file numerical ID"
+    input: "text"
+    label: "CurseForge File ID"
+    category: "curseforge"
+  }];
+  optional string cf_modpack_zip = 124 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "Data-dir path to unpublished modpack zip"
+    input: "text"
+    label: "CurseForge Modpack Zip"
+    category: "curseforge"
+  }];
+  optional string cf_exclude_mods = 125 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "Comma/space delimited list of mod slugs/IDs to exclude"
+    input: "text"
+    label: "CurseForge Exclude Mods"
+    category: "curseforge"
+  }];
+  optional string cf_force_include_mods = 126 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "Comma/space delimited list of mod slugs/IDs to include"
+    input: "text"
+    label: "CurseForge Force Include Mods"
+    category: "curseforge"
+  }];
+  optional string modrinth_modpack = 127 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "Modrinth modpack project slug, ID, or URL"
+    input: "text"
+    label: "Modrinth Modpack"
+    category: "modrinth"
+  }];
+  optional string modrinth_modpack_version_type = 128 [(discopanel.options.v1.prop) = {
+    default_value: "release"
+    desc: "Version type for modpack"
+    input: "select"
+    label: "Modrinth Modpack Version Type"
+    category: "modrinth"
+    options: [
+      "release",
+      "beta",
+      "alpha"
+    ]
+  }];
+  optional string modrinth_version = 129 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "Specific version ID or number"
+    input: "text"
+    label: "Modrinth Version"
+    category: "modrinth"
+  }];
+  optional string modrinth_loader = 130 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "Mod loader for narrowing versions (forge, neoforge, fabric, quilt)"
+    input: "select"
+    label: "Modrinth Loader"
+    category: "modrinth"
+  }];
+  optional string modrinth_exclude_files = 131 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "Comma or newline delimited list of partial file names to exclude"
+    input: "text"
+    label: "Exclude Files"
+    category: "modrinth"
+  }];
+  optional string modrinth_force_include_files = 132 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "Comma or newline delimited list of partial file names to force include"
+    input: "text"
+    label: "Force Include Files"
+    category: "modrinth"
+  }];
+  optional string modrinth_projects = 133 [(discopanel.options.v1.prop) = {
+    default_value: ""
+    desc: "Comma or newline delimited list of Modrinth project slugs or IDs to install as mods"
+    input: "text"
+    label: "Modrinth Projects"
+    category: "modrinth"
+  }];
+  optional string modrinth_download_dependencies = 134 [(discopanel.options.v1.prop) = {
+    default_value: "none"
+    desc: "Dependency download mode"
+    input: "select"
+    label: "Modrinth Download Dependencies"
+    category: "modrinth"
+    options: [
+      "none",
+      "required",
+      "optional"
+    ]
+  }];
+  optional string modrinth_projects_default_version_type = 135 [(discopanel.options.v1.prop) = {
+    default_value: "release"
+    desc: "Default version type to select"
+    input: "select"
+    label: "Modrinth Default Version Type"
+    category: "modrinth"
+    options: [
+      "release",
+      "beta",
+      "alpha"
+    ]
+  }];
+  optional bool doctor_enabled = 136 [(discopanel.options.v1.prop) = {
+    default_value: "true"
+    desc: "Let the doctor watch this server and publish health findings"
+    input: "checkbox"
+    label: "Doctor Enabled"
+    category: "doctor"
+  }];
+  optional string doctor_mode = 137 [(discopanel.options.v1.prop) = {
+    default_value: "repair"
+    desc: "Repair crashes with reversible mod changes, or observe and report only"
+    input: "select"
+    label: "Doctor Mode"
+    category: "doctor"
+    options: [
+      "repair",
+      "observe"
+    ]
+  }];
+  optional bool doctor_install_deps = 138 [(discopanel.options.v1.prop) = {
+    default_value: "true"
+    desc: "Allow the doctor to download missing mod dependencies from indexers"
+    input: "checkbox"
+    label: "Install Missing Dependencies"
+    category: "doctor"
+  }];
+}

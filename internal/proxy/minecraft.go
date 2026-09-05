@@ -1,276 +1,548 @@
 package proxy
 
 import (
+	"bufio"
+	"bytes"
 	"context"
-	"fmt"
+	"encoding/json"
 	"io"
 	"net"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/nickheyer/discopanel/pkg/logger"
+	"github.com/discohaus/discopanel/pkg/mcproto"
+	"github.com/discohaus/discopanel/pkg/minecraft"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/protometa"
 )
 
-// MinecraftProxy handles Minecraft protocol proxying with handshake parsing for hostname-based routing
-type MinecraftProxy struct {
-	listener     net.Listener
-	routes       map[string]*Route
-	routesMutex  sync.RWMutex
-	logger       *logger.Logger
-	listenAddr   string
-	running      bool
-	runningMutex sync.RWMutex
-	ctx          context.Context
-	cancel       context.CancelFunc
+// Counts per-route proxy activity, keyed by server ID
+type RouteStats struct {
+	ActiveConns    atomic.Int64
+	TotalConns     atomic.Int64
+	StatusPings    atomic.Int64
+	Logins         atomic.Int64
+	Wakes          atomic.Int64
+	BytesToBackend atomic.Int64
+	BytesToClient  atomic.Int64
+	LastProtocol   atomic.Int32
 }
 
-// NewMinecraftProxy creates a new Minecraft proxy instance
-func NewMinecraftProxy(cfg *Config) *MinecraftProxy {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &MinecraftProxy{
-		routes:     make(map[string]*Route),
-		logger:     cfg.Logger,
-		listenAddr: cfg.ListenAddr,
-		ctx:        ctx,
-		cancel:     cancel,
+// Relays and folds moved bytes into the counters
+func (st *RouteStats) countRelay(client, backend net.Conn) {
+	toBackend, toClient := relay(client, backend)
+	st.BytesToBackend.Add(toBackend)
+	st.BytesToClient.Add(toClient)
+}
+
+// Copies the live counters onto a fresh route message
+func (st *RouteStats) Snapshot() *v1.ProxyRoute {
+	return &v1.ProxyRoute{
+		ActiveConnections:   st.ActiveConns.Load(),
+		TotalConnections:    st.TotalConns.Load(),
+		StatusPings:         st.StatusPings.Load(),
+		Logins:              st.Logins.Load(),
+		Wakes:               st.Wakes.Load(),
+		BytesToBackend:      st.BytesToBackend.Load(),
+		BytesToClient:       st.BytesToClient.Load(),
+		LastProtocolVersion: st.LastProtocol.Load(),
 	}
 }
 
-// AddRoute adds a new routing rule
-func (p *MinecraftProxy) AddRoute(serverID, hostname, backendHost string, backendPort int) {
-	p.routesMutex.Lock()
-	defer p.routesMutex.Unlock()
-
-	hostname = strings.ToLower(strings.Split(hostname, ":")[0])
-
-	p.routes[hostname] = &Route{
-		ServerID:    serverID,
-		Hostname:    hostname,
-		BackendHost: backendHost,
-		BackendPort: backendPort,
-		Active:      true,
+// Returns a route's counters, creating them on first use
+func (s *ListenerSocket) statsFor(serverID string) *RouteStats {
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+	st, ok := s.stats[serverID]
+	if !ok {
+		st = &RouteStats{}
+		s.stats[serverID] = st
 	}
-
-	p.logger.Info("Added route: hostname=%s backend=%s:%d", hostname, backendHost, backendPort)
+	return st
 }
 
-// RemoveRoute removes a routing rule
-func (p *MinecraftProxy) RemoveRoute(hostname string) {
-	p.routesMutex.Lock()
-	defer p.routesMutex.Unlock()
-
-	hostname = strings.ToLower(strings.Split(hostname, ":")[0])
-	delete(p.routes, hostname)
-
-	p.logger.Info("Removed route: hostname=%s", hostname)
-}
-
-// UpdateRoute updates the backend for a route
-func (p *MinecraftProxy) UpdateRoute(hostname, backendHost string, backendPort int) {
-	p.routesMutex.Lock()
-	defer p.routesMutex.Unlock()
-
-	hostname = strings.ToLower(strings.Split(hostname, ":")[0])
-	if route, exists := p.routes[hostname]; exists {
-		route.BackendHost = backendHost
-		route.BackendPort = backendPort
-		p.logger.Info("Updated route: hostname=%s backend=%s:%d", hostname, backendHost, backendPort)
-	}
-}
-
-// SetRouteActive enables or disables a route
-func (p *MinecraftProxy) SetRouteActive(hostname string, active bool) {
-	p.routesMutex.Lock()
-	defer p.routesMutex.Unlock()
-
-	hostname = strings.ToLower(strings.Split(hostname, ":")[0])
-	if route, exists := p.routes[hostname]; exists {
-		route.Active = active
-		p.logger.Info("Set route active: hostname=%s active=%v", hostname, active)
-	}
-}
-
-// Start starts the proxy server
-func (p *MinecraftProxy) Start() error {
-	p.runningMutex.Lock()
-	defer p.runningMutex.Unlock()
-
-	if p.running {
-		return fmt.Errorf("proxy already running")
-	}
-
-	listener, err := net.Listen("tcp", p.listenAddr)
-	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %w", p.listenAddr, err)
-	}
-
-	p.listener = listener
-	p.running = true
-
-	go p.acceptLoop()
-
-	p.logger.Info("Minecraft proxy started on %s", p.listenAddr)
-	return nil
-}
-
-// Stop stops the proxy server
-func (p *MinecraftProxy) Stop() error {
-	p.runningMutex.Lock()
-	defer p.runningMutex.Unlock()
-
-	if !p.running {
-		return nil
-	}
-
-	p.cancel()
-	p.running = false
-
-	if p.listener != nil {
-		if err := p.listener.Close(); err != nil {
-			return fmt.Errorf("failed to close listener: %w", err)
+// Forgets counters matching the predicate
+func (s *ListenerSocket) DropStats(match func(string) bool) {
+	s.statsMu.Lock()
+	for id := range s.stats {
+		if match(id) {
+			delete(s.stats, id)
 		}
 	}
-
-	p.logger.Info("Minecraft proxy stopped")
-	return nil
+	s.statsMu.Unlock()
 }
 
-// acceptLoop accepts incoming connections
-func (p *MinecraftProxy) acceptLoop() {
-	for {
-		conn, err := p.listener.Accept()
-		if err != nil {
-			select {
-			case <-p.ctx.Done():
+// Copies every route's counters for the API
+func (s *ListenerSocket) StatsSnapshots() map[string]*v1.ProxyRoute {
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+	out := make(map[string]*v1.ProxyRoute, len(s.stats))
+	for id, st := range s.stats {
+		out[id] = st.Snapshot()
+	}
+	return out
+}
+
+// Wire side normalizer, config names use NormalizeHostname
+func normalizeWireHostname(hostname string) string {
+	hostname, _ = mcproto.SplitHostMarkers(hostname)
+	hostname, _, _ = strings.Cut(hostname, ":")
+	return strings.ToLower(strings.TrimSuffix(hostname, "."))
+}
+
+// Installs or replaces an mc route, silent when unchanged
+func (s *ListenerSocket) UpsertServerRoute(route Route) {
+	route.Protocol = v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT
+	if route.State == v1.ProxyRouteState_PROXY_ROUTE_STATE_UNSPECIFIED {
+		route.State = v1.ProxyRouteState_PROXY_ROUTE_STATE_ONLINE
+	}
+	route.Hostname = normalizeWireHostname(route.Hostname)
+
+	s.routesMu.Lock()
+	old, exists := s.mcRoutes[route.Hostname]
+	changed := !exists || *old != route
+	if changed {
+		s.mcRoutes[route.Hostname] = &route
+	}
+	s.routesMu.Unlock()
+
+	if changed {
+		s.logger.Info("Route %s is %s (backend=%s:%d wakeable=%v)",
+			route.Hostname, protometa.Name(route.State), route.BackendHost, route.BackendPort, route.Wakeable)
+	}
+}
+
+// Removes an mc route and its counters
+func (s *ListenerSocket) removeMCRoute(hostname string) {
+	hostname = normalizeWireHostname(hostname)
+
+	s.routesMu.Lock()
+	route, exists := s.mcRoutes[hostname]
+	delete(s.mcRoutes, hostname)
+	s.routesMu.Unlock()
+
+	if !exists {
+		return
+	}
+
+	s.statsMu.Lock()
+	delete(s.stats, route.ServerID)
+	s.statsMu.Unlock()
+
+	s.logger.Info("Removed route: hostname=%s", hostname)
+}
+
+// Returns a snapshot of the mc route for hostname
+func (s *ListenerSocket) lookupMCRoute(hostname string) (Route, bool) {
+	s.routesMu.RLock()
+	defer s.routesMu.RUnlock()
+	if route, exists := s.mcRoutes[hostname]; exists {
+		return *route, true
+	}
+	// Explicit catch all takes unmatched names, nothing else does
+	if route, exists := s.mcRoutes[""]; exists {
+		return *route, true
+	}
+	return Route{}, false
+}
+
+// Finds backend for a parsed handshake, wakes sleepers, relays
+func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, handshake *mcproto.HandshakePacket) {
+	hostname := normalizeWireHostname(handshake.ServerAddress)
+	route, ok := s.lookupMCRoute(hostname)
+	if !ok {
+		s.serveHubless(clientConn, br, handshake, hostname)
+		return
+	}
+	// Claims from the lobby outrank the matched route
+	if handshake.NextState != mcproto.NextStateStatus {
+		if target, ok := s.claimRoutedIntent(br, route); ok {
+			login, err := mcproto.ReadLoginStart(br)
+			if err != nil {
+				s.logger.Debug("Bad login start from %s: %v", clientConn.RemoteAddr(), err)
 				return
-			default:
-				p.logger.Error("Failed to accept connection: %v", err)
-				continue
+			}
+			s.serveRoute(clientConn, br, handshake, hostname, target, login)
+			return
+		}
+	}
+	s.serveRoute(clientConn, br, handshake, hostname, route, nil)
+}
+
+// Peeks the login name and burns any pending claim
+// True reroutes toward a different claimed server
+func (s *ListenerSocket) claimRoutedIntent(br *bufio.Reader, route Route) (Route, bool) {
+	if s.intents == nil {
+		return Route{}, false
+	}
+	name, ok := mcproto.PeekLoginName(br)
+	if !ok {
+		return Route{}, false
+	}
+	targetID, ok := s.claimIntent(name)
+	if !ok || targetID == route.ServerID {
+		return Route{}, false
+	}
+	target, found := s.routeByServerID(targetID)
+	if !found {
+		s.logger.Debug("Intent target %s has no route, keeping %s", targetID, route.ServerID)
+		return Route{}, false
+	}
+	return target, true
+}
+
+// Answers hostnames nothing routes, lobby first
+func (s *ListenerSocket) serveHubless(clientConn net.Conn, br *bufio.Reader, handshake *mcproto.HandshakePacket, hostname string) {
+	hubRT := s.hub
+	if hubRT == nil || !hubRT.Enabled() {
+		s.logger.Debug("No active route for hostname %q from %s", hostname, clientConn.RemoteAddr())
+		if handshake.NextState == mcproto.NextStateStatus {
+			s.serveSyntheticStatus(clientConn, br, handshake, statusUnknownHost(hostname, int(handshake.ProtocolVersion)))
+			return
+		}
+		s.kick(clientConn, handshake, kickUnknownHost(hostname))
+		return
+	}
+	if handshake.NextState == mcproto.NextStateStatus {
+		s.serveSyntheticStatus(clientConn, br, handshake, hubRT.statusCard())
+		return
+	}
+	login, err := mcproto.ReadLoginStart(br)
+	if err != nil {
+		s.logger.Debug("Bad login start from %s: %v", clientConn.RemoteAddr(), err)
+		return
+	}
+	// Claimed rejoins hop to their promised world
+	if targetID, ok := s.claimIntent(login.Name); ok {
+		if target, found := s.routeByServerID(targetID); found {
+			s.serveRoute(clientConn, br, handshake, hostname, target, login)
+			return
+		}
+		s.logger.Debug("Intent target %s has no route, keeping hub", targetID)
+	}
+	if !hubRT.serve(s, clientConn, br, handshake, login, nil) {
+		s.kick(clientConn, handshake, kickHubVersion())
+	}
+}
+
+// Holds one login in the lobby while its world boots
+func (s *ListenerSocket) holdInHub(clientConn net.Conn, br *bufio.Reader, handshake *mcproto.HandshakePacket, route Route, login *mcproto.LoginStart, fallback minecraft.Text) {
+	hubRT := s.hub
+	if hubRT == nil || !hubRT.Enabled() {
+		s.kick(clientConn, handshake, fallback)
+		return
+	}
+	if login == nil {
+		ls, err := mcproto.ReadLoginStart(br)
+		if err != nil {
+			s.logger.Debug("Bad login start from %s: %v", clientConn.RemoteAddr(), err)
+			return
+		}
+		login = ls
+	}
+	hold := hubRT.targetByID(route.ServerID)
+	if hold == nil || !hubRT.serve(s, clientConn, br, handshake, login, hold) {
+		s.kick(clientConn, handshake, fallback)
+	}
+}
+
+// Wakes sleepers and relays one routed connection
+func (s *ListenerSocket) serveRoute(clientConn net.Conn, br *bufio.Reader, handshake *mcproto.HandshakePacket, hostname string, route Route, login *mcproto.LoginStart) {
+	stats := s.statsFor(route.ServerID)
+	stats.TotalConns.Add(1)
+	stats.LastProtocol.Store(int32(handshake.ProtocolVersion))
+	if handshake.NextState == mcproto.NextStateStatus {
+		stats.StatusPings.Add(1)
+	} else {
+		stats.Logins.Add(1)
+	}
+
+	// Rerouted joins need a version the target speaks
+	if login != nil && route.McProtocol != 0 &&
+		route.McProtocol != int32(handshake.ProtocolVersion) && route.McVersion != "" {
+		s.kick(clientConn, handshake, kickVersionMismatch(route.McVersion))
+		return
+	}
+
+	// Paused servers answer status pings without waking, wake on login
+	if gate := s.getGate(); gate != nil {
+		if info, sleeping := gate.SleepingInfo(route.ServerID); sleeping {
+			if handshake.NextState == mcproto.NextStateStatus {
+				s.serveSyntheticStatus(clientConn, br, handshake, statusSleeping(info.Motd, info.MaxPlayers, route.Favicon))
+				return
+			}
+			s.logger.Info("Waking sleeping server %s for incoming login", route.ServerID)
+			stats.Wakes.Add(1)
+			wakeCtx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
+			err := gate.WakeServer(wakeCtx, route.ServerID)
+			cancel()
+			if err != nil {
+				s.logger.Error("Failed to wake server %s: %v", route.ServerID, err)
+				s.kick(clientConn, handshake, kickWakeFailed())
+				return
 			}
 		}
-
-		go p.handleConnection(conn)
-	}
-}
-
-// handleConnection handles a single client connection with Minecraft protocol parsing
-func (p *MinecraftProxy) handleConnection(clientConn net.Conn) {
-	defer clientConn.Close()
-
-	p.logger.Debug("Attempting to route incoming Minecraft connection!")
-
-	// Set initial timeout for handshake
-	clientConn.SetReadDeadline(time.Now().Add(10 * time.Second))
-
-	// Read the handshake packet
-	handshake, err := ReadHandshakePacket(clientConn)
-	if err != nil {
-		p.logger.Debug("Failed to read handshake from %s: %v", clientConn.RemoteAddr(), err)
-		return
 	}
 
-	// Extract hostname from the handshake
-	p.logger.Debug("Extracting hostname from: %s", handshake.ServerAddress)
-	hostname := strings.ToLower(strings.Split(handshake.ServerAddress, ":")[0])
-	if idx := strings.IndexByte(hostname, 0); idx != -1 {
-		hostname = hostname[:idx]
-		p.logger.Debug("Null byte(s) detected, trimmed suffix null termination: %s", hostname)
-	}
-
-	// Find the route
-	p.routesMutex.RLock()
-	route, exists := p.routes[hostname]
-	p.routesMutex.RUnlock()
-
-	if !exists || !route.Active {
-		p.logger.Debug("No active route found for hostname: %s", hostname)
-		p.routesMutex.RLock()
-		p.logger.Debug("Available routes:")
-		for r := range p.routes {
-			p.logger.Debug("%s", r)
+	// Stopped and booting servers answer synthetically instead of dialing
+	switch route.State {
+	case v1.ProxyRouteState_PROXY_ROUTE_STATE_OFFLINE:
+		if handshake.NextState == mcproto.NextStateStatus {
+			s.serveSyntheticStatus(clientConn, br, handshake, statusOffline(route))
+			return
 		}
-		p.routesMutex.RUnlock()
+		if !route.Wakeable {
+			s.kick(clientConn, handshake, kickOffline())
+			return
+		}
+		gate := s.getGate()
+		if gate == nil {
+			s.kick(clientConn, handshake, kickOffline())
+			return
+		}
+		s.logger.Info("Starting stopped server %s for incoming login", route.ServerID)
+		stats.Wakes.Add(1)
+		if err := gate.StartServer(route.ServerID); err != nil {
+			s.logger.Error("Failed to start server %s for login: %v", route.ServerID, err)
+			s.kick(clientConn, handshake, kickStartFailed())
+			return
+		}
+		s.holdInHub(clientConn, br, handshake, route, login, kickStarted())
+		return
+
+	case v1.ProxyRouteState_PROXY_ROUTE_STATE_STARTING:
+		if handshake.NextState == mcproto.NextStateStatus {
+			s.serveSyntheticStatus(clientConn, br, handshake, statusStarting(route))
+			return
+		}
+		// No backend yet, lobby holds the login instead
+		if route.BackendHost == "" {
+			s.holdInHub(clientConn, br, handshake, route, login, kickStillStarting())
+			return
+		}
+		// Backend exists, let dial retry ride out the boot
+	}
+
+	if route.BackendHost == "" {
+		s.logger.Error("Route %s has no backend address", hostname)
+		if handshake.NextState != mcproto.NextStateStatus {
+			s.kick(clientConn, handshake, kickUnreachable())
+		}
 		return
 	}
 
-	// Connect to backend
-	backendAddr := net.JoinHostPort(route.BackendHost, fmt.Sprintf("%d", route.BackendPort))
-	backendConn, err := net.DialTimeout("tcp", backendAddr, 5*time.Second)
+	backendAddr := route.BackendAddr()
+	backendConn, err := dialBackendWithRetry(s.ctx, backendAddr, 10*time.Second)
 	if err != nil {
-		p.logger.Error("Failed to connect to backend %s: %v", backendAddr, err)
+		s.logger.Error("Failed to connect to backend %s for %s: %v", backendAddr, hostname, err)
+		if handshake.NextState != mcproto.NextStateStatus {
+			s.kick(clientConn, handshake, kickNotAccepting())
+		}
 		return
 	}
 	defer backendConn.Close()
 
-	// Modify handshake packet to use backend's expected hostname
-	// For Forge servers, we need to preserve any FML data in the address field
-	addressParts := strings.Split(handshake.ServerAddress, "\x00")
-	if len(addressParts) > 1 {
-		// Forge client detected - preserve all FML protocol data
-		originalHost := addressParts[0]
-		addressParts[0] = "localhost"
+	backendConn.SetWriteDeadline(time.Now().Add(handshakeTimeout))
 
-		if len(addressParts) >= 2 {
-			fmlVersion := addressParts[1]
-			p.logger.Debug("Forge handshake detected - FML version: %s, original host: %s", fmlVersion, originalHost)
-
-			if len(addressParts) > 2 {
-				p.logger.Debug("Additional FML data segments: %d", len(addressParts)-2)
-			}
+	// Real client address rides ahead of the handshake when enabled
+	if route.ProxyProtocol {
+		if err := WriteProxyV2Header(backendConn, clientConn.RemoteAddr(), clientConn.LocalAddr()); err != nil {
+			s.logger.Error("Failed to write PROXY header to backend %s: %v", backendAddr, err)
+			return
 		}
-
-		handshake.ServerAddress = strings.Join(addressParts, "\x00")
-	} else {
-		handshake.ServerAddress = "localhost"
 	}
-	handshake.ServerPort = uint16(route.BackendPort)
 
-	// Forward the modified handshake to the backend
-	if err := WriteHandshakePacket(backendConn, handshake); err != nil {
-		p.logger.Error("Failed to write handshake to backend: %v", err)
+	rewriteHandshakeAddress(handshake, route.BackendPort, route.PreserveHost)
+
+	if err := mcproto.WriteHandshakePacket(backendConn, handshake); err != nil {
+		s.logger.Error("Failed to write handshake to backend %s: %v", backendAddr, err)
 		return
 	}
 
-	// Clear timeouts for proxying
-	clientConn.SetReadDeadline(time.Time{})
-	backendConn.SetReadDeadline(time.Time{})
-
-	// Start bidirectional proxying
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		io.Copy(backendConn, clientConn)
-		backendConn.Close()
-	}()
-
-	go func() {
-		defer wg.Done()
-		io.Copy(clientConn, backendConn)
-		clientConn.Close()
-	}()
-
-	wg.Wait()
-}
-
-// GetRoutes returns a copy of all current routes
-func (p *MinecraftProxy) GetRoutes() map[string]*Route {
-	p.routesMutex.RLock()
-	defer p.routesMutex.RUnlock()
-
-	routes := make(map[string]*Route)
-	for k, v := range p.routes {
-		routeCopy := *v
-		routes[k] = &routeCopy
+	// Consumed login start rides ahead of buffered bytes
+	if login != nil {
+		if err := login.Replay(backendConn); err != nil {
+			s.logger.Error("Failed to replay login start to backend %s: %v", backendAddr, err)
+			return
+		}
 	}
-	return routes
+
+	// Flushes client bytes already buffered before relay handoff
+	if buffered := br.Buffered(); buffered > 0 {
+		pending, _ := br.Peek(buffered)
+		if _, err := backendConn.Write(pending); err != nil {
+			s.logger.Error("Failed to flush buffered client data to backend %s: %v", backendAddr, err)
+			return
+		}
+		br.Discard(buffered)
+	}
+
+	// Clears deadlines, relays raw sockets via splice fast path
+	clientConn.SetDeadline(time.Time{})
+	backendConn.SetDeadline(time.Time{})
+	stats.ActiveConns.Add(1)
+	stats.countRelay(clientConn, backendConn)
+	stats.ActiveConns.Add(-1)
 }
 
-// IsRunning returns whether the proxy is running
-func (p *MinecraftProxy) IsRunning() bool {
-	p.runningMutex.RLock()
-	defer p.runningMutex.RUnlock()
-	return p.running
+// Burns a pending reroute when a table exists
+func (s *ListenerSocket) claimIntent(player string) (string, bool) {
+	if s.intents == nil {
+		return "", false
+	}
+	return s.intents.Claim(player)
+}
+
+// Finds this socket's route for a server id
+func (s *ListenerSocket) routeByServerID(serverID string) (Route, bool) {
+	s.routesMu.RLock()
+	defer s.routesMu.RUnlock()
+	for _, route := range s.mcRoutes {
+		if route.ServerID == serverID {
+			return *route, true
+		}
+	}
+	return Route{}, false
+}
+
+// Points handshake at backend, loader markers ride along
+func rewriteHandshakeAddress(handshake *mcproto.HandshakePacket, backendPort int, preserveHost bool) {
+	if !preserveHost {
+		_, markers := mcproto.SplitHostMarkers(handshake.ServerAddress)
+		handshake.ServerAddress = "localhost" + markers
+	}
+	handshake.ServerPort = uint16(backendPort)
+}
+
+// Sends a styled kick screen to the client
+func (s *ListenerSocket) kick(conn net.Conn, handshake *mcproto.HandshakePacket, screen minecraft.Text) {
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	reason, err := json.Marshal(screen.Render(int(handshake.ProtocolVersion)))
+	if err != nil {
+		return
+	}
+	mcproto.WriteLoginDisconnectJSON(conn, reason)
+}
+
+// Synthesizes a status reply so server lists never wake backends
+func (s *ListenerSocket) serveSyntheticStatus(conn net.Conn, r io.Reader, handshake *mcproto.HandshakePacket, card synthStatus) {
+	conn.SetDeadline(time.Now().Add(handshakeTimeout))
+
+	desc := card.desc
+	if motd, ok := desc.(string); ok {
+		desc = map[string]any{"text": motd}
+	}
+	sample := make([]map[string]any, 0, len(card.sample))
+	for _, line := range card.sample {
+		sample = append(sample, map[string]any{"name": line, "id": sampleUUID})
+	}
+	status := map[string]any{
+		"version": map[string]any{
+			// Echo the client protocol so the entry renders as compatible
+			"name":     card.version,
+			"protocol": int(handshake.ProtocolVersion),
+		},
+		"players": map[string]any{
+			"max":    card.maxPlayers,
+			"online": card.online,
+			"sample": sample,
+		},
+		"description": desc,
+	}
+	if card.favicon != "" {
+		status["favicon"] = card.favicon
+	}
+	statusJSON, err := json.Marshal(status)
+	if err != nil {
+		return
+	}
+
+	for {
+		// Reads next packet, status request or ping
+		length, err := mcproto.ReadVarInt(r)
+		if err != nil || length < 1 || length > 1024 {
+			return
+		}
+		data := make([]byte, length)
+		if _, err := io.ReadFull(r, data); err != nil {
+			return
+		}
+		reader := bytes.NewReader(data)
+		packetID, err := mcproto.ReadVarInt(reader)
+		if err != nil {
+			return
+		}
+
+		switch packetID {
+		case 0x00: // Status request -> status response
+			var payload bytes.Buffer
+			mcproto.WriteVarInt(&payload, 0x00)
+			mcproto.WriteVarInt(&payload, mcproto.VarInt(len(statusJSON)))
+			payload.Write(statusJSON)
+			if err := mcproto.WriteFramed(conn, payload.Bytes()); err != nil {
+				return
+			}
+		case 0x01: // Ping -> pong, echoes the 8-byte payload
+			var payload bytes.Buffer
+			mcproto.WriteVarInt(&payload, 0x01)
+			pingData := make([]byte, 8)
+			if _, err := io.ReadFull(reader, pingData); err != nil {
+				return
+			}
+			payload.Write(pingData)
+			mcproto.WriteFramed(conn, payload.Bytes())
+			return
+		default:
+			return
+		}
+	}
+}
+
+// Answers a pre-1.7 ping with a kick style status
+func (s *ListenerSocket) serveLegacyPing(conn net.Conn, raw []byte) {
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	motd, version, maxPlayers := s.legacyStatus(raw)
+	mcproto.WriteLegacyKick(conn, len(raw) > 1, motd, version, maxPlayers)
+}
+
+// Derives legacy status fields from the routed server
+func (s *ListenerSocket) legacyStatus(raw []byte) (string, string, int) {
+	route, ok := s.legacyPingRoute(raw)
+	if !ok {
+		return "powered by §fdisco§apanel", "discopanel", 0
+	}
+
+	stats := s.statsFor(route.ServerID)
+	stats.TotalConns.Add(1)
+	stats.StatusPings.Add(1)
+
+	if gate := s.getGate(); gate != nil {
+		if info, sleeping := gate.SleepingInfo(route.ServerID); sleeping {
+			return info.Motd, "sleeping", info.MaxPlayers
+		}
+	}
+
+	motd := route.Motd
+	if motd == "" {
+		motd = route.Hostname
+	}
+	version := "online"
+	switch route.State {
+	case v1.ProxyRouteState_PROXY_ROUTE_STATE_STARTING:
+		version = "starting"
+	case v1.ProxyRouteState_PROXY_ROUTE_STATE_OFFLINE:
+		version = "offline"
+	}
+	return motd, version, route.MaxPlayers
+}
+
+// Resolves the route a legacy ping is asking about
+func (s *ListenerSocket) legacyPingRoute(raw []byte) (Route, bool) {
+	if hostname, ok := mcproto.LegacyPingHostname(raw); ok {
+		return s.lookupMCRoute(normalizeWireHostname(hostname))
+	}
+
+	// Hostnameless pings only ever see the catch all
+	return s.lookupMCRoute("")
 }

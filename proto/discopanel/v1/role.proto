@@ -2,32 +2,63 @@ syntax = "proto3";
 
 package discopanel.v1;
 
-import "discopanel/v1/common.proto";
+import "discopanel/options/v1/options.proto";
+import "discopanel/v1/storage.proto";
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
 // Role and permission management service
 service RoleService {
   // List all roles
-  rpc ListRoles(ListRolesRequest) returns (ListRolesResponse);
+  rpc ListRoles(ListRolesRequest) returns (ListRolesResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_ROLES
+      action: ACTION_TYPE_READ
+    };
+  }
   // Get a single role
-  rpc GetRole(GetRoleRequest) returns (GetRoleResponse);
+  rpc GetRole(GetRoleRequest) returns (GetRoleResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_ROLES
+      action: ACTION_TYPE_READ
+    };
+  }
   // Create a new custom role
-  rpc CreateRole(CreateRoleRequest) returns (CreateRoleResponse);
+  rpc CreateRole(CreateRoleRequest) returns (CreateRoleResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_ROLES
+      action: ACTION_TYPE_CREATE
+    };
+  }
   // Update a role
-  rpc UpdateRole(UpdateRoleRequest) returns (UpdateRoleResponse);
+  rpc UpdateRole(UpdateRoleRequest) returns (UpdateRoleResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_ROLES
+      action: ACTION_TYPE_UPDATE
+    };
+  }
   // Delete a custom role
-  rpc DeleteRole(DeleteRoleRequest) returns (DeleteRoleResponse);
+  rpc DeleteRole(DeleteRoleRequest) returns (DeleteRoleResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_ROLES
+      action: ACTION_TYPE_DELETE
+    };
+  }
   // Get permission matrix for all roles
-  rpc GetPermissionMatrix(GetPermissionMatrixRequest) returns (GetPermissionMatrixResponse);
+  rpc GetPermissionMatrix(GetPermissionMatrixRequest) returns (GetPermissionMatrixResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_ROLES
+      action: ACTION_TYPE_READ
+    };
+  }
   // Set permissions for a role
-  rpc UpdatePermissions(UpdatePermissionsRequest) returns (UpdatePermissionsResponse);
-  // Assign a role to a user
-  rpc AssignRole(AssignRoleRequest) returns (AssignRoleResponse);
-  // Unassign a role from a user
-  rpc UnassignRole(UnassignRoleRequest) returns (UnassignRoleResponse);
+  rpc UpdatePermissions(UpdatePermissionsRequest) returns (UpdatePermissionsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_ROLES
+      action: ACTION_TYPE_UPDATE
+    };
+  }
   // Get roles for a user
-  rpc GetUserRoles(GetUserRolesRequest) returns (GetUserRolesResponse);
 }
 
 // Empty list request
@@ -89,18 +120,19 @@ message GetPermissionMatrixRequest {
   bool include_objects = 1;
 }
 
-// An object that can be scoped in permissions (e.g. a specific server)
+// Object a permission can scope to, like a server
 message ScopeableObject {
   string id = 1;
   string name = 2;
-  string resource = 3;
-  string scope_source = 4;  // Entity type providing scope (e.g., "servers" when files scoped by server)
+  discopanel.options.v1.ResourceType resource = 3;
+  // Entity type providing the scope objects
+  discopanel.options.v1.ResourceType scope_source = 4;
 }
 
-// Valid actions per resource, derived from procedure mappings
+// Valid actions per resource, derived from rpc annotations
 message ResourceActions {
-  string resource = 1;
-  repeated string actions = 2;
+  discopanel.options.v1.ResourceType resource = 1;
+  repeated discopanel.options.v1.ActionType actions = 2;
 }
 
 // Permission matrix response
@@ -124,36 +156,4 @@ message UpdatePermissionsRequest {
 // Update confirmation
 message UpdatePermissionsResponse {
   string message = 1;
-}
-
-// Assign role to user
-message AssignRoleRequest {
-  string user_id = 1;
-  string role_name = 2;
-}
-
-// Assignment confirmation
-message AssignRoleResponse {
-  string message = 1;
-}
-
-// Unassign role from user
-message UnassignRoleRequest {
-  string user_id = 1;
-  string role_name = 2;
-}
-
-// Unassignment confirmation
-message UnassignRoleResponse {
-  string message = 1;
-}
-
-// Get user roles request
-message GetUserRolesRequest {
-  string user_id = 1;
-}
-
-// User roles response
-message GetUserRolesResponse {
-  repeated string roles = 1;
 }

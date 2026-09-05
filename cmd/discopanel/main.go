@@ -4,29 +4,34 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
-	"github.com/nickheyer/discopanel/internal/command"
-	"github.com/nickheyer/discopanel/internal/config"
-	storage "github.com/nickheyer/discopanel/internal/db"
-	"github.com/nickheyer/discopanel/internal/docker"
-	"github.com/nickheyer/discopanel/internal/events"
-	"github.com/nickheyer/discopanel/internal/metrics"
-	"github.com/nickheyer/discopanel/internal/module"
-	"github.com/nickheyer/discopanel/internal/proxy"
-	"github.com/nickheyer/discopanel/internal/rpc"
-	"github.com/nickheyer/discopanel/internal/scheduler"
-	"github.com/nickheyer/discopanel/pkg/logger"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/internal/alias"
+	"github.com/discohaus/discopanel/internal/command"
+	storage "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/internal/docker"
+	"github.com/discohaus/discopanel/internal/lifecycle"
+	"github.com/discohaus/discopanel/internal/metrics"
+	"github.com/discohaus/discopanel/internal/module"
+	"github.com/discohaus/discopanel/internal/provisioner"
+	"github.com/discohaus/discopanel/internal/proxy"
+	"github.com/discohaus/discopanel/internal/rpc"
+	"github.com/discohaus/discopanel/internal/scheduler"
+	"github.com/discohaus/discopanel/pkg/config"
+	"github.com/discohaus/discopanel/pkg/events"
+	"github.com/discohaus/discopanel/pkg/logger"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
 func main() {
-	var configPath = flag.String("config", "./config.yaml", "Path to configuration file")
+	var configPath = flag.String("config", "", "Path to config file, default locations searched when empty")
 	flag.Parse()
 
 	// Load configuration
@@ -37,15 +42,7 @@ func main() {
 	}
 
 	// Init logger
-	logConfig := &logger.Config{
-		Enabled:    cfg.Logging.Enabled,
-		FilePath:   cfg.Logging.FilePath,
-		MaxSize:    cfg.Logging.MaxSize,
-		MaxBackups: cfg.Logging.MaxBackups,
-		MaxAge:     cfg.Logging.MaxAge,
-		Compress:   cfg.Logging.Compress,
-	}
-	log := logger.NewWithConfig(logConfig)
+	log := logger.NewWithConfig(&cfg.Logging)
 	defer log.Close()
 
 	// Create required directories
@@ -71,11 +68,11 @@ func main() {
 
 	// Initialize Docker client with configuration
 	dockerClient, err := docker.NewClient(cfg.Docker.Host, log, docker.ClientConfig{
-		APIVersion:  cfg.Docker.Version,
-		NetworkName: cfg.Docker.NetworkName,
-		RegistryURL: cfg.Docker.RegistryURL,
-		DNS:         cfg.Docker.DNS,
-		Labels:      cfg.Docker.Labels,
+		APIVersion:   cfg.Docker.Version,
+		NetworkName:  cfg.Docker.NetworkName,
+		RuntimeImage: cfg.Docker.RuntimeImage,
+		DNS:          cfg.Docker.DNS,
+		Labels:       cfg.Docker.Labels,
 	})
 	if err != nil {
 		log.Fatal("Failed to initialize Docker client: %v", err)
@@ -101,13 +98,13 @@ func main() {
 	// Build map of tracked container IDs
 	trackedIDs := make(map[string]bool)
 	for _, server := range servers {
-		if server.ContainerID != "" {
-			trackedIDs[server.ContainerID] = true
+		if server.ContainerId != "" {
+			trackedIDs[server.ContainerId] = true
 		}
 	}
 	for _, module := range modules {
-		if module.ContainerID != "" {
-			trackedIDs[module.ContainerID] = true
+		if module.ContainerId != "" {
+			trackedIDs[module.ContainerId] = true
 		}
 	}
 
@@ -123,55 +120,80 @@ func main() {
 	} else {
 		if isNew {
 			proxyConfig.Enabled = cfg.Proxy.Enabled
-			proxyConfig.BaseURL = cfg.Proxy.BaseURL
+		} else {
+			cfg.Proxy.Enabled = proxyConfig.Enabled
+		}
+		// Config base domain applies when the db has none
+		seededBase := false
+		if base := proxy.NormalizeHostname(cfg.Proxy.BaseURL); base != "" && proxyConfig.BaseUrl == "" {
+			if proxy.ValidHostname(base) {
+				proxyConfig.BaseUrl = base
+				seededBase = true
+			} else {
+				log.Warn("Ignoring invalid proxy.base_url %q", cfg.Proxy.BaseURL)
+			}
+		}
+		if isNew || seededBase {
 			err = store.SaveProxyConfig(ctx, proxyConfig)
 			if err != nil {
 				log.Error("Failed to set proxy configs from startup configuration values: %v", err)
 			}
-		} else {
-			cfg.Proxy.Enabled = proxyConfig.Enabled
-			cfg.Proxy.BaseURL = proxyConfig.BaseURL
 		}
 
-		// Load listeners and build ports array
-		listeners, err := store.GetProxyListeners(ctx)
-		if err == nil && len(listeners) > 0 {
-			listenPorts := make([]int, 0, len(listeners))
-			for _, l := range listeners {
-				if l.Enabled {
-					listenPorts = append(listenPorts, l.Port)
-				}
-			}
-			if len(listenPorts) > 0 {
-				cfg.Proxy.ListenPorts = listenPorts
-				cfg.Proxy.ListenPort = listenPorts[0]
-			}
-		}
-
-		log.Info("Loaded proxy configuration from database: enabled=%v, base_url=%v, listeners=%d",
-			cfg.Proxy.Enabled, cfg.Proxy.BaseURL, len(cfg.Proxy.ListenPorts))
+		log.Info("Loaded proxy configuration from database: enabled=%v, hostnames=%v",
+			cfg.Proxy.Enabled, proxyConfig.Hostnames)
 	}
 
 	// Initialize proxy manager
-	proxyManager := proxy.NewManager(store, cfg, log)
+	proxyManager, err := proxy.NewManager(store, dockerClient, cfg, log)
+	if err != nil {
+		log.Fatal("Failed to create proxy manager: %v", err)
+	}
 
-	// Start proxy if enabled
+	// Aliases resolve host.hostname through the proxy manager
+	alias.SetHostnameSource(proxyManager.PanelHostname)
+
+	// Panel http serves on loopback behind the panel socket
+	panelLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		log.Fatal("Failed to bind the panel backend: %v", err)
+	}
+	proxyManager.SetPanelBackend(panelLn.Addr().(*net.TCPAddr).Port)
+
+	// Start proxy manager, the panel socket must come up
 	if err := proxyManager.Start(); err != nil {
-		log.Error("Failed to start proxy manager: %v", err)
+		log.Fatal("Failed to start proxy manager: %v", err)
 	}
 	defer proxyManager.Stop()
 
 	// Initialize command sender
-	sender := command.NewSender(store, cfg, dockerClient)
+	sender := command.NewSender(store, dockerClient, cfg)
 
 	// Initialize the central event bus
 	eventBus := events.NewBus(log)
 
-	// Initialize metrics collector
-	metricsCollector := metrics.NewCollector(store, dockerClient, sender, cfg, eventBus, log)
+	// One recorder owns the per-server activity ledger
+	rec := metrics.NewRecorder(store, log)
+
+	// Initialize metrics collector, the panel side health source
+	metricsCollector := metrics.NewCollector(store, dockerClient, cfg, eventBus, log, metrics.DefaultConfig())
+	dockerClient.SetHealthChecker(metricsCollector)
+	metricsCollector.SetProxyTrafficSource(proxyManager.GetRouteStats)
+
+	// Agent hub feeds telemetry and serves console commands
+	agentHub := metrics.NewHub(metricsCollector, eventBus, rec, log)
+	sender.SetAgent(agentHub)
+
+	// Lifecycle manager owns all start stop pause transitions
+	prov := provisioner.New(store, dockerClient, cfg, rec, log)
+	lifecycleManager := lifecycle.NewManager(store, dockerClient, prov, sender, proxyManager, eventBus, cfg, rec, log)
+	lifecycleManager.SetPlayerCounter(metricsCollector)
+
+	// Proxy answers pings for paused servers, wakes logins
+	proxyManager.SetServerGate(lifecycleManager)
 
 	// Initialize task scheduler
-	taskScheduler := scheduler.NewScheduler(store, dockerClient, sender, cfg, metricsCollector, log, scheduler.Config{
+	taskScheduler := scheduler.NewScheduler(store, dockerClient, sender, lifecycleManager, cfg, metricsCollector, rec, log, scheduler.Config{
 		CheckInterval: time.Duration(cfg.Docker.SyncInterval) * time.Second, // Use same interval as container status monitor
 	})
 
@@ -181,21 +203,13 @@ func main() {
 	}
 	defer taskScheduler.Stop()
 
-	// Initialize builtin module templates
-	if err := module.InitBuiltinTemplates(store); err != nil {
-		log.Error("Failed to initialize builtin module templates: %v", err)
-	}
-
-	// Initialize module manager
+	// Initialize module manager, started after rpc wiring below
 	moduleManager := module.NewManager(store, dockerClient, sender, cfg, proxyManager, log)
-	if err := moduleManager.Start(); err != nil {
-		log.Error("Failed to start module manager: %v", err)
-	}
-	defer moduleManager.Stop()
 
-	// Register event consumers on the event bus - EVENT CONSUMERS REGISTER HERE...
+	// Event consumers register on the bus here
 	eventBus.Subscribe(moduleManager.HandleServerEvent)
 	eventBus.Subscribe(taskScheduler.HandleServerEvent)
+	eventBus.Subscribe(lifecycleManager.HandleServerEvent)
 
 	// Start the metrics collector now that consumers are subscribed
 	if err := metricsCollector.Start(); err != nil {
@@ -203,15 +217,35 @@ func main() {
 	}
 	defer metricsCollector.Stop()
 
+	// Start the idle watcher (autopause/autostop policies)
+	lifecycleManager.StartIdleWatcher()
+	defer lifecycleManager.StopIdleWatcher()
+
 	// Initialize RPC server with full configuration
-	rpcServer := rpc.NewServer(store, dockerClient, sender, cfg, proxyManager, taskScheduler, metricsCollector, moduleManager, eventBus, log)
+	rpcServer, err := rpc.NewServer(store, dockerClient, sender, cfg, proxyManager, taskScheduler, lifecycleManager, metricsCollector, moduleManager, eventBus, agentHub, rec, log)
+	if err != nil {
+		log.Fatal("Failed to initialize RPC server: %v", err)
+	}
+
+	// Rpc wiring set the token minter, safe to seed now
+	if err := moduleManager.Start(); err != nil {
+		log.Error("Failed to start module manager: %v", err)
+	}
+	defer moduleManager.Stop()
+
+	// Provision progress lands in the server console
+	if streamer := rpcServer.LogStreamer(); streamer != nil {
+		prov.SetProgressSink(streamer.AddSystemEntry)
+		agentHub.SetConsoleSink(streamer.AddSystemEntry)
+		rec.SetConsoleSink(streamer.AddSystemEntry)
+	}
 
 	// Print recovery key
 	if key := rpcServer.RecoveryKey(); key != "" {
-		fmt.Fprintf(os.Stderr, "\n═══════════════════════════════════════════════════════════════════════\n")
+		fmt.Fprintf(os.Stderr, "\n=======================================================================\n")
 		fmt.Fprintf(os.Stderr, "RECOVERY KEY (use to reset panel access if locked out)\n")
 		fmt.Fprintf(os.Stderr, "%s\n", key)
-		fmt.Fprintf(os.Stderr, "═══════════════════════════════════════════════════════════════════════\n\n")
+		fmt.Fprintf(os.Stderr, "=======================================================================\n\n")
 		keyPath := filepath.Join(cfg.Storage.DataDir, "recovery.key")
 		if err := os.WriteFile(keyPath, []byte(key), 0600); err != nil {
 			log.Error("Failed to write recovery key file: %v", err)
@@ -233,62 +267,33 @@ func main() {
 				// Wait a moment for everything to initialize
 				time.Sleep(2 * time.Second)
 
-				// Get server config
-				_, err := store.GetServerConfig(ctx, server.ID)
-				if err != nil {
-					log.Error("Failed to get config for auto-start server %s: %v", server.Name, err)
-					return
-				}
-
-				status, err := dockerClient.GetContainerStatus(ctx, server.ContainerID)
-				if err != nil {
-					log.Error("Failed to find existing container for auto-start server %s: %v", server.Name, err)
-					return
-				}
-
-				if status == storage.StatusStopped {
-					// Start the container
-					if err := dockerClient.StartContainer(ctx, server.ContainerID); err != nil {
-						log.Error("Failed to start container for auto-start server %s: %v", server.Name, err)
+				// Already-running containers just need their log stream reattached
+				if server.ContainerId != "" {
+					if status, err := dockerClient.GetContainerStatus(ctx, server.ContainerId); err == nil &&
+						(status == v1.ServerStatus_SERVER_STATUS_RUNNING || status == v1.ServerStatus_SERVER_STATUS_STARTING) {
+						if err := rpcServer.StartLogStreaming(server.Id, server.ContainerId); err != nil {
+							log.Error("Failed to start log streaming for running server %s: %v", server.Name, err)
+						}
+						if err := proxyManager.SyncServerRoutes(ctx, server); err != nil {
+							log.Error("Failed to update proxy routes for %s: %v", server.Name, err)
+						}
 						return
 					}
 				}
 
-				// Start log streaming for this container (whether it was just started or already running)
-				if status == storage.StatusRunning || status == storage.StatusStopped {
-					if err := rpcServer.StartLogStreaming(server.ContainerID); err != nil {
-						log.Error("Failed to start log streaming for auto-started server %s: %v", server.Name, err)
-					}
+				startCtx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+				defer cancel()
+				if err := lifecycleManager.Start(metrics.WithTrace(metrics.WithSource(startCtx, "autostart")), server.Id); err != nil {
+					log.Error("Failed to auto-start server %s: %v", server.Name, err)
+					return
 				}
-
-				// Update server status
-				server.Status = storage.StatusRunning
-				now := time.Now()
-				server.LastStarted = &now
-				if err := store.UpdateServer(ctx, server); err != nil {
-					log.Error("Failed to update auto-start server %s: %v", server.Name, err)
-				}
-
-				// Update proxy route if enabled
-				if server.ProxyHostname != "" {
-					if err := proxyManager.UpdateServerRoute(server); err != nil {
-						log.Error("Failed to update proxy route for auto-started server %s: %v", server.Name, err)
-					}
-				}
-
 				log.Info("Successfully auto-started server: %s", server.Name)
-
-				// Emit the server-start event
-				eventBus.Emit(ctx, events.Event{
-					Type:     v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_SERVER_START,
-					ServerID: server.ID,
-				})
 			}()
 		}
 	}
 
 	// Clean expired sessions on startup, then periodically
-	if err := store.CleanExpiredSessions(ctx); err != nil {
+	if err := store.CleanExpiredSessions(ctx, time.Now().UTC()); err != nil {
 		log.Error("Failed to clean expired sessions on startup: %v", err)
 	}
 	stopSessionCleanup := make(chan struct{})
@@ -298,7 +303,7 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				if err := store.CleanExpiredSessions(context.Background()); err != nil {
+				if err := store.CleanExpiredSessions(context.Background(), time.Now().UTC()); err != nil {
 					log.Error("Failed to clean expired sessions: %v", err)
 				}
 			case <-stopSessionCleanup:
@@ -323,22 +328,55 @@ func main() {
 					continue
 				}
 
+				// Port route rebuilds batch into one sync per tick
+				needSync := false
 				for _, server := range servers {
-					if server.ContainerID != "" {
-						status, err := dockerClient.GetContainerStatus(ctx, server.ContainerID)
-						if err == nil && server.Status != status {
-							oldStatus := server.Status
-							server.Status = status
-							if err := store.UpdateServer(ctx, server); err != nil {
-								log.Error("Failed to update server status: %v", err)
-							}
-							// Update proxy route if status changed and server has proxy configured
-							if server.ProxyHostname != "" && oldStatus != status {
-								if err := proxyManager.UpdateServerRoute(server); err != nil {
-									log.Error("Failed to update proxy route for %s: %v", server.Name, err)
-								}
-							}
+					if server.ContainerId == "" {
+						continue
+					}
+					status, err := dockerClient.GetContainerStatus(ctx, server.ContainerId)
+					if err != nil || server.Status == status {
+						continue
+					}
+					server.Status = status
+					if err := store.UpdateServerFields(ctx, server.Id, map[string]any{"status": status}); err != nil {
+						log.Error("Failed to update server status: %v", err)
+					}
+					// Updates proxy route on status change when proxied
+					if len(server.ProxyHostnames) > 0 {
+						if err := proxyManager.UpdateServerRoute(server); err != nil {
+							log.Error("Failed to update proxy route for %s: %v", server.Name, err)
 						}
+					}
+					if proxy.HasProxyPorts(server.AdditionalPorts) {
+						needSync = true
+					}
+				}
+
+				// Crashed modules must drop their routes too
+				modules, err := store.ListModules(ctx)
+				if err == nil {
+					for _, mod := range modules {
+						if mod.ContainerId == "" {
+							continue
+						}
+						status, serr := moduleManager.StatusForModule(ctx, mod)
+						if serr != nil || mod.Status == status {
+							continue
+						}
+						mod.Status = status
+						if err := store.UpdateModule(ctx, mod); err != nil {
+							log.Error("Failed to update module status: %v", err)
+						}
+						if proxy.HasProxyPorts(mod.Ports) {
+							needSync = true
+						}
+					}
+				}
+
+				if needSync {
+					if err := proxyManager.SyncListeners(ctx); err != nil {
+						log.Error("Failed to sync proxy routes: %v", err)
 					}
 				}
 			case <-stopMonitor:
@@ -347,19 +385,17 @@ func main() {
 		}
 	}()
 
-	// Setup HTTP server
+	// No body deadlines, agent streams stay open for hours
 	srv := &http.Server{
-		Addr:         fmt.Sprintf("%s:%s", cfg.Server.Host, cfg.Server.Port),
-		Handler:      rpcServer.Handler(),
-		ReadTimeout:  time.Duration(cfg.Server.ReadTimeout) * time.Second,
-		WriteTimeout: time.Duration(cfg.Server.WriteTimeout) * time.Second,
-		IdleTimeout:  time.Duration(cfg.Server.IdleTimeout) * time.Second,
+		Handler:           rpcServer.Handler(),
+		ReadHeaderTimeout: time.Duration(cfg.Server.ReadHeaderTimeout) * time.Second,
+		IdleTimeout:       time.Duration(cfg.Server.IdleTimeout) * time.Second,
 	}
 
-	// Start server in goroutine
+	// Panel socket relays plain http here
 	go func() {
 		log.Info("Starting DiscoPanel on %s:%s", cfg.Server.Host, cfg.Server.Port)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(panelLn); err != nil && err != http.ErrServerClosed {
 			log.Fatal("Failed to start server: %v", err)
 		}
 	}()
@@ -371,28 +407,43 @@ func main() {
 
 	log.Info("Shutting down server...")
 	close(stopSessionCleanup)
+	close(stopMonitor)
 
-	// Graceful shutdown with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Budget must outlast the 60s graceful world save window
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	// Stop managed containers if auto-stop is enabled
+	// Stop managed servers in parallel through the lifecycle owner
 	log.Info("Checking for managed containers...")
 	managedServers, lsErr := store.ListServers(ctx)
 	if lsErr != nil {
 		log.Error("Unable to list managed containers prior to shutdown: %v", lsErr)
 	}
 
+	var stopWG sync.WaitGroup
 	for _, server := range managedServers {
 		if server.Detached {
 			log.Info("Skipping shutdown of detached server: %s", server.Name)
-		} else if server.Status == storage.StatusRunning {
-			log.Info("Stopping managed container for server: %s", server.Name)
-			if _, err := dockerClient.StopContainer(ctx, server.ContainerID); err != nil {
-				log.Error("Failed to stop container %s: %v", server.ContainerID, err)
-			}
+			continue
 		}
+		// Live containers stop regardless of drifted db status
+		if server.ContainerId == "" {
+			continue
+		}
+		switch server.Status {
+		case v1.ServerStatus_SERVER_STATUS_STOPPED, v1.ServerStatus_SERVER_STATUS_ERROR:
+			continue
+		}
+		stopWG.Go(func() {
+			log.Info("Stopping managed server: %s", server.Name)
+			stopCtx, stopCancel := context.WithTimeout(metrics.WithTrace(metrics.WithSource(ctx, "system")), 90*time.Second)
+			defer stopCancel()
+			if err := lifecycleManager.Stop(stopCtx, server.Id); err != nil {
+				log.Error("Failed to stop server %s: %v", server.Name, err)
+			}
+		})
 	}
+	stopWG.Wait()
 
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Error("Server forced to shutdown: %v", err)

@@ -1,0 +1,19 @@
+---
+title: Playit.gg
+description: Give your server a free public address that tunnels to your machine, no port forwarding.
+---
+
+import chip from '../../../../../../../identity/assets/playit/chip.svg';
+
+<img class="module-mark" src={chip.src} alt="" />
+
+[playit.gg](https://playit.gg) gives your server a free public address that tunnels to your machine, so friends can join **without port forwarding** and without you exposing your home IP. The module runs the official playit agent and feeds tunnel traffic through the DiscoPanel proxy, which means wake-on-connect and autopause keep working.
+
+## Setup
+
+1. On [playit.gg](https://playit.gg), create an account and generate an **agent secret key**.
+2. Add the Playit.gg module to your server, paste the key into the **Agent secret key** field on the module's Configuration tab, and start it. The module won't let you create it without the key.
+3. On the playit dashboard, create a **Minecraft Java** tunnel and set its local address to `127.0.0.1:25565` - the agent and the bridge live in the same container.
+4. Share the tunnel's public address (something like `yourname.craft.ply.gg`) with your players.
+
+Voice mods that use UDP (Simple Voice Chat, Plasmo Voice) work too: add a UDP tunnel on the playit dashboard pointing at `127.0.0.1:24454`.

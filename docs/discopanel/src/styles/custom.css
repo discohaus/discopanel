@@ -2,3 +2,96 @@
 	--sl-content-width: 65rem;
 	--sl-sidebar-width: 16rem;
 }
+
+/* Wordmark set lowercase in the identity mono stack */
+.brand-wordmark {
+	display: block;
+	width: fit-content;
+	margin-inline: auto;
+	font-family: 'JetBrains Mono', 'Cascadia Code', ui-monospace, Menlo, Consolas, monospace;
+	font-weight: 700;
+}
+
+/* Wordmark suffix in identity green */
+.brand-suffix {
+	color: #55aa55;
+}
+
+/* Parent org signature tucked under the wordmark */
+.brand-byline {
+	position: relative;
+	display: flex;
+	width: fit-content;
+	align-items: center;
+	gap: 0.4rem;
+	margin-left: auto;
+	margin-top: -0.25rem;
+	font-family: 'JetBrains Mono', 'Cascadia Code', ui-monospace, Menlo, Consolas, monospace;
+	font-size: 0.9rem;
+	font-weight: 700;
+	line-height: 1;
+	color: var(--sl-color-gray-3);
+	text-decoration: none;
+	opacity: 0.85;
+	transition: opacity 0.2s;
+}
+
+.brand-byline:hover {
+	opacity: 1;
+}
+
+/* Softer lead-in word before the lockup */
+.byline-by {
+	font-weight: 400;
+	opacity: 0.8;
+}
+
+/* Haus suffix in discohaus purple */
+.byline-haus {
+	color: #8962e7;
+}
+
+.brand-byline img {
+	width: 18px;
+	height: 18px;
+}
+
+@media (min-width: 50rem) {
+	.brand-wordmark {
+		margin-inline: 0;
+	}
+
+	.brand-byline {
+		margin-top: -0.5rem;
+	}
+}
+
+/* Discohaus beams over the landing page */
+[data-has-hero] .page {
+	background:
+		radial-gradient(circle at 12% 0%, rgba(224, 95, 192, 0.2), transparent 42%),
+		radial-gradient(circle at 88% 12%, rgba(79, 201, 232, 0.18), transparent 42%);
+}
+
+/* Framed UI screenshots in guides */
+.sl-markdown-content img[src*='screenshots'] {
+	border: 1px solid var(--sl-color-gray-5);
+	border-radius: 8px;
+}
+
+/* Identity chip on module pages */
+.module-mark {
+	float: right;
+	width: 88px;
+	height: 88px;
+	margin: 0 0 1rem 1.25rem;
+}
+
+/* Small chip beside module links */
+.module-chip-inline {
+	display: inline-block;
+	width: 26px;
+	height: 26px;
+	vertical-align: -0.4em;
+	margin-right: 0.25rem;
+}

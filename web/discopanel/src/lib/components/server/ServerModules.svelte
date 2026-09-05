@@ -1,13 +1,25 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
-	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
 	import { Badge } from '$lib/components/ui/badge';
+	import { Skeleton } from '$lib/components/ui/skeleton';
+	import { SectionCard, EmptyState, ConfirmDialog, AddressSelect } from '$lib/components/app';
 	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
-	import { toast } from 'svelte-sonner';
-	import type { Server } from '$lib/proto/discopanel/v1/common_pb';
-	import type { Module, ModuleTemplate } from '$lib/proto/discopanel/v1/module_pb';
-	import { ModuleStatus } from '$lib/proto/discopanel/v1/module_pb';
+	import { registerRefresh } from '$lib/stores/refresh';
+	import { moduleUrls } from '$lib/module-urls';
+	import { notify } from '$lib/stores/activity.svelte';
+	import type { Server, Module, ModuleTemplate } from '$lib/proto/discopanel/v1/storage_pb';
+	import type { PendingModulePrompt } from '$lib/proto/discopanel/v1/module_pb';
+	import {
+		ModuleStatus,
+		ModuleProtocol,
+		ModuleProtocolSchema
+	} from '$lib/proto/discopanel/v1/storage_pb';
+	import { enumLabel } from '$lib/proto-meta';
+	import { TONE_BADGE, TONE_BG } from '$lib/server-status';
+	import { moduleStatusMeta } from '$lib/module-status';
 	import { getEventTypeLabel } from '$lib/utils/events';
+	import { copyToClipboard } from '$lib/utils/clipboard';
+	import { cn } from '$lib/utils';
 	import {
 		Loader2,
 		Plus,
@@ -19,87 +31,129 @@
 		Terminal,
 		Cpu,
 		ExternalLink,
+		KeyRound,
 		Package,
-		RefreshCw,
 		Puzzle,
 		Link,
 		Zap,
-		Info
+		Copy
 	} from '@lucide/svelte';
 	import ModuleDialog from './ModuleDialog.svelte';
 	import ModuleLogsDialog from './ModuleLogsDialog.svelte';
+	import ModulePromptDialog from './ModulePromptDialog.svelte';
 	import ModuleTemplateCreateDialog from './ModuleTemplateCreateDialog.svelte';
 
 	interface Props {
 		server: Server;
 		active?: boolean;
+		prompts?: PendingModulePrompt[];
+		onPromptAnswered?: () => void;
+		onModuleCount?: (count: number) => void;
 	}
 
-	let { server, active = false }: Props = $props();
+	let { server, active = false, prompts = [], onPromptAnswered, onModuleCount }: Props = $props();
 
 	let modules = $state<Module[]>([]);
 	let templates = $state<ModuleTemplate[]>([]);
 	let loading = $state(true);
 	let actionLoading = $state<string | null>(null);
 	let aliasValues = $state<Record<string, Record<string, string>>>({});
+	let aliasKey = '';
+	let snapshots = $state<Record<string, Record<string, string>>>({});
 
-	// Dialog state
 	let createDialogOpen = $state(false);
 	let editDialogOpen = $state(false);
 	let logsDialogOpen = $state(false);
 	let templateCreateDialogOpen = $state(false);
 	let selectedModule = $state<Module | null>(null);
+	let deleteTarget = $state<Module | null>(null);
+	let deleteOpen = $state(false);
+	let promptDialogOpen = $state(false);
+	let seenPromptKey = $state('');
 
-	let hasLoaded = false;
+	// Auto opens the prompt dialog when new input is awaited
+	$effect(() => {
+		const key = prompts
+			.map((p) => `${p.moduleId}:${p.prompt?.id}`)
+			.sort()
+			.join('|');
+		if (!key) {
+			seenPromptKey = '';
+			return;
+		}
+		if (active && key !== seenPromptKey) {
+			seenPromptKey = key;
+			promptDialogOpen = true;
+		}
+	});
+
+	function modulePrompt(moduleId: string): PendingModulePrompt | undefined {
+		return prompts.find((p) => p.moduleId === moduleId);
+	}
+
+	// Feeds the logs dialog fresh status from polling
+	let liveSelectedModule = $derived(
+		modules.find((m) => m.id === selectedModule?.id) ?? selectedModule
+	);
+
+	let hasLoaded = $state(false);
+	// svelte-ignore state_referenced_locally
 	let previousServerId = $state(server.id);
-	let pollingInterval: ReturnType<typeof setInterval> | null = null;
 
-	// Reset state when server changes
+	// Resets everything when server changes
 	$effect(() => {
 		if (server.id !== previousServerId) {
 			previousServerId = server.id;
 			modules = [];
 			templates = [];
+			aliasValues = {};
+			aliasKey = '';
+			snapshots = {};
 			loading = true;
 			hasLoaded = false;
-			if (pollingInterval) {
-				clearInterval(pollingInterval);
-				pollingInterval = null;
-			}
 		}
 	});
 
+	// Loads once when tab first activates
 	$effect(() => {
 		if (active && !hasLoaded) {
 			hasLoaded = true;
 			loadModules();
 			loadTemplates();
-			// Start polling
-			pollingInterval = setInterval(() => loadModules(true), 5000);
-		} else if (!active && pollingInterval) {
-			clearInterval(pollingInterval);
-			pollingInterval = null;
 		}
+	});
 
-		return () => {
-			if (pollingInterval) {
-				clearInterval(pollingInterval);
-				pollingInterval = null;
-			}
-		};
+	// Polls while tab stays active
+	$effect(() => {
+		if (!active || !hasLoaded) return;
+		const interval = setInterval(() => loadModules(true), 5000);
+		return () => clearInterval(interval);
+	});
+
+	$effect(() => {
+		if (!active) return;
+		return registerRefresh(() => Promise.all([loadModules(true), loadTemplates()]));
 	});
 
 	async function loadModules(silent = false) {
 		try {
 			if (!silent) loading = true;
 			const response = await rpcClient.module.listModules(
-				{ serverId: server.id },
+				{ serverId: server.id, fullStats: true },
 				silent ? silentCallOptions : undefined
 			);
 			modules = response.modules;
-			modules.forEach((m) => loadAliases(m.id));
+			onModuleCount?.(modules.length);
+			// Refetches aliases when ids or statuses change
+			const key = modules.map((m) => `${m.id}:${m.status}`).join(',');
+			if (key !== aliasKey) {
+				aliasKey = key;
+				modules.forEach((m) => loadAliases(m.id));
+			}
+			// Snapshots refresh every poll, values change while running
+			modules.filter((m) => m.status === ModuleStatus.RUNNING).forEach((m) => loadSnapshot(m.id));
 		} catch {
-			if (!silent) toast.error('Failed to load modules');
+			if (!silent) notify.error('Failed to load modules');
 		} finally {
 			if (!silent) loading = false;
 		}
@@ -108,9 +162,10 @@
 	async function loadTemplates() {
 		try {
 			const response = await rpcClient.module.listModuleTemplates({});
-			templates = response.templates;
+			// Global templates never attach to a server
+			templates = response.templates.filter((t) => !t.global);
 		} catch {
-			toast.error('Failed to load module templates');
+			notify.error('Failed to load module templates');
 		}
 	}
 
@@ -122,23 +177,43 @@
 			);
 			aliasValues = { ...aliasValues, [moduleId]: response.aliases };
 		} catch {
-			/* ignore */
+			/* Ignore alias lookup errors */
 		}
 	}
 
-	function resolve(input: string, moduleId: string): string {
-		const vals = aliasValues[moduleId] ?? {};
-		return input.replace(/\{\{[^}]+\}\}/g, (match) => vals[match] ?? match);
+	async function loadSnapshot(moduleId: string) {
+		try {
+			const response = await rpcClient.module.getModuleStatusSnapshot(
+				{ id: moduleId },
+				silentCallOptions
+			);
+			if (response.available) {
+				snapshots = { ...snapshots, [moduleId]: response.fields };
+			}
+		} catch {
+			/* Ignore snapshot fetch errors */
+		}
+	}
+
+	function snapshotLabel(key: string): string {
+		const label = key.replace(/_/g, ' ');
+		return label.charAt(0).toUpperCase() + label.slice(1);
+	}
+
+	async function copySnapshotValue(value: string) {
+		if (await copyToClipboard(value)) {
+			notify.success('Copied to clipboard');
+		}
 	}
 
 	async function handleStartModule(module: Module) {
 		actionLoading = module.id;
 		try {
 			await rpcClient.module.startModule({ id: module.id });
-			toast.success(`Starting ${module.name}...`);
+			notify.success(`Starting ${module.name}...`);
 			await loadModules();
 		} catch (error) {
-			toast.error(
+			notify.error(
 				`Failed to start module: ${error instanceof Error ? error.message : 'Unknown error'}`
 			);
 		} finally {
@@ -150,10 +225,10 @@
 		actionLoading = module.id;
 		try {
 			await rpcClient.module.stopModule({ id: module.id });
-			toast.success(`Stopping ${module.name}...`);
+			notify.success(`Stopping ${module.name}...`);
 			await loadModules();
 		} catch (error) {
-			toast.error(
+			notify.error(
 				`Failed to stop module: ${error instanceof Error ? error.message : 'Unknown error'}`
 			);
 		} finally {
@@ -165,10 +240,10 @@
 		actionLoading = module.id;
 		try {
 			await rpcClient.module.restartModule({ id: module.id });
-			toast.success(`Restarting ${module.name}...`);
+			notify.success(`Restarting ${module.name}...`);
 			await loadModules();
 		} catch (error) {
-			toast.error(
+			notify.error(
 				`Failed to restart module: ${error instanceof Error ? error.message : 'Unknown error'}`
 			);
 		} finally {
@@ -176,19 +251,21 @@
 		}
 	}
 
-	async function handleDeleteModule(module: Module) {
-		const confirmed = confirm(
-			`Are you sure you want to delete "${module.name}"?\n\nThis will stop and remove the container and all module data.`
-		);
-		if (!confirmed) return;
+	function requestDelete(module: Module) {
+		deleteTarget = module;
+		deleteOpen = true;
+	}
 
+	async function confirmDelete() {
+		if (!deleteTarget) return;
+		const module = deleteTarget;
 		actionLoading = module.id;
 		try {
 			await rpcClient.module.deleteModule({ id: module.id });
-			toast.success(`Module "${module.name}" deleted`);
+			notify.success(`Module "${module.name}" deleted`);
 			await loadModules();
 		} catch (error) {
-			toast.error(
+			notify.error(
 				`Failed to delete module: ${error instanceof Error ? error.message : 'Unknown error'}`
 			);
 		} finally {
@@ -206,58 +283,18 @@
 		logsDialogOpen = true;
 	}
 
-	function getStatusBadgeVariant(
-		status: ModuleStatus
-	): 'default' | 'secondary' | 'destructive' | 'outline' {
-		switch (status) {
-			case ModuleStatus.RUNNING:
-				return 'default';
-			case ModuleStatus.STARTING:
-			case ModuleStatus.STOPPING:
-			case ModuleStatus.CREATING:
-				return 'secondary';
-			case ModuleStatus.ERROR:
-				return 'destructive';
-			default:
-				return 'outline';
-		}
-	}
-
-	function getStatusLabel(status: ModuleStatus): string {
-		switch (status) {
-			case ModuleStatus.RUNNING:
-				return 'Running';
-			case ModuleStatus.STOPPED:
-				return 'Stopped';
-			case ModuleStatus.STARTING:
-				return 'Starting';
-			case ModuleStatus.STOPPING:
-				return 'Stopping';
-			case ModuleStatus.ERROR:
-				return 'Error';
-			case ModuleStatus.CREATING:
-				return 'Creating';
-			default:
-				return 'Unknown';
-		}
-	}
-
 	function getDependencyName(moduleId: string): string {
 		const dep = modules.find((m) => m.id === moduleId);
 		return dep?.name || moduleId.slice(0, 8);
 	}
 
 	function hasAdvancedConfig(module: Module): boolean {
-		return (
-			(module.dependencies?.length ?? 0) > 0 ||
-			(module.eventHooks?.length ?? 0) > 0 ||
-			Object.keys(module.metadata ?? {}).length > 0
-		);
+		return (module.dependencies?.length ?? 0) > 0 || (module.eventHooks?.length ?? 0) > 0;
 	}
 
 	function handleModuleCreated() {
 		loadModules();
-		// Poll more frequently after creation to catch status transitions
+		// Extra refreshes catch fast status transitions
 		setTimeout(() => loadModules(true), 1000);
 		setTimeout(() => loadModules(true), 3000);
 	}
@@ -271,281 +308,290 @@
 	}
 </script>
 
-<Card class="flex h-full flex-col">
-	<CardHeader>
-		<div class="flex items-center justify-between">
-			<div>
-				<CardTitle>Server Modules</CardTitle>
-				<p class="mt-1 text-sm text-muted-foreground">Companion services attached to this server</p>
-			</div>
-			<div class="flex items-center gap-2">
-				<Button variant="outline" size="sm" onclick={() => loadModules()} disabled={loading}>
-					{#if loading}
-						<Loader2 class="h-4 w-4 animate-spin" />
-					{:else}
-						<RefreshCw class="h-4 w-4" />
-					{/if}
-				</Button>
-				<Button variant="outline" onclick={() => (templateCreateDialogOpen = true)}>
-					<Puzzle class="mr-2 h-4 w-4" />
-					Create Template
-				</Button>
-				<Button onclick={() => (createDialogOpen = true)} disabled={templates.length === 0}>
-					<Plus class="mr-2 h-4 w-4" />
-					Add Module
-				</Button>
-			</div>
+<SectionCard title="Server modules" description="Companion services attached to this server">
+	{#snippet action()}
+		<Button variant="outline" size="sm" onclick={() => (templateCreateDialogOpen = true)}>
+			<Puzzle class="size-4" />
+			Create template
+		</Button>
+		<Button size="sm" onclick={() => (createDialogOpen = true)} disabled={templates.length === 0}>
+			<Plus class="size-4" />
+			Add module
+		</Button>
+	{/snippet}
+
+	{#if loading}
+		<div class="grid gap-3 lg:grid-cols-2">
+			{#each Array(2) as _, i (i)}
+				<Skeleton class="h-44 rounded-lg" />
+			{/each}
 		</div>
-	</CardHeader>
-	<CardContent class="flex-1 overflow-auto">
-		{#if loading}
-			<div class="flex items-center justify-center py-12">
-				<Loader2 class="h-8 w-8 animate-spin text-muted-foreground" />
-			</div>
-		{:else if modules.length === 0}
-			<div class="flex flex-col items-center justify-center py-12 text-muted-foreground">
-				<Package class="mb-4 h-12 w-12" />
-				<p>No modules attached to this server</p>
-				<p class="mt-2 text-sm">Add a module to extend server functionality</p>
-				{#if templates.length > 0}
-					<Button class="mt-4" onclick={() => (createDialogOpen = true)}>
-						<Plus class="mr-2 h-4 w-4" />
-						Add Module
-					</Button>
-				{:else}
-					<p class="mt-4 text-xs text-muted-foreground/60">No module templates available</p>
-				{/if}
-			</div>
-		{:else}
-			<div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
-				{#each modules as module (module.id)}
-					{@const isLoading = actionLoading === module.id}
-					<Card
-						class="group relative overflow-hidden border shadow-sm transition-all hover:shadow-md"
-					>
-						<div
-							class="absolute top-0 right-0 left-0 h-1 {module.status === ModuleStatus.RUNNING
-								? 'bg-green-500'
-								: module.status === ModuleStatus.ERROR
-									? 'bg-red-500'
-									: 'bg-gray-300'}"
-						></div>
-						<CardContent class="p-4">
-							<div class="mb-3 flex items-start justify-between">
-								<div class="min-w-0 flex-1">
-									<div class="mb-1 flex items-center gap-2">
-										<h3 class="truncate font-semibold">{module.name}</h3>
-										<Badge variant={getStatusBadgeVariant(module.status)} class="text-xs">
-											{getStatusLabel(module.status)}
-										</Badge>
-									</div>
-									<p class="truncate text-sm text-muted-foreground">
-										{module.templateName}{#if module.createdByUsername}
-											<span class="ml-2 text-muted-foreground/60"
-												>by {module.createdByUsername}</span
-											>
-										{/if}
-									</p>
-								</div>
-								<div class="ml-2 flex items-center gap-1">
-									{#if module.status === ModuleStatus.STOPPED}
-										<Button
-											size="icon"
-											variant="ghost"
-											onclick={() => handleStartModule(module)}
-											disabled={isLoading}
-											title="Start module"
-											class="h-8 w-8"
-										>
-											{#if isLoading}
-												<Loader2 class="h-4 w-4 animate-spin" />
-											{:else}
-												<Play class="h-4 w-4 text-green-500" />
-											{/if}
-										</Button>
-									{:else if module.status === ModuleStatus.RUNNING}
-										<Button
-											size="icon"
-											variant="ghost"
-											onclick={() => handleStopModule(module)}
-											disabled={isLoading}
-											title="Stop module"
-											class="h-8 w-8"
-										>
-											{#if isLoading}
-												<Loader2 class="h-4 w-4 animate-spin" />
-											{:else}
-												<Square class="h-4 w-4 text-red-500" />
-											{/if}
-										</Button>
-										<Button
-											size="icon"
-											variant="ghost"
-											onclick={() => handleRestartModule(module)}
-											disabled={isLoading}
-											title="Restart module"
-											class="h-8 w-8"
-										>
-											<RotateCw class="h-4 w-4" />
-										</Button>
-									{:else if module.status === ModuleStatus.STARTING || module.status === ModuleStatus.STOPPING || module.status === ModuleStatus.CREATING}
-										<Button size="icon" variant="ghost" disabled class="h-8 w-8">
-											<Loader2 class="h-4 w-4 animate-spin" />
-										</Button>
-									{:else if module.status === ModuleStatus.ERROR}
-										<Button
-											size="icon"
-											variant="ghost"
-											onclick={() => handleStartModule(module)}
-											disabled={isLoading}
-											title="Start module"
-											class="h-8 w-8"
-										>
-											{#if isLoading}
-												<Loader2 class="h-4 w-4 animate-spin" />
-											{:else}
-												<Play class="h-4 w-4 text-green-500" />
-											{/if}
-										</Button>
-									{/if}
-								</div>
-							</div>
-
-							<div class="mb-3 space-y-1 text-xs">
-								{#if module.ports?.length}
-									<div class="flex flex-wrap gap-1.5">
-										{#each module.ports as port (port.name)}
-											<Badge variant="outline" class="px-1.5 py-0 font-mono text-[10px]">
-												{port.name || 'Port'}: {port.hostPort || '?'}→{port.containerPort}/{(
-													port.protocol || 'tcp'
-												).toUpperCase()}
-											</Badge>
-										{/each}
-									</div>
-								{:else}
-									<span class="text-muted-foreground">No ports</span>
-								{/if}
-								{#if module.status === ModuleStatus.RUNNING && module.memoryUsage > 0}
-									<div class="flex items-center gap-3 text-muted-foreground">
+	{:else if modules.length === 0}
+		<EmptyState
+			icon={Package}
+			title="No modules attached"
+			description="Add a module to extend this server with companion services."
+		>
+			{#if templates.length > 0}
+				<Button size="sm" onclick={() => (createDialogOpen = true)}>
+					<Plus class="size-4" />
+					Add module
+				</Button>
+			{:else}
+				<p class="text-xs text-muted-foreground">No module templates available</p>
+			{/if}
+		</EmptyState>
+	{:else}
+		<div class="grid gap-3 lg:grid-cols-2">
+			{#each modules as module (module.id)}
+				{@const busy = actionLoading === module.id}
+				{@const meta = moduleStatusMeta(module.status)}
+				<div
+					class="group flex flex-col rounded-lg border bg-card p-4 transition-colors hover:border-primary/20"
+				>
+					<div class="flex-1">
+						<div class="flex items-start justify-between gap-2">
+							<div class="min-w-0 flex-1">
+								<div class="flex items-center gap-2">
+									<h3 class="truncate text-sm font-medium">{module.name}</h3>
+									<span
+										class={cn(
+											'inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium',
+											TONE_BADGE[meta.tone]
+										)}
+									>
 										<span
-											><Cpu class="mr-1 inline h-3 w-3" />{module.memoryUsage.toFixed(0)} MB</span
+											class={cn(
+												'size-1.5 rounded-full',
+												TONE_BG[meta.tone],
+												meta.transitional && 'animate-pulse'
+											)}
+										></span>
+										{meta.label}
+									</span>
+								</div>
+								<p class="mt-0.5 truncate text-xs text-muted-foreground">
+									{module.templateName}{#if module.createdByUsername}<span
+											class="text-muted-foreground/70"
 										>
-										<span>CPU: {module.cpuPercent.toFixed(1)}%</span>
-									</div>
+											· by {module.createdByUsername}</span
+										>{/if}
+								</p>
+							</div>
+							<div class="flex shrink-0 items-center gap-1">
+								{#if module.status === ModuleStatus.STOPPED || module.status === ModuleStatus.ERROR}
+									<Button
+										size="icon"
+										variant="ghost"
+										class="size-8 text-status-ok hover:bg-status-ok/10 hover:text-status-ok"
+										onclick={() => handleStartModule(module)}
+										disabled={busy}
+										title="Start module"
+									>
+										{#if busy}
+											<Loader2 class="size-4 animate-spin" />
+										{:else}
+											<Play class="size-4" />
+										{/if}
+									</Button>
+								{:else if module.status === ModuleStatus.RUNNING}
+									<Button
+										size="icon"
+										variant="ghost"
+										class="size-8 text-status-danger hover:bg-status-danger/10 hover:text-status-danger"
+										onclick={() => handleStopModule(module)}
+										disabled={busy}
+										title="Stop module"
+									>
+										{#if busy}
+											<Loader2 class="size-4 animate-spin" />
+										{:else}
+											<Square class="size-4" />
+										{/if}
+									</Button>
+									<Button
+										size="icon"
+										variant="ghost"
+										class="size-8"
+										onclick={() => handleRestartModule(module)}
+										disabled={busy}
+										title="Restart module"
+									>
+										<RotateCw class="size-4" />
+									</Button>
+								{:else if meta.transitional}
+									<Button size="icon" variant="ghost" class="size-8" disabled>
+										<Loader2 class="size-4 animate-spin" />
+									</Button>
 								{/if}
 							</div>
+						</div>
 
-							{#if module.accessUrls?.length}
-								<div class="mb-3 space-y-1">
-									{#each module.accessUrls as url (url)}
-										{@const resolved = resolve(url, module.id)}
-										<div class="flex items-center gap-2 rounded bg-muted/50 p-2">
-											<ExternalLink class="h-3 w-3 shrink-0 text-muted-foreground" />
-											<!-- eslint-disable svelte/no-navigation-without-resolve -- external URL -->
-											<a
-												href={resolved}
-												target="_blank"
-												rel="noopener noreferrer"
-												class="truncate font-mono text-xs text-primary hover:underline"
-											>
-												{resolved}
-											</a>
-											<!-- eslint-enable svelte/no-navigation-without-resolve -->
-										</div>
+						{#if modulePrompt(module.id)}
+							<button
+								class="mt-3 flex w-full items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-left text-xs font-medium text-amber-600 transition-colors hover:bg-amber-500/20 dark:text-amber-400"
+								onclick={() => (promptDialogOpen = true)}
+							>
+								<KeyRound class="size-3.5 shrink-0" />
+								<span class="truncate">
+									{modulePrompt(module.id)?.prompt?.title || 'Input needed'}
+								</span>
+								<span class="ml-auto shrink-0 underline-offset-2 hover:underline">Respond</span>
+							</button>
+						{/if}
+
+						<div class="mt-3 space-y-2 text-xs">
+							{#if module.ports?.length}
+								<div class="flex flex-wrap gap-1.5">
+									{#each module.ports as port, i (i)}
+										<Badge variant="outline" class="font-mono">
+											{port.name || 'Port'}: {port.hostPort || '?'}:{port.containerPort}/{enumLabel(
+												ModuleProtocolSchema,
+												port.protocol || ModuleProtocol.TCP
+											)}
+										</Badge>
 									{/each}
 								</div>
+							{:else}
+								<span class="text-muted-foreground">No ports</span>
 							{/if}
-
-							<!-- Advanced Configuration Summary -->
-							{#if hasAdvancedConfig(module)}
-								<div class="mb-3 space-y-1.5 text-xs">
-									{#if module.dependencies && module.dependencies.length > 0}
-										<div class="flex items-center gap-1.5 text-muted-foreground">
-											<Link class="h-3 w-3" />
-											<span>Depends on:</span>
-											<span class="text-foreground">
-												{module.dependencies.map((d) => getDependencyName(d.moduleId)).join(', ')}
-											</span>
-										</div>
-									{/if}
-									{#if module.eventHooks && module.eventHooks.length > 0}
-										<div class="flex items-center gap-1.5 text-muted-foreground">
-											<Zap class="h-3 w-3" />
-											<span
-												>{module.eventHooks.length} hook{module.eventHooks.length > 1
-													? 's'
-													: ''}</span
-											>
-											<span class="text-muted-foreground/60">
-												({module.eventHooks.map((h) => getEventTypeLabel(h.event)).join(', ')})
-											</span>
-										</div>
-									{/if}
-									{#if module.metadata && Object.keys(module.metadata).length > 0}
-										<div class="space-y-0.5">
-											{#each Object.entries(module.metadata) as [key, value] (key)}
-												<div class="flex items-center gap-1.5 text-muted-foreground">
-													<Info class="h-3 w-3 shrink-0" />
-													<span class="font-medium">{key}:</span>
-													<span class="truncate text-foreground">{resolve(value, module.id)}</span>
-												</div>
-											{/each}
-										</div>
-									{/if}
+							{#if module.status === ModuleStatus.RUNNING && module.memoryUsage > 0}
+								<div class="flex items-center gap-3 text-muted-foreground">
+									<span class="flex items-center gap-1">
+										<Cpu class="size-3" />
+										<span class="tabular">{module.memoryUsage.toFixed(0)} MB</span>
+									</span>
+									<span class="tabular">CPU: {module.cpuPercent.toFixed(1)}%</span>
 								</div>
 							{/if}
+						</div>
 
-							<div class="flex items-center justify-between border-t pt-2">
-								<div class="flex items-center gap-1">
-									{#if module.autoStart}
-										<Badge variant="secondary" class="px-1.5 py-0 text-[10px]">Auto-start</Badge>
-									{/if}
-									{#if module.followServerLifecycle}
-										<Badge variant="secondary" class="px-1.5 py-0 text-[10px]">Follows server</Badge
+						{#if module.status === ModuleStatus.RUNNING && snapshots[module.id]}
+							{@const snapshot = snapshots[module.id]}
+							<div class="mt-3 space-y-0.5 rounded-md bg-muted/40 px-2.5 py-2 text-xs">
+								{#each Object.keys(snapshot).sort() as key (key)}
+									<div class="flex items-center gap-1.5">
+										<span class="shrink-0 text-muted-foreground">{snapshotLabel(key)}:</span>
+										<button
+											class="group/copy flex min-w-0 items-center gap-1 font-mono text-foreground transition-colors hover:text-primary"
+											onclick={() => copySnapshotValue(snapshot[key])}
+											title="Copy value"
 										>
-									{/if}
-									{#if module.detached}
-										<Badge variant="secondary" class="px-1.5 py-0 text-[10px]">Detached</Badge>
-									{/if}
-								</div>
-								<div class="flex items-center gap-1">
-									<Button
-										size="icon"
-										variant="ghost"
-										onclick={() => openLogsDialog(module)}
-										title="View logs"
-										class="h-7 w-7"
-									>
-										<Terminal class="h-3.5 w-3.5" />
-									</Button>
-									<Button
-										size="icon"
-										variant="ghost"
-										onclick={() => openEditDialog(module)}
-										title="Edit module"
-										class="h-7 w-7"
-									>
-										<Settings class="h-3.5 w-3.5" />
-									</Button>
-									<Button
-										size="icon"
-										variant="ghost"
-										onclick={() => handleDeleteModule(module)}
-										disabled={isLoading}
-										title="Delete module"
-										class="h-7 w-7 text-destructive hover:text-destructive"
-									>
-										<Trash2 class="h-3.5 w-3.5" />
-									</Button>
-								</div>
+											<span class="truncate">{snapshot[key]}</span>
+											<Copy
+												class="size-3 shrink-0 opacity-0 transition-opacity group-hover/copy:opacity-100"
+											/>
+										</button>
+									</div>
+								{/each}
 							</div>
-						</CardContent>
-					</Card>
-				{/each}
-			</div>
-		{/if}
-	</CardContent>
-</Card>
+						{/if}
+
+						{#if module.accessUrls?.length}
+							<div class="mt-3 space-y-1">
+								{#each module.accessUrls as url, i (i)}
+									{@const resolved = moduleUrls(url, module, aliasValues[module.id] ?? {})}
+									{#if resolved[0].includes('{{')}
+										<div class="flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1.5">
+											<ExternalLink class="size-3 shrink-0 text-muted-foreground" />
+											<span class="truncate font-mono text-xs text-muted-foreground">
+												{resolved[0]}
+											</span>
+										</div>
+									{:else}
+										<AddressSelect addresses={resolved} label="URL" link />
+									{/if}
+								{/each}
+							</div>
+						{/if}
+
+						{#if hasAdvancedConfig(module)}
+							<div class="mt-3 space-y-1.5 text-xs">
+								{#if module.dependencies && module.dependencies.length > 0}
+									<div class="flex items-center gap-1.5 text-muted-foreground">
+										<Link class="size-3 shrink-0" />
+										<span>Depends on:</span>
+										<span class="truncate text-foreground">
+											{module.dependencies.map((d) => getDependencyName(d.moduleId)).join(', ')}
+										</span>
+									</div>
+								{/if}
+								{#if module.eventHooks && module.eventHooks.length > 0}
+									<div class="flex items-center gap-1.5 text-muted-foreground">
+										<Zap class="size-3 shrink-0" />
+										<span
+											>{module.eventHooks.length} hook{module.eventHooks.length > 1
+												? 's'
+												: ''}</span
+										>
+										<span class="truncate text-muted-foreground/70">
+											({module.eventHooks.map((h) => getEventTypeLabel(h.event)).join(', ')})
+										</span>
+									</div>
+								{/if}
+							</div>
+						{/if}
+					</div>
+
+					<div class="mt-3 flex items-center justify-between gap-2 border-t pt-2.5">
+						<div class="flex min-w-0 flex-wrap items-center gap-1">
+							{#if module.autoStart}
+								<Badge variant="secondary">Auto-start</Badge>
+							{/if}
+							{#if module.followServerLifecycle}
+								<Badge variant="secondary">Follows server</Badge>
+							{/if}
+							{#if module.detached}
+								<Badge variant="secondary">Detached</Badge>
+							{/if}
+						</div>
+						<div
+							class="flex shrink-0 items-center gap-1 opacity-60 transition-opacity group-hover:opacity-100"
+						>
+							<Button
+								size="icon"
+								variant="ghost"
+								class="size-7"
+								onclick={() => openLogsDialog(module)}
+								title="View logs"
+							>
+								<Terminal class="size-3.5" />
+							</Button>
+							<Button
+								size="icon"
+								variant="ghost"
+								class="size-7"
+								onclick={() => openEditDialog(module)}
+								title="Edit module"
+							>
+								<Settings class="size-3.5" />
+							</Button>
+							<Button
+								size="icon"
+								variant="ghost"
+								class="size-7 text-status-danger hover:bg-status-danger/10 hover:text-status-danger"
+								onclick={() => requestDelete(module)}
+								disabled={busy}
+								title="Delete module"
+							>
+								<Trash2 class="size-3.5" />
+							</Button>
+						</div>
+					</div>
+				</div>
+			{/each}
+		</div>
+	{/if}
+</SectionCard>
+
+<ConfirmDialog
+	bind:open={deleteOpen}
+	title="Delete {deleteTarget?.name ?? 'module'}?"
+	description="This will stop and remove the container and all module data."
+	confirmLabel="Delete module"
+	destructive
+	onConfirm={confirmDelete}
+/>
 
 <ModuleDialog
 	bind:open={createDialogOpen}
@@ -564,10 +610,12 @@
 		onSuccess={handleModuleUpdated}
 	/>
 
-	<ModuleLogsDialog bind:open={logsDialogOpen} module={selectedModule} />
+	<ModuleLogsDialog bind:open={logsDialogOpen} module={liveSelectedModule ?? selectedModule} />
 {/if}
 
 <ModuleTemplateCreateDialog
 	bind:open={templateCreateDialogOpen}
 	onSuccess={handleTemplateCreated}
 />
+
+<ModulePromptDialog bind:open={promptDialogOpen} {prompts} onAnswered={onPromptAnswered} />

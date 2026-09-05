@@ -7,15 +7,19 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"net/http"
 	"os"
 	"path/filepath"
-	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/containerd/errdefs"
+	"github.com/discohaus/discopanel/internal/alias"
+	models "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/pkg/logger"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/protometa"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
@@ -23,58 +27,39 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
-	models "github.com/nickheyer/discopanel/internal/db"
-	"github.com/nickheyer/discopanel/internal/minecraft"
-	"github.com/nickheyer/discopanel/pkg/logger"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 const (
-	// Docker images manifest URL from itzg/docker-minecraft-server repo
-	dockerImagesURL = "https://raw.githubusercontent.com/itzg/docker-minecraft-server/refs/heads/master/images.json"
-
-	// Cache for 1 hour
-	dockerImagesCacheDuration = time.Hour
-
 	// Default Minecraft server port inside containers
-	DefaultMinecraftPort = 25565
+	DefaultMinecraftPort = models.MinecraftDefaultPort
 
 	// Default RCON port inside containers
 	DefaultRCONPort = 25575
 
 	// Offset added to game port for RCON host binding
 	RCONPortOffset = 10
+
+	// Graceful stop window when server has no configured duration
+	DefaultStopTimeoutSeconds = 60
 )
 
+// Seconds a graceful stop may take, configured or default
+func StopTimeoutFor(cfg *v1.ServerProperties) int {
+	if cfg != nil && cfg.StopDuration != nil && *cfg.StopDuration > 0 {
+		return int(*cfg.StopDuration)
+	}
+	return DefaultStopTimeoutSeconds
+}
+
 type ContainerStats struct {
-	CPUPercent  float64 `json:"cpu_percent"`
-	MemoryUsage float64 `json:"memory_usage"` // in MB
-	MemoryLimit float64 `json:"memory_limit"` // in MB
+	CpuPercent  float64 `json:"cpu_percent"`
+	CpuCount    int     `json:"cpu_count"`
+	MemoryUsage float64 `json:"memory_usage"` // In MB
+	MemoryLimit float64 `json:"memory_limit"` // In MB
 }
 
-type DockerImageTag struct {
-	Tag           string   `json:"tag"`           // Docker tag name (e.g., "latest", "java21", etc.)
-	Java          string   `json:"java"`          // Java version number
-	Distribution  string   `json:"distribution"`  // Linux distribution (ubuntu, alpine, oracle)
-	JVM           string   `json:"jvm"`           // JVM type (hotspot, graalvm)
-	Architectures []string `json:"architectures"` // Supported architectures
-	Deprecated    bool     `json:"deprecated"`    // Whether this tag is deprecated
-	LTS           bool     `json:"lts"`           // Whether this is an LTS version
-	JDK           bool     `json:"jdk"`           // Whether this includes JDK
-	Notes         string   `json:"notes"`         // Additional notes about the tag
-}
-
-// Cached docker images data
-type dockerImagesCache struct {
-	mu            sync.RWMutex
-	images        []DockerImageTag
-	lastFetchTime time.Time
-}
-
-var dockerCache = &dockerImagesCache{}
-
-// Converts a container-internal path to a host path.
-// When DISCOPANEL_HOST_DATA_PATH is not set (running on host), it returns the path unchanged.
+// Converts a container-internal path to a host path
 func TranslateToHostPath(path string) string {
 	hostDataPath := os.Getenv("DISCOPANEL_HOST_DATA_PATH")
 	if hostDataPath == "" {
@@ -92,113 +77,37 @@ func TranslateToHostPath(path string) string {
 	return filepath.Join(hostDataPath, relPath)
 }
 
-// Fetches the docker images manifest from itzg
-func fetchDockerImages() ([]DockerImageTag, error) {
-	// Check cache first
-	dockerCache.mu.RLock()
-	if len(dockerCache.images) > 0 && time.Since(dockerCache.lastFetchTime) < dockerImagesCacheDuration {
-		images := dockerCache.images
-		dockerCache.mu.RUnlock()
-		return images, nil
-	}
-	dockerCache.mu.RUnlock()
-
-	// Fetch new manifest
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
-
-	resp, err := client.Get(dockerImagesURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch docker images manifest: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to fetch docker images manifest: status code %d", resp.StatusCode)
-	}
-
-	var images []DockerImageTag
-	if err := json.NewDecoder(resp.Body).Decode(&images); err != nil {
-		return nil, fmt.Errorf("failed to decode docker images manifest: %w", err)
-	}
-
-	// Update cache
-	dockerCache.mu.Lock()
-	dockerCache.images = images
-	dockerCache.lastFetchTime = time.Now()
-	dockerCache.mu.Unlock()
-
-	return images, nil
-}
-
-// Gets ideal docker tag for a given Minecraft version + mod loader
-func GetOptimalDockerTag(mcVersion string, modLoader models.ModLoader, preferGraalVM bool) string {
-	javaVersion := GetRequiredJavaVersion(mcVersion, modLoader)
-	if javaVersion == "0" || javaVersion == "" {
-		// Could not determine Java version, use stable
-		return "stable"
-	}
-
-	// Fetch Docker images from API
-	images, err := fetchDockerImages()
-	if err != nil {
-		// Could not fetch Docker images, use stable
-		return "stable"
-	}
-
-	// Find matching tag
-	for _, tag := range images {
-		if tag.Java == javaVersion && !tag.Deprecated {
-			if preferGraalVM && strings.Contains(tag.Tag, "graalvm") {
-				return tag.Tag
-			}
-			// Return first matching non-special tag (not graalvm, alpine, or jdk)
-			if !strings.Contains(tag.Tag, "graalvm") && !strings.Contains(tag.Tag, "alpine") && !strings.Contains(tag.Tag, "jdk") {
-				return tag.Tag
-			}
-		}
-	}
-
-	// No matching tag found, construct one
-	return fmt.Sprintf("java%s", javaVersion)
-}
-
-// Gets required Java version for a Minecraft version
-func GetRequiredJavaVersion(mcVersion string, modLoader models.ModLoader) string {
-	// Fetch the Java version from the Minecraft version metadata
-	javaVersion, err := minecraft.GetJavaVersion(mcVersion)
-	if err != nil {
-		// If we can't determine the Java version, return 0 to indicate error
-		return "0"
-	}
-	return javaVersion
+// Reports panel-side health for running containers
+type HealthChecker interface {
+	ContainerHealth(containerID string, startedAt time.Time) v1.ServerStatus
 }
 
 type ClientConfig struct {
-	APIVersion  string
-	NetworkName string
-	RegistryURL string
-	DNS         string
-	Labels      map[string]string
-}
-
-type ContainerLogStreamer interface {
-	StartStreaming(containerID string) error
-	StopStreaming(containerID string)
-	MigrateSubscribers(oldContainerID, newContainerID string)
+	APIVersion   string
+	NetworkName  string
+	RuntimeImage string
+	DNS          string
+	Labels       map[string]string
 }
 
 type Client struct {
-	docker      *client.Client
-	config      ClientConfig
-	logStreamer ContainerLogStreamer
-	log         *logger.Logger
+	docker        *client.Client
+	config        ClientConfig
+	healthChecker HealthChecker
+	log           *logger.Logger
+
+	// Background image refresh bookkeeping for ensureImage
+	refreshMu      sync.Mutex
+	imageRefreshed map[string]time.Time
+
+	// Cached module-facing panel URL, stable per process
+	panelURLOnce sync.Once
+	panelURL     string
 }
 
-// Auto manage streams at the client level when set
-func (c *Client) SetLogStreamer(ls ContainerLogStreamer) {
-	c.logStreamer = ls
+// Registers panel-side health source for container status
+func (c *Client) SetHealthChecker(hc HealthChecker) {
+	c.healthChecker = hc
 }
 
 func NewClient(host string, log *logger.Logger, config ...ClientConfig) (*Client, error) {
@@ -221,7 +130,7 @@ func NewClient(host string, log *logger.Logger, config ...ClientConfig) (*Client
 		return nil, fmt.Errorf("failed to create docker client: %w", err)
 	}
 
-	c := &Client{docker: docker, log: log}
+	c := &Client{docker: docker, log: log, imageRefreshed: make(map[string]time.Time)}
 	if len(config) > 0 {
 		c.config = config[0]
 	} else {
@@ -243,7 +152,7 @@ func (c *Client) GetDockerClient() *client.Client {
 	return c.docker
 }
 
-// ApplyOverrides applies DockerOverrides to container and host configs
+// Applies DockerOverrides to container and host configs
 func ApplyOverrides(overrides *v1.DockerOverrides, config *container.Config, hostConfig *container.HostConfig) {
 	if overrides == nil {
 		return
@@ -254,20 +163,6 @@ func ApplyOverrides(overrides *v1.DockerOverrides, config *container.Config, hos
 		for key, value := range overrides.GetEnvironment() {
 			config.Env = append(config.Env, fmt.Sprintf("%s=%s", key, value))
 		}
-	}
-
-	// Apply additional volume mounts
-	for _, vol := range overrides.GetVolumes() {
-		mountType := mount.Type(vol.GetType())
-		if mountType == "" {
-			mountType = mount.TypeBind
-		}
-		hostConfig.Mounts = append(hostConfig.Mounts, mount.Mount{
-			Type:     mountType,
-			Source:   vol.GetSource(),
-			Target:   vol.GetTarget(),
-			ReadOnly: vol.GetReadOnly(),
-		})
 	}
 
 	// Apply restart policy override
@@ -359,39 +254,22 @@ func ApplyOverrides(overrides *v1.DockerOverrides, config *container.Config, hos
 	}
 }
 
-func (c *Client) CreateContainer(ctx context.Context, server *models.Server, serverConfig *models.ServerConfig) (string, error) {
-	// Use server's DockerImage if specified, otherwise determine based on version and loader
-	var imageName string
-	if server.DockerImage != "" {
-		imageName = "itzg/minecraft-server:" + server.DockerImage
-	} else {
-		imageName = getDockerImage(server.ModLoader, server.MCVersion)
-	}
+// Creates server container and reports setup progress via callback
+func (c *Client) CreateContainer(ctx context.Context, server *v1.Server, serverConfig *v1.ServerProperties, progress func(string)) (string, error) {
+	imageName := c.DesiredImage(server)
 
-	// Try pulling latest
-	if err := c.pullImage(ctx, imageName); err != nil {
-		return "", fmt.Errorf("failed to pull image: %w", err)
+	if err := c.ensureImage(ctx, imageName, progress); err != nil {
+		return "", err
 	}
 
 	// Build environment variables
 	env := buildEnvFromConfig(serverConfig)
 
-	// Determine container port - proxy servers always use default port internally
-	useProxy := server.ProxyHostname != ""
-	containerPort := server.Port
-	if useProxy {
-		containerPort = DefaultMinecraftPort
-		// Override SERVER_PORT env var for proxy servers
-		filtered := make([]string, 0, len(env))
-		for _, e := range env {
-			if !strings.HasPrefix(e, "SERVER_PORT=") {
-				filtered = append(filtered, e)
-			}
-		}
-		env = append(filtered, fmt.Sprintf("SERVER_PORT=%d", DefaultMinecraftPort))
-	}
+	// Proxy servers always use default port internally
+	useProxy := len(server.ProxyHostnames) > 0
+	containerPort := models.InContainerPort(server)
 
-	c.log.Debug("Creating container for server %s with image %s", server.ID, imageName)
+	c.log.Debug("Creating container for server %s with image %s", server.Id, imageName)
 
 	// Build exposed ports
 	exposedPorts := nat.PortSet{
@@ -399,10 +277,7 @@ func (c *Client) CreateContainer(ctx context.Context, server *models.Server, ser
 		nat.Port(fmt.Sprintf("%d/tcp", DefaultRCONPort)): struct{}{},
 	}
 	for _, port := range server.AdditionalPorts {
-		protocol := port.GetProtocol()
-		if protocol == "" {
-			protocol = "tcp"
-		}
+		protocol := protometa.Name(models.TransportOf(port.GetProtocol()))
 		exposedPorts[nat.Port(fmt.Sprintf("%d/%s", port.GetContainerPort(), protocol))] = struct{}{}
 	}
 
@@ -420,10 +295,11 @@ func (c *Client) CreateContainer(ctx context.Context, server *models.Server, ser
 	}
 	// Add additional port bindings
 	for _, port := range server.AdditionalPorts {
-		protocol := port.GetProtocol()
-		if protocol == "" {
-			protocol = "tcp"
+		// Proxied ports reach the container over the panel network
+		if port.GetProxyEnabled() {
+			continue
 		}
+		protocol := protometa.Name(models.TransportOf(port.GetProtocol()))
 		portKey := nat.Port(fmt.Sprintf("%d/%s", port.GetContainerPort(), protocol))
 		portBindings[portKey] = []nat.PortBinding{
 			{HostIP: "0.0.0.0", HostPort: fmt.Sprintf("%d", port.GetHostPort())},
@@ -438,19 +314,25 @@ func (c *Client) CreateContainer(ctx context.Context, server *models.Server, ser
 		return "", fmt.Errorf("failed to create server data directory: %w", err)
 	}
 
+	// Docker initiated stops honor the configured save budget
+	stopTimeout := StopTimeoutFor(serverConfig)
+
 	config := &container.Config{
-		Image:        imageName,
-		Env:          env,
-		Tty:          true,
+		Image: imageName,
+		Env:   env,
+		// PTY adds per-line overhead and the streamer demuxes pipes fine
+		Tty:          false,
 		AttachStdout: true,
 		AttachStderr: true,
+		StopTimeout:  &stopTimeout,
 		ExposedPorts: exposedPorts,
 		Labels: map[string]string{
-			"discopanel.server.id":      server.ID,
+			"discopanel.server.id":      server.Id,
 			"discopanel.server.name":    server.Name,
-			"discopanel.server.loader":  string(server.ModLoader),
-			"discopanel.server.version": server.MCVersion,
+			"discopanel.server.loader":  protometa.Name(server.ModLoader),
+			"discopanel.server.version": server.McVersion,
 			"discopanel.managed":        "true",
+			LabelConfigHash:             c.DesiredConfigHash(server, serverConfig),
 		},
 	}
 
@@ -463,9 +345,12 @@ func (c *Client) CreateContainer(ctx context.Context, server *models.Server, ser
 		Resources: container.Resources{
 			Memory:     int64(server.Memory) * 1024 * 1024,
 			MemorySwap: int64(server.Memory) * 1024 * 1024,
+			// Servers win CPU contention against modules and sidecars
+			CPUShares: 8192,
 		},
 		LogConfig: container.LogConfig{
-			Type:   "json-file",
+			// Local driver skips the json-file double write per line
+			Type:   "local",
 			Config: map[string]string{"max-size": "10m", "max-file": "3"},
 		},
 	}
@@ -483,6 +368,16 @@ func (c *Client) CreateContainer(ctx context.Context, server *models.Server, ser
 	// Apply docker overrides
 	ApplyOverrides(server.DockerOverrides, config, hostConfig)
 
+	// Override volumes take the module volume path, aliases and all
+	aliasCtx := &alias.Context{Server: server, ServerProperties: serverConfig}
+	overrideVols := c.resolveVolumes(server.DockerOverrides.GetVolumes(), aliasCtx)
+	hostConfig.Mounts = append(hostConfig.Mounts, c.volumesToMounts(overrideVols)...)
+
+	// Lets the supervisor raise tick thread priority
+	if !slices.Contains(hostConfig.CapAdd, "SYS_NICE") {
+		hostConfig.CapAdd = append(hostConfig.CapAdd, "SYS_NICE")
+	}
+
 	// Network configuration
 	networkConfig := &network.NetworkingConfig{}
 	if c.config.NetworkName != "" && hostConfig.NetworkMode == "" {
@@ -493,7 +388,7 @@ func (c *Client) CreateContainer(ctx context.Context, server *models.Server, ser
 
 	resp, err := c.docker.ContainerCreate(
 		ctx, config, hostConfig, networkConfig, nil,
-		fmt.Sprintf("discopanel-server-%s", server.ID),
+		fmt.Sprintf("discopanel-server-%s", server.Id),
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed to create container: %w", err)
@@ -503,32 +398,21 @@ func (c *Client) CreateContainer(ctx context.Context, server *models.Server, ser
 }
 
 func (c *Client) StartContainer(ctx context.Context, containerID string) error {
-	if err := c.docker.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
-		return err
-	}
-
-	// Start log streaming if configured
-	if c.logStreamer != nil {
-		if err := c.logStreamer.StartStreaming(containerID); err != nil {
-			c.log.Warn("Failed to start log streaming for container %s: %v", containerID, err)
-		}
-	}
-
-	return nil
+	return c.docker.ContainerStart(ctx, containerID, container.StartOptions{})
 }
 
-// StopContainer stops a container. Returns (containerFound, error).
-// If container doesn't exist, returns (false, nil) so caller can clean up stale references.
-func (c *Client) StopContainer(ctx context.Context, containerID string) (bool, error) {
-	// Stop log streaming before stopping container
-	if c.logStreamer != nil {
-		c.logStreamer.StopStreaming(containerID)
-	}
+// Reports whether err means the docker object is gone
+func IsNotFound(err error) bool {
+	return errdefs.IsNotFound(err)
+}
 
-	// First try graceful stop with a short timeout
-	timeout := 5 // seconds
+// Stops container gracefully then force kills on failure
+func (c *Client) StopContainer(ctx context.Context, containerID string, timeoutSeconds int) (bool, error) {
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = DefaultStopTimeoutSeconds
+	}
 	err := c.docker.ContainerStop(ctx, containerID, container.StopOptions{
-		Timeout: &timeout,
+		Timeout: &timeoutSeconds,
 	})
 
 	if err != nil {
@@ -558,9 +442,9 @@ func (c *Client) RemoveContainer(ctx context.Context, containerID string) error 
 	})
 }
 
-// Stops and starts a container with an optional delay between operations
+// Stops and starts a container with an optional delay
 func (c *Client) RestartContainer(ctx context.Context, containerID string, delay time.Duration) error {
-	if _, err := c.StopContainer(ctx, containerID); err != nil {
+	if _, err := c.StopContainer(ctx, containerID, DefaultStopTimeoutSeconds); err != nil {
 		return fmt.Errorf("failed to stop container: %w", err)
 	}
 
@@ -585,8 +469,8 @@ type RecreateContainerResult struct {
 	WasRunning     bool
 }
 
-// Stops, removes, and creates a new container - Returns new container ID and whether it was running before
-func (c *Client) RecreateContainer(ctx context.Context, oldContainerID string, server *models.Server, serverConfig *models.ServerConfig) (*RecreateContainerResult, error) {
+// Recreates container and restores prior run state
+func (c *Client) RecreateContainer(ctx context.Context, oldContainerID string, server *v1.Server, serverConfig *v1.ServerProperties, progress func(string)) (*RecreateContainerResult, error) {
 	result := &RecreateContainerResult{}
 
 	// Check if container was running before we stop it
@@ -595,9 +479,9 @@ func (c *Client) RecreateContainer(ctx context.Context, oldContainerID string, s
 		if err != nil {
 			// Container may not exist, that's ok - continue with creation
 			c.log.Debug("Container %s not found during recreation: %v", oldContainerID, err)
-		} else if status == models.StatusRunning || status == models.StatusUnhealthy {
+		} else if status == v1.ServerStatus_SERVER_STATUS_RUNNING || status == v1.ServerStatus_SERVER_STATUS_UNHEALTHY {
 			result.WasRunning = true
-			if _, err := c.StopContainer(ctx, oldContainerID); err != nil {
+			if _, err := c.StopContainer(ctx, oldContainerID, DefaultStopTimeoutSeconds); err != nil {
 				return nil, fmt.Errorf("failed to stop container: %w", err)
 			}
 		}
@@ -610,16 +494,11 @@ func (c *Client) RecreateContainer(ctx context.Context, oldContainerID string, s
 	}
 
 	// Create new container
-	newContainerID, err := c.CreateContainer(ctx, server, serverConfig)
+	newContainerID, err := c.CreateContainer(ctx, server, serverConfig, progress)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container: %w", err)
 	}
 	result.NewContainerID = newContainerID
-
-	// Migrate log subscribers from old to new container
-	if c.logStreamer != nil && oldContainerID != "" {
-		c.logStreamer.MigrateSubscribers(oldContainerID, newContainerID)
-	}
 
 	// Start if it was running before
 	if result.WasRunning {
@@ -631,39 +510,106 @@ func (c *Client) RecreateContainer(ctx context.Context, oldContainerID string, s
 	return result, nil
 }
 
-func (c *Client) GetContainerStatus(ctx context.Context, containerID string) (models.ServerStatus, error) {
+func (c *Client) GetContainerStatus(ctx context.Context, containerID string) (v1.ServerStatus, error) {
 	inspect, err := c.docker.ContainerInspect(ctx, containerID)
 	if err != nil {
-		return models.StatusError, err
+		return v1.ServerStatus_SERVER_STATUS_ERROR, err
 	}
 
 	switch inspect.State.Status {
 	case "running":
-		// Check health status if available
-		if inspect.State.Health != nil {
-			switch inspect.State.Health.Status {
-			case "healthy":
-				return models.StatusRunning, nil
-			case "starting":
-				return models.StatusStarting, nil
-			case "unhealthy":
-				// Server process isn't responding
-				return models.StatusUnhealthy, nil
-			default:
-				// No health status or unknown, assume running
-				return models.StatusRunning, nil
+		// Health comes from the panel-side SLP checker
+		if c.healthChecker != nil {
+			startedAt, _ := time.Parse(time.RFC3339Nano, inspect.State.StartedAt)
+			if verdict := c.healthChecker.ContainerHealth(containerID, startedAt); verdict != v1.ServerStatus_SERVER_STATUS_UNSPECIFIED {
+				return verdict, nil
 			}
 		}
-		return models.StatusRunning, nil
+		return v1.ServerStatus_SERVER_STATUS_RUNNING, nil
+	case "paused":
+		return v1.ServerStatus_SERVER_STATUS_PAUSED, nil
 	case "restarting":
-		return models.StatusStarting, nil
-	case "exited", "dead":
-		return models.StatusStopped, nil
-	case "created", "paused", "removing":
-		return models.StatusStopped, nil
+		return v1.ServerStatus_SERVER_STATUS_STARTING, nil
+	case "exited", "dead", "created", "removing":
+		return v1.ServerStatus_SERVER_STATUS_STOPPED, nil
 	default:
-		return models.StatusError, nil
+		return v1.ServerStatus_SERVER_STATUS_ERROR, nil
 	}
+}
+
+// Freezes all container processes for autopause
+func (c *Client) PauseContainer(ctx context.Context, containerID string) error {
+	return c.docker.ContainerPause(ctx, containerID)
+}
+
+// Resumes paused container for wake-on-connect
+func (c *Client) UnpauseContainer(ctx context.Context, containerID string) error {
+	return c.docker.ContainerUnpause(ctx, containerID)
+}
+
+// Reports whether container is currently paused
+func (c *Client) IsContainerPaused(ctx context.Context, containerID string) (bool, error) {
+	inspect, err := c.docker.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return false, err
+	}
+	return inspect.State.Status == "paused", nil
+}
+
+// Reports container image name and desired build match
+func (c *Client) ContainerImageState(ctx context.Context, containerID, desired string) (string, bool, error) {
+	inspect, err := c.docker.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return "", false, err
+	}
+	name := inspect.Config.Image
+	if name != desired {
+		return name, false, nil
+	}
+	img, err := c.docker.ImageInspect(ctx, desired)
+	if err != nil {
+		// Tag missing locally, keep the container
+		return name, true, nil
+	}
+	return name, img.ID == inspect.Image, nil
+}
+
+// Returns the registry digest of a container's image
+func (c *Client) ContainerImageDigest(ctx context.Context, containerID string) (string, error) {
+	inspect, err := c.docker.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return "", err
+	}
+	img, err := c.docker.ImageInspect(ctx, inspect.Image)
+	if err != nil {
+		return "", err
+	}
+	if len(img.RepoDigests) > 0 {
+		return img.RepoDigests[0], nil
+	}
+	// Locally built images have no repo digest
+	return img.ID, nil
+}
+
+// Raw run state for the panel-side health tracker
+type ContainerRunInfo struct {
+	Running   bool
+	Paused    bool
+	StartedAt time.Time
+}
+
+// Returns raw container run state without health interpretation
+func (c *Client) GetContainerRunInfo(ctx context.Context, containerID string) (*ContainerRunInfo, error) {
+	inspect, err := c.docker.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return nil, err
+	}
+	startedAt, _ := time.Parse(time.RFC3339Nano, inspect.State.StartedAt)
+	return &ContainerRunInfo{
+		Running:   inspect.State.Status == "running",
+		Paused:    inspect.State.Status == "paused",
+		StartedAt: startedAt,
+	}, nil
 }
 
 func (c *Client) GetContainerStats(ctx context.Context, containerID string) (*ContainerStats, error) {
@@ -697,109 +643,246 @@ func (c *Client) GetContainerStats(ctx context.Context, containerID string) (*Co
 		cpuPercent = (cpuDelta / systemDelta) * cpuCount * 100.0
 	}
 
-	// Get memory usage in MB (excluding cache)
-	memoryUsage := float64(stats.MemoryStats.Usage-stats.MemoryStats.Stats["cache"]) / 1024 / 1024
+	// Get memory usage in MB (excluding reclaimable file cache)
+	memoryUsage := memUsageNoCache(stats.MemoryStats) / 1024 / 1024
 	memoryLimit := float64(stats.MemoryStats.Limit) / 1024 / 1024
 
 	return &ContainerStats{
-		CPUPercent:  cpuPercent,
+		CpuPercent:  cpuPercent,
+		CpuCount:    int(cpuCount),
 		MemoryUsage: memoryUsage,
 		MemoryLimit: memoryLimit,
 	}, nil
 }
 
-// Runs shell command, script, or executable inside the container and returns the output
-func (c *Client) Exec(ctx context.Context, containerID string, execCmd []string) (string, error) {
-	// Create exec configuration
+// Subtracts reclaimable file cache like docker stats does
+func memUsageNoCache(mem container.MemoryStats) float64 {
+	// Cgroup v1 key
+	if v, ok := mem.Stats["total_inactive_file"]; ok && v < mem.Usage {
+		return float64(mem.Usage - v)
+	}
+	// Cgroup v2 key
+	if v := mem.Stats["inactive_file"]; v < mem.Usage {
+		return float64(mem.Usage - v)
+	}
+	return float64(mem.Usage)
+}
+
+// Runs command inside container, returns stdout and stderr
+func (c *Client) Exec(ctx context.Context, containerID string, execCmd []string) (string, string, error) {
 	execConfig := container.ExecOptions{
 		AttachStdin:  true,
 		AttachStdout: true,
 		AttachStderr: true,
 		Tty:          false,
-		Cmd:          execCmd, //[]string{"rcon-cli", command},
+		Cmd:          execCmd,
 	}
 
-	// Create exec instance
 	execResp, err := c.docker.ContainerExecCreate(ctx, containerID, execConfig)
 	if err != nil {
-		return "", fmt.Errorf("failed to create exec: %w", err)
+		return "", "", fmt.Errorf("failed to create exec: %w", err)
 	}
 
-	// Attach to exec instance
 	attachResp, err := c.docker.ContainerExecAttach(ctx, execResp.ID, container.ExecStartOptions{})
 	if err != nil {
-		return "", fmt.Errorf("failed to attach to exec: %w", err)
+		return "", "", fmt.Errorf("failed to attach to exec: %w", err)
 	}
 	defer attachResp.Close()
 
-	// Read output using stdcopy to demultiplex the stream
-	var outputBuf bytes.Buffer
-	_, err = stdcopy.StdCopy(&outputBuf, &outputBuf, attachResp.Reader)
-	if err != nil {
-		return "", fmt.Errorf("failed to read exec output: %w", err)
+	// Demultiplexes the docker stream into split buffers
+	var stdout, stderr bytes.Buffer
+	if _, err = stdcopy.StdCopy(&stdout, &stderr, attachResp.Reader); err != nil {
+		return "", "", fmt.Errorf("failed to read exec output: %w", err)
 	}
 
-	// Check exec exit code
 	inspectResp, err := c.docker.ContainerExecInspect(ctx, execResp.ID)
 	if err != nil {
-		return "", fmt.Errorf("failed to inspect exec: %w", err)
+		return "", "", fmt.Errorf("failed to inspect exec: %w", err)
 	}
 
 	if inspectResp.ExitCode != 0 {
-		return "", fmt.Errorf("command failed with exit code %d: %s", inspectResp.ExitCode, outputBuf.String())
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = strings.TrimSpace(stdout.String())
+		}
+		return "", "", fmt.Errorf("command failed with exit code %d: %s", inspectResp.ExitCode, detail)
 	}
 
-	return outputBuf.String(), nil
+	return stdout.String(), stderr.String(), nil
 }
 
-// ExecCommand executes a command inside the container and returns the output
-func (c *Client) ExecCommand(ctx context.Context, containerID string, command string) (string, error) {
-	return c.Exec(ctx, containerID, []string{"rcon-cli", command})
-}
+// Pulls image only when absent so starts never block
+func (c *Client) ensureImage(ctx context.Context, imageName string, progress func(string)) error {
+	if _, err := c.docker.ImageInspect(ctx, imageName); err == nil {
+		c.refreshImageAsync(imageName)
+		return nil
+	}
 
-func (c *Client) pullImage(ctx context.Context, imageName string) error {
+	if progress != nil {
+		progress(fmt.Sprintf("pulling image %s...", imageName))
+	}
 	reader, err := c.docker.ImagePull(ctx, imageName, image.PullOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to pull image %s: %w", imageName, err)
 	}
 	defer reader.Close()
 
-	// Read the output to ensure the pull completes
-	_, err = io.Copy(io.Discard, reader)
-	if err != nil {
-		return fmt.Errorf("failed to complete image pull for %s: %w", imageName, err)
+	// Aggregate per-layer pull progress into one throttled line
+	type layerState struct{ current, total int64 }
+	layers := map[string]*layerState{}
+	lastReport := time.Now()
+	dec := json.NewDecoder(reader)
+	for {
+		var msg struct {
+			ID             string `json:"id"`
+			Status         string `json:"status"`
+			Error          string `json:"error"`
+			ProgressDetail struct {
+				Current int64 `json:"current"`
+				Total   int64 `json:"total"`
+			} `json:"progressDetail"`
+		}
+		if err := dec.Decode(&msg); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("failed to complete image pull for %s: %w", imageName, err)
+		}
+		if msg.Error != "" {
+			return fmt.Errorf("failed to pull image %s: %s", imageName, msg.Error)
+		}
+		if msg.ID != "" && msg.Status == "Downloading" && msg.ProgressDetail.Total > 0 {
+			ls := layers[msg.ID]
+			if ls == nil {
+				ls = &layerState{}
+				layers[msg.ID] = ls
+			}
+			ls.current = msg.ProgressDetail.Current
+			ls.total = msg.ProgressDetail.Total
+		}
+		if progress != nil && time.Since(lastReport) >= 2*time.Second && len(layers) > 0 {
+			var current, total int64
+			for _, ls := range layers {
+				current += ls.current
+				total += ls.total
+			}
+			progress(fmt.Sprintf("pulling image %s: %.1f/%.1f MB",
+				imageName, float64(current)/1024/1024, float64(total)/1024/1024))
+			lastReport = time.Now()
+		}
 	}
 
+	if progress != nil {
+		progress(fmt.Sprintf("image %s ready", imageName))
+	}
 	return nil
 }
 
-func (c *Client) GetDockerImages() []DockerImageTag {
-	images, err := fetchDockerImages()
-	if err != nil {
-		c.log.Error("Failed to fetch docker images: %v", err)
-		return []DockerImageTag{}
+// Re-pulls present image in background without blocking starts
+func (c *Client) refreshImageAsync(imageName string) {
+	c.refreshMu.Lock()
+	if time.Since(c.imageRefreshed[imageName]) < time.Hour {
+		c.refreshMu.Unlock()
+		return
 	}
+	c.imageRefreshed[imageName] = time.Now()
+	c.refreshMu.Unlock()
 
-	// Filter out deprecated and dedup
-	seen := make(map[string]bool)
-	var activeImages []DockerImageTag
-	for _, img := range images {
-		if !img.Deprecated && !seen[img.Tag] {
-			seen[img.Tag] = true
-			activeImages = append(activeImages, img)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
+
+		// Never clobbers a locally built image with registry pull
+		if img, err := c.docker.ImageInspect(ctx, imageName); err == nil &&
+			img.Config != nil && img.Config.Labels["app.discopanel.build"] == "local" {
+			c.log.Debug("Image %s is locally built, skipping background refresh", imageName)
+			return
+		}
+
+		// Failed pulls retry on the next start, not next hour
+		clearMark := func() {
+			c.refreshMu.Lock()
+			delete(c.imageRefreshed, imageName)
+			c.refreshMu.Unlock()
+		}
+		reader, err := c.docker.ImagePull(ctx, imageName, image.PullOptions{})
+		if err != nil {
+			c.log.Debug("Background refresh of image %s failed: %v", imageName, err)
+			clearMark()
+			return
+		}
+		defer reader.Close()
+		if _, err := io.Copy(io.Discard, reader); err != nil {
+			c.log.Debug("Background refresh of image %s interrupted: %v", imageName, err)
+			clearMark()
+		}
+	}()
+}
+
+// Resolves container IP on the panel network
+func (c *Client) ContainerIP(ctx context.Context, containerID string) (string, error) {
+	inspect, err := c.docker.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return "", fmt.Errorf("failed to inspect container: %w", err)
+	}
+	if c.config.NetworkName != "" {
+		if network, ok := inspect.NetworkSettings.Networks[c.config.NetworkName]; ok && network.IPAddress != "" {
+			return network.IPAddress, nil
 		}
 	}
-	return activeImages
+	for _, network := range inspect.NetworkSettings.Networks {
+		if network.IPAddress != "" {
+			return network.IPAddress, nil
+		}
+	}
+	return "", fmt.Errorf("no IP address found for container")
 }
 
-func getDockerImage(loader models.ModLoader, mcVersion string) string {
-	_ = loader
-	// itzg/minecraft-server supports all mod loaders through environment variables
-	// We use Java version specific tags for better compatibility
-	return "itzg/minecraft-server:" + GetOptimalDockerTag(mcVersion, loader, false)
+// DNS name containerized panel registers on managed network
+const PanelNetworkAlias = "discopanel-panel"
+
+// Resolves URL runtime containers use to reach the panel
+func (c *Client) PanelAgentURL(ctx context.Context, panelPort string) (string, error) {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		if hostname, err := os.Hostname(); err == nil {
+			if info, err := c.docker.ContainerInspect(ctx, hostname); err == nil {
+				if ep, ok := info.NetworkSettings.Networks[c.config.NetworkName]; ok {
+					if slices.Contains(ep.Aliases, PanelNetworkAlias) {
+						return fmt.Sprintf("http://%s:%s", PanelNetworkAlias, panelPort), nil
+					}
+					if ep.IPAddress != "" {
+						return fmt.Sprintf("http://%s:%s", ep.IPAddress, panelPort), nil
+					}
+				}
+			}
+		}
+	}
+	nw, err := c.docker.NetworkInspect(ctx, c.config.NetworkName, network.InspectOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to inspect network %s: %w", c.config.NetworkName, err)
+	}
+	for _, ipam := range nw.IPAM.Config {
+		if ipam.Gateway != "" {
+			return fmt.Sprintf("http://%s:%s", ipam.Gateway, panelPort), nil
+		}
+	}
+	return "", fmt.Errorf("no gateway on network %s", c.config.NetworkName)
 }
 
-// Creates the Docker network if it doesn't exist - attaches itself to that network when applicable
+// Resolves and caches panel URL for module containers
+func (c *Client) ModulePanelURL(panelPort string) string {
+	c.panelURLOnce.Do(func() {
+		url, err := c.PanelAgentURL(context.Background(), panelPort)
+		if err != nil {
+			c.log.Warn("Falling back to host gateway for module panel URL: %v", err)
+			url = "http://host.docker.internal:" + panelPort
+		}
+		c.panelURL = url
+	})
+	return c.panelURL
+}
+
+// Creates the Docker network and attaches self when containerized
 func (c *Client) EnsureNetwork() error {
 	ctx := context.Background()
 
@@ -819,7 +902,7 @@ func (c *Client) EnsureNetwork() error {
 	}
 
 	if !exists {
-		// Create network - let Docker allocate subnet from its configured default-address-pools
+		// Creates network so Docker allocates the subnet automatically
 		createOpts := network.CreateOptions{
 			Driver: "bridge",
 			Labels: map[string]string{
@@ -836,8 +919,7 @@ func (c *Client) EnsureNetwork() error {
 	return nil
 }
 
-// Connects discopanel to its own bridge network if running as container
-// NOTE: Only really needed for bridge mode though
+// Connects panel to bridge network and registers DNS alias
 func (c *Client) attachSelfToNetwork(ctx context.Context) {
 	if _, err := os.Stat("/.dockerenv"); err != nil {
 		return
@@ -848,7 +930,7 @@ func (c *Client) attachSelfToNetwork(ctx context.Context) {
 		return
 	}
 
-	// Docker sets the container hostname to its short ID by default
+	// Docker sets the container hostname to its short ID
 	info, err := c.docker.ContainerInspect(ctx, hostname)
 	if err != nil {
 		c.log.Debug("Could not inspect own container %s: %v", hostname, err)
@@ -859,62 +941,43 @@ func (c *Client) attachSelfToNetwork(ctx context.Context) {
 		return
 	}
 
-	if _, ok := info.NetworkSettings.Networks[c.config.NetworkName]; ok {
-		return
+	endpoint := &network.EndpointSettings{Aliases: []string{PanelNetworkAlias}}
+
+	if ep, ok := info.NetworkSettings.Networks[c.config.NetworkName]; ok {
+		if slices.Contains(ep.Aliases, PanelNetworkAlias) {
+			return
+		}
+		if err := c.docker.NetworkDisconnect(ctx, c.config.NetworkName, info.ID, false); err != nil {
+			c.log.Warn("Could not detach own container to register panel alias: %v", err)
+			return
+		}
 	}
 
-	if err := c.docker.NetworkConnect(ctx, c.config.NetworkName, info.ID, nil); err != nil {
+	if err := c.docker.NetworkConnect(ctx, c.config.NetworkName, info.ID, endpoint); err != nil {
 		c.log.Error("Failed to attach DiscoPanel container to network %s: %v", c.config.NetworkName, err)
 		return
 	}
 
-	c.log.Info("Attached DiscoPanel container to network %s", c.config.NetworkName)
+	c.log.Info("Attached DiscoPanel container to network %s as %s", c.config.NetworkName, PanelNetworkAlias)
 }
 
-// Builds Docker environment variables from ServerConfig struct
-func buildEnvFromConfig(config *models.ServerConfig) []string {
-	env := []string{
-		"DUMP_SERVER_PROPERTIES=true",
-	}
-
-	configValue := reflect.ValueOf(config).Elem()
-	configType := configValue.Type()
-
-	for i := 0; i < configType.NumField(); i++ {
-		field := configType.Field(i)
-		envTag := field.Tag.Get("env")
-
-		// Skip fields without env tags
-		if envTag == "" || envTag == "-" {
+// Builds Docker environment variables from ServerProperties annotations
+func buildEnvFromConfig(config *v1.ServerProperties) []string {
+	var env []string
+	m := config.ProtoReflect()
+	for _, p := range protometa.Props(m.Descriptor()) {
+		if p.Meta.Env == "" || p.Meta.Env == "-" {
 			continue
 		}
-
-		fieldValue := configValue.Field(i)
-
-		// Handle pointer types
-		if fieldValue.Kind() == reflect.Pointer {
-			// Skip if nil
-			if fieldValue.IsNil() {
-				continue
-			}
-			// Dereference the pointer
-			fieldValue = fieldValue.Elem()
+		value, set := protometa.ScalarString(m, p.Field)
+		if !set {
+			continue
 		}
-
-		// Handle different field types
-		switch fieldValue.Kind() {
-		case reflect.String:
-			if str := fieldValue.String(); str != "" {
-				env = append(env, fmt.Sprintf("%s=%s", envTag, str))
-			}
-		case reflect.Int, reflect.Int32, reflect.Int64:
-			// Always include int values (even 0) when the field is explicitly set
-			env = append(env, fmt.Sprintf("%s=%d", envTag, fieldValue.Int()))
-		case reflect.Bool:
-			// Always include bool values when the field is explicitly set
-			env = append(env, fmt.Sprintf("%s=%v", envTag, fieldValue.Bool()))
+		// Empty strings stay out, zero numbers and bools go in
+		if value == "" && p.Field.Kind() == protoreflect.StringKind {
+			continue
 		}
+		env = append(env, fmt.Sprintf("%s=%s", p.Meta.Env, value))
 	}
-
 	return env
 }

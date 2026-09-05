@@ -1,23 +1,35 @@
 package services
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/discohaus/discopanel/internal/alias"
+	"github.com/discohaus/discopanel/internal/auth"
+	storage "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/internal/docker"
+	"github.com/discohaus/discopanel/internal/metrics"
+	"github.com/discohaus/discopanel/internal/module"
+	"github.com/discohaus/discopanel/internal/proxy"
+	"github.com/discohaus/discopanel/pkg/config"
+	"github.com/discohaus/discopanel/pkg/files"
+	"github.com/discohaus/discopanel/pkg/logger"
+	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
 	"github.com/google/uuid"
-	"github.com/nickheyer/discopanel/internal/alias"
-	"github.com/nickheyer/discopanel/internal/auth"
-	"github.com/nickheyer/discopanel/internal/config"
-	storage "github.com/nickheyer/discopanel/internal/db"
-	"github.com/nickheyer/discopanel/internal/docker"
-	"github.com/nickheyer/discopanel/internal/module"
-	"github.com/nickheyer/discopanel/internal/proxy"
-	"github.com/nickheyer/discopanel/pkg/logger"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
-	"github.com/nickheyer/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -26,17 +38,18 @@ var _ discopanelv1connect.ModuleServiceHandler = (*ModuleService)(nil)
 
 // ModuleService implements the Module service
 type ModuleService struct {
-	store         *storage.Store
-	docker        *docker.Client
-	moduleManager *module.Manager
-	proxyManager  *proxy.Manager
-	authManager   *auth.Manager
-	config        *config.Config
-	log           *logger.Logger
-	logStreamer   *logger.LogStreamer
+	store            *storage.Store
+	docker           *docker.Client
+	moduleManager    *module.Manager
+	proxyManager     *proxy.Manager
+	authManager      *auth.Manager
+	config           *config.Config
+	metricsCollector *metrics.Collector
+	rec              *metrics.Recorder
+	log              *logger.Logger
+	logStreamer      *logger.LogStreamer
 }
 
-// NewModuleService creates a new module service
 func NewModuleService(
 	store *storage.Store,
 	docker *docker.Client,
@@ -45,175 +58,38 @@ func NewModuleService(
 	authManager *auth.Manager,
 	cfg *config.Config,
 	logStreamer *logger.LogStreamer,
+	metricsCollector *metrics.Collector,
+	rec *metrics.Recorder,
 	log *logger.Logger,
 ) *ModuleService {
 	return &ModuleService{
-		store:         store,
-		docker:        docker,
-		moduleManager: moduleManager,
-		proxyManager:  proxyManager,
-		authManager:   authManager,
-		config:        cfg,
-		logStreamer:   logStreamer,
-		log:           log,
+		store:            store,
+		docker:           docker,
+		moduleManager:    moduleManager,
+		proxyManager:     proxyManager,
+		authManager:      authManager,
+		config:           cfg,
+		logStreamer:      logStreamer,
+		metricsCollector: metricsCollector,
+		rec:              rec,
+		log:              log,
 	}
 }
 
-// Conversion functions
-
-func dbModuleTemplateTypeToProto(t storage.ModuleTemplateType) v1.ModuleTemplateType {
-	switch t {
-	case storage.ModuleTemplateTypeBuiltin:
-		return v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_BUILTIN
-	case storage.ModuleTemplateTypeCustom:
-		return v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_CUSTOM
-	default:
-		return v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_UNSPECIFIED
+// Copies cached collector usage onto transient module fields
+func (s *ModuleService) applyModuleStats(m *v1.Module) {
+	if s.metricsCollector == nil || m.ContainerId == "" || m.Status != v1.ModuleStatus_MODULE_STATUS_RUNNING {
+		return
 	}
+	stats := s.metricsCollector.GetModuleStats(m.Id)
+	if stats == nil {
+		return
+	}
+	m.CpuPercent = stats.CpuPercent
+	m.MemoryUsage = stats.MemoryUsage
 }
 
-// func protoModuleTemplateTypeToDB(t v1.ModuleTemplateType) storage.ModuleTemplateType {
-// 	switch t {
-// 	case v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_BUILTIN:
-// 		return storage.ModuleTemplateTypeBuiltin
-// 	case v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_CUSTOM:
-// 		return storage.ModuleTemplateTypeCustom
-// 	default:
-// 		return storage.ModuleTemplateTypeCustom
-// 	}
-// }
-
-// func dbModuleProtocolToProto(p storage.ModuleProtocol) v1.ModuleProtocol {
-// 	switch p {
-// 	case storage.ModuleProtocolTCP:
-// 		return v1.ModuleProtocol_MODULE_PROTOCOL_TCP
-// 	case storage.ModuleProtocolUDP:
-// 		return v1.ModuleProtocol_MODULE_PROTOCOL_UDP
-// 	default:
-// 		return v1.ModuleProtocol_MODULE_PROTOCOL_UNSPECIFIED
-// 	}
-// }
-
-// func protoModuleProtocolToDB(p v1.ModuleProtocol) storage.ModuleProtocol {
-// 	switch p {
-// 	case v1.ModuleProtocol_MODULE_PROTOCOL_TCP:
-// 		return storage.ModuleProtocolTCP
-// 	case v1.ModuleProtocol_MODULE_PROTOCOL_UDP:
-// 		return storage.ModuleProtocolUDP
-// 	default:
-// 		return storage.ModuleProtocolTCP
-// 	}
-// }
-
-func dbModuleStatusToProto(s storage.ModuleStatus) v1.ModuleStatus {
-	switch s {
-	case storage.ModuleStatusStopped:
-		return v1.ModuleStatus_MODULE_STATUS_STOPPED
-	case storage.ModuleStatusStarting:
-		return v1.ModuleStatus_MODULE_STATUS_STARTING
-	case storage.ModuleStatusRunning:
-		return v1.ModuleStatus_MODULE_STATUS_RUNNING
-	case storage.ModuleStatusStopping:
-		return v1.ModuleStatus_MODULE_STATUS_STOPPING
-	case storage.ModuleStatusError:
-		return v1.ModuleStatus_MODULE_STATUS_ERROR
-	case storage.ModuleStatusCreating:
-		return v1.ModuleStatus_MODULE_STATUS_CREATING
-	default:
-		return v1.ModuleStatus_MODULE_STATUS_UNSPECIFIED
-	}
-}
-
-func dbModuleTemplateToProto(t *storage.ModuleTemplate) *v1.ModuleTemplate {
-	if t == nil {
-		return nil
-	}
-	return &v1.ModuleTemplate{
-		Id:                      t.ID,
-		Name:                    t.Name,
-		Description:             t.Description,
-		Type:                    dbModuleTemplateTypeToProto(t.Type),
-		DockerImage:             t.DockerImage,
-		DefaultEnv:              t.DefaultEnv,
-		DefaultVolumes:          t.DefaultVolumes,
-		HealthCheckPath:         t.HealthCheckPath,
-		HealthCheckPort:         int32(t.HealthCheckPort),
-		RequiresServer:          t.RequiresServer,
-		SupportsProxy:           t.SupportsProxy,
-		Icon:                    t.Icon,
-		Category:                t.Category,
-		Documentation:           t.Documentation,
-		CreatedAt:               timestamppb.New(t.CreatedAt),
-		UpdatedAt:               timestamppb.New(t.UpdatedAt),
-		Ports:                   t.Ports,
-		SuggestedDependencies:   t.SuggestedDependencies,
-		DefaultHooks:            t.DefaultHooks,
-		Metadata:                t.Metadata,
-		DefaultCmd:              t.DefaultCmd,
-		DefaultAccessUrls:       t.DefaultAccessUrls,
-		DefaultMemory:           int32(t.DefaultMemory),
-		DefaultUid:              t.DefaultUID,
-		DefaultGid:              t.DefaultGID,
-		DefaultInitCommand:      t.DefaultInitCommand,
-		DefaultInitCommandDelay: int32(t.DefaultInitCommandDelay),
-		DefaultRestartAfterInit: t.DefaultRestartAfterInit,
-	}
-}
-
-func dbModuleToProto(m *storage.Module, serverName, templateName, serverProxyHostname, createdByUsername string) *v1.Module {
-	if m == nil {
-		return nil
-	}
-
-	protoModule := &v1.Module{
-		Id:                    m.ID,
-		Name:                  m.Name,
-		ServerId:              m.ServerID,
-		TemplateId:            m.TemplateID,
-		ContainerId:           m.ContainerID,
-		Status:                dbModuleStatusToProto(m.Status),
-		Config:                m.Config,
-		EnvOverrides:          m.EnvOverrides,
-		VolumeOverrides:       m.VolumeOverrides,
-		Memory:                int32(m.Memory),
-		CpuLimit:              m.CPULimit,
-		AutoStart:             m.AutoStart,
-		FollowServerLifecycle: m.FollowServerLifecycle,
-		Detached:              m.Detached,
-		DataPath:              m.DataPath,
-		CreatedAt:             timestamppb.New(m.CreatedAt),
-		UpdatedAt:             timestamppb.New(m.UpdatedAt),
-		MemoryUsage:           m.MemoryUsage,
-		CpuPercent:            m.CPUPercent,
-		ServerName:            serverName,
-		TemplateName:          templateName,
-		ServerProxyHostname:   serverProxyHostname,
-		Ports:                 m.Ports,
-		Dependencies:          m.Dependencies,
-		HealthCheckInterval:   int32(m.HealthCheckInterval),
-		HealthCheckTimeout:    int32(m.HealthCheckTimeout),
-		HealthCheckRetries:    int32(m.HealthCheckRetries),
-		EventHooks:            m.EventHooks,
-		Metadata:              m.Metadata,
-		CmdOverride:           m.CmdOverride,
-		AccessUrls:            m.AccessUrls,
-		CreatedByUserId:       m.CreatedBy,
-		CreatedByUsername:     createdByUsername,
-		Uid:                   m.UID,
-		Gid:                   m.GID,
-		InitCommand:           m.InitCommand,
-		InitCommandDelay:      int32(m.InitCommandDelay),
-		RestartAfterInit:      m.RestartAfterInit,
-	}
-
-	if m.LastStarted != nil {
-		protoModule.LastStarted = timestamppb.New(*m.LastStarted)
-	}
-
-	return protoModule
-}
-
-// resolveCreatedByUsername looks up the username for a module's CreatedBy user ID
+// Looks up the username behind a module's creator id
 func (s *ModuleService) resolveCreatedByUsername(ctx context.Context, userID string) string {
 	if userID == "" {
 		return ""
@@ -223,6 +99,53 @@ func (s *ModuleService) resolveCreatedByUsername(ctx context.Context, userID str
 		return ""
 	}
 	return user.Username
+}
+
+// Loads a module or returns the canonical not found error
+func getModule(ctx context.Context, store *storage.Store, id string) (*v1.Module, error) {
+	if id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
+	}
+	module, err := store.GetModule(ctx, id)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("module not found"))
+	}
+	return module, nil
+}
+
+// Loads a template or returns the canonical not found error
+func getModuleTemplate(ctx context.Context, store *storage.Store, id string) (*v1.ModuleTemplate, error) {
+	if id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("template ID is required"))
+	}
+	template, err := store.GetModuleTemplate(ctx, id)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("template not found"))
+	}
+	return template, nil
+}
+
+// Fills display fields and strips the nested template
+func (s *ModuleService) hydrateModule(ctx context.Context, m *v1.Module, server *v1.Server, template *v1.ModuleTemplate) {
+	m.Template = nil
+	if server == nil && m.ServerId != "" {
+		if srv, err := s.store.GetServer(ctx, m.ServerId); err == nil {
+			server = srv
+		}
+	}
+	if server != nil {
+		m.ServerName = server.Name
+		m.ServerProxyHostnames = server.ProxyHostnames
+	}
+	if template == nil {
+		if t, err := s.store.GetModuleTemplate(ctx, m.TemplateId); err == nil {
+			template = t
+		}
+	}
+	if template != nil {
+		m.TemplateName = template.Name
+	}
+	m.CreatedByUsername = s.resolveCreatedByUsername(ctx, m.CreatedByUserId)
 }
 
 // Template operations
@@ -238,7 +161,7 @@ func (s *ModuleService) ListModuleTemplates(ctx context.Context, req *connect.Re
 	for _, t := range templates {
 		// Filter by type if specified
 		if msg.Type != nil && *msg.Type != v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_UNSPECIFIED {
-			if dbModuleTemplateTypeToProto(t.Type) != *msg.Type {
+			if t.Type != *msg.Type {
 				continue
 			}
 		}
@@ -246,7 +169,7 @@ func (s *ModuleService) ListModuleTemplates(ctx context.Context, req *connect.Re
 		if msg.Category != nil && *msg.Category != "" && t.Category != *msg.Category {
 			continue
 		}
-		protoTemplates = append(protoTemplates, dbModuleTemplateToProto(t))
+		protoTemplates = append(protoTemplates, t)
 	}
 
 	return connect.NewResponse(&v1.ListModuleTemplatesResponse{
@@ -255,18 +178,13 @@ func (s *ModuleService) ListModuleTemplates(ctx context.Context, req *connect.Re
 }
 
 func (s *ModuleService) GetModuleTemplate(ctx context.Context, req *connect.Request[v1.GetModuleTemplateRequest]) (*connect.Response[v1.GetModuleTemplateResponse], error) {
-	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("template ID is required"))
-	}
-
-	template, err := s.store.GetModuleTemplate(ctx, msg.Id)
+	template, err := getModuleTemplate(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("template not found"))
+		return nil, err
 	}
 
 	return connect.NewResponse(&v1.GetModuleTemplateResponse{
-		Template: dbModuleTemplateToProto(template),
+		Template: template,
 	}), nil
 }
 
@@ -284,16 +202,27 @@ func (s *ModuleService) CreateModuleTemplate(ctx context.Context, req *connect.R
 		return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("template with this name already exists"))
 	}
 
-	template := &storage.ModuleTemplate{
-		ID:                      uuid.New().String(),
+	if err := module.ValidateConfigFieldDefs(msg.ConfigFields); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if err := validateTemplatePorts(msg.Ports); err != nil {
+		return nil, err
+	}
+	if err := validateBindSources(ctx, s.authManager, s.config.Storage.DataDir, msg.DefaultVolumes); err != nil {
+		return nil, err
+	}
+
+	template := &v1.ModuleTemplate{
+		Id:                      uuid.New().String(),
 		Name:                    msg.Name,
 		Description:             msg.Description,
-		Type:                    storage.ModuleTemplateTypeCustom, // User-created templates are always custom
+		Type:                    v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_CUSTOM, // User-created templates are always custom
 		DockerImage:             msg.DockerImage,
+		ConfigFields:            msg.ConfigFields,
 		DefaultEnv:              msg.DefaultEnv,
 		DefaultVolumes:          msg.DefaultVolumes,
 		HealthCheckPath:         msg.HealthCheckPath,
-		HealthCheckPort:         int(msg.HealthCheckPort),
+		HealthCheckPort:         msg.HealthCheckPort,
 		RequiresServer:          msg.RequiresServer,
 		SupportsProxy:           msg.SupportsProxy,
 		Icon:                    msg.Icon,
@@ -305,11 +234,13 @@ func (s *ModuleService) CreateModuleTemplate(ctx context.Context, req *connect.R
 		Metadata:                msg.Metadata,
 		DefaultCmd:              msg.DefaultCmd,
 		DefaultAccessUrls:       msg.DefaultAccessUrls,
-		DefaultUID:              msg.DefaultUid,
-		DefaultGID:              msg.DefaultGid,
+		DefaultUid:              msg.DefaultUid,
+		DefaultGid:              msg.DefaultGid,
 		DefaultInitCommand:      msg.DefaultInitCommand,
-		DefaultInitCommandDelay: int(msg.DefaultInitCommandDelay),
+		DefaultInitCommandDelay: msg.DefaultInitCommandDelay,
 		DefaultRestartAfterInit: msg.DefaultRestartAfterInit,
+		DefaultSecurityOpt:      msg.DefaultSecurityOpt,
+		CertMountPath:           msg.CertMountPath,
 	}
 
 	if err := s.store.CreateModuleTemplate(ctx, template); err != nil {
@@ -317,23 +248,19 @@ func (s *ModuleService) CreateModuleTemplate(ctx context.Context, req *connect.R
 	}
 
 	return connect.NewResponse(&v1.CreateModuleTemplateResponse{
-		Template: dbModuleTemplateToProto(template),
+		Template: template,
 	}), nil
 }
 
 func (s *ModuleService) UpdateModuleTemplate(ctx context.Context, req *connect.Request[v1.UpdateModuleTemplateRequest]) (*connect.Response[v1.UpdateModuleTemplateResponse], error) {
 	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("template ID is required"))
-	}
-
-	template, err := s.store.GetModuleTemplate(ctx, msg.Id)
+	template, err := getModuleTemplate(ctx, s.store, msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("template not found"))
+		return nil, err
 	}
 
 	// Don't allow modifying built-in templates' core fields
-	if template.Type == storage.ModuleTemplateTypeBuiltin {
+	if template.Type == v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_BUILTIN {
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("cannot modify built-in template"))
 	}
 
@@ -347,17 +274,26 @@ func (s *ModuleService) UpdateModuleTemplate(ctx context.Context, req *connect.R
 	if msg.DockerImage != nil {
 		template.DockerImage = *msg.DockerImage
 	}
+	if len(msg.ConfigFields) > 0 {
+		if err := module.ValidateConfigFieldDefs(msg.ConfigFields); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		template.ConfigFields = msg.ConfigFields
+	}
 	if msg.DefaultEnv != nil {
-		template.DefaultEnv = *msg.DefaultEnv
+		template.DefaultEnv = msg.DefaultEnv
 	}
 	if msg.DefaultVolumes != nil {
-		template.DefaultVolumes = *msg.DefaultVolumes
+		if err := validateBindSources(ctx, s.authManager, s.config.Storage.DataDir, msg.DefaultVolumes); err != nil {
+			return nil, err
+		}
+		template.DefaultVolumes = msg.DefaultVolumes
 	}
 	if msg.HealthCheckPath != nil {
 		template.HealthCheckPath = *msg.HealthCheckPath
 	}
 	if msg.HealthCheckPort != nil {
-		template.HealthCheckPort = int(*msg.HealthCheckPort)
+		template.HealthCheckPort = *msg.HealthCheckPort
 	}
 	if msg.RequiresServer != nil {
 		template.RequiresServer = *msg.RequiresServer
@@ -374,7 +310,13 @@ func (s *ModuleService) UpdateModuleTemplate(ctx context.Context, req *connect.R
 	if msg.Documentation != nil {
 		template.Documentation = *msg.Documentation
 	}
+	if msg.CertMountPath != nil {
+		template.CertMountPath = *msg.CertMountPath
+	}
 	if len(msg.Ports) > 0 {
+		if err := validateTemplatePorts(msg.Ports); err != nil {
+			return nil, err
+		}
 		template.Ports = msg.Ports
 	}
 	if len(msg.SuggestedDependencies) > 0 {
@@ -393,19 +335,22 @@ func (s *ModuleService) UpdateModuleTemplate(ctx context.Context, req *connect.R
 		template.DefaultAccessUrls = msg.DefaultAccessUrls
 	}
 	if msg.DefaultUid != nil {
-		template.DefaultUID = *msg.DefaultUid
+		template.DefaultUid = *msg.DefaultUid
 	}
 	if msg.DefaultGid != nil {
-		template.DefaultGID = *msg.DefaultGid
+		template.DefaultGid = *msg.DefaultGid
 	}
 	if msg.DefaultInitCommand != nil {
 		template.DefaultInitCommand = *msg.DefaultInitCommand
 	}
 	if msg.DefaultInitCommandDelay != nil {
-		template.DefaultInitCommandDelay = int(*msg.DefaultInitCommandDelay)
+		template.DefaultInitCommandDelay = *msg.DefaultInitCommandDelay
 	}
 	if msg.DefaultRestartAfterInit != nil {
 		template.DefaultRestartAfterInit = *msg.DefaultRestartAfterInit
+	}
+	if len(msg.DefaultSecurityOpt) > 0 {
+		template.DefaultSecurityOpt = msg.DefaultSecurityOpt
 	}
 
 	if err := s.store.UpdateModuleTemplate(ctx, template); err != nil {
@@ -413,23 +358,19 @@ func (s *ModuleService) UpdateModuleTemplate(ctx context.Context, req *connect.R
 	}
 
 	return connect.NewResponse(&v1.UpdateModuleTemplateResponse{
-		Template: dbModuleTemplateToProto(template),
+		Template: template,
 	}), nil
 }
 
 func (s *ModuleService) DeleteModuleTemplate(ctx context.Context, req *connect.Request[v1.DeleteModuleTemplateRequest]) (*connect.Response[v1.DeleteModuleTemplateResponse], error) {
 	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("template ID is required"))
-	}
-
-	template, err := s.store.GetModuleTemplate(ctx, msg.Id)
+	template, err := getModuleTemplate(ctx, s.store, msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("template not found"))
+		return nil, err
 	}
 
 	// Don't allow deleting built-in templates
-	if template.Type == storage.ModuleTemplateTypeBuiltin {
+	if template.Type == v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_BUILTIN {
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("cannot delete built-in template"))
 	}
 
@@ -445,7 +386,7 @@ func (s *ModuleService) DeleteModuleTemplate(ctx context.Context, req *connect.R
 func (s *ModuleService) ListModules(ctx context.Context, req *connect.Request[v1.ListModulesRequest]) (*connect.Response[v1.ListModulesResponse], error) {
 	msg := req.Msg
 
-	var modules []*storage.Module
+	var modules []*v1.Module
 	var err error
 
 	if msg.ServerId != nil && *msg.ServerId != "" {
@@ -460,40 +401,66 @@ func (s *ModuleService) ListModules(ctx context.Context, req *connect.Request[v1
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list modules: %w", err))
 	}
 
-	// Enrich with server and template names, and update status from Docker
+	servers, err := s.store.ListServers(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list servers: %w", err))
+	}
+	serversByID := make(map[string]*v1.Server, len(servers))
+	for _, srv := range servers {
+		serversByID[srv.Id] = srv
+	}
+	templates, err := s.store.ListModuleTemplates(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list templates: %w", err))
+	}
+	templateNames := make(map[string]string, len(templates))
+	for _, t := range templates {
+		templateNames[t.Id] = t.Name
+	}
+	usernames := map[string]string{}
+
+	fullStats := msg.FullStats != nil && *msg.FullStats
+	if fullStats {
+		// Live docker state serves the response, never the row
+		var wg sync.WaitGroup
+		for _, m := range modules {
+			if m.ContainerId == "" {
+				continue
+			}
+			wg.Add(1)
+			go func(mod *v1.Module) {
+				defer wg.Done()
+				if actualStatus, err := s.moduleManager.StatusForModule(ctx, mod); err == nil {
+					mod.Status = actualStatus
+				}
+			}(m)
+		}
+		wg.Wait()
+	}
 	var protoModules []*v1.Module
 	for _, m := range modules {
-		// Get actual status from Docker and update if different
-		if m.ContainerID != "" {
-			actualStatus, err := s.moduleManager.GetModuleStatus(ctx, m.ID)
-			if err == nil && actualStatus != m.Status {
-				m.Status = actualStatus
-				s.store.UpdateModule(ctx, m)
-			}
-		} else if m.Status == storage.ModuleStatusCreating {
-			// If no container but status is Creating, check if creation stalled
-			// This can happen if container creation failed silently
-			// Give it some grace period (30 seconds) before marking as error
-			if time.Since(m.UpdatedAt) > 30*time.Second {
-				m.Status = storage.ModuleStatusError
-				s.store.UpdateModule(ctx, m)
-			}
+		if m.ContainerId == "" && m.Status == v1.ModuleStatus_MODULE_STATUS_CREATING && time.Since(m.UpdatedAt.AsTime()) > 30*time.Second {
+			m.Status = v1.ModuleStatus_MODULE_STATUS_ERROR
+		}
+		if fullStats {
+			s.applyModuleStats(m)
 		}
 
 		serverName := ""
-		serverProxyHostname := ""
-		if server, err := s.store.GetServer(ctx, m.ServerID); err == nil {
-			serverName = server.Name
-			serverProxyHostname = server.ProxyHostname
+		var serverProxyHostnames []string
+		if srv := serversByID[m.ServerId]; srv != nil {
+			serverName = srv.Name
+			serverProxyHostnames = srv.ProxyHostnames
 		}
-
-		templateName := ""
-		if template, err := s.store.GetModuleTemplate(ctx, m.TemplateID); err == nil {
-			templateName = template.Name
+		if _, ok := usernames[m.CreatedByUserId]; !ok {
+			usernames[m.CreatedByUserId] = s.resolveCreatedByUsername(ctx, m.CreatedByUserId)
 		}
-
-		createdByUsername := s.resolveCreatedByUsername(ctx, m.CreatedBy)
-		protoModules = append(protoModules, dbModuleToProto(m, serverName, templateName, serverProxyHostname, createdByUsername))
+		m.Template = nil
+		m.ServerName = serverName
+		m.TemplateName = templateNames[m.TemplateId]
+		m.ServerProxyHostnames = serverProxyHostnames
+		m.CreatedByUsername = usernames[m.CreatedByUserId]
+		protoModules = append(protoModules, m.Redact())
 	}
 
 	return connect.NewResponse(&v1.ListModulesResponse{
@@ -502,42 +469,79 @@ func (s *ModuleService) ListModules(ctx context.Context, req *connect.Request[v1
 }
 
 func (s *ModuleService) GetModule(ctx context.Context, req *connect.Request[v1.GetModuleRequest]) (*connect.Response[v1.GetModuleResponse], error) {
-	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
-	}
-
-	module, err := s.store.GetModule(ctx, msg.Id)
+	module, err := getModule(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("module not found"))
+		return nil, err
 	}
 
 	// Get actual status from Docker and update if different
-	if module.ContainerID != "" {
-		actualStatus, err := s.moduleManager.GetModuleStatus(ctx, msg.Id)
+	if module.ContainerId != "" {
+		actualStatus, err := s.moduleManager.StatusForModule(ctx, module)
 		if err == nil && actualStatus != module.Status {
 			module.Status = actualStatus
 			s.store.UpdateModule(ctx, module)
 		}
 	}
 
-	// Enrich with server and template names
-	serverName := ""
-	serverProxyHostname := ""
-	if server, err := s.store.GetServer(ctx, module.ServerID); err == nil {
-		serverName = server.Name
-		serverProxyHostname = server.ProxyHostname
-	}
+	s.applyModuleStats(module)
 
-	templateName := ""
-	if template, err := s.store.GetModuleTemplate(ctx, module.TemplateID); err == nil {
-		templateName = template.Name
-	}
-
-	createdByUsername := s.resolveCreatedByUsername(ctx, module.CreatedBy)
+	s.hydrateModule(ctx, module, nil, nil)
 	return connect.NewResponse(&v1.GetModuleResponse{
-		Module: dbModuleToProto(module, serverName, templateName, serverProxyHostname, createdByUsername),
+		Module: module.Redact(),
 	}), nil
+}
+
+// Proxied ports make no sense while the proxy is off
+func (s *ModuleService) rejectProxiedPortsWhileDisabled(ports []*v1.NetworkPort) error {
+	if s.proxyManager.Enabled() {
+		return nil
+	}
+	for _, port := range ports {
+		if port != nil && port.ProxyEnabled {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("proxy is disabled, port %s cannot be proxied", port.Name))
+		}
+	}
+	return nil
+}
+
+// Validates hostname overrides on a port list in place
+func normalizeModulePorts(ports []*v1.NetworkPort, fallbackHostnames []string) error {
+	for _, port := range ports {
+		if port == nil {
+			continue
+		}
+		hostnames, err := proxy.NormalizeHostnames(port.Hostnames)
+		if err != nil {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%w on port %s", err, port.Name))
+		}
+		if len(hostnames) == 0 {
+			port.Hostnames = nil
+		} else {
+			switch port.Protocol {
+			case v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT:
+			default:
+				return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("hostnames only apply to http and minecraft ports, not %s", port.Name))
+			}
+			port.Hostnames = hostnames
+		}
+		if err := proxy.ValidatePortRouting(port, fallbackHostnames); err != nil {
+			return connect.NewError(connect.CodeInvalidArgument, err)
+		}
+	}
+	return nil
+}
+
+// Rejects impossible catch all flags on template ports
+func validateTemplatePorts(ports []*v1.NetworkPort) error {
+	for _, port := range ports {
+		if port == nil {
+			continue
+		}
+		if port.CatchAll && port.Protocol != v1.ModuleProtocol_MODULE_PROTOCOL_HTTP {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("catch all only applies to http ports, not %s", port.Name))
+		}
+	}
+	return nil
 }
 
 func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v1.CreateModuleRequest]) (*connect.Response[v1.CreateModuleResponse], error) {
@@ -553,15 +557,31 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 	}
 
 	// Verify server exists
-	server, err := s.store.GetServer(ctx, msg.ServerId)
+	server, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
+		return nil, err
 	}
 
 	// Verify template exists
-	template, err := s.store.GetModuleTemplate(ctx, msg.TemplateId)
+	template, err := getModuleTemplate(ctx, s.store, msg.TemplateId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("template not found"))
+		return nil, err
+	}
+
+	// Global templates run panel wide, never per server
+	if template.Global {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("this module runs panel wide and cannot attach to a server"))
+	}
+
+	// Cert uploads only land where the template mounts them
+	certPem := strings.TrimSpace(msg.CertPem)
+	keyPem := strings.TrimSpace(msg.KeyPem)
+	if err := validateModuleCert(template, certPem, keyPem); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	if err := validateBindSources(ctx, s.authManager, s.config.Storage.DataDir, msg.VolumeOverrides); err != nil {
+		return nil, err
 	}
 
 	// Use ports from request, or fall back to template defaults
@@ -570,85 +590,49 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 		ports = template.Ports
 	}
 
-	// Allocate host ports for any port entries that need it
-	// Track ports allocated in this request to avoid duplicates
-	allocatedInRequest := make(map[int]bool)
-	for _, port := range ports {
-		if port == nil || port.ContainerPort == 0 {
-			continue
-		}
-		if port.HostPort == 0 {
-			allocatedPort, err := s.moduleManager.AllocateModulePortExcluding(ctx, allocatedInRequest)
-			if err != nil {
-				return nil, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("failed to allocate port: %w", err))
-			}
-			port.HostPort = int32(allocatedPort)
-			allocatedInRequest[allocatedPort] = true
-		}
-	}
-
-	// Verify all ports are available (considering proxy/protocol rules)
-	for _, port := range ports {
-		if port == nil || port.HostPort == 0 {
-			continue
-		}
-		protocol := port.Protocol
-		if protocol == "" {
-			protocol = "tcp"
-		}
-		conflict, err := s.store.CheckPortAvailability(ctx, int(port.HostPort), protocol, port.ProxyEnabled, server.ProxyHostname, "")
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to check port availability: %w", err))
-		}
-		if conflict != nil {
-			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("port %d/%s: %s (used by %s)", port.HostPort, protocol, conflict.Reason, conflict.Module.Name))
-		}
-	}
-
 	moduleID := uuid.New().String()
 
-	module := &storage.Module{
-		ID:                    moduleID,
+	// Registry checkout guards every port until the row persists
+	netClaim, err := s.preparePorts(ctx, moduleID, ports, server.ProxyHostnames)
+	if err != nil {
+		return nil, err
+	}
+	defer netClaim.Release()
+
+	module := &v1.Module{
+		Id:                    moduleID,
 		Name:                  msg.Name,
-		ServerID:              msg.ServerId,
-		TemplateID:            msg.TemplateId,
-		Status:                storage.ModuleStatusStopped,
-		Config:                msg.Config,
+		ServerId:              msg.ServerId,
+		TemplateId:            msg.TemplateId,
+		Status:                v1.ModuleStatus_MODULE_STATUS_STOPPED,
 		EnvOverrides:          msg.EnvOverrides,
 		VolumeOverrides:       msg.VolumeOverrides,
-		Memory:                int(msg.Memory),
-		CPULimit:              msg.CpuLimit,
+		Memory:                msg.Memory,
+		CpuLimit:              msg.CpuLimit,
 		AutoStart:             msg.AutoStart,
 		FollowServerLifecycle: msg.FollowServerLifecycle,
 		Detached:              msg.Detached,
 		Ports:                 ports,
 		Dependencies:          msg.Dependencies,
-		HealthCheckInterval:   int(msg.HealthCheckInterval),
-		HealthCheckTimeout:    int(msg.HealthCheckTimeout),
-		HealthCheckRetries:    int(msg.HealthCheckRetries),
+		HealthCheckInterval:   msg.HealthCheckInterval,
+		HealthCheckTimeout:    msg.HealthCheckTimeout,
+		HealthCheckRetries:    msg.HealthCheckRetries,
 		EventHooks:            msg.EventHooks,
 		Metadata:              msg.Metadata,
 		CmdOverride:           msg.CmdOverride,
 		AccessUrls:            msg.AccessUrls,
-		UID:                   msg.Uid,
-		GID:                   msg.Gid,
+		Uid:                   msg.Uid,
+		Gid:                   msg.Gid,
 		InitCommand:           msg.InitCommand,
-		InitCommandDelay:      int(msg.InitCommandDelay),
+		InitCommandDelay:      msg.InitCommandDelay,
 		RestartAfterInit:      msg.RestartAfterInit,
+		CertPem:               certPem,
+		KeyPem:                keyPem,
 	}
 
-	// Generate module API token tied to the creating user
+	// Manager mints a scoped token at container create
 	if user := auth.GetUserFromContext(ctx); user != nil {
-		module.CreatedBy = user.ID
-		if s.authManager != nil {
-			plaintext, token, err := s.authManager.GenerateModuleToken(ctx, user.ID, msg.Name, moduleID)
-			if err != nil {
-				s.log.Error("Failed to generate module token: %v", err)
-			} else {
-				module.TokenID = token.ID
-				module.TokenPlaintext = plaintext
-			}
-		}
+		module.CreatedByUserId = user.Id
 	}
 
 	// Use template defaults for access URLs if not provided
@@ -664,11 +648,11 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 		}
 	}
 
-	if module.UID == "" && template.DefaultUID != "" {
-		module.UID = template.DefaultUID
+	if module.Uid == "" && template.DefaultUid != "" {
+		module.Uid = template.DefaultUid
 	}
-	if module.GID == "" && template.DefaultGID != "" {
-		module.GID = template.DefaultGID
+	if module.Gid == "" && template.DefaultGid != "" {
+		module.Gid = template.DefaultGid
 	}
 	if module.InitCommand == "" && template.DefaultInitCommand != "" {
 		module.InitCommand = template.DefaultInitCommand
@@ -680,64 +664,72 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 		module.RestartAfterInit = template.DefaultRestartAfterInit
 	}
 
+	// Fill missing env from config field defaults
+	for _, field := range template.ConfigFields {
+		if field == nil || field.Env == "" || field.DefaultValue == "" {
+			continue
+		}
+		if module.EnvOverrides == nil {
+			module.EnvOverrides = make(map[string]string)
+		}
+		if _, ok := module.EnvOverrides[field.Env]; !ok {
+			module.EnvOverrides[field.Env] = field.DefaultValue
+		}
+	}
+
+	// Deny gate runs before anything persists
+	if err := s.moduleManager.GateModuleConfig(ctx, module, template); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	if err := s.store.CreateModule(ctx, module); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create module: %w", err))
 	}
+	netClaim.Confirm()
+
+	// Reconcile starts any auto created listener sockets
+	syncRoutes(ctx, s.proxyManager, s.log, "after module create")
+	s.rec.Record(ctx, module.ServerId, v1.ServerActionKind_SERVER_ACTION_KIND_MODULE_CREATE, metrics.Attrs{"module": module.Name, "template": template.Name}, "created module %s", module.Name)
 
 	// Create container in background
+	bgCtx := detach(ctx)
 	go func() {
-		bgCtx := context.Background()
-		if err := s.moduleManager.CreateAndStartModule(bgCtx, module.ID, msg.StartImmediately); err != nil {
+		if err := s.moduleManager.CreateAndStartModule(bgCtx, module.Id, msg.StartImmediately); err != nil {
 			s.log.Error("Failed to create module container: %v", err)
 		}
 	}()
 
-	createdByUsername := s.resolveCreatedByUsername(ctx, module.CreatedBy)
+	s.hydrateModule(ctx, module, server, template)
 	return connect.NewResponse(&v1.CreateModuleResponse{
-		Module: dbModuleToProto(module, server.Name, template.Name, server.ProxyHostname, createdByUsername),
+		Module: module.Redact(),
 	}), nil
 }
 
 func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v1.UpdateModuleRequest]) (*connect.Response[v1.UpdateModuleResponse], error) {
 	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
-	}
-
-	module, err := s.store.GetModule(ctx, msg.Id)
+	module, err := getModule(ctx, s.store, msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("module not found"))
+		return nil, err
 	}
-
-	needsRecreate := false
 
 	// Update fields if provided
 	if msg.Name != nil {
 		module.Name = *msg.Name
 	}
-	if msg.Config != nil {
-		module.Config = *msg.Config
-	}
 	if msg.EnvOverrides != nil {
-		if *msg.EnvOverrides != module.EnvOverrides {
-			module.EnvOverrides = *msg.EnvOverrides
-			needsRecreate = true
-		}
+		module.EnvOverrides = msg.EnvOverrides
 	}
 	if msg.VolumeOverrides != nil {
-		if *msg.VolumeOverrides != module.VolumeOverrides {
-			module.VolumeOverrides = *msg.VolumeOverrides
-			needsRecreate = true
+		if err := validateBindSources(ctx, s.authManager, s.config.Storage.DataDir, msg.VolumeOverrides); err != nil {
+			return nil, err
 		}
+		module.VolumeOverrides = msg.VolumeOverrides
 	}
 	if msg.Memory != nil {
-		if int(*msg.Memory) != module.Memory {
-			module.Memory = int(*msg.Memory)
-			needsRecreate = true
-		}
+		module.Memory = *msg.Memory
 	}
 	if msg.CpuLimit != nil {
-		module.CPULimit = *msg.CpuLimit
+		module.CpuLimit = *msg.CpuLimit
 	}
 	if msg.AutoStart != nil {
 		module.AutoStart = *msg.AutoStart
@@ -748,45 +740,41 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 	if msg.Detached != nil {
 		module.Detached = *msg.Detached
 	}
+	var netClaim *proxy.NetClaim
 	if len(msg.Ports) > 0 {
-		// Get server for hostname context
-		server, err := s.store.GetServer(ctx, module.ServerID)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get server: %w", err))
+		// Global modules carry no server hostname context
+		var hostnames []string
+		if module.ServerId != "" {
+			server, err := s.store.GetServer(ctx, module.ServerId)
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get server: %w", err))
+			}
+			hostnames = server.ProxyHostnames
 		}
 
-		// Validate new ports are available (excluding current module)
-		for _, port := range msg.Ports {
-			if port == nil || port.HostPort == 0 {
-				continue
-			}
-			protocol := port.Protocol
-			if protocol == "" {
-				protocol = "tcp"
-			}
-			conflict, err := s.store.CheckPortAvailability(ctx, int(port.HostPort), protocol, port.ProxyEnabled, server.ProxyHostname, module.ID)
-			if err != nil {
-				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to check port availability: %w", err))
-			}
-			if conflict != nil {
-				return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("port %d/%s: %s (used by %s)", port.HostPort, protocol, conflict.Reason, conflict.Module.Name))
-			}
+		// Registry checkout guards the new ports until persist
+		claim, err := s.preparePorts(ctx, module.Id, msg.Ports, hostnames)
+		if err != nil {
+			return nil, err
 		}
+		netClaim = claim
+		defer netClaim.Release()
 
 		module.Ports = msg.Ports
-		needsRecreate = true
+	} else if msg.ClearPorts {
+		module.Ports = nil
 	}
 	if len(msg.Dependencies) > 0 {
 		module.Dependencies = msg.Dependencies
 	}
 	if msg.HealthCheckInterval != nil {
-		module.HealthCheckInterval = int(*msg.HealthCheckInterval)
+		module.HealthCheckInterval = *msg.HealthCheckInterval
 	}
 	if msg.HealthCheckTimeout != nil {
-		module.HealthCheckTimeout = int(*msg.HealthCheckTimeout)
+		module.HealthCheckTimeout = *msg.HealthCheckTimeout
 	}
 	if msg.HealthCheckRetries != nil {
-		module.HealthCheckRetries = int(*msg.HealthCheckRetries)
+		module.HealthCheckRetries = *msg.HealthCheckRetries
 	}
 	if len(msg.EventHooks) > 0 {
 		module.EventHooks = msg.EventHooks
@@ -795,65 +783,69 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 		module.Metadata = msg.Metadata
 	}
 	if msg.CmdOverride != nil {
-		if *msg.CmdOverride != module.CmdOverride {
-			module.CmdOverride = *msg.CmdOverride
-			needsRecreate = true
-		}
+		module.CmdOverride = *msg.CmdOverride
 	}
 	if len(msg.AccessUrls) > 0 {
 		module.AccessUrls = msg.AccessUrls
 	}
 	if msg.Uid != nil {
-		if *msg.Uid != module.UID {
-			module.UID = *msg.Uid
-			needsRecreate = true
-		}
+		module.Uid = *msg.Uid
 	}
 	if msg.Gid != nil {
-		if *msg.Gid != module.GID {
-			module.GID = *msg.Gid
-			needsRecreate = true
-		}
+		module.Gid = *msg.Gid
 	}
 	if msg.InitCommand != nil {
 		module.InitCommand = *msg.InitCommand
 	}
 	if msg.InitCommandDelay != nil {
-		module.InitCommandDelay = int(*msg.InitCommandDelay)
+		module.InitCommandDelay = *msg.InitCommandDelay
 	}
 	if msg.RestartAfterInit != nil {
 		module.RestartAfterInit = *msg.RestartAfterInit
 	}
 
+	template, err := getModuleTemplate(ctx, s.store, module.TemplateId)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cert swaps only land where the template mounts them
+	if msg.CertPem != nil || msg.KeyPem != nil {
+		certPem := strings.TrimSpace(msg.GetCertPem())
+		keyPem := strings.TrimSpace(msg.GetKeyPem())
+		if err := validateModuleCert(template, certPem, keyPem); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		module.CertPem = certPem
+		module.KeyPem = keyPem
+	}
+
+	// Deny gate runs on the fully merged state
+	if err := s.moduleManager.GateModuleConfig(ctx, module, template); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	if err := s.store.UpdateModule(ctx, module); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update module: %w", err))
 	}
+	netClaim.Confirm()
 
-	// Recreate container if needed
-	if needsRecreate && module.ContainerID != "" {
+	// Reconcile keeps routes matching the saved ports
+	syncRoutes(ctx, s.proxyManager, s.log, "after module update")
+
+	// Config hash decides whether the container must rebuild
+	if needsRecreate, err := s.moduleManager.NeedsRecreate(ctx, module.Id); err == nil && needsRecreate {
 		go func() {
 			bgCtx := context.Background()
-			if err := s.moduleManager.RecreateModule(bgCtx, module.ID); err != nil {
+			if err := s.moduleManager.RecreateModule(bgCtx, module.Id); err != nil {
 				s.log.Error("Failed to recreate module container: %v", err)
 			}
 		}()
 	}
 
-	// Get enrichment data
-	serverName := ""
-	serverProxyHostname := ""
-	if server, err := s.store.GetServer(ctx, module.ServerID); err == nil {
-		serverName = server.Name
-		serverProxyHostname = server.ProxyHostname
-	}
-	templateName := ""
-	if template, err := s.store.GetModuleTemplate(ctx, module.TemplateID); err == nil {
-		templateName = template.Name
-	}
-
-	createdByUsername := s.resolveCreatedByUsername(ctx, module.CreatedBy)
+	s.hydrateModule(ctx, module, nil, template)
 	return connect.NewResponse(&v1.UpdateModuleResponse{
-		Module: dbModuleToProto(module, serverName, templateName, serverProxyHostname, createdByUsername),
+		Module: module.Redact(),
 	}), nil
 }
 
@@ -862,9 +854,25 @@ func (s *ModuleService) DeleteModule(ctx context.Context, req *connect.Request[v
 	if msg.Id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
 	}
+	module, _ := s.store.GetModule(ctx, msg.Id)
+
+	// System modules only ever disable, never delete
+	if module != nil && module.ServerId == "" {
+		if template, terr := s.store.GetModuleTemplate(ctx, module.TemplateId); terr == nil &&
+			template.Type == v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_BUILTIN {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("system module %s can only be disabled", module.Name))
+		}
+	}
 
 	if err := s.moduleManager.DeleteModule(ctx, msg.Id); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete module: %w", err))
+	}
+	if s.proxyManager != nil {
+		s.proxyManager.DropOwnerStats(msg.Id)
+	}
+	if module != nil {
+		s.rec.Record(ctx, module.ServerId, v1.ServerActionKind_SERVER_ACTION_KIND_MODULE_DELETE, metrics.Attrs{"module": module.Name}, "deleted module %s", module.Name)
 	}
 
 	return connect.NewResponse(&v1.DeleteModuleResponse{}), nil
@@ -874,17 +882,13 @@ func (s *ModuleService) DeleteModule(ctx context.Context, req *connect.Request[v
 
 func (s *ModuleService) StartModule(ctx context.Context, req *connect.Request[v1.StartModuleRequest]) (*connect.Response[v1.StartModuleResponse], error) {
 	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
-	}
-
-	module, err := s.store.GetModule(ctx, msg.Id)
+	module, err := getModule(ctx, s.store, msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("module not found"))
+		return nil, err
 	}
 
 	// If no container exists, create one first
-	if module.ContainerID == "" {
+	if module.ContainerId == "" {
 		if err := s.moduleManager.CreateAndStartModule(ctx, msg.Id, true); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create and start module: %w", err))
 		}
@@ -894,85 +898,83 @@ func (s *ModuleService) StartModule(ctx context.Context, req *connect.Request[v1
 		}
 	}
 
+	s.rec.Record(ctx, module.ServerId, v1.ServerActionKind_SERVER_ACTION_KIND_MODULE_START, metrics.Attrs{"module": module.Name}, "started module %s", module.Name)
+
 	return connect.NewResponse(&v1.StartModuleResponse{
-		Status: "started",
+		Status: s.moduleStatus(ctx, msg.Id),
 	}), nil
 }
 
 func (s *ModuleService) StopModule(ctx context.Context, req *connect.Request[v1.StopModuleRequest]) (*connect.Response[v1.StopModuleResponse], error) {
-	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
+	status, err := s.moduleOp(ctx, req.Msg.Id, "stop", "stopped", v1.ServerActionKind_SERVER_ACTION_KIND_MODULE_STOP, s.moduleManager.StopModule)
+	if err != nil {
+		return nil, err
 	}
-
-	if err := s.moduleManager.StopModule(ctx, msg.Id); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to stop module: %w", err))
-	}
-
-	return connect.NewResponse(&v1.StopModuleResponse{
-		Status: "stopped",
-	}), nil
+	return connect.NewResponse(&v1.StopModuleResponse{Status: status}), nil
 }
 
 func (s *ModuleService) RestartModule(ctx context.Context, req *connect.Request[v1.RestartModuleRequest]) (*connect.Response[v1.RestartModuleResponse], error) {
-	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
+	status, err := s.moduleOp(ctx, req.Msg.Id, "restart", "restarted", v1.ServerActionKind_SERVER_ACTION_KIND_MODULE_RESTART, s.moduleManager.RestartModule)
+	if err != nil {
+		return nil, err
 	}
-
-	if err := s.moduleManager.RestartModule(ctx, msg.Id); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to restart module: %w", err))
-	}
-
-	return connect.NewResponse(&v1.RestartModuleResponse{
-		Status: "restarted",
-	}), nil
+	return connect.NewResponse(&v1.RestartModuleResponse{Status: status}), nil
 }
 
 func (s *ModuleService) RecreateModule(ctx context.Context, req *connect.Request[v1.RecreateModuleRequest]) (*connect.Response[v1.RecreateModuleResponse], error) {
-	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
+	status, err := s.moduleOp(ctx, req.Msg.Id, "recreate", "", v1.ServerActionKind_SERVER_ACTION_KIND_UNSPECIFIED, s.moduleManager.RecreateModule)
+	if err != nil {
+		return nil, err
 	}
+	return connect.NewResponse(&v1.RecreateModuleResponse{Status: status}), nil
+}
 
-	if err := s.moduleManager.RecreateModule(ctx, msg.Id); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to recreate module: %w", err))
+// Current stored status for op responses
+func (s *ModuleService) moduleStatus(ctx context.Context, id string) v1.ModuleStatus {
+	if module, err := s.store.GetModule(ctx, id); err == nil {
+		return module.Status
 	}
+	return v1.ModuleStatus_MODULE_STATUS_UNSPECIFIED
+}
 
-	return connect.NewResponse(&v1.RecreateModuleResponse{
-		Status: "recreated",
-	}), nil
+// Runs one lifecycle op and answers with stored status
+func (s *ModuleService) moduleOp(ctx context.Context, id, verb, past string, kind v1.ServerActionKind, run func(context.Context, string) error) (v1.ModuleStatus, error) {
+	module, err := getModule(ctx, s.store, id)
+	if err != nil {
+		return v1.ModuleStatus_MODULE_STATUS_UNSPECIFIED, err
+	}
+	if err := run(ctx, id); err != nil {
+		return v1.ModuleStatus_MODULE_STATUS_UNSPECIFIED, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to %s module: %w", verb, err))
+	}
+	if kind != v1.ServerActionKind_SERVER_ACTION_KIND_UNSPECIFIED {
+		s.rec.Record(ctx, module.ServerId, kind, metrics.Attrs{"module": module.Name}, "%s module %s", past, module.Name)
+	}
+	return s.moduleStatus(ctx, id), nil
 }
 
 // Logs and status
 
 func (s *ModuleService) GetModuleLogs(ctx context.Context, req *connect.Request[v1.GetModuleLogsRequest]) (*connect.Response[v1.GetModuleLogsResponse], error) {
 	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID is required"))
-	}
-
-	module, err := s.store.GetModule(ctx, msg.Id)
+	module, err := getModule(ctx, s.store, msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("module not found"))
+		return nil, err
 	}
 
-	if module.ContainerID == "" {
-		return connect.NewResponse(&v1.GetModuleLogsResponse{
-			Logs:  []*v1.LogEntry{},
-			Total: 0,
-		}), nil
-	}
-
-	tail := int(msg.Tail)
-	if tail == 0 {
+	tail := msg.Tail
+	if tail <= 0 {
 		tail = 100
 	}
 
 	// Get structured log entries from the log streamer if available
 	var protoLogs []*v1.LogEntry
 	if s.logStreamer != nil {
-		protoLogs = s.logStreamer.GetLogs(module.ContainerID, tail)
+		if module.ContainerId != "" {
+			if err := s.logStreamer.StartStreaming(module.Id, module.ContainerId); err != nil {
+				s.log.Warn("Failed to start log streaming for module %s: %v", module.Id, err)
+			}
+		}
+		protoLogs = s.logStreamer.GetLogs(module.Id, int(tail))
 	}
 
 	return connect.NewResponse(&v1.GetModuleLogsResponse{
@@ -987,17 +989,10 @@ func (s *ModuleService) GetNextAvailableModulePort(ctx context.Context, req *con
 		return nil, connect.NewError(connect.CodeResourceExhausted, err)
 	}
 
-	usedPorts, err := s.moduleManager.GetUsedModulePorts(ctx)
+	// Registry snapshot backs the client side hints
+	protoUsedPorts, err := usedPortsProto(ctx, s.proxyManager)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
-	var protoUsedPorts []*v1.UsedPort
-	for _, p := range usedPorts {
-		protoUsedPorts = append(protoUsedPorts, &v1.UsedPort{
-			Port:  int32(p),
-			InUse: true,
-		})
+		return nil, err
 	}
 
 	return connect.NewResponse(&v1.GetNextAvailableModulePortResponse{
@@ -1006,92 +1001,427 @@ func (s *ModuleService) GetNextAvailableModulePort(ctx context.Context, req *con
 	}), nil
 }
 
-// GetAvailableAliases returns all available aliases for module/template configuration
-func (s *ModuleService) GetAvailableAliases(ctx context.Context, req *connect.Request[v1.GetAvailableAliasesRequest]) (*connect.Response[v1.GetAvailableAliasesResponse], error) {
-	msg := req.Msg
-
-	// Build alias context from request
+// Builds the alias context one RPC asked about
+func (s *ModuleService) aliasContext(ctx context.Context, serverID, moduleID *string, withSiblings bool) *alias.Context {
 	aliasCtx := alias.NewContext()
 	aliasCtx.Config = s.config
 
-	// Get server context if provided
-	if msg.ServerId != nil && *msg.ServerId != "" {
-		if server, err := s.store.GetServer(ctx, *msg.ServerId); err == nil {
+	if serverID != nil && *serverID != "" {
+		if server, err := s.store.GetServer(ctx, *serverID); err == nil {
+			s.store.HydrateProxyPorts(ctx, server)
 			aliasCtx.Server = server
 			// Also get server config for server.config.* aliases
-			if serverConfig, err := s.store.GetServerConfig(ctx, *msg.ServerId); err == nil {
-				aliasCtx.ServerConfig = serverConfig
+			if serverConfig, err := s.store.GetServerProperties(ctx, *serverID); err == nil {
+				aliasCtx.ServerProperties = serverConfig
 			}
 		}
 	}
 
-	// Get module context if provided
-	if msg.ModuleId != nil && *msg.ModuleId != "" {
-		if mod, err := s.store.GetModule(ctx, *msg.ModuleId); err == nil {
+	if moduleID != nil && *moduleID != "" {
+		if mod, err := s.store.GetModule(ctx, *moduleID); err == nil {
 			aliasCtx.Module = mod
-		}
-	}
-
-	// Get all available aliases dynamically using reflection
-	availableAliases := alias.GetAvailableAliases(aliasCtx)
-
-	// Convert to proto messages
-	var protoAliases []*v1.AliasInfo
-	for _, a := range availableAliases {
-		protoAliases = append(protoAliases, &v1.AliasInfo{
-			Alias:        a.Alias,
-			Description:  a.Description,
-			Category:     aliasCategoryToProto(a.Category),
-			ExampleValue: a.ExampleValue,
-		})
-	}
-
-	return connect.NewResponse(&v1.GetAvailableAliasesResponse{
-		Aliases: protoAliases,
-	}), nil
-}
-
-// Get all aliases with resolved values for ctx
-func (s *ModuleService) GetResolvedAliases(ctx context.Context, req *connect.Request[v1.GetResolvedAliasesRequest]) (*connect.Response[v1.GetResolvedAliasesResponse], error) {
-	msg := req.Msg
-	aliasCtx := alias.NewContext()
-	aliasCtx.Config = s.config
-
-	if msg.ServerId != nil && *msg.ServerId != "" {
-		if server, err := s.store.GetServer(ctx, *msg.ServerId); err == nil {
-			aliasCtx.Server = server
-			if serverConfig, err := s.store.GetServerConfig(ctx, *msg.ServerId); err == nil {
-				aliasCtx.ServerConfig = serverConfig
+			if !withSiblings {
+				return aliasCtx
 			}
-		}
-	}
-
-	if msg.ModuleId != nil && *msg.ModuleId != "" {
-		if mod, err := s.store.GetModule(ctx, *msg.ModuleId); err == nil {
-			aliasCtx.Module = mod
-			if siblings, err := s.store.ListServerModules(ctx, mod.ServerID); err == nil {
-				aliasCtx.Modules = make(map[string]*storage.Module)
+			if siblings, err := s.store.ListServerModules(ctx, mod.ServerId); err == nil {
+				aliasCtx.Modules = make(map[string]*v1.Module, len(siblings))
 				for _, sib := range siblings {
 					aliasCtx.Modules[sib.Name] = sib
 				}
 			}
 		}
 	}
-
-	resolved := alias.GetResolvedAliases(aliasCtx)
-	return connect.NewResponse(&v1.GetResolvedAliasesResponse{Aliases: resolved}), nil
+	return aliasCtx
 }
 
-// aliasCategoryToProto converts internal alias category to proto enum
-func aliasCategoryToProto(c alias.Category) v1.AliasCategory {
-	switch c {
-	case alias.CategoryServer:
-		return v1.AliasCategory_ALIAS_CATEGORY_SERVER
-	case alias.CategoryModule:
-		return v1.AliasCategory_ALIAS_CATEGORY_MODULE
-	case alias.CategorySpecial:
-		return v1.AliasCategory_ALIAS_CATEGORY_SPECIAL
+// GetAvailableAliases returns all available aliases for module/template configuration
+func (s *ModuleService) GetAvailableAliases(ctx context.Context, req *connect.Request[v1.GetAvailableAliasesRequest]) (*connect.Response[v1.GetAvailableAliasesResponse], error) {
+	aliasCtx := s.aliasContext(ctx, req.Msg.ServerId, req.Msg.ModuleId, false)
+	return connect.NewResponse(&v1.GetAvailableAliasesResponse{
+		Aliases: alias.GetAvailableAliases(aliasCtx),
+	}), nil
+}
+
+// Get all aliases with resolved values for ctx
+func (s *ModuleService) GetResolvedAliases(ctx context.Context, req *connect.Request[v1.GetResolvedAliasesRequest]) (*connect.Response[v1.GetResolvedAliasesResponse], error) {
+	aliasCtx := s.aliasContext(ctx, req.Msg.ServerId, req.Msg.ModuleId, true)
+	return connect.NewResponse(&v1.GetResolvedAliasesResponse{Aliases: alias.GetResolvedAliases(aliasCtx)}), nil
+}
+
+// Runtime input prompts
+
+// Wire shape of a module health port prompt
+type modulePromptWire struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Message     string `json:"message"`
+	Kind        string `json:"kind"`
+	Placeholder string `json:"placeholder"`
+	Options     []struct {
+		Value string `json:"value"`
+		Label string `json:"label"`
+	} `json:"options"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// Maps sidecar prompt kind onto config field type
+func promptKind(kind string) v1.ModuleConfigFieldType {
+	switch kind {
+	case "password":
+		return v1.ModuleConfigFieldType_MODULE_CONFIG_FIELD_TYPE_PASSWORD
+	case "select":
+		return v1.ModuleConfigFieldType_MODULE_CONFIG_FIELD_TYPE_SELECT
 	default:
-		return v1.AliasCategory_ALIAS_CATEGORY_UNSPECIFIED
+		return v1.ModuleConfigFieldType_MODULE_CONFIG_FIELD_TYPE_STRING
 	}
+}
+
+// Resolves the base URL of a running module's health port
+func (s *ModuleService) moduleHTTPBase(ctx context.Context, module *v1.Module) (string, error) {
+	if module.ContainerId == "" {
+		return "", errors.New("module is not running")
+	}
+	template, err := s.store.GetModuleTemplate(ctx, module.TemplateId)
+	if err != nil {
+		return "", errors.New("template not found")
+	}
+	port := template.HealthCheckPort
+	if port == 0 && len(module.Ports) > 0 {
+		port = module.Ports[0].ContainerPort
+	}
+	if port == 0 {
+		return "", errors.New("module has no health port")
+	}
+	ip, err := s.docker.ContainerIP(ctx, module.ContainerId)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("http://%s:%d", ip, port), nil
+}
+
+// Fetches the pending prompt from one module, nil when idle
+func (s *ModuleService) fetchModulePrompt(ctx context.Context, module *v1.Module) (*v1.ModulePrompt, error) {
+	base, err := s.moduleHTTPBase(ctx, module)
+	if err != nil {
+		// Not running or no endpoint means nothing pending
+		return nil, nil
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/prompt", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		// Module may not implement prompts, treat as nothing pending
+		return nil, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil
+	}
+
+	var wire modulePromptWire
+	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
+		return nil, fmt.Errorf("decode prompt: %w", err)
+	}
+
+	prompt := &v1.ModulePrompt{
+		Id:          wire.ID,
+		Title:       wire.Title,
+		Message:     wire.Message,
+		Kind:        promptKind(wire.Kind),
+		Placeholder: wire.Placeholder,
+		CreatedAt:   timestamppb.New(wire.CreatedAt),
+	}
+	for _, o := range wire.Options {
+		prompt.Options = append(prompt.Options, &v1.ModuleConfigOption{Value: o.Value, Label: o.Label})
+	}
+	return prompt, nil
+}
+
+func (s *ModuleService) GetModulePrompt(ctx context.Context, req *connect.Request[v1.GetModulePromptRequest]) (*connect.Response[v1.GetModulePromptResponse], error) {
+	module, err := getModule(ctx, s.store, req.Msg.Id)
+	if err != nil {
+		return nil, err
+	}
+
+	prompt, err := s.fetchModulePrompt(ctx, module)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if prompt == nil {
+		return connect.NewResponse(&v1.GetModulePromptResponse{Pending: false}), nil
+	}
+	return connect.NewResponse(&v1.GetModulePromptResponse{Pending: true, Prompt: prompt}), nil
+}
+
+func (s *ModuleService) ListModulePrompts(ctx context.Context, req *connect.Request[v1.ListModulePromptsRequest]) (*connect.Response[v1.ListModulePromptsResponse], error) {
+	msg := req.Msg
+
+	var modules []*v1.Module
+	var err error
+	if msg.ServerId != nil && *msg.ServerId != "" {
+		modules, err = s.store.ListServerModules(ctx, *msg.ServerId)
+	} else {
+		modules, err = s.store.ListModules(ctx)
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list modules: %w", err))
+	}
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	pending := []*v1.PendingModulePrompt{}
+	for _, mod := range modules {
+		if mod.ContainerId == "" {
+			continue
+		}
+		// Only prompt capable templates get probed
+		template, terr := s.store.GetModuleTemplate(ctx, mod.TemplateId)
+		if terr != nil || template.Metadata["supports_prompts"] != "true" {
+			continue
+		}
+		wg.Add(1)
+		go func(m *v1.Module) {
+			defer wg.Done()
+			prompt, perr := s.fetchModulePrompt(ctx, m)
+			if perr != nil || prompt == nil {
+				return
+			}
+			mu.Lock()
+			pending = append(pending, &v1.PendingModulePrompt{
+				ModuleId:   m.Id,
+				ModuleName: m.Name,
+				Prompt:     prompt,
+			})
+			mu.Unlock()
+		}(mod)
+	}
+	wg.Wait()
+
+	// Stable order keeps the UI from reshuffling between polls
+	sort.Slice(pending, func(i, j int) bool { return pending[i].ModuleId < pending[j].ModuleId })
+	return connect.NewResponse(&v1.ListModulePromptsResponse{Prompts: pending}), nil
+}
+
+// Renders one decoded snapshot value as a display string
+func snapshotValue(v any) string {
+	switch val := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return val
+	case bool:
+		return strconv.FormatBool(val)
+	case json.Number:
+		return val.String()
+	default:
+		raw, err := json.Marshal(val)
+		if err != nil {
+			return fmt.Sprintf("%v", val)
+		}
+		return string(raw)
+	}
+}
+
+func (s *ModuleService) GetModuleStatusSnapshot(ctx context.Context, req *connect.Request[v1.GetModuleStatusSnapshotRequest]) (*connect.Response[v1.GetModuleStatusSnapshotResponse], error) {
+	module, err := getModule(ctx, s.store, req.Msg.Id)
+	if err != nil {
+		return nil, err
+	}
+
+	unavailable := connect.NewResponse(&v1.GetModuleStatusSnapshotResponse{Available: false})
+
+	// Only templates declaring a status path get probed
+	template, err := s.store.GetModuleTemplate(ctx, module.TemplateId)
+	if err != nil || template.Metadata["status_path"] == "" {
+		return unavailable, nil
+	}
+	base, err := s.moduleHTTPBase(ctx, module)
+	if err != nil {
+		return unavailable, nil
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, base+template.Metadata["status_path"], nil)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return unavailable, nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return unavailable, nil
+	}
+
+	// UseNumber keeps SteamID64 sized values exact
+	decoder := json.NewDecoder(resp.Body)
+	decoder.UseNumber()
+	var wire map[string]any
+	if err := decoder.Decode(&wire); err != nil {
+		return unavailable, nil
+	}
+
+	fields := make(map[string]string, len(wire))
+	for key, value := range wire {
+		fields[key] = snapshotValue(value)
+	}
+	return connect.NewResponse(&v1.GetModuleStatusSnapshotResponse{Available: true, Fields: fields}), nil
+}
+
+func (s *ModuleService) AnswerModulePrompt(ctx context.Context, req *connect.Request[v1.AnswerModulePromptRequest]) (*connect.Response[v1.AnswerModulePromptResponse], error) {
+	msg := req.Msg
+	if msg.Id == "" || msg.PromptId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("module ID and prompt ID are required"))
+	}
+	module, err := getModule(ctx, s.store, msg.Id)
+	if err != nil {
+		return nil, err
+	}
+
+	base, err := s.moduleHTTPBase(ctx, module)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+
+	body, err := json.Marshal(map[string]string{"id": msg.PromptId, "value": msg.Value})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/prompt", bytes.NewReader(body))
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("module unreachable: %w", err))
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusConflict {
+		return nil, connect.NewError(connect.CodeAborted, errors.New("prompt is no longer waiting for this answer"))
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("module rejected answer: %d", resp.StatusCode))
+	}
+	return connect.NewResponse(&v1.AnswerModulePromptResponse{Accepted: true}), nil
+}
+
+// Alias prefixes non admins may bind sources from
+var sanctionedSourceAliases = []string{
+	"{{server.data_path}}",
+	"{{module.data_path}}",
+	"{{config.storage.data_dir}}",
+	"{{config.storage.backup_dir}}",
+	"{{config.storage.temp_dir}}",
+}
+
+// Reports whether rel lexically stays inside its root
+func staysInside(rel string) bool {
+	r := filepath.Clean(rel)
+	return r != ".." && !strings.HasPrefix(r, ".."+string(filepath.Separator))
+}
+
+// Rejects bind sources outside panel storage for non admins
+func validateBindSources(ctx context.Context, am *auth.Manager, dataDir string, vols []*v1.VolumeMount) error {
+	// Host browse rights also cover binding anywhere
+	if am.Can(ctx, optionsv1.ResourceType_RESOURCE_TYPE_SETTINGS, optionsv1.ActionType_ACTION_TYPE_UPDATE) {
+		return nil
+	}
+	absData, err := filepath.Abs(dataDir)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, errors.New("failed to resolve panel storage directory"))
+	}
+	for _, vol := range vols {
+		if vol == nil || vol.Source == "" {
+			continue
+		}
+		// Named volumes carry no host path
+		if vol.Type != "" && vol.Type != "bind" {
+			continue
+		}
+		src := vol.Source
+		if strings.Contains(src, "{{") {
+			ok := false
+			for _, alias := range sanctionedSourceAliases {
+				rest, found := strings.CutPrefix(src, alias)
+				if !found {
+					continue
+				}
+				if rest == "" || (strings.HasPrefix(rest, "/") && !strings.Contains(rest, "{{") &&
+					staysInside(strings.TrimPrefix(rest, "/"))) {
+					ok = true
+				}
+				break
+			}
+			if !ok {
+				return connect.NewError(connect.CodePermissionDenied,
+					fmt.Errorf("bind source %q needs administrator rights, use a data path alias instead", src))
+			}
+			continue
+		}
+		if !filepath.IsAbs(src) || !files.Within(absData, filepath.Clean(src)) {
+			return connect.NewError(connect.CodePermissionDenied,
+				fmt.Errorf("bind source %q sits outside panel storage and needs administrator rights", src))
+		}
+	}
+	return nil
+}
+
+// Rejects cert pairs the template or tls loader cannot take
+func validateModuleCert(template *v1.ModuleTemplate, certPem, keyPem string) error {
+	if certPem == "" && keyPem == "" {
+		return nil
+	}
+	if template.CertMountPath == "" {
+		return errors.New("this module does not accept certificates")
+	}
+	if (certPem == "") != (keyPem == "") {
+		return errors.New("certificate and key are both required")
+	}
+	if _, err := tls.X509KeyPair([]byte(certPem), []byte(keyPem)); err != nil {
+		return fmt.Errorf("certificate rejected: %w", err)
+	}
+	return nil
+}
+
+// Zero host ports ask the module registry for one
+func (s *ModuleService) allocateModulePorts(ctx context.Context, ports []*v1.NetworkPort) error {
+	allocated := make(map[int]bool)
+	for _, port := range ports {
+		if port == nil || port.ContainerPort == 0 || port.HostPort > 0 {
+			continue
+		}
+		free, err := s.moduleManager.AllocateModulePortExcluding(ctx, port.Protocol, allocated)
+		if err != nil {
+			return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("failed to allocate port: %w", err))
+		}
+		port.HostPort = int32(free)
+		allocated[free] = true
+	}
+	return nil
+}
+
+// Validates, allocates, and checks out a module's ports
+func (s *ModuleService) preparePorts(ctx context.Context, moduleID string, ports []*v1.NetworkPort, serverHostnames []string) (*proxy.NetClaim, error) {
+	if err := s.rejectProxiedPortsWhileDisabled(ports); err != nil {
+		return nil, err
+	}
+	if err := s.allocateModulePorts(ctx, ports); err != nil {
+		return nil, err
+	}
+	// Global and bare server names inherit panel names
+	fallback := s.proxyManager.ModuleFallbackNames(ctx, serverHostnames)
+	if err := normalizeModulePorts(ports, fallback); err != nil {
+		return nil, err
+	}
+	netReqs := s.proxyManager.ModuleNetRequests(ctx, &v1.Module{Id: moduleID, Ports: ports}, fallback)
+	return checkoutNetwork(ctx, s.proxyManager, s.log, proxy.NetOwner{Kind: proxy.OwnerModule, ID: moduleID}, netReqs)
 }

@@ -3,32 +3,42 @@ package services
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
-	"strconv"
 	"strings"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/discohaus/discopanel/internal/auth"
+	"github.com/discohaus/discopanel/internal/command"
+	storage "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/internal/docker"
+	"github.com/discohaus/discopanel/internal/lifecycle"
+	"github.com/discohaus/discopanel/internal/metrics"
+	"github.com/discohaus/discopanel/internal/module"
+	"github.com/discohaus/discopanel/internal/provisioner"
+	"github.com/discohaus/discopanel/internal/proxy"
+	"github.com/discohaus/discopanel/pkg/config"
+	"github.com/discohaus/discopanel/pkg/events"
+	"github.com/discohaus/discopanel/pkg/files"
+	"github.com/discohaus/discopanel/pkg/indexers"
+	"github.com/discohaus/discopanel/pkg/logger"
+	"github.com/discohaus/discopanel/pkg/minecraft"
+	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
+	"github.com/discohaus/discopanel/pkg/protometa"
+	"github.com/discohaus/discopanel/pkg/runtimespec"
+	"github.com/discohaus/discopanel/pkg/transfer"
+	utils "github.com/discohaus/discopanel/pkg/utils"
 	"github.com/google/uuid"
-	"github.com/nickheyer/discopanel/internal/command"
-	"github.com/nickheyer/discopanel/internal/config"
-	storage "github.com/nickheyer/discopanel/internal/db"
-	"github.com/nickheyer/discopanel/internal/docker"
-	"github.com/nickheyer/discopanel/internal/events"
-	"github.com/nickheyer/discopanel/internal/metrics"
-	"github.com/nickheyer/discopanel/internal/minecraft"
-	"github.com/nickheyer/discopanel/internal/module"
-	"github.com/nickheyer/discopanel/internal/proxy"
-	"github.com/nickheyer/discopanel/pkg/files"
-	"github.com/nickheyer/discopanel/pkg/logger"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
-	"github.com/nickheyer/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -42,195 +52,218 @@ type ServerService struct {
 	sender           *command.Sender
 	config           *config.Config
 	proxy            *proxy.Manager
+	lifecycle        *lifecycle.Manager
+	authManager      *auth.Manager
+	rec              *metrics.Recorder
 	log              *logger.Logger
 	logStreamer      *logger.LogStreamer
 	metricsCollector *metrics.Collector
 	moduleManager    *module.Manager
 	bus              *events.Bus
+	uploadManager    *transfer.UploadManager
+
+	// Encoded server icons cached by file identity
+	favicons minecraft.FaviconCache
+}
+
+// Normalizes additional ports, proxied ones may route
+func normalizeAdditionalPorts(ports []*v1.NetworkPort, serverHostnames []string, proxyOn bool) ([]*v1.NetworkPort, error) {
+	var out []*v1.NetworkPort
+	for _, p := range ports {
+		if p == nil {
+			continue
+		}
+		if p.ContainerPort < 1 || p.ContainerPort > 65535 {
+			return nil, fmt.Errorf("invalid container port %d", p.ContainerPort)
+		}
+		if p.HostPort < 1 || p.HostPort > 65535 {
+			return nil, fmt.Errorf("invalid host port %d", p.HostPort)
+		}
+		if p.ProxyEnabled && !proxyOn {
+			return nil, fmt.Errorf("proxy is disabled, port %s cannot be proxied", p.Name)
+		}
+		protocol := p.Protocol
+		switch protocol {
+		case v1.ModuleProtocol_MODULE_PROTOCOL_UNSPECIFIED:
+			protocol = v1.ModuleProtocol_MODULE_PROTOCOL_TCP
+		case v1.ModuleProtocol_MODULE_PROTOCOL_TCP, v1.ModuleProtocol_MODULE_PROTOCOL_UDP:
+		case v1.ModuleProtocol_MODULE_PROTOCOL_HTTP, v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT:
+			// Hostname routed protocols only work through the proxy
+			if !p.ProxyEnabled {
+				return nil, fmt.Errorf("port %s must enable the proxy to speak %s", p.Name, protometa.Name(protocol))
+			}
+		default:
+			return nil, fmt.Errorf("invalid protocol %s", protometa.Name(protocol))
+		}
+		hostnames, err := proxy.NormalizeHostnames(p.Hostnames)
+		if err != nil {
+			return nil, fmt.Errorf("%w on port %s", err, p.Name)
+		}
+		normalized := &v1.NetworkPort{
+			ContainerPort: p.ContainerPort,
+			HostPort:      p.HostPort,
+			Protocol:      protocol,
+			Name:          p.Name,
+			ProxyEnabled:  p.ProxyEnabled,
+			Hostnames:     hostnames,
+			CatchAll:      p.CatchAll,
+		}
+		if err := proxy.ValidatePortRouting(normalized, serverHostnames); err != nil {
+			return nil, err
+		}
+		out = append(out, normalized)
+	}
+	return out, nil
+}
+
+// Zero host ports ask the registry for one
+func (s *ServerService) allocateAdditionalPorts(ctx context.Context, ports []*v1.NetworkPort) error {
+	taken := make(map[int]bool)
+	for _, p := range ports {
+		if p != nil && p.HostPort > 0 {
+			taken[int(p.HostPort)] = true
+		}
+	}
+	for _, p := range ports {
+		if p == nil || p.HostPort > 0 {
+			continue
+		}
+		free, err := s.proxy.FindFreePort(ctx, proxy.FreePortOpts{
+			Protocol: p.Protocol,
+			Start:    s.config.Proxy.PortRangeMin,
+			End:      65535,
+			Exclude:  taken,
+		})
+		if err != nil {
+			return err
+		}
+		p.HostPort = int32(free)
+		taken[free] = true
+	}
+	return nil
+}
+
+// Reports whether both port lists match exactly
+func networkPortsEqual(a, b []*v1.NetworkPort) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !proto.Equal(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // NewServerService creates a new server service
-func NewServerService(store *storage.Store, docker *docker.Client, sender *command.Sender, config *config.Config, proxy *proxy.Manager, logStreamer *logger.LogStreamer, metricsCollector *metrics.Collector, moduleManager *module.Manager, bus *events.Bus, log *logger.Logger) *ServerService {
+func NewServerService(store *storage.Store, docker *docker.Client, sender *command.Sender, config *config.Config, proxy *proxy.Manager, lifecycleManager *lifecycle.Manager, authManager *auth.Manager, logStreamer *logger.LogStreamer, metricsCollector *metrics.Collector, moduleManager *module.Manager, bus *events.Bus, uploadManager *transfer.UploadManager, rec *metrics.Recorder, log *logger.Logger) *ServerService {
 	return &ServerService{
 		store:            store,
 		docker:           docker,
 		sender:           sender,
 		config:           config,
 		proxy:            proxy,
+		lifecycle:        lifecycleManager,
+		authManager:      authManager,
+		rec:              rec,
 		log:              log,
 		logStreamer:      logStreamer,
 		metricsCollector: metricsCollector,
 		moduleManager:    moduleManager,
 		bus:              bus,
+		uploadManager:    uploadManager,
 	}
 }
 
-// dbServerToProto converts a database server model to proto server
-func dbServerToProto(server *storage.Server) *v1.Server {
-	if server == nil {
-		return nil
-	}
-
-	// Convert JavaVersion string to int32
-	javaVersion, _ := strconv.ParseInt(server.JavaVersion, 10, 32)
-
-	protoServer := &v1.Server{
-		Id:              server.ID,
-		Name:            server.Name,
-		Description:     server.Description,
-		McVersion:       server.MCVersion,
-		Port:            int32(server.Port),
-		ProxyHostname:   server.ProxyHostname,
-		ProxyListenerId: server.ProxyListenerID,
-		ProxyPort:       int32(server.ProxyPort),
-		MaxPlayers:      int32(server.MaxPlayers),
-		Memory:          int32(server.Memory),
-		DataPath:        server.DataPath,
-		ContainerId:     server.ContainerID,
-		JavaVersion:     int32(javaVersion),
-		DockerImage:     server.DockerImage,
-		AutoStart:       server.AutoStart,
-		Detached:        server.Detached,
-		TpsCommand:      server.TPSCommand,
-		MemoryUsage:     int64(server.MemoryUsage),
-		CpuPercent:      server.CPUPercent,
-		DiskUsage:       server.DiskUsage,
-		DiskTotal:       server.DiskTotal,
-		WorldSize:       server.WorldSize,
-		PlayersOnline:   int32(server.PlayersOnline),
-		Tps:             server.TPS,
-		AdditionalPorts: server.AdditionalPorts,
-		CreatedAt:       timestamppb.New(server.CreatedAt),
-		UpdatedAt:       timestamppb.New(server.UpdatedAt),
-
-		// SLP fields
-		SlpAvailable:    server.SLPAvailable,
-		SlpLatencyMs:    server.SLPLatencyMs,
-		Motd:            server.MOTD,
-		ServerVersion:   server.ServerVersion,
-		ProtocolVersion: int32(server.ProtocolVersion),
-		PlayerSample:    server.PlayerSample,
-		MaxPlayersSlp:   int32(server.MaxPlayersSLP),
-		Favicon:         server.Favicon,
-	}
-
-	// Apply overrides
-	protoServer.DockerOverrides = server.DockerOverrides
-
-	// Map mod loader
-	protoServer.ModLoader = dbModLoaderToProto(server.ModLoader)
-
-	// Map status
-	protoServer.Status = dbStatusToProto(server.Status)
-
-	// Map optional last started
-	if server.LastStarted != nil {
-		protoServer.LastStarted = timestamppb.New(*server.LastStarted)
-	}
-
-	return protoServer
+// Detaches request work from cancellation, values ride along
+func detach(ctx context.Context) context.Context {
+	return context.WithoutCancel(ctx)
 }
 
-// dbModLoaderToProto converts database mod loader to proto
-func dbModLoaderToProto(loader storage.ModLoader) v1.ModLoader {
-	switch loader {
-	case storage.ModLoaderVanilla:
-		return v1.ModLoader_MOD_LOADER_VANILLA
-	case storage.ModLoaderForge:
-		return v1.ModLoader_MOD_LOADER_FORGE
-	case storage.ModLoaderFabric:
-		return v1.ModLoader_MOD_LOADER_FABRIC
-	case storage.ModLoaderQuilt:
-		return v1.ModLoader_MOD_LOADER_QUILT
-	case storage.ModLoaderPaper:
-		return v1.ModLoader_MOD_LOADER_PAPER
-	case storage.ModLoaderFolia:
-		return v1.ModLoader_MOD_LOADER_FOLIA
-	case storage.ModLoaderSpigot:
-		return v1.ModLoader_MOD_LOADER_SPIGOT
-	case storage.ModLoaderBukkit:
-		return v1.ModLoader_MOD_LOADER_BUKKIT
-	case storage.ModLoaderPurpur:
-		return v1.ModLoader_MOD_LOADER_PURPUR
-	case storage.ModLoaderSpongeVanilla:
-		return v1.ModLoader_MOD_LOADER_SPONGE_VANILLA
-	case storage.ModLoaderMohist:
-		return v1.ModLoader_MOD_LOADER_MOHIST
-	case storage.ModLoaderCatserver:
-		return v1.ModLoader_MOD_LOADER_CATSERVER
-	case storage.ModLoaderArclight:
-		return v1.ModLoader_MOD_LOADER_ARCLIGHT
-	case storage.ModLoaderAutoCurseForge:
-		return v1.ModLoader_MOD_LOADER_AUTO_CURSEFORGE
-	case storage.ModLoaderModrinth:
-		return v1.ModLoader_MOD_LOADER_MODRINTH
-	case storage.ModLoaderNeoForge:
-		return v1.ModLoader_MOD_LOADER_NEOFORGE
-	default:
-		return v1.ModLoader_MOD_LOADER_VANILLA
+// Loads a server or returns the canonical not found error
+func getServer(ctx context.Context, store *storage.Store, id string) (*v1.Server, error) {
+	server, err := store.GetServer(ctx, id)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("server not found"))
 	}
+	return server, nil
 }
 
-// protoModLoaderToDB converts proto mod loader to database
-func protoModLoaderToDB(loader v1.ModLoader) storage.ModLoader {
-	switch loader {
-	case v1.ModLoader_MOD_LOADER_VANILLA:
-		return storage.ModLoaderVanilla
-	case v1.ModLoader_MOD_LOADER_FORGE:
-		return storage.ModLoaderForge
-	case v1.ModLoader_MOD_LOADER_FABRIC:
-		return storage.ModLoaderFabric
-	case v1.ModLoader_MOD_LOADER_QUILT:
-		return storage.ModLoaderQuilt
-	case v1.ModLoader_MOD_LOADER_PAPER:
-		return storage.ModLoaderPaper
-	case v1.ModLoader_MOD_LOADER_FOLIA:
-		return storage.ModLoaderFolia
-	case v1.ModLoader_MOD_LOADER_SPIGOT:
-		return storage.ModLoaderSpigot
-	case v1.ModLoader_MOD_LOADER_BUKKIT:
-		return storage.ModLoaderBukkit
-	case v1.ModLoader_MOD_LOADER_PURPUR:
-		return storage.ModLoaderPurpur
-	case v1.ModLoader_MOD_LOADER_SPONGE_VANILLA:
-		return storage.ModLoaderSpongeVanilla
-	case v1.ModLoader_MOD_LOADER_MOHIST:
-		return storage.ModLoaderMohist
-	case v1.ModLoader_MOD_LOADER_CATSERVER:
-		return storage.ModLoaderCatserver
-	case v1.ModLoader_MOD_LOADER_ARCLIGHT:
-		return storage.ModLoaderArclight
-	case v1.ModLoader_MOD_LOADER_AUTO_CURSEFORGE:
-		return storage.ModLoaderAutoCurseForge
-	case v1.ModLoader_MOD_LOADER_MODRINTH:
-		return storage.ModLoaderModrinth
-	case v1.ModLoader_MOD_LOADER_NEOFORGE:
-		return storage.ModLoaderNeoForge
-	default:
-		return storage.ModLoaderVanilla
-	}
+// Runs one lifecycle op in the background with a deadline
+func (s *ServerService) runLifecycleAsync(ctx context.Context, server *v1.Server, timeout time.Duration, verb string, fn func(context.Context, string) error) {
+	go func() {
+		bgCtx, cancel := context.WithTimeout(detach(ctx), timeout)
+		defer cancel()
+		if err := fn(bgCtx, server.Id); err != nil {
+			s.log.Error("Failed to %s server %s: %v", verb, server.Name, err)
+		}
+	}()
 }
 
-// dbStatusToProto converts database status to proto
-func dbStatusToProto(status storage.ServerStatus) v1.ServerStatus {
-	switch status {
-	case storage.StatusCreating:
-		return v1.ServerStatus_SERVER_STATUS_CREATING
-	case storage.StatusStarting:
-		return v1.ServerStatus_SERVER_STATUS_STARTING
-	case storage.StatusRunning:
-		return v1.ServerStatus_SERVER_STATUS_RUNNING
-	case storage.StatusStopping:
-		return v1.ServerStatus_SERVER_STATUS_STOPPING
-	case storage.StatusStopped:
-		return v1.ServerStatus_SERVER_STATUS_STOPPED
-	case storage.StatusError:
-		return v1.ServerStatus_SERVER_STATUS_ERROR
-	case storage.StatusUnhealthy:
-		return v1.ServerStatus_SERVER_STATUS_UNHEALTHY
-	default:
-		return v1.ServerStatus_SERVER_STATUS_UNSPECIFIED
+// Loads properties or falls back to defaults on error
+func (s *ServerService) serverPropertiesOrDefault(ctx context.Context, serverID string) *v1.ServerProperties {
+	serverConfig, err := s.store.GetServerProperties(ctx, serverID)
+	if err != nil {
+		s.log.Error("Failed to get server config: %v", err)
+		serverConfig = s.store.CreateDefaultServerProperties(serverID)
 	}
+	return serverConfig
+}
+
+// Renders the registry port snapshot for client hints
+func usedPortsProto(ctx context.Context, pm *proxy.Manager) ([]*v1.UsedPort, error) {
+	used, err := pm.UsedNetworkPorts(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	out := make([]*v1.UsedPort, 0, len(used))
+	for _, p := range used {
+		out = append(out, &v1.UsedPort{Port: p})
+	}
+	return out, nil
+}
+
+// Serves server-icon.png from disk, cached by file identity
+func (s *ServerService) serverFavicon(server *v1.Server) string {
+	return s.favicons.Get(server.Id, server.DataPath)
+}
+
+// Copies cached runtime stats onto transient server fields
+func (s *ServerService) applyMetrics(server *v1.Server) {
+	if s.metricsCollector == nil {
+		return
+	}
+	m := s.metricsCollector.GetMetrics(server.Id)
+	if m == nil {
+		return
+	}
+	server.MemoryUsage = int64(m.MemoryUsage)
+	server.CpuPercent = m.CpuPercent
+	server.CpuCores = int32(m.CpuCount)
+	server.DiskUsage = m.DiskUsage
+	server.DiskTotal = m.DiskTotal
+	server.DiskUsed = m.DiskUsed
+	server.WorldSize = m.WorldSize
+	server.PlayersOnline = int32(m.PlayersOnline)
+	server.Tps = m.Tps
+
+	// SLP fields
+	server.SlpAvailable = m.SlpAvailable
+	server.SlpLatencyMs = m.SlpLatencyMs
+	server.Motd = m.Motd
+	server.ServerVersion = m.ServerVersion
+	server.ProtocolVersion = int32(m.ProtocolVersion)
+	server.PlayerSample = m.PlayerSample
+	server.MaxPlayersSlp = int32(m.MaxPlayers)
+
+	// Agent-sourced fields
+	server.AgentConnected = m.AgentConnected
+	server.Mspt = m.Mspt
+	server.HeapUsedMb = m.HeapUsedMb
+	server.HeapMaxMb = m.HeapMaxMb
+	server.CpuThrottlePercent = m.CpuThrottlePercent
+	server.ClassCount = int32(m.ClassCount)
 }
 
 // ListServers lists all servers
@@ -241,61 +274,31 @@ func (s *ServerService) ListServers(ctx context.Context, req *connect.Request[v1
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list servers"))
 	}
 
-	// Get all proxy listeners once for efficiency
-	var listeners map[string]*storage.ProxyListener
-	if s.config.Proxy.Enabled {
-		allListeners, err := s.store.GetProxyListeners(ctx)
-		if err == nil {
-			listeners = make(map[string]*storage.ProxyListener)
-			for _, l := range allListeners {
-				listeners[l.ID] = l
-			}
-		}
+	if err := s.store.HydrateProxyPorts(ctx, servers...); err != nil {
+		s.log.Error("Failed to hydrate proxy ports: %v", err)
 	}
 
 	// Update status from Docker and apply cached metrics
 	for _, server := range servers {
-		// If server uses proxy, ensure ProxyPort is populated from the listener
-		if server.ProxyHostname != "" && server.ProxyListenerID != "" && listeners != nil {
-			if listener, ok := listeners[server.ProxyListenerID]; ok {
-				server.ProxyPort = listener.Port
-			}
-		}
+		// Icon comes from disk, cheap enough for light polls
+		server.Favicon = s.serverFavicon(server)
 
-		if server.ContainerID != "" {
-			status, err := s.docker.GetContainerStatus(ctx, server.ContainerID)
+		// Stored status only unless the caller wants live stats
+		if server.ContainerId != "" && req.Msg.FullStats {
+			status, err := s.docker.GetContainerStatus(ctx, server.ContainerId)
 			if err == nil {
 				server.Status = status
 			}
 
 			// Apply cached metrics from the background collector
-			if s.metricsCollector != nil {
-				if m := s.metricsCollector.GetMetrics(server.ID); m != nil {
-					server.MemoryUsage = m.MemoryUsage
-					server.CPUPercent = m.CPUPercent
-					server.DiskUsage = m.DiskUsage
-					server.DiskTotal = m.DiskTotal
-					server.WorldSize = m.WorldSize
-					server.PlayersOnline = m.PlayersOnline
-					server.TPS = m.TPS
-
-					// SLP fields
-					server.SLPAvailable = m.SLPAvailable
-					server.SLPLatencyMs = m.SLPLatencyMs
-					server.MOTD = m.MOTD
-					server.ServerVersion = m.ServerVersion
-					server.ProtocolVersion = m.ProtocolVersion
-					server.PlayerSample = m.PlayerSample
-					server.MaxPlayersSLP = m.MaxPlayers
-				}
-			}
+			s.applyMetrics(server)
 		}
 	}
 
 	// Convert to proto
 	protoServers := make([]*v1.Server, len(servers))
 	for i, server := range servers {
-		protoServers[i] = dbServerToProto(server)
+		protoServers[i] = server.Redact()
 	}
 
 	return connect.NewResponse(&v1.ListServersResponse{
@@ -305,87 +308,57 @@ func (s *ServerService) ListServers(ctx context.Context, req *connect.Request[v1
 
 // GetServer gets a specific server
 func (s *ServerService) GetServer(ctx context.Context, req *connect.Request[v1.GetServerRequest]) (*connect.Response[v1.GetServerResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
-	// If server uses proxy, ensure ProxyPort is populated from the listener
-	if server.ProxyHostname != "" && server.ProxyListenerID != "" {
-		listener, err := s.store.GetProxyListener(ctx, server.ProxyListenerID)
-		if err == nil && listener != nil {
-			server.ProxyPort = listener.Port
-		}
+	if err := s.store.HydrateProxyPorts(ctx, server); err != nil {
+		s.log.Error("Failed to hydrate proxy port: %v", err)
 	}
 
 	// Update status from Docker
-	if server.ContainerID != "" {
-		status, err := s.docker.GetContainerStatus(ctx, server.ContainerID)
+	if server.ContainerId != "" {
+		status, err := s.docker.GetContainerStatus(ctx, server.ContainerId)
 		if err == nil {
 			server.Status = status
 		}
 	}
 
 	// Apply cached metrics from the background collector
-	if s.metricsCollector != nil {
-		if m := s.metricsCollector.GetMetrics(server.ID); m != nil {
-			server.MemoryUsage = m.MemoryUsage
-			server.CPUPercent = m.CPUPercent
-			server.DiskUsage = m.DiskUsage
-			server.DiskTotal = m.DiskTotal
-			server.WorldSize = m.WorldSize
-			server.PlayersOnline = m.PlayersOnline
-			server.TPS = m.TPS
-
-			// SLP fields
-			server.SLPAvailable = m.SLPAvailable
-			server.SLPLatencyMs = m.SLPLatencyMs
-			server.MOTD = m.MOTD
-			server.ServerVersion = m.ServerVersion
-			server.ProtocolVersion = m.ProtocolVersion
-			server.PlayerSample = m.PlayerSample
-			server.MaxPlayersSLP = m.MaxPlayers
-			server.Favicon = m.Favicon
-		}
-	}
+	s.applyMetrics(server)
+	server.Favicon = s.serverFavicon(server)
 
 	return connect.NewResponse(&v1.GetServerResponse{
-		Server: dbServerToProto(server),
+		Server: server.Redact(),
 	}), nil
 }
 
-// CreateServer creates a new server
 func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v1.CreateServerRequest]) (*connect.Response[v1.CreateServerResponse], error) {
 	msg := req.Msg
 
 	// Convert mod loader from proto
-	modLoader := protoModLoaderToDB(msg.ModLoader)
+	modLoader := msg.ModLoader
 
 	// If modpack is selected, load it and derive settings
-	var modpackURL string
+	var modpack *v1.IndexedModpack
 	if msg.ModpackId != "" {
-		modpack, err := s.store.GetIndexedModpack(ctx, msg.ModpackId)
+		var err error
+		modpack, err = s.store.GetIndexedModpack(ctx, msg.ModpackId)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid modpack"))
 		}
 
-		// Set the modpack URL
-		modpackURL = modpack.WebsiteURL
-
-		// Override mod loader based on indexer
-		switch modpack.Indexer {
-		case "fuego", "manual":
-			modLoader = storage.ModLoaderAutoCurseForge
-		case "modrinth":
-			modLoader = storage.ModLoaderModrinth
+		// Override mod loader based on the pack platform
+		loader, ok := modpackPlatformLoader(ctx, s.store, modpack)
+		if !ok {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unsupported modpack indexer %q", modpack.Indexer))
 		}
+		modLoader = loader
 
 		// Get MC version from modpack if not explicitly set
-		if msg.McVersion == "" {
-			var gameVersions []string
-			if err := json.Unmarshal([]byte(modpack.GameVersions), &gameVersions); err == nil && len(gameVersions) > 0 {
-				msg.McVersion = minecraft.FindMostRecentMinecraftVersion(gameVersions)
-			}
+		if msg.McVersion == "" && len(modpack.GameVersions) > 0 {
+			msg.McVersion = minecraft.FindMostRecentMinecraftVersion(modpack.GameVersions)
 		}
 
 		// Set minimum memory for modpacks
@@ -400,20 +373,17 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 	}
 
 	// Handle proxy configuration
-	proxyHostname := msg.ProxyHostname
+	proxyHostnames, err := proxy.NormalizeHostnames(msg.ProxyHostnames)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	proxyListenerID := msg.ProxyListenerId
 	port := int(msg.Port)
 
-	if proxyHostname != "" {
-		// If using base URL, append it to the hostname
-		if msg.UseBaseUrl {
-			proxyConfig, _, err := s.store.GetProxyConfig(ctx)
-			if err == nil && proxyConfig.BaseURL != "" {
-				// Only append base URL if hostname doesn't already contain a domain
-				if !strings.Contains(proxyHostname, ".") {
-					proxyHostname = proxyHostname + "." + proxyConfig.BaseURL
-				}
-			}
+	if len(proxyHostnames) > 0 {
+		// Routing needs the proxy on
+		if !s.proxy.Enabled() {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("proxy is disabled"))
 		}
 
 		// Validate listener selection
@@ -422,16 +392,16 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 			if err != nil || !listener.Enabled {
 				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid or disabled proxy listener"))
 			}
-			port = listener.Port
+			port = int(listener.Port)
 		} else {
 			// No listener specified, get the default one
-			listeners, err := s.store.GetProxyListeners(ctx)
+			listeners, err := s.store.ListProxyListeners(ctx)
 			if err != nil || len(listeners) == 0 {
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("no proxy listeners configured"))
 			}
 
 			// Find default or first enabled listener
-			var defaultListener *storage.ProxyListener
+			var defaultListener *v1.ProxyListener
 			for _, l := range listeners {
 				if l.IsDefault && l.Enabled {
 					defaultListener = l
@@ -449,106 +419,73 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 			if defaultListener == nil {
 				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("no enabled proxy listeners available"))
 			}
-			proxyListenerID = defaultListener.ID
-			port = defaultListener.Port
+			proxyListenerID = defaultListener.Id
+			port = int(defaultListener.Port)
 		}
 	} else {
 		// For non-proxy servers, must have a unique port
 		if port == 0 {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("port is required for non-proxy servers"))
 		}
-
-		// Check if port is already in use
-		existing, err := s.store.GetServerByPort(ctx, port)
-		if err != nil {
-			s.log.Error("Failed to check port: %v", err)
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to check port availability"))
-		}
-		if existing != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("port already in use"))
-		}
-
-		// Also check if this port is used by the proxy
-		if s.config.Proxy.Enabled {
-			if slices.Contains(s.config.Proxy.ListenPorts, port) {
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("port is already in use by the proxy server"))
-			}
-		}
 	}
 
-	// Determine Docker image if not specified
+	// Only an explicit valid tag pins, java version drives otherwise
 	dockerImage := msg.DockerImage
-	if dockerImage == "" {
-		dockerImage = docker.GetOptimalDockerTag(msg.McVersion, modLoader, false)
+	if !docker.IsValidRuntimeTag(dockerImage) {
+		dockerImage = ""
 	}
 
-	// Validate additional ports
-	var additionalPorts []*v1.AdditionalPort
-	usedPorts := make(map[string]bool)
+	if err := s.allocateAdditionalPorts(ctx, msg.AdditionalPorts); err != nil {
+		return nil, connect.NewError(connect.CodeResourceExhausted, err)
+	}
+	additionalPorts, err := normalizeAdditionalPorts(msg.AdditionalPorts, proxyHostnames, s.proxy.Enabled())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 
-	for _, protoPort := range msg.AdditionalPorts {
-		// Validate port range
-		if protoPort.ContainerPort < 1 || protoPort.ContainerPort > 65535 {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid container port %d", protoPort.ContainerPort))
-		}
-		if protoPort.HostPort < 1 || protoPort.HostPort > 65535 {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid host port %d", protoPort.HostPort))
-		}
-
-		// Default protocol to TCP
-		protocol := protoPort.Protocol
-		if protocol == "" {
-			protocol = "tcp"
-		} else if protocol != "tcp" && protocol != "udp" {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid protocol %s (must be tcp or udp)", protocol))
-		}
-
-		// Check for duplicate ports
-		portKey := fmt.Sprintf("%d/%s", protoPort.HostPort, protocol)
-		if usedPorts[portKey] {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("duplicate host port %d/%s", protoPort.HostPort, protocol))
-		}
-		usedPorts[portKey] = true
-
-		// Check if port conflicts
-		if int(protoPort.HostPort) == port {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("additional port %d conflicts with main server port", protoPort.HostPort))
-		}
-		if s.config.Proxy.Enabled && slices.Contains(s.config.Proxy.ListenPorts, int(protoPort.HostPort)) {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("port %d is already in use by the proxy server", protoPort.HostPort))
-		}
-
-		additionalPorts = append(additionalPorts, &v1.AdditionalPort{
-			ContainerPort: protoPort.ContainerPort,
-			HostPort:      protoPort.HostPort,
-			Protocol:      protocol,
-			Name:          protoPort.Name,
-		})
+	if err := validateBindSources(ctx, s.authManager, s.config.Storage.DataDir, msg.DockerOverrides.GetVolumes()); err != nil {
+		return nil, err
 	}
 
 	// Create server object
 	serverUUID := uuid.New().String()
+
+	// Registry checkout guards every port until the row persists
+	proxyOn := s.proxy.Enabled()
+	netOwner := proxy.NetOwner{Kind: proxy.OwnerServer, ID: serverUUID}
+	var netReqs []proxy.NetRequest
+	if len(proxyHostnames) > 0 {
+		netReqs = proxy.ServerProxiedNetRequests(proxyHostnames, port, additionalPorts, proxyOn, false)
+	} else {
+		netReqs = proxy.ServerDirectNetRequests(port, additionalPorts, proxyOn)
+	}
+	netClaim, err := checkoutNetwork(ctx, s.proxy, s.log, netOwner, netReqs)
+	if err != nil {
+		return nil, err
+	}
+	defer netClaim.Release()
 	serverDataDir := fmt.Sprintf("%s_%s", files.SanitizePathName(msg.Name), serverUUID)
 	serverDataPath := filepath.Join(s.config.Storage.DataDir, "servers", serverDataDir)
 
-	server := &storage.Server{
-		ID:              serverUUID,
+	server := &v1.Server{
+		Id:              serverUUID,
 		Name:            msg.Name,
 		Description:     msg.Description,
 		ModLoader:       modLoader,
-		MCVersion:       msg.McVersion,
-		Status:          storage.StatusCreating,
-		Port:            port,
-		ProxyHostname:   proxyHostname,
-		ProxyListenerID: proxyListenerID,
-		MaxPlayers:      int(msg.MaxPlayers),
-		Memory:          int(msg.Memory),
+		McVersion:       msg.McVersion,
+		Status:          v1.ServerStatus_SERVER_STATUS_CREATING,
+		Port:            int32(port),
+		ProxyHostnames:  proxyHostnames,
+		ProxyListenerId: proxyListenerID,
+		MaxPlayers:      msg.MaxPlayers,
+		Memory:          msg.Memory,
+		MemoryMin:       msg.MemoryMin,
+		MemoryMax:       msg.MemoryMax,
 		DataPath:        serverDataPath,
 		JavaVersion:     docker.GetRequiredJavaVersion(msg.McVersion, modLoader),
 		DockerImage:     dockerImage,
 		AutoStart:       msg.AutoStart,
 		Detached:        msg.Detached,
-		TPSCommand:      minecraft.GetTPSCommand(modLoader),
 		AdditionalPorts: additionalPorts,
 		DockerOverrides: msg.DockerOverrides,
 	}
@@ -560,16 +497,19 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 	if server.Memory == 0 {
 		server.Memory = 4096
 	}
-	if server.ModLoader == "" {
-		server.ModLoader = storage.ModLoaderVanilla
+	if server.ModLoader == v1.ModLoader_MOD_LOADER_UNSPECIFIED {
+		server.ModLoader = v1.ModLoader_MOD_LOADER_VANILLA
+	}
+
+	if err := runtimespec.NormalizeServerMemory(server); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	// When using proxy, set the ports correctly
-	if server.ProxyHostname != "" && proxyListenerID != "" {
-		listener, err := s.store.GetProxyListener(ctx, proxyListenerID)
-		if err == nil && listener != nil {
-			server.ProxyPort = listener.Port
-			server.Port = 25565 // Internal container port for proxied servers
+	if len(server.ProxyHostnames) > 0 && proxyListenerID != "" {
+		server.Port = int32(storage.MinecraftDefaultPort)
+		if err := s.store.HydrateProxyPorts(ctx, server); err != nil {
+			s.log.Error("Failed to hydrate proxy port: %v", err)
 		}
 	}
 
@@ -579,159 +519,69 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create server directory"))
 	}
 
+	// Imported world lands before the row so failures stay clean
+	importedLevelName := ""
+	if msg.WorldUploadSessionId != "" {
+		levelName, err := s.importUploadedWorld(server, msg.WorldUploadSessionId)
+		if err != nil {
+			os.RemoveAll(server.DataPath)
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("world import failed: %w", err))
+		}
+		importedLevelName = levelName
+	}
+
 	// Save to database
 	if err := s.store.CreateServer(ctx, server); err != nil {
 		s.log.Error("Failed to create server: %v", err)
+		os.RemoveAll(server.DataPath)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create server"))
 	}
+	netClaim.Confirm()
+	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_SERVER_CREATE, nil, "created the server")
+
+	// Reconcile starts any auto created listener sockets
+	syncRoutes(ctx, s.proxy, s.log, "after server create")
 
 	// Get the server config
-	serverConfig, err := s.store.GetServerConfig(ctx, server.ID)
-	if err != nil {
-		s.log.Error("Failed to get server config: %v", err)
-		serverConfig = s.store.CreateDefaultServerConfig(server.ID)
+	serverConfig := s.serverPropertiesOrDefault(ctx, server.Id)
+	if importedLevelName != "" {
+		serverConfig.Level = &importedLevelName
 	}
 
-	// Set memory configuration
-	if serverConfig.MaxMemory == nil && serverConfig.Memory == nil && serverConfig.InitMemory == nil {
-		strMax := fmt.Sprintf("%dM", int(float64(server.Memory)*0.75))
-		serverConfig.MaxMemory = &strMax
-		strMin := fmt.Sprintf("%dM", int(float64(server.Memory)*0.45))
-		serverConfig.InitMemory = &strMin
-	}
+	// Reflects heap sizing into read-only properties
+	runtimespec.SyncPropertiesMemory(serverConfig, server)
 
-	if serverConfig.Memory != nil {
-		serverConfig.MaxMemory = serverConfig.Memory
-		serverConfig.InitMemory = serverConfig.Memory
-	}
-
-	if err := s.store.UpdateServerConfig(ctx, serverConfig); err != nil {
+	if err := s.store.UpdateServerProperties(ctx, serverConfig); err != nil {
 		s.log.Error("Failed to update server config with memory settings: %v", err)
 	}
 
 	// Configure modpack if selected
-	if msg.ModpackId != "" {
-		modpack, _ := s.store.GetIndexedModpack(ctx, msg.ModpackId)
-		if modpack != nil && modpack.Indexer == "manual" {
-			// For manual modpacks, copy the zip file
-			modpackFile, err := s.store.GetIndexedModpackFiles(ctx, msg.ModpackId)
-			if err == nil && len(modpackFile) > 0 {
-				sourcePath := modpackFile[0].DownloadURL
-				destPath := filepath.Join(server.DataPath, "modpack.zip")
-
-				// Copy the modpack file
-				if sourceFile, err := os.Open(sourcePath); err == nil {
-					defer sourceFile.Close()
-					if destFile, err := os.Create(destPath); err == nil {
-						defer destFile.Close()
-						io.Copy(destFile, sourceFile)
-
-						// Set CF_MODPACK_ZIP for manual modpack
-						cfModpackZip := "/data/modpack.zip"
-						serverConfig.CFModpackZip = &cfModpackZip
-
-						// Set a dummy slug
-						cfSlug := "manual-" + modpack.ID
-						serverConfig.CFSlug = &cfSlug
-					}
-				}
-			}
-		} else if modpackURL != "" && server.ModLoader == storage.ModLoaderAutoCurseForge {
-			// If version is pinned, append /files/<id>
-			if msg.ModpackVersionId != "" {
-				versionedURL := fmt.Sprintf("%s/files/%s", modpackURL, msg.ModpackVersionId)
-				serverConfig.CFPageURL = &versionedURL
-			} else {
-				serverConfig.CFPageURL = &modpackURL
-			}
-		} else if modpack != nil && modpack.Indexer == "modrinth" {
-			var projectSpec string
-			if msg.ModpackVersionId != "" && msg.ModpackVersionId != "latest" {
-				projectSpec = fmt.Sprintf("%s:%s", modpack.IndexerID, msg.ModpackVersionId)
-				s.log.Info("Using specific Modrinth version: %s", projectSpec)
-			} else {
-				projectSpec = modpack.IndexerID
-				s.log.Info("Using latest Modrinth version for project: %s", projectSpec)
-			}
-			serverConfig.ModrinthModpack = &projectSpec
-			downloadDeps := "required"
-			serverConfig.ModrinthDownloadDependencies = &downloadDeps
-
-			// Only set version type when using latest
-			if msg.ModpackVersionId == "" || msg.ModpackVersionId == "latest" {
-				versionType := "release"
-				serverConfig.ModrinthModpackVersionType = &versionType
-			}
+	if modpack != nil {
+		if err := s.applyModpackSelection(ctx, server, serverConfig, modpack, msg.ModpackVersionId); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
 		}
-
-		// Update config with modpack settings
-		if err := s.store.UpdateServerConfig(ctx, serverConfig); err != nil {
+		if err := s.store.UpdateServerProperties(ctx, serverConfig); err != nil {
 			s.log.Error("Failed to update server config with modpack settings: %v", err)
 		}
 	}
 
-	// Create Docker container asynchronously
-	go func() {
-		bgCtx := context.Background()
-		s.log.Info("Starting async Docker container creation for server %s", server.ID)
-
-		containerID, err := s.docker.CreateContainer(bgCtx, server, serverConfig)
-		if err != nil {
-			s.log.Error("Failed to create container: %v", err)
-			server.Status = storage.StatusError
-			if updateErr := s.store.UpdateServer(bgCtx, server); updateErr != nil {
-				s.log.Error("Failed to update server status to error: %v", updateErr)
-			}
-			return
+	// Provisioning and container creation happen on first start.
+	if msg.StartImmediately {
+		server.Status = v1.ServerStatus_SERVER_STATUS_PROVISIONING
+		if err := s.store.UpdateServer(ctx, server); err != nil {
+			s.log.Error("Failed to update server status: %v", err)
 		}
-
-		server.ContainerID = containerID
-		s.log.Info("Container created successfully for server %s: %s", server.ID, containerID)
-
-		// Update server with container ID
-		if err := s.store.UpdateServer(bgCtx, server); err != nil {
-			s.log.Error("Failed to update server with container ID: %v", err)
-			return
+		s.runLifecycleAsync(ctx, server, 2*time.Hour, "start newly created", s.lifecycle.Start)
+	} else {
+		server.Status = v1.ServerStatus_SERVER_STATUS_STOPPED
+		if err := s.store.UpdateServer(ctx, server); err != nil {
+			s.log.Error("Failed to update server status: %v", err)
 		}
+		s.log.Info("Server %s created but not started immediately", server.Id)
+	}
 
-		// Start the container immediately if requested
-		if msg.StartImmediately {
-			if err := s.docker.StartContainer(bgCtx, containerID); err != nil {
-				s.log.Error("Failed to start container: %v", err)
-				server.Status = storage.StatusError
-			} else {
-				server.Status = storage.StatusStarting
-				// Update last started time
-				now := time.Now()
-				server.LastStarted = &now
-				// Clear ephemeral configuration fields
-				if err := s.store.ClearEphemeralConfigFields(bgCtx, server.ID); err != nil {
-					s.log.Error("Failed to clear ephemeral config fields: %v", err)
-				}
-			}
-			// Update status in database
-			if err := s.store.UpdateServer(bgCtx, server); err != nil {
-				s.log.Error("Failed to update server status: %v", err)
-			}
-			// Update proxy route if enabled
-			if s.proxy != nil && server.ProxyHostname != "" {
-				if err := s.proxy.UpdateServerRoute(server); err != nil {
-					s.log.Error("Failed to update proxy route for newly created server: %v", err)
-				}
-			}
-		} else {
-			// Update status to stopped once container is ready
-			server.Status = storage.StatusStopped
-			if err := s.store.UpdateServer(bgCtx, server); err != nil {
-				s.log.Error("Failed to update server status: %v", err)
-			}
-			s.log.Info("Server %s created but not started immediately", server.ID)
-		}
-	}()
-
-	// Return immediately with the server in "creating" state
 	return connect.NewResponse(&v1.CreateServerResponse{
-		Server: dbServerToProto(server),
+		Server: server.Redact(),
 	}), nil
 }
 
@@ -739,16 +589,16 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v1.UpdateServerRequest]) (*connect.Response[v1.UpdateServerResponse], error) {
 	msg := req.Msg
 
-	server, err := s.store.GetServer(ctx, msg.Id)
+	server, err := getServer(ctx, s.store, msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
 	// Check if container recreation is needed
 	needsRecreation := false
 	originalMemory := server.Memory
 	originalModLoader := server.ModLoader
-	originalMCVersion := server.MCVersion
+	originalMCVersion := server.McVersion
 	originalDockerImage := server.DockerImage
 
 	// Update fields
@@ -758,10 +608,10 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 	if msg.Description != "" {
 		server.Description = msg.Description
 	}
-	if msg.Port != nil && int(*msg.Port) != server.Port {
+	if msg.Port != nil && int(*msg.Port) != int(server.Port) {
 		newPort := int(*msg.Port)
 
-		if server.ProxyHostname != "" {
+		if len(server.ProxyHostnames) > 0 {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("cannot change port for proxy-enabled servers"))
 		}
 
@@ -769,43 +619,46 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid port %d", newPort))
 		}
 
-		existing, err := s.store.GetServerByPort(ctx, newPort)
-		if err != nil {
-			s.log.Error("Failed to check port: %v", err)
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to check port availability"))
-		}
-		if existing != nil && existing.ID != server.ID {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("port already in use"))
+		server.Port = int32(newPort)
+		needsRecreation = true
+	}
+	if msg.MaxPlayers > 0 && msg.MaxPlayers != server.MaxPlayers {
+		server.MaxPlayers = msg.MaxPlayers
+		needsRecreation = true
+	}
+	if msg.Memory > 0 || msg.MemoryMin > 0 || msg.MemoryMax > 0 {
+		originalMemoryMin := server.MemoryMin
+		originalMemoryMax := server.MemoryMax
+		if msg.Memory > 0 {
+			server.Memory = msg.Memory
 		}
 
-		if s.config.Proxy.Enabled && slices.Contains(s.config.Proxy.ListenPorts, newPort) {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("port is already in use by the proxy server"))
+		// Zero heap values rescale to defaults in normalize
+		server.MemoryMin = msg.MemoryMin
+		server.MemoryMax = msg.MemoryMax
+		if err := runtimespec.NormalizeServerMemory(server); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 
-		server.Port = newPort
-		needsRecreation = true
-	}
-	if msg.MaxPlayers > 0 {
-		server.MaxPlayers = int(msg.MaxPlayers)
-		needsRecreation = true
-	}
-	if msg.Memory > 0 && int(msg.Memory) != originalMemory {
-		server.Memory = int(msg.Memory)
-		needsRecreation = true
-		if err := s.store.UpdateServerConfigMemory(ctx, server.ID, int(msg.Memory)); err != nil {
-			s.log.Error("Failed to update server config memory: %v", err)
+		if server.Memory != originalMemory || server.MemoryMin != originalMemoryMin || server.MemoryMax != originalMemoryMax {
+			needsRecreation = true
+			if err := s.store.SyncServerPropertiesWithServer(ctx, server); err != nil {
+				s.log.Error("Failed to sync server config memory: %v", err)
+			}
 		}
 	}
-	if msg.ModLoader != "" && storage.ModLoader(msg.ModLoader) != originalModLoader {
-		server.ModLoader = storage.ModLoader(msg.ModLoader)
-		server.TPSCommand = minecraft.GetTPSCommand(server.ModLoader)
+	if msg.ModLoader != v1.ModLoader_MOD_LOADER_UNSPECIFIED && msg.ModLoader != originalModLoader {
+		server.ModLoader = msg.ModLoader
 		needsRecreation = true
 	}
 	if msg.McVersion != "" && msg.McVersion != originalMCVersion {
-		server.MCVersion = msg.McVersion
+		server.McVersion = msg.McVersion
 		needsRecreation = true
 	}
 	if msg.DockerImage != "" && msg.DockerImage != originalDockerImage {
+		if !docker.IsValidRuntimeTag(msg.DockerImage) {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unknown runtime image tag %q", msg.DockerImage))
+		}
 		server.DockerImage = msg.DockerImage
 		needsRecreation = true
 	}
@@ -815,57 +668,22 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 	if msg.Detached != nil {
 		server.Detached = *msg.Detached
 	}
-	if msg.TpsCommand != nil {
-		server.TPSCommand = *msg.TpsCommand
-	}
 
 	// Handle additional ports update
 	if len(msg.AdditionalPorts) > 0 {
-		// Validate additional ports
-		var additionalPorts []*v1.AdditionalPort
-		usedPorts := make(map[string]bool)
-
-		for _, protoPort := range msg.AdditionalPorts {
-			// Validate port range
-			if protoPort.ContainerPort < 1 || protoPort.ContainerPort > 65535 {
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid container port %d", protoPort.ContainerPort))
-			}
-			if protoPort.HostPort < 1 || protoPort.HostPort > 65535 {
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid host port %d", protoPort.HostPort))
-			}
-
-			// Default protocol to TCP
-			protocol := protoPort.Protocol
-			if protocol == "" {
-				protocol = "tcp"
-			} else if protocol != "tcp" && protocol != "udp" {
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid protocol %s", protocol))
-			}
-
-			// Check for duplicate ports
-			portKey := fmt.Sprintf("%d/%s", protoPort.HostPort, protocol)
-			if usedPorts[portKey] {
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("duplicate host port %d/%s", protoPort.HostPort, protocol))
-			}
-			usedPorts[portKey] = true
-
-			// Check if port conflicts
-			if int(protoPort.HostPort) == server.Port {
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("additional port %d conflicts with main server port", protoPort.HostPort))
-			}
-			if s.config.Proxy.Enabled && slices.Contains(s.config.Proxy.ListenPorts, int(protoPort.HostPort)) {
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("port %d is already in use by the proxy server", protoPort.HostPort))
-			}
-
-			additionalPorts = append(additionalPorts, &v1.AdditionalPort{
-				ContainerPort: protoPort.ContainerPort,
-				HostPort:      protoPort.HostPort,
-				Protocol:      protocol,
-				Name:          protoPort.Name,
-			})
+		if err := s.allocateAdditionalPorts(ctx, msg.AdditionalPorts); err != nil {
+			return nil, connect.NewError(connect.CodeResourceExhausted, err)
 		}
-
-		server.AdditionalPorts = additionalPorts
+		additionalPorts, err := normalizeAdditionalPorts(msg.AdditionalPorts, server.ProxyHostnames, s.proxy.Enabled())
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		if !networkPortsEqual(additionalPorts, server.AdditionalPorts) {
+			server.AdditionalPorts = additionalPorts
+			needsRecreation = true
+		}
+	} else if msg.ClearAdditionalPorts && len(server.AdditionalPorts) > 0 {
+		server.AdditionalPorts = nil
 		needsRecreation = true
 	}
 
@@ -878,146 +696,278 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 			}
 		}
 
-		server.DockerOverrides = msg.DockerOverrides
-		needsRecreation = true
+		if err := validateBindSources(ctx, s.authManager, s.config.Storage.DataDir, msg.DockerOverrides.GetVolumes()); err != nil {
+			return nil, err
+		}
+
+		if !proto.Equal(server.DockerOverrides, msg.DockerOverrides) {
+			server.DockerOverrides = msg.DockerOverrides
+			needsRecreation = true
+		}
 	}
 
 	// Handle modpack version update
 	if msg.ModpackId != "" {
-		serverConfig, err := s.store.GetServerConfig(ctx, server.ID)
-		if err != nil {
-			s.log.Error("Failed to get server config: %v", err)
-			serverConfig = s.store.CreateDefaultServerConfig(server.ID)
-		}
+		serverConfig := s.serverPropertiesOrDefault(ctx, server.Id)
 
 		modpack, err := s.store.GetIndexedModpack(ctx, msg.ModpackId)
-		if err == nil {
-			modpackURL := modpack.WebsiteURL
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid modpack"))
+		}
+		if err := s.applyModpackSelection(ctx, server, serverConfig, modpack, msg.ModpackVersionId); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		needsRecreation = true
 
-			switch modpack.Indexer {
-			case "fuego", "manual":
-				server.ModLoader = storage.ModLoaderAutoCurseForge
-				needsRecreation = true
-
-				if msg.ModpackVersionId != "" {
-					versionedURL := fmt.Sprintf("%s/files/%s", modpackURL, msg.ModpackVersionId)
-					serverConfig.CFPageURL = &versionedURL
-				} else {
-					serverConfig.CFPageURL = &modpackURL
-				}
-			case "modrinth":
-				server.ModLoader = storage.ModLoaderModrinth
-				needsRecreation = true
-
-				var projectSpec string
-				if msg.ModpackVersionId != "" && msg.ModpackVersionId != "latest" {
-					projectSpec = fmt.Sprintf("%s:%s", modpack.IndexerID, msg.ModpackVersionId)
-				} else {
-					projectSpec = modpack.IndexerID
-				}
-				serverConfig.ModrinthModpack = &projectSpec
-
-				downloadDeps := "required"
-				serverConfig.ModrinthDownloadDependencies = &downloadDeps
-
-				if msg.ModpackVersionId == "" || msg.ModpackVersionId == "latest" {
-					versionType := "release"
-					serverConfig.ModrinthModpackVersionType = &versionType
-				}
-			}
-
-			if err := s.store.UpdateServerConfig(ctx, serverConfig); err != nil {
-				s.log.Error("Failed to update server config with modpack settings: %v", err)
-			}
+		if err := s.store.UpdateServerProperties(ctx, serverConfig); err != nil {
+			s.log.Error("Failed to update server config with modpack settings: %v", err)
 		}
 	}
+
+	// Registry checkout guards the merged network state until persist
+	proxyOn := s.proxy.Enabled()
+	var netReqs []proxy.NetRequest
+	if len(server.ProxyHostnames) > 0 {
+		netReqs = proxy.PortNetRequests(server.AdditionalPorts, server.ProxyHostnames, proxyOn)
+		if listener, lerr := s.store.GetProxyListener(ctx, server.ProxyListenerId); lerr == nil && listener != nil {
+			netReqs = proxy.ServerProxiedNetRequests(server.ProxyHostnames, int(listener.Port), server.AdditionalPorts, proxyOn, server.ProxyCatchAll)
+		}
+	} else {
+		netReqs = proxy.ServerDirectNetRequests(int(server.Port), server.AdditionalPorts, proxyOn)
+	}
+	netClaim, err := checkoutNetwork(ctx, s.proxy, s.log, proxy.NetOwner{Kind: proxy.OwnerServer, ID: server.Id}, netReqs)
+	if err != nil {
+		return nil, err
+	}
+	defer netClaim.Release()
 
 	// Save server updates first
 	if err := s.store.UpdateServer(ctx, server); err != nil {
 		s.log.Error("Failed to update server: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update server"))
 	}
+	netClaim.Confirm()
 
-	// If container needs recreation
+	// Reconcile keeps routes matching the saved shape
+	syncRoutes(ctx, s.proxy, s.log, "after server update")
+
 	if needsRecreation {
-		// Get server config for container creation
-		serverConfig, err := s.store.GetServerConfig(ctx, server.ID)
-		if err != nil {
-			s.log.Error("Failed to get server config: %v", err)
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get server configuration"))
-		}
+		s.recreateAfterConfigChange(ctx, server)
+	}
 
-		// Recreate container
-		result, err := s.docker.RecreateContainer(ctx, server.ContainerID, server, serverConfig)
-		if err != nil {
-			s.log.Error("Failed to recreate container: %v", err)
-			if result != nil && result.NewContainerID != "" {
-				// Container was created but failed to start
-				server.ContainerID = result.NewContainerID
-				server.Status = storage.StatusError
-			} else {
-				// Complete failure
-				server.Status = storage.StatusError
-				server.ContainerID = ""
-			}
-		} else {
-			server.ContainerID = result.NewContainerID
-			if result.WasRunning {
-				server.Status = storage.StatusRunning
-			} else {
-				server.Status = storage.StatusStopped
-			}
-		}
-
-		// Update server with new container ID and status
-		if err := s.store.UpdateServer(ctx, server); err != nil {
-			s.log.Error("Failed to update server after container recreation: %v", err)
-		}
+	if err := s.store.HydrateProxyPorts(ctx, server); err != nil {
+		s.log.Error("Failed to hydrate proxy port: %v", err)
 	}
 
 	return connect.NewResponse(&v1.UpdateServerResponse{
-		Server: dbServerToProto(server),
+		Server: server.Redact(),
+	}), nil
+}
+
+// Points server loader and properties at the selected modpack
+func (s *ServerService) applyModpackSelection(ctx context.Context, server *v1.Server, serverConfig *v1.ServerProperties, modpack *v1.IndexedModpack, versionID string) error {
+	loader, ok := modpackPlatformLoader(ctx, s.store, modpack)
+	if !ok {
+		return fmt.Errorf("unsupported modpack indexer %q", modpack.Indexer)
+	}
+	server.ModLoader = loader
+
+	// Stale identities from earlier selections must not linger
+	clearPackSelection(serverConfig)
+
+	pinned := versionID != "" && versionID != "latest"
+	switch indexers.PackSourceFor(modpack.Indexer) {
+	case optionsv1.PackSource_PACK_SOURCE_ZIP:
+		staged, err := s.stageManualModpack(ctx, server, modpack)
+		if err != nil {
+			return err
+		}
+		serverConfig.CfModpackZip = &staged
+	case optionsv1.PackSource_PACK_SOURCE_CURSEFORGE:
+		slug := modpack.Slug
+		serverConfig.CfSlug = &slug
+		if pinned {
+			fileID := versionID
+			serverConfig.CfFileId = &fileID
+		}
+	case optionsv1.PackSource_PACK_SOURCE_MODRINTH:
+		project := modpack.IndexerId
+		serverConfig.ModrinthModpack = &project
+		if pinned {
+			pin := versionID
+			serverConfig.ModrinthVersion = &pin
+		} else {
+			versionType := "release"
+			serverConfig.ModrinthModpackVersionType = &versionType
+		}
+		downloadDeps := "required"
+		serverConfig.ModrinthDownloadDependencies = &downloadDeps
+	default:
+		return fmt.Errorf("unsupported modpack indexer %q", modpack.Indexer)
+	}
+
+	// Pack art becomes the server icon like an upload would
+	s.adoptModpackIcon(ctx, server, modpack)
+	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_MODPACK_SELECT, metrics.Attrs{"modpack": modpack.Name}, "selected modpack %s", modpack.Name)
+	return nil
+}
+
+// Clears pack identity properties from earlier selections
+func clearPackSelection(cfg *v1.ServerProperties) {
+	cfg.CfPageUrl = nil
+	cfg.CfSlug = nil
+	cfg.CfFileId = nil
+	cfg.CfModpackZip = nil
+	cfg.ModrinthModpack = nil
+	cfg.ModrinthVersion = nil
+}
+
+// Stages an uploaded pack archive into the data dir
+func (s *ServerService) stageManualModpack(ctx context.Context, server *v1.Server, modpack *v1.IndexedModpack) (string, error) {
+	packFiles, err := s.store.GetIndexedModpackFiles(ctx, modpack.Id)
+	if err != nil || len(packFiles) == 0 {
+		return "", fmt.Errorf("uploaded modpack has no archive")
+	}
+	src := packFiles[0].DownloadUrl
+	ext := filepath.Ext(src)
+	if ext == "" {
+		ext = ".zip"
+	}
+	// Unique names keep pack change detection honest
+	staged := fmt.Sprintf("modpack-%s%s", modpack.Id, ext)
+	if err := os.MkdirAll(server.DataPath, 0755); err != nil {
+		return "", fmt.Errorf("failed to create server data dir: %w", err)
+	}
+	if err := files.CopyFile(src, filepath.Join(server.DataPath, staged)); err != nil {
+		return "", fmt.Errorf("failed to stage modpack archive: %w", err)
+	}
+	return "/data/" + staged, nil
+}
+
+// Rebuilds the container after config changes, restarts if running
+func (s *ServerService) recreateAfterConfigChange(ctx context.Context, server *v1.Server) {
+	if server.ContainerId == "" {
+		return
+	}
+
+	wasRunning := false
+	if status, err := s.docker.GetContainerStatus(ctx, server.ContainerId); err == nil {
+		switch status {
+		case v1.ServerStatus_SERVER_STATUS_RUNNING, v1.ServerStatus_SERVER_STATUS_STARTING, v1.ServerStatus_SERVER_STATUS_UNHEALTHY, v1.ServerStatus_SERVER_STATUS_PAUSED:
+			wasRunning = true
+		}
+	}
+
+	// Running servers come back through the full lifecycle
+	if wasRunning {
+		s.runLifecycleAsync(ctx, server, 2*time.Hour, "recreate", s.lifecycle.Recreate)
+		return
+	}
+
+	if err := s.docker.RemoveContainer(ctx, server.ContainerId); err != nil {
+		s.log.Debug("Failed to remove container after update (may not exist): %v", err)
+	}
+	server.ContainerId = ""
+	server.Status = v1.ServerStatus_SERVER_STATUS_STOPPED
+	if err := s.store.UpdateServer(ctx, server); err != nil {
+		s.log.Error("Failed to update server after container removal: %v", err)
+	}
+	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_CONTAINER_REMOVE, nil, "removed the container so new settings apply on next start")
+}
+
+// Adopts modpack art as the server icon, uploads win
+func (s *ServerService) adoptModpackIcon(ctx context.Context, server *v1.Server, modpack *v1.IndexedModpack) {
+	if server.IconSource == v1.IconSource_ICON_SOURCE_UPLOAD || modpack.LogoUrl == "" {
+		return
+	}
+	iconPNG, err := provisioner.FetchServerIcon(ctx, s.config.Server.UserAgent, modpack.LogoUrl)
+	if err != nil {
+		s.log.Warn("Modpack icon fetch failed for %s: %v", server.Name, err)
+		return
+	}
+	if err := os.MkdirAll(server.DataPath, 0755); err != nil {
+		s.log.Error("Failed to create server data dir: %v", err)
+		return
+	}
+	if err := os.WriteFile(filepath.Join(server.DataPath, "server-icon.png"), iconPNG, 0644); err != nil {
+		s.log.Error("Failed to write modpack icon: %v", err)
+		return
+	}
+	server.IconSource = v1.IconSource_ICON_SOURCE_MODPACK
+}
+
+// UploadServerIcon converts an uploaded image into server-icon.png
+func (s *ServerService) UploadServerIcon(ctx context.Context, req *connect.Request[v1.UploadServerIconRequest]) (*connect.Response[v1.UploadServerIconResponse], error) {
+	const maxIconBytes = 4 << 20
+
+	server, err := getServer(ctx, s.store, req.Msg.Id)
+	if err != nil {
+		return nil, err
+	}
+	if len(req.Msg.Image) == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("image data is required"))
+	}
+	if len(req.Msg.Image) > maxIconBytes {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("image must be under 4 MB"))
+	}
+
+	iconPNG, err := provisioner.ConvertServerIcon(bytes.NewReader(req.Msg.Image))
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unsupported image format"))
+	}
+
+	if err := os.MkdirAll(server.DataPath, 0755); err != nil {
+		s.log.Error("Failed to create server data dir: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save icon"))
+	}
+	iconPath := filepath.Join(server.DataPath, "server-icon.png")
+	if err := os.WriteFile(iconPath, iconPNG, 0644); err != nil {
+		s.log.Error("Failed to write server icon: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save icon"))
+	}
+
+	server.IconSource = v1.IconSource_ICON_SOURCE_UPLOAD
+	if err := s.store.UpdateServer(ctx, server); err != nil {
+		s.log.Error("Failed to persist icon source: %v", err)
+	}
+	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_ICON_UPLOAD, nil, "uploaded a server icon")
+
+	// Sleeping and offline status replies pick up the icon
+	if err := s.proxy.SyncServerRoutes(ctx, server); err != nil {
+		s.log.Warn("Route refresh after icon upload failed: %v", err)
+	}
+
+	favicon := "data:image/png;base64," + base64.StdEncoding.EncodeToString(iconPNG)
+	return connect.NewResponse(&v1.UploadServerIconResponse{
+		Favicon: favicon,
 	}), nil
 }
 
 // DeleteServer deletes a server
 func (s *ServerService) DeleteServer(ctx context.Context, req *connect.Request[v1.DeleteServerRequest]) (*connect.Response[v1.DeleteServerResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
-	// Remove proxy route if configured
-	if s.proxy != nil && server.ProxyHostname != "" {
-		if err := s.proxy.RemoveServerRoute(server.ID); err != nil {
-			s.log.Error("Failed to remove proxy route: %v", err)
-		}
-	}
-
-	// Stop and remove module containers before deleting the server
-	// (database cascade will delete module records, but containers need cleanup)
+	// Delete every module row with its container and token
 	if s.moduleManager != nil {
-		modules, err := s.store.ListServerModules(ctx, server.ID)
+		modules, err := s.store.ListServerModules(ctx, server.Id)
 		if err == nil {
 			for _, mod := range modules {
-				if mod.ContainerID != "" {
-					if err := s.moduleManager.StopModule(ctx, mod.ID); err != nil {
-						s.log.Error("Failed to stop module %s: %v", mod.ID, err)
-					}
-					if err := s.moduleManager.DeleteModule(ctx, mod.ID); err != nil {
-						s.log.Error("Failed to delete module %s: %v", mod.ID, err)
-					}
+				if err := s.moduleManager.DeleteModule(ctx, mod.Id); err != nil {
+					s.log.Error("Failed to delete module %s: %v", mod.Id, err)
 				}
 			}
 		}
 	}
 
 	// Stop and remove container
-	if server.ContainerID != "" {
-		if _, err := s.docker.StopContainer(ctx, server.ContainerID); err != nil {
+	if server.ContainerId != "" {
+		if _, err := s.docker.StopContainer(ctx, server.ContainerId, 30); err != nil {
 			s.log.Error("Failed to stop container: %v", err)
 		}
-		if err := s.docker.RemoveContainer(ctx, server.ContainerID); err != nil {
+		if err := s.docker.RemoveContainer(ctx, server.ContainerId); err != nil {
 			s.log.Error("Failed to remove container: %v", err)
 		}
 	}
@@ -1033,367 +983,115 @@ func (s *ServerService) DeleteServer(ctx context.Context, req *connect.Request[v
 		s.log.Error("Failed to delete server data: %v", err)
 	}
 
+	// Reconcile drops the server's routes and counters
+	syncRoutes(ctx, s.proxy, s.log, "after server delete")
+	if s.proxy != nil {
+		s.proxy.DropOwnerStats(server.Id)
+	}
+
 	return connect.NewResponse(&v1.DeleteServerResponse{}), nil
 }
 
-// StartServer starts a server
+// StartServer starts a server (provisioning + container start run async)
 func (s *ServerService) StartServer(ctx context.Context, req *connect.Request[v1.StartServerRequest]) (*connect.Response[v1.StartServerResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
-	// If container doesn't exist, create it first
-	if server.ContainerID == "" {
-		serverConfig, err := s.store.GetServerConfig(ctx, server.ID)
-		if err != nil {
-			s.log.Error("Failed to get server config: %v", err)
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get server configuration"))
+	// Claim decides before any status stamp
+	if err := s.lifecycle.BeginStart(server.Id); err != nil {
+		// Running start absorbs the repeat click
+		if s.lifecycle.IsStarting(server.Id) {
+			return connect.NewResponse(&v1.StartServerResponse{
+				Status: v1.ServerStatus_SERVER_STATUS_PROVISIONING,
+			}), nil
 		}
-
-		containerID, err := s.docker.CreateContainer(ctx, server, serverConfig)
-		if err != nil {
-			s.log.Error("Failed to create container: %v", err)
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create server container"))
-		}
-
-		server.ContainerID = containerID
-		if err := s.store.UpdateServer(ctx, server); err != nil {
-			s.log.Error("Failed to update server with container ID: %v", err)
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update server"))
-		}
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 	}
 
-	// Start container
-	if err := s.docker.StartContainer(ctx, server.ContainerID); err != nil {
-		s.log.Error("Failed to start container, attempting to recreate: %v", err)
-
-		// Get server config for container creation
-		serverConfig, err := s.store.GetServerConfig(ctx, server.ID)
-		if err != nil {
-			s.log.Error("Failed to get server config: %v", err)
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get server configuration"))
-		}
-
-		// Recreate container
-		result, err := s.docker.RecreateContainer(ctx, server.ContainerID, server, serverConfig)
-		if err != nil {
-			s.log.Error("Failed to recreate container: %v", err)
-			if result != nil && result.NewContainerID != "" {
-				// Container was created but failed to start
-				server.ContainerID = result.NewContainerID
-				server.Status = storage.StatusError
-			} else {
-				// Complete failure
-				server.Status = storage.StatusError
-				server.ContainerID = ""
-			}
-		} else {
-			server.ContainerID = result.NewContainerID
-			if result.WasRunning {
-				server.Status = storage.StatusRunning
-			} else {
-				server.Status = storage.StatusStopped
-			}
-		}
-
-		// Update server with new container ID and status
-		if err := s.store.UpdateServer(ctx, server); err != nil {
-			s.log.Error("Failed to update server after container recreation: %v", err)
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update server after container recreation"))
-		}
-	}
-
-	// Update server status
-	now := time.Now()
-	server.Status = storage.StatusStarting
-	server.LastStarted = &now
-
-	if err := s.store.UpdateServer(ctx, server); err != nil {
+	if err := s.store.UpdateServerFields(ctx, server.Id, map[string]any{"status": v1.ServerStatus_SERVER_STATUS_PROVISIONING}); err != nil {
 		s.log.Error("Failed to update server status: %v", err)
 	}
 
-	// Update proxy route if enabled
-	if s.proxy != nil && server.ProxyHostname != "" {
-		if err := s.proxy.UpdateServerRoute(server); err != nil {
-			s.log.Error("Failed to update proxy route: %v", err)
-		}
-	}
-
-	// Clear ephemeral configuration fields
-	if err := s.store.ClearEphemeralConfigFields(ctx, server.ID); err != nil {
-		s.log.Error("Failed to clear ephemeral config fields: %v", err)
-	}
-
-	// Emit the server-start event
-	if s.bus != nil {
-		s.bus.Emit(ctx, events.Event{
-			Type:     v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_SERVER_START,
-			ServerID: server.ID,
-		})
-	}
+	s.lifecycle.RunStartAsync(detach(ctx), server.Id)
 
 	return connect.NewResponse(&v1.StartServerResponse{
-		Status: "starting",
+		Status: v1.ServerStatus_SERVER_STATUS_PROVISIONING,
 	}), nil
 }
 
-// StopServer stops a server
+// StopServer stops a server (graceful stop runs async)
 func (s *ServerService) StopServer(ctx context.Context, req *connect.Request[v1.StopServerRequest]) (*connect.Response[v1.StopServerResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
-	if server.ContainerID == "" {
-		// If there's no container, server is already stopped
-		server.Status = storage.StatusStopped
-		if err := s.store.UpdateServer(ctx, server); err != nil {
+	if server.ContainerId == "" {
+		if err := s.store.UpdateServerFields(ctx, server.Id, map[string]any{"status": v1.ServerStatus_SERVER_STATUS_STOPPED}); err != nil {
 			s.log.Error("Failed to update server status: %v", err)
 		}
 		return connect.NewResponse(&v1.StopServerResponse{
-			Status: "stopped",
+			Status: v1.ServerStatus_SERVER_STATUS_STOPPED,
 		}), nil
 	}
 
-	// Stop container
-	found, err := s.docker.StopContainer(ctx, server.ContainerID)
-	if err != nil {
-		s.log.Error("Failed to stop container: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to stop server"))
-	}
-
-	// If container wasn't found, clean up stale reference
-	if !found {
-		s.log.Warn("Container %s not found, cleaning up stale reference", server.ContainerID)
-		server.ContainerID = ""
-		server.Status = storage.StatusStopped
-	} else {
-		server.Status = storage.StatusStopping
-	}
-
-	if err := s.store.UpdateServer(ctx, server); err != nil {
+	if err := s.store.UpdateServerFields(ctx, server.Id, map[string]any{"status": v1.ServerStatus_SERVER_STATUS_STOPPING}); err != nil {
 		s.log.Error("Failed to update server status: %v", err)
 	}
 
-	// Remove proxy route if enabled
-	if s.proxy != nil && server.ProxyHostname != "" {
-		if err := s.proxy.RemoveServerRoute(server.ID); err != nil {
-			s.log.Error("Failed to remove proxy route: %v", err)
-		}
-	}
+	s.runLifecycleAsync(ctx, server, 15*time.Minute, "stop", s.lifecycle.Stop)
 
-	// Emit the server-stop event
-	if s.bus != nil {
-		s.bus.Emit(ctx, events.Event{
-			Type:     v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_SERVER_STOP,
-			ServerID: server.ID,
-		})
-	}
-
-	status := "stopping"
-	if !found {
-		status = "stopped"
-	}
 	return connect.NewResponse(&v1.StopServerResponse{
-		Status: status,
+		Status: v1.ServerStatus_SERVER_STATUS_STOPPING,
 	}), nil
 }
 
-// RestartServer restarts a server
+// RestartServer restarts a server (runs async)
 func (s *ServerService) RestartServer(ctx context.Context, req *connect.Request[v1.RestartServerRequest]) (*connect.Response[v1.RestartServerResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
-	// If container doesn't exist, create it and start it
-	if server.ContainerID == "" {
-		// Get server config for container creation
-		serverConfig, err := s.store.GetServerConfig(ctx, server.ID)
-		if err != nil {
-			s.log.Error("Failed to get server config: %v", err)
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get server configuration"))
-		}
-
-		// Create container
-		containerID, err := s.docker.CreateContainer(ctx, server, serverConfig)
-		if err != nil {
-			s.log.Error("Failed to create container: %v", err)
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create server container"))
-		}
-
-		server.ContainerID = containerID
-		if err := s.store.UpdateServer(ctx, server); err != nil {
-			s.log.Error("Failed to update server with container ID: %v", err)
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update server"))
-		}
-
-		// Now start the container
-		if err := s.docker.StartContainer(ctx, server.ContainerID); err != nil {
-			s.log.Error("Failed to start container: %v", err)
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to start server"))
-		}
-
-		// Update server status
-		now := time.Now()
-		server.Status = storage.StatusStarting
-		server.LastStarted = &now
-
-		if err := s.store.UpdateServer(ctx, server); err != nil {
-			s.log.Error("Failed to update server status: %v", err)
-		}
-
-		// Clear ephemeral configuration fields
-		if err := s.store.ClearEphemeralConfigFields(ctx, server.ID); err != nil {
-			s.log.Error("Failed to clear ephemeral config fields: %v", err)
-		}
-
-		// Emit the server-restart event
-		if s.bus != nil {
-			s.bus.Emit(ctx, events.Event{
-				Type:     v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_SERVER_RESTART,
-				ServerID: server.ID,
-			})
-		}
-
-		return connect.NewResponse(&v1.RestartServerResponse{
-			Status: "starting",
-		}), nil
-	}
-
-	// Restart container
-	if err := s.docker.RestartContainer(ctx, server.ContainerID, 2*time.Second); err != nil {
-		s.log.Error("Failed to restart container: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to restart server"))
-	}
-
-	// Update server status
-	now := time.Now()
-	server.Status = storage.StatusStarting
-	server.LastStarted = &now
-	if err := s.store.UpdateServer(ctx, server); err != nil {
-		s.log.Error("Failed to update server status: %v", err)
-	}
-
-	// Clear ephemeral configuration fields
-	if err := s.store.ClearEphemeralConfigFields(ctx, server.ID); err != nil {
-		s.log.Error("Failed to clear ephemeral config fields: %v", err)
-	}
-
-	// Emit the server-restart event
-	if s.bus != nil {
-		s.bus.Emit(ctx, events.Event{
-			Type:     v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_SERVER_RESTART,
-			ServerID: server.ID,
-		})
-	}
+	s.runLifecycleAsync(ctx, server, 2*time.Hour, "restart", s.lifecycle.Restart)
 
 	return connect.NewResponse(&v1.RestartServerResponse{
-		Status: "restarting",
+		Status: v1.ServerStatus_SERVER_STATUS_STARTING,
 	}), nil
 }
 
-// Destroys and recreates a server container from scratch - brute force reset
+// Destroys and recreates the container from scratch
 func (s *ServerService) RecreateServer(ctx context.Context, req *connect.Request[v1.RecreateServerRequest]) (*connect.Response[v1.RecreateServerResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
-	// Get server config for container creation
-	serverConfig, err := s.store.GetServerConfig(ctx, server.ID)
-	if err != nil {
-		s.log.Error("Failed to get server config: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get server configuration"))
-	}
-
-	// Recreate container
-	result, err := s.docker.RecreateContainer(ctx, server.ContainerID, server, serverConfig)
-	if err != nil {
-		s.log.Error("Failed to recreate container: %v", err)
-		server.Status = storage.StatusError
-		if updateErr := s.store.UpdateServer(ctx, server); updateErr != nil {
-			s.log.Error("Failed to update server status: %v", updateErr)
-		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to recreate server container"))
-	}
-
-	server.ContainerID = result.NewContainerID
-
-	// Update server status
-	now := time.Now()
-	server.Status = storage.StatusStarting
-	server.LastStarted = &now
-
-	if err := s.store.UpdateServer(ctx, server); err != nil {
-		s.log.Error("Failed to update server: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update server"))
-	}
-
-	// Update proxy route if enabled
-	if s.proxy != nil && server.ProxyHostname != "" {
-		if err := s.proxy.UpdateServerRoute(server); err != nil {
-			s.log.Error("Failed to update proxy route: %v", err)
-		}
-	}
-
-	// Clear ephemeral configuration fields
-	if err := s.store.ClearEphemeralConfigFields(ctx, server.ID); err != nil {
-		s.log.Error("Failed to clear ephemeral config fields: %v", err)
-	}
-
-	s.log.Info("Server %s recreated successfully with new container %s", server.Name, result.NewContainerID)
+	s.runLifecycleAsync(ctx, server, 2*time.Hour, "recreate", s.lifecycle.Recreate)
 
 	return connect.NewResponse(&v1.RecreateServerResponse{
-		Status: "recreated",
+		Status: v1.ServerStatus_SERVER_STATUS_CREATING,
 	}), nil
 }
 
 // SendCommand sends a command to a server
 func (s *ServerService) SendCommand(ctx context.Context, req *connect.Request[v1.SendCommandRequest]) (*connect.Response[v1.SendCommandResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
-
 	silent := false
 	if req.Msg.Silent != nil {
 		silent = *req.Msg.Silent
 	}
 
-	if err != nil {
-		s.log.Error("Failed to get server: %v", err)
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
-	}
-
-	// Check if server is running
-	if server.ContainerID == "" {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("server container not found"))
-	}
-
-	status, err := s.docker.GetContainerStatus(ctx, server.ContainerID)
-	if err != nil || status != storage.StatusRunning {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("server is not running"))
-	}
-
-	if req.Msg.Command == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("command is required"))
-	}
-
-	// Add command to log stream if available
-	commandTime := time.Now()
-	if !silent && s.logStreamer != nil {
-		s.logStreamer.AddCommandEntry(server.ContainerID, req.Msg.Command, commandTime)
-	}
-
-	// Send command
-	output, err := s.sender.SendCommand(ctx, server.ID, req.Msg.Command)
-	success := err == nil
-
-	// Add command output to log stream if available
-	if !silent && s.logStreamer != nil && (output != "" || !success) {
-		s.logStreamer.AddCommandOutput(server.ContainerID, output, success, commandTime)
-	}
-
-	if err != nil {
+	output, err := s.sender.Run(ctx, req.Msg.Id, req.Msg.Command, silent)
+	switch {
+	case errors.Is(err, command.ErrEmptyCommand):
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	case errors.Is(err, command.ErrServerNotFound):
+		return nil, connect.NewError(connect.CodeNotFound, err)
+	case errors.Is(err, command.ErrNoContainer), errors.Is(err, command.ErrNotRunning):
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	case err != nil:
 		s.log.Error("Failed to execute command: %v", err)
 		return connect.NewResponse(&v1.SendCommandResponse{
 			Success: false,
@@ -1407,11 +1105,27 @@ func (s *ServerService) SendCommand(ctx context.Context, req *connect.Request[v1
 	}), nil
 }
 
+// Broadcasts a chat line in game under the given sender
+func (s *ServerService) SendChat(ctx context.Context, req *connect.Request[v1.SendChatRequest]) (*connect.Response[v1.SendChatResponse], error) {
+	err := s.sender.Chat(ctx, req.Msg.Id, req.Msg.Sender, req.Msg.Message)
+	switch {
+	case errors.Is(err, command.ErrEmptyMessage):
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	case errors.Is(err, command.ErrServerNotFound):
+		return nil, connect.NewError(connect.CodeNotFound, err)
+	case errors.Is(err, command.ErrNoContainer), errors.Is(err, command.ErrNotRunning):
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	case err != nil:
+		return nil, connect.NewError(connect.CodeUnavailable, err)
+	}
+	return connect.NewResponse(&v1.SendChatResponse{}), nil
+}
+
 // Reads the server's latest.log and uploads it to mclo.gs
 func (s *ServerService) UploadToMCLogs(ctx context.Context, req *connect.Request[v1.UploadToMCLogsRequest]) (*connect.Response[v1.UploadToMCLogsResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
 	logPath := filepath.Join(server.DataPath, "logs", "latest.log")
@@ -1478,27 +1192,25 @@ func (s *ServerService) UploadToMCLogs(ctx context.Context, req *connect.Request
 func (s *ServerService) GetServerLogs(ctx context.Context, req *connect.Request[v1.GetServerLogsRequest]) (*connect.Response[v1.GetServerLogsResponse], error) {
 	// Parse tail parameter
 	tail := int(req.Msg.Tail)
-	if tail == 0 {
+	if tail <= 0 {
 		tail = 100
 	}
 
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
-	}
-
-	// If container not created yet, return empty logs
-	if server.ContainerID == "" {
-		return connect.NewResponse(&v1.GetServerLogsResponse{
-			Logs:  []*v1.LogEntry{},
-			Total: 0,
-		}), nil
+		return nil, err
 	}
 
 	// Get structured log entries from the log streamer if available
 	var protoLogs []*v1.LogEntry
 	if s.logStreamer != nil {
-		protoLogs = s.logStreamer.GetLogs(server.ContainerID, tail)
+		// Attaches a follow when no stream exists yet
+		if server.ContainerId != "" {
+			if err := s.logStreamer.StartStreaming(server.Id, server.ContainerId); err != nil {
+				s.log.Warn("Failed to start log streaming for server %s: %v", server.Id, err)
+			}
+		}
+		protoLogs = s.logStreamer.GetLogs(server.Id, tail)
 	}
 
 	return connect.NewResponse(&v1.GetServerLogsResponse{
@@ -1509,18 +1221,14 @@ func (s *ServerService) GetServerLogs(ctx context.Context, req *connect.Request[
 
 // ClearServerLogs clears server logs
 func (s *ServerService) ClearServerLogs(ctx context.Context, req *connect.Request[v1.ClearServerLogsRequest]) (*connect.Response[v1.ClearServerLogsResponse], error) {
-	server, err := s.store.GetServer(ctx, req.Msg.Id)
+	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
-	}
-
-	if server.ContainerID == "" {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("server container not created"))
+		return nil, err
 	}
 
 	// Clear structured log entries if log streamer is available
 	if s.logStreamer != nil {
-		s.logStreamer.ClearLogs(server.ContainerID)
+		s.logStreamer.ClearLogs(server.Id)
 	}
 
 	return connect.NewResponse(&v1.ClearServerLogsResponse{}), nil
@@ -1528,50 +1236,179 @@ func (s *ServerService) ClearServerLogs(ctx context.Context, req *connect.Reques
 
 // GetNextAvailablePort gets the next available port
 func (s *ServerService) GetNextAvailablePort(ctx context.Context, req *connect.Request[v1.GetNextAvailablePortRequest]) (*connect.Response[v1.GetNextAvailablePortResponse], error) {
-	// Get all servers
-	servers, err := s.store.ListServers(ctx)
+	// Registry scan keeps the candidate and rcon shadow free
+	nextPort, err := s.proxy.FindFreePort(ctx, proxy.FreePortOpts{
+		Protocol:   v1.ModuleProtocol_MODULE_PROTOCOL_TCP,
+		Start:      s.config.Proxy.PortRangeMin,
+		End:        65535,
+		RconShadow: true,
+	})
 	if err != nil {
-		s.log.Error("Failed to list servers: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get available port"))
+		return nil, connect.NewError(connect.CodeResourceExhausted, err)
 	}
 
-	// Build a map of used ports (only for non-proxied servers)
-	usedPortsMap := make(map[int32]bool)
-	for _, server := range servers {
-		// Only count ports for servers that don't use proxy
-		if server.ProxyHostname == "" && server.Port > 0 {
-			usedPortsMap[int32(server.Port)] = true
-		}
-	}
-
-	// Mark proxy listening ports as used (only if proxy is enabled)
-	if s.config.Proxy.Enabled {
-		for _, port := range s.config.Proxy.ListenPorts {
-			usedPortsMap[int32(port)] = true
-		}
-	}
-
-	// Find the next available port starting from 25565
-	var nextPort int32 = 25565
-	for usedPortsMap[nextPort] {
-		nextPort++
-		// Safety check to avoid infinite loop
-		if nextPort > 65535 {
-			return nil, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("no available ports"))
-		}
-	}
-
-	// Convert map to proto UsedPort array
-	usedPorts := make([]*v1.UsedPort, 0, len(usedPortsMap))
-	for port, inUse := range usedPortsMap {
-		usedPorts = append(usedPorts, &v1.UsedPort{
-			Port:  port,
-			InUse: inUse,
-		})
+	// Registry snapshot backs the client side hints
+	usedPorts, err := usedPortsProto(ctx, s.proxy)
+	if err != nil {
+		return nil, err
 	}
 
 	return connect.NewResponse(&v1.GetNextAvailablePortResponse{
-		Port:      nextPort,
+		Port:      int32(nextPort),
 		UsedPorts: usedPorts,
 	}), nil
+}
+
+// Reports host physical memory and per-server reservations
+func (s *ServerService) GetHostMemory(ctx context.Context, req *connect.Request[v1.GetHostMemoryRequest]) (*connect.Response[v1.GetHostMemoryResponse], error) {
+	var totalMB int64
+	if s.docker != nil {
+		if dockerClient := s.docker.GetDockerClient(); dockerClient != nil {
+			if info, err := dockerClient.Info(ctx); err == nil {
+				totalMB = info.MemTotal / 1024 / 1024
+			} else {
+				s.log.Error("Failed to read docker host info: %v", err)
+			}
+		}
+	}
+
+	servers, err := s.store.ListServers(ctx)
+	if err != nil {
+		s.log.Error("Failed to list servers: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get host memory"))
+	}
+
+	allocations := make([]*v1.ServerMemoryAllocation, 0, len(servers))
+	for _, server := range servers {
+		allocations = append(allocations, &v1.ServerMemoryAllocation{
+			ServerId:   server.Id,
+			ServerName: server.Name,
+			Memory:     int32(server.Memory),
+		})
+	}
+
+	return connect.NewResponse(&v1.GetHostMemoryResponse{
+		TotalMb:     totalMB,
+		Allocations: allocations,
+	}), nil
+}
+
+// Ranges longer than this are served bucketed
+const rawHistoryWindow = 6 * time.Hour
+
+// Returns stored metrics samples for one server's charts
+func (s *ServerService) GetServerMetricsHistory(ctx context.Context, req *connect.Request[v1.GetServerMetricsHistoryRequest]) (*connect.Response[v1.GetServerMetricsHistoryResponse], error) {
+	if _, err := s.store.GetServer(ctx, req.Msg.Id); err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+	}
+
+	to := time.Now()
+	if req.Msg.To != nil {
+		to = req.Msg.To.AsTime()
+	}
+	from := to.Add(-time.Hour)
+	if req.Msg.From != nil {
+		from = req.Msg.From.AsTime()
+	}
+	if !from.Before(to) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("from must be before to"))
+	}
+
+	resolution := int(req.Msg.Resolution)
+	if resolution == 0 && to.Sub(from) > rawHistoryWindow {
+		resolution = 300
+	}
+
+	rawSeconds := 0
+	if s.metricsCollector != nil {
+		rawSeconds = s.metricsCollector.HistorySampleSeconds()
+	}
+	samples, err := s.store.GetMetricsHistory(ctx, req.Msg.Id, from, to, resolution, rawSeconds)
+	if err != nil {
+		s.log.Error("Failed to load metrics history for %s: %v", req.Msg.Id, err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load metrics history"))
+	}
+
+	return connect.NewResponse(&v1.GetServerMetricsHistoryResponse{
+		Samples:    samples,
+		Resolution: int32(resolution),
+	}), nil
+}
+
+// Serves findings the doctor module published, panel adds nothing
+func (s *ServerService) GetServerPerformanceReport(ctx context.Context, req *connect.Request[v1.GetServerPerformanceReportRequest]) (*connect.Response[v1.GetServerPerformanceReportResponse], error) {
+	server, err := getServer(ctx, s.store, req.Msg.Id)
+	if err != nil {
+		return nil, err
+	}
+
+	var agentConnected bool
+	if s.metricsCollector != nil {
+		if m := s.metricsCollector.GetMetrics(server.Id); m != nil {
+			agentConnected = m.AgentConnected
+		}
+	}
+
+	rows, err := s.store.GetFindingDismissals(ctx, server.Id)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load dismissals: %w", err))
+	}
+	dismissals := make(map[string]*v1.FindingDismissal, len(rows))
+	for _, d := range rows {
+		dismissals[d.FindingId] = d
+	}
+
+	findings := runtimespec.ReadFindings(server.DataPath)
+	for _, f := range findings {
+		d, ok := dismissals[f.GetId()]
+		f.Dismissed = ok && d.ContentHash == utils.FindingHash(f)
+	}
+
+	return connect.NewResponse(&v1.GetServerPerformanceReportResponse{
+		Findings:       findings,
+		AgentConnected: agentConnected,
+	}), nil
+}
+
+// Hides or restores one finding, scoped to its current content
+func (s *ServerService) DismissPerformanceFinding(ctx context.Context, req *connect.Request[v1.DismissPerformanceFindingRequest]) (*connect.Response[v1.DismissPerformanceFindingResponse], error) {
+	server, err := getServer(ctx, s.store, req.Msg.Id)
+	if err != nil {
+		return nil, err
+	}
+	if req.Msg.Restore {
+		if err := s.store.DeleteFindingDismissal(ctx, server.Id, req.Msg.FindingId); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to restore finding: %w", err))
+		}
+		return connect.NewResponse(&v1.DismissPerformanceFindingResponse{}), nil
+	}
+
+	for _, f := range runtimespec.ReadFindings(server.DataPath) {
+		if f.GetId() != req.Msg.FindingId {
+			continue
+		}
+		dismissal := &v1.FindingDismissal{
+			ServerId:    server.Id,
+			FindingId:   f.GetId(),
+			ContentHash: utils.FindingHash(f),
+			DismissedAt: timestamppb.Now(),
+		}
+		if err := s.store.UpsertFindingDismissal(ctx, dismissal); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to dismiss finding: %w", err))
+		}
+		return connect.NewResponse(&v1.DismissPerformanceFindingResponse{}), nil
+	}
+	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("finding not found"))
+}
+
+// Returns the activity ledger for one server
+func (s *ServerService) GetServerActions(ctx context.Context, req *connect.Request[v1.GetServerActionsRequest]) (*connect.Response[v1.GetServerActionsResponse], error) {
+	if _, err := s.store.GetServer(ctx, req.Msg.Id); err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+	}
+	rows, err := s.store.GetServerActions(ctx, req.Msg.Id, uint(req.Msg.AfterId))
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load actions: %w", err))
+	}
+	return connect.NewResponse(&v1.GetServerActionsResponse{Actions: rows}), nil
 }

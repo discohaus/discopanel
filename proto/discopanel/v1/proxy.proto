@@ -2,39 +2,192 @@ syntax = "proto3";
 
 package discopanel.v1;
 
-import "discopanel/v1/common.proto";
+import "discopanel/options/v1/options.proto";
+import "discopanel/v1/storage.proto";
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
 // TCP proxy and routing management
 service ProxyService {
   // List active proxy routes
-  rpc GetProxyRoutes(GetProxyRoutesRequest) returns (GetProxyRoutesResponse);
+  rpc GetProxyRoutes(GetProxyRoutesRequest) returns (GetProxyRoutesResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_PROXY
+      action: ACTION_TYPE_READ
+    };
+  }
   // Check proxy system status
-  rpc GetProxyStatus(GetProxyStatusRequest) returns (GetProxyStatusResponse);
-  // Modify proxy settings
-  rpc UpdateProxyConfig(UpdateProxyConfigRequest) returns (UpdateProxyConfigResponse);
+  rpc GetProxyStatus(GetProxyStatusRequest) returns (GetProxyStatusResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_PROXY
+      action: ACTION_TYPE_READ
+    };
+  }
+  // Modify proxy settings, returns the fresh status
+  rpc UpdateProxyConfig(UpdateProxyConfigRequest) returns (GetProxyStatusResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_PROXY
+      action: ACTION_TYPE_UPDATE
+    };
+  }
   // List all proxy listeners
-  rpc GetProxyListeners(GetProxyListenersRequest) returns (GetProxyListenersResponse);
+  rpc GetProxyListeners(GetProxyListenersRequest) returns (GetProxyListenersResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_PROXY
+      action: ACTION_TYPE_READ
+    };
+  }
   // Add new listener port
-  rpc CreateProxyListener(CreateProxyListenerRequest) returns (CreateProxyListenerResponse);
+  rpc CreateProxyListener(CreateProxyListenerRequest) returns (CreateProxyListenerResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_PROXY
+      action: ACTION_TYPE_CREATE
+    };
+  }
   // Modify listener settings
-  rpc UpdateProxyListener(UpdateProxyListenerRequest) returns (UpdateProxyListenerResponse);
+  rpc UpdateProxyListener(UpdateProxyListenerRequest) returns (UpdateProxyListenerResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_PROXY
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "id"
+    };
+  }
   // Remove listener port
-  rpc DeleteProxyListener(DeleteProxyListenerRequest) returns (DeleteProxyListenerResponse);
+  rpc DeleteProxyListener(DeleteProxyListenerRequest) returns (DeleteProxyListenerResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_PROXY
+      action: ACTION_TYPE_DELETE
+      object_id_field: "id"
+    };
+  }
   // Get server proxy configuration
-  rpc GetServerRouting(GetServerRoutingRequest) returns (GetServerRoutingResponse);
+  rpc GetServerRouting(GetServerRoutingRequest) returns (GetServerRoutingResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_PROXY
+      action: ACTION_TYPE_READ
+      object_id_field: "server_id"
+    };
+  }
   // Update server proxy hostname
-  rpc UpdateServerRouting(UpdateServerRoutingRequest) returns (UpdateServerRoutingResponse);
+  rpc UpdateServerRouting(UpdateServerRoutingRequest) returns (UpdateServerRoutingResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_PROXY
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "server_id"
+    };
+  }
+  // Full network topology snapshot
+  rpc GetNetworkTopology(GetNetworkTopologyRequest) returns (GetNetworkTopologyResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_PROXY
+      action: ACTION_TYPE_READ
+    };
+  }
+  // Preview what disabling the proxy converts
+  rpc GetProxyDisableImpact(GetProxyDisableImpactRequest) returns (GetProxyDisableImpactResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_PROXY
+      action: ACTION_TYPE_READ
+    };
+  }
+}
+
+// Route serving state
+enum ProxyRouteState {
+  option (discopanel.options.v1.enum_type) = {label: "Route State"};
+  PROXY_ROUTE_STATE_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  // Backend is reachable, connections relay through
+  PROXY_ROUTE_STATE_ONLINE = 1 [(discopanel.options.v1.value) = {label: "Online"}];
+  // Server is booting, status pings get a synthesized response
+  PROXY_ROUTE_STATE_STARTING = 2 [(discopanel.options.v1.value) = {label: "Starting"}];
+  // Server is stopped, logins may wake it when wakeable
+  PROXY_ROUTE_STATE_OFFLINE = 3 [(discopanel.options.v1.value) = {label: "Offline"}];
+}
+
+// How a reservation occupies its port
+enum NetworkReservationKind {
+  option (discopanel.options.v1.enum_type) = {label: "Reservation Kind"};
+  NETWORK_RESERVATION_KIND_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  // Direct host bind owns the port outright
+  NETWORK_RESERVATION_KIND_EXCLUSIVE = 1 [(discopanel.options.v1.value) = {label: "Direct bind"}];
+  // Shared proxy listener socket
+  NETWORK_RESERVATION_KIND_SOCKET = 2 [(discopanel.options.v1.value) = {label: "Listener socket"}];
+  // Hostname route inside a shared socket
+  NETWORK_RESERVATION_KIND_ROUTED = 3 [(discopanel.options.v1.value) = {label: "Routed"}];
+  // Hostnameless fallback forward, one per transport per port
+  NETWORK_RESERVATION_KIND_RELAY = 4 [(discopanel.options.v1.value) = {label: "Relay"}];
+}
+
+// Who holds a network reservation
+enum NetworkOwnerKind {
+  option (discopanel.options.v1.enum_type) = {label: "Reservation Owner"};
+  NETWORK_OWNER_KIND_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  NETWORK_OWNER_KIND_SERVER = 1 [(discopanel.options.v1.value) = {label: "Server"}];
+  NETWORK_OWNER_KIND_MODULE = 2 [(discopanel.options.v1.value) = {label: "Module"}];
+  NETWORK_OWNER_KIND_LISTENER = 3 [(discopanel.options.v1.value) = {label: "Listener"}];
+  NETWORK_OWNER_KIND_PANEL = 4 [(discopanel.options.v1.value) = {label: "Panel"}];
+}
+
+// One checked out slice of the host network space
+message NetworkReservation {
+  int32 port = 1;
+  NetworkTransport transport = 2;
+  NetworkReservationKind kind = 3;
+  ModuleProtocol protocol = 4;
+  // Empty hostname means catch all
+  string hostname = 5;
+  NetworkOwnerKind owner_kind = 6;
+  string owner_id = 7;
+  string detail = 8;
+}
+
+// Empty topology request
+message GetNetworkTopologyRequest {}
+
+// Full network picture for the topology view
+message GetNetworkTopologyResponse {
+  bool proxy_enabled = 1;
+  bool proxy_running = 2;
+  int32 panel_port = 5;
+  repeated NetworkReservation reservations = 6;
+  repeated ProxyRoute routes = 7;
+  // Router wan address seen from the internet
+  string public_ip = 8;
+  // Host address on the local network
+  string lan_ip = 9;
+  // Default gateway the host routes through
+  string gateway_ip = 10;
 }
 
 // Active proxy connection
 message ProxyRoute {
+  // Owning server id, empty for module routes
   string server_id = 1;
   string hostname = 2;
   string backend_host = 3;
   int32 backend_port = 4;
-  bool active = 5;
+  ProxyRouteState state = 6;
+  bool wakeable = 7;
+  bool proxy_protocol = 8;
+  bool preserve_hostname = 9;
+  int64 active_connections = 10;
+  int64 total_connections = 11;
+  int64 bytes_to_backend = 12;
+  int64 bytes_to_client = 13;
+  int32 last_protocol_version = 14;
+  int64 logins = 15;
+  int64 status_pings = 16;
+  int64 wakes = 17;
+  // Socket the route rides on
+  int32 listen_port = 18;
+  // Owning listener id, empty for module port sockets
+  string listener_id = 19;
+  NetworkOwnerKind owner_kind = 20;
+  string owner_id = 21;
+  // Module port name for module routes
+  string port_name = 22;
+  // Protocol lane the route serves on its socket
+  ModuleProtocol protocol = 23;
 }
 
 // Empty routes request
@@ -51,29 +204,89 @@ message GetProxyStatusRequest {}
 // Proxy system state
 message GetProxyStatusResponse {
   bool enabled = 1;
-  string base_url = 2;
+  // Hostnames the panel answers on
+  repeated string hostnames = 2;
   repeated int32 listen_ports = 3;
   repeated ProxyListener listeners = 4;
   int32 listen_port = 5; // Primary port
   bool running = 6;
   int32 active_routes = 7;
+  // Panel also answers unmatched hostnames
+  bool catch_all = 8;
+  // Panel lobby answers unrouted game joins
+  bool lobby = 9;
+  // Lobby verifies joins against mojang
+  bool lobby_online = 10;
+  // Players standing in the lobby right now
+  int32 lobby_members = 11;
+  // Lobby members waiting per waking server id
+  map<string, int32> lobby_waiting = 12;
+  // Saved base domain, empty means auto
+  string base_url = 13;
+  // Base domain in effect right now
+  string effective_base_url = 14;
+  // Host address on the local network
+  string lan_ip = 15;
+  // Router wan address seen from the internet
+  string public_ip = 16;
 }
 
 // Proxy settings to update
 message UpdateProxyConfigRequest {
   bool enabled = 1;
-  string base_url = 2;
+  // Hostnames the panel answers on
+  repeated string hostnames = 2;
+  // Converts proxied servers to direct ports on disable
+  bool convert_to_direct = 3;
+  // Port picks for the convert, missing servers auto assign
+  repeated ProxiedServerImpact assignments = 4;
+  // Panel also answers unmatched hostnames
+  bool catch_all = 5;
+  // Panel lobby answers unrouted game joins
+  // Absent keeps the saved value
+  optional bool lobby = 6;
+  // Lobby verifies joins against mojang
+  // Absent keeps the saved value
+  optional bool lobby_online = 7;
+  // Base domain, absent keeps the saved value
+  optional string base_url = 8;
 }
 
-// Updated proxy state
-message UpdateProxyConfigResponse {
-  bool enabled = 1;
-  string base_url = 2;
-  repeated int32 listen_ports = 3;
-  repeated ProxyListener listeners = 4;
-  int32 listen_port = 5;
-  bool running = 6;
-  int32 active_routes = 7;
+// Empty impact request
+message GetProxyDisableImpactRequest {}
+
+// One proxied server and its proposed direct port
+message ProxiedServerImpact {
+  string server_id = 1;
+  // Hostnames the server loses on convert
+  repeated string hostnames = 2;
+  // Rcon shadows at plus ten
+  int32 proposed_port = 3;
+}
+
+// One proxied module port and its landing spot
+message ProxiedModulePortImpact {
+  string module_id = 1;
+  string port_name = 2;
+  int32 current_host_port = 3;
+  // Differs when the direct bind would collide
+  int32 proposed_host_port = 4;
+}
+
+// One proxied server extra port and its landing spot
+message ProxiedServerPortImpact {
+  string server_id = 1;
+  string port_name = 2;
+  int32 current_host_port = 3;
+  // Differs when the direct bind would collide
+  int32 proposed_host_port = 4;
+}
+
+// Everything a disable would convert
+message GetProxyDisableImpactResponse {
+  repeated ProxiedServerImpact servers = 1;
+  repeated ProxiedModulePortImpact module_ports = 2;
+  repeated ProxiedServerPortImpact server_ports = 3;
 }
 
 // Empty listeners request
@@ -83,6 +296,8 @@ message GetProxyListenersRequest {}
 message ProxyListenerWithCount {
   ProxyListener listener = 1;
   int32 server_count = 2;
+  // Routed and relay reservations riding this port
+  int32 workload_count = 3;
 }
 
 // All configured listeners
@@ -97,6 +312,8 @@ message CreateProxyListenerRequest {
   int32 port = 3;
   bool enabled = 4;
   bool is_default = 5;
+  bool ingress_proxy_protocol = 6;
+  repeated string trusted_proxies = 7;
 }
 
 // Created listener
@@ -112,6 +329,8 @@ message UpdateProxyListenerRequest {
   int32 port = 4;
   bool enabled = 5;
   bool is_default = 6;
+  bool ingress_proxy_protocol = 7;
+  repeated string trusted_proxies = 8;
 }
 
 // Updated listener
@@ -124,10 +343,8 @@ message DeleteProxyListenerRequest {
   string id = 1;
 }
 
-// Deletion status
-message DeleteProxyListenerResponse {
-  string status = 1;
-}
+// Empty deletion response
+message DeleteProxyListenerResponse {}
 
 // Server routing lookup
 message GetServerRoutingRequest {
@@ -137,30 +354,35 @@ message GetServerRoutingRequest {
 // Active server route
 message ServerRoute {
   string hostname = 1;
-  bool active = 2;
 }
 
 // Server proxy configuration
 message GetServerRoutingResponse {
   bool proxy_enabled = 1;
-  string proxy_hostname = 2;
-  string suggested_hostname = 3;
-  string base_url = 4;
+  // Hostnames this server serves on its listener
+  repeated string proxy_hostnames = 2;
   int32 listen_port = 5;
   optional ServerRoute current_route = 6;
   string proxy_listener_id = 7;
+  // Unknown hostname joins on the listener land here
+  bool proxy_catch_all = 8;
 }
 
-// Hostname and listener to assign
+// Hostnames and listener to assign
 message UpdateServerRoutingRequest {
   string server_id = 1;
-  string proxy_hostname = 2;
+  // Hostnames to serve, full state, empty disables routing
+  repeated string proxy_hostnames = 2;
   string proxy_listener_id = 3;
+  // Direct mode host port, ignored when hostnames set
+  optional int32 port = 4;
+  // Makes this server the listener's default destination
+  bool proxy_catch_all = 5;
 }
 
 // Routing update result
 message UpdateServerRoutingResponse {
-  string status = 1;
-  string hostname = 2;
-  string proxy_listener_id = 3;
+  repeated string hostnames = 1;
+  string proxy_listener_id = 2;
 }
+

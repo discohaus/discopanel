@@ -7,9 +7,14 @@
 	import htmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker';
 	import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
 
+	const globalScope = self as typeof self & {
+		MonacoEnvironment?: monaco.Environment;
+		__jsonTemplateLang?: boolean;
+	};
+
 	// Configure the Monaco worker environment
-	if (!(self as any).MonacoEnvironment) {
-		(self as any).MonacoEnvironment = {
+	if (!globalScope.MonacoEnvironment) {
+		globalScope.MonacoEnvironment = {
 			getWorker(_: unknown, label: string) {
 				if (label === 'json') return new jsonWorker();
 				if (label === 'css' || label === 'scss' || label === 'less') return new cssWorker();
@@ -22,8 +27,8 @@
 	}
 
 	// MONACO PSEUDO JSON-LIKE TEMPLATE AND LINTER, NEEDED FOR GO TEMPLATING
-	if (!(self as any).__jsonTemplateLang) {
-		(self as any).__jsonTemplateLang = true;
+	if (!globalScope.__jsonTemplateLang) {
+		globalScope.__jsonTemplateLang = true;
 		monaco.languages.register({ id: 'json-template' });
 		monaco.languages.setLanguageConfiguration('json-template', {
 			brackets: [
@@ -48,7 +53,7 @@
 					[/\{\{/, { token: 'variable.template', next: '@template' }],
 					[/"(?:[^"\\]|\\.)*"(?=\s*:)/, 'type'],
 					[/"/, { token: 'string', next: '@string' }],
-					[/-?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?/, 'number'],
+					[/-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/, 'number'],
 					[/\b(?:true|false|null)\b/, 'keyword'],
 					[/[{}[\]]/, 'delimiter.bracket'],
 					[/[,:]/, 'delimiter']
@@ -94,7 +99,7 @@
 	let editor: monaco.editor.IStandaloneCodeEditor | null = null;
 	let resizeObserver: ResizeObserver | null = null;
 
-	// Guards onChange from firing while we push an external value into the editor
+	// Guards onChange while pushing an external value into editor
 	let applyingExternal = false;
 
 	// Create the editor when the container mounts

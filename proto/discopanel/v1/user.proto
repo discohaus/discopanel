@@ -2,22 +2,48 @@ syntax = "proto3";
 
 package discopanel.v1;
 
-import "discopanel/v1/common.proto";
+import "discopanel/options/v1/options.proto";
+import "discopanel/v1/storage.proto";
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
 // User management service (admin only)
 service UserService {
   // Get all system users
-  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_USERS
+      action: ACTION_TYPE_READ
+    };
+  }
   // Get a single user
-  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+  rpc GetUser(GetUserRequest) returns (GetUserResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_USERS
+      action: ACTION_TYPE_READ
+    };
+  }
   // Create new user account
-  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_USERS
+      action: ACTION_TYPE_CREATE
+    };
+  }
   // Modify user account
-  rpc UpdateUser(UpdateUserRequest) returns (UpdateUserResponse);
+  rpc UpdateUser(UpdateUserRequest) returns (UpdateUserResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_USERS
+      action: ACTION_TYPE_UPDATE
+    };
+  }
   // Remove user account
-  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_USERS
+      action: ACTION_TYPE_DELETE
+    };
+  }
 }
 
 // Empty user list request

@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+// File contract between panel and runtime container
+package discopanel.v1;
+
+import "discopanel/options/v1/options.proto";
+import "discopanel/v1/storage.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+
+// How the runtime entrypoint starts the server process
+enum LaunchKind {
+  LAUNCH_KIND_UNSPECIFIED = 0;
+  // Java <flags> -jar <jar> <args> nogui
+  LAUNCH_KIND_JAR = 1;
+  // Java <flags> @<args_file> nogui, modern Forge and NeoForge
+  LAUNCH_KIND_ARGS_FILE = 2;
+  // Java <flags> <exec tokens verbatim>
+  LAUNCH_KIND_CUSTOM = 3;
+}
+
+// Tells the runtime entrypoint how to start the server process
+message LaunchSpec {
+  int32 version = 1;
+  LaunchKind kind = 2;
+  string jar = 3;
+  string args_file = 4;
+  // Whitespace-tokenized for LAUNCH_KIND_CUSTOM
+  string exec = 5;
+  ModLoader loader = 6;
+  string mc_version = 7;
+  int32 java_major = 8;
+}
+
+// Tells the runtime supervisor how to reach the panel
+message AgentSpec {
+  int32 version = 1;
+  bool enabled = 2;
+  string panel_url = 3;
+  string token = 4;
+  string server_id = 5;
+}
+
+// Identifies the modpack a server was provisioned from
+message ModpackRef {
+  discopanel.options.v1.PackSource source = 1;
+  string id = 2;
+  string version_id = 3;
+}
+
+// Records the provisioned state of a server data directory
+message Manifest {
+  int32 version = 1;
+  ModLoader loader = 2;
+  string loader_version = 3;
+  string mc_version = 4;
+  int32 java_major = 5;
+  ModpackRef modpack = 6;
+  google.protobuf.Timestamp provisioned_at = 7;
+}

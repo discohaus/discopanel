@@ -4,22 +4,16 @@
 	import { resolve } from '$app/paths';
 	import { create } from '@bufbuild/protobuf';
 	import { authStore } from '$lib/stores/auth';
-	import { rpcClient } from '$lib/api/rpc-client';
-	import { silentCallOptions } from '$lib/api/rpc-client';
+	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 	import { ValidateInviteRequestSchema } from '$lib/proto/discopanel/v1/auth_pb';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
-	import {
-		Card,
-		CardContent,
-		CardDescription,
-		CardHeader,
-		CardTitle
-	} from '$lib/components/ui/card';
+	import { Card, CardContent } from '$lib/components/ui/card';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Tabs, TabsContent, TabsList, TabsTrigger } from '$lib/components/ui/tabs';
-	import { toast } from 'svelte-sonner';
+	import { DiscoLogo } from '$lib/components/app';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { Loader2, AlertCircle, TicketCheck, KeyRound } from '@lucide/svelte';
 
 	let mode = $state<'login' | 'register'>('login');
@@ -41,6 +35,9 @@
 	let showRecovery = $state(false);
 	let recoveryKey = $state('');
 
+	// Blocks the form while an SSO callback validates
+	let validatingSso = $state(false);
+
 	// Invite state
 	let inviteCode = $state('');
 	let inviteValid = $state(false);
@@ -49,51 +46,59 @@
 	let invitePin = $state('');
 
 	onMount(() => {
-		// Check for OIDC callback token
+		// Token in URL fragment means OIDC callback landed
 		const urlParams = new URLSearchParams(window.location.search);
-		const token = urlParams.get('token');
+		const token = new URLSearchParams(window.location.hash.slice(1)).get('token');
 		if (token) {
-			// Store token from OIDC callback in both localStorage and store state
+			validatingSso = true;
 			authStore.setToken(token);
-			window.history.replaceState({}, '', '/login');
-			authStore.validateSession().then((valid) => {
-				if (valid) {
-					goto(resolve('/'));
-				} else {
+			window.history.replaceState({}, '', resolve('/login'));
+			authStore
+				.validateSession()
+				.then(async (valid) => {
+					if (valid) {
+						goto(resolve('/'));
+						return;
+					}
 					error = 'Session validation failed. Please try again.';
-				}
-			});
+					await loadAuthStatus(null);
+					validatingSso = false;
+				})
+				.catch(async () => {
+					error = 'Session validation failed. Please try again.';
+					await loadAuthStatus(null);
+					validatingSso = false;
+				});
 			return;
 		}
 
-		// Check for invite code in URL
 		const invite = urlParams.get('invite');
 
-		// If already authenticated, redirect to home
 		if ($authStore.isAuthenticated) {
 			goto(resolve('/'));
 			return;
 		}
 
-		// Check auth status
-		authStore.checkAuthStatus().then(async (status) => {
+		loadAuthStatus(invite);
+	});
+
+	async function loadAuthStatus(invite: string | null) {
+		try {
+			const status = await authStore.checkAuthStatus();
 			authStatus = status;
 			oidcEnabled = $authStore.oidcEnabled;
 			localAuthEnabled = $authStore.localAuthEnabled;
 
-			// If auth is disabled and not first user setup, redirect to home
 			if (!status.enabled && !status.firstUserSetup) {
 				goto(resolve('/'));
 				return;
 			}
 
-			// If first user setup, show registration
 			if (status.firstUserSetup) {
 				mode = 'register';
 				return;
 			}
 
-			// Validate invite code if present
 			if (invite) {
 				try {
 					const resp = await rpcClient.auth.validateInvite(
@@ -108,13 +113,15 @@
 						mode = 'register';
 					}
 				} catch {
-					// Invalid invite, just show normal login
+					// Invalid invite falls back to normal login
 				}
-				// Clean up URL
-				window.history.replaceState({}, '', '/login');
+				window.history.replaceState({}, '', resolve('/login'));
 			}
-		});
-	});
+		} catch (err) {
+			console.error('Failed to load auth status:', err);
+			error = 'Could not reach the server. Refresh to try again.';
+		}
+	}
 
 	async function handleLogin() {
 		error = '';
@@ -122,7 +129,7 @@
 
 		try {
 			await authStore.login(username, password);
-			toast.success('Logged in successfully');
+			notify.success('Logged in successfully');
 			setTimeout(() => {
 				goto(resolve('/'));
 			}, 100);
@@ -155,7 +162,7 @@
 				inviteValid ? inviteCode : undefined,
 				inviteValid && inviteRequiresPin ? invitePin : undefined
 			);
-			toast.success(
+			notify.success(
 				authStatus.firstUserSetup
 					? 'Admin account created successfully'
 					: 'Account created successfully'
@@ -171,9 +178,7 @@
 
 	async function handleOIDCLogin() {
 		try {
-			const response = await (
-				await import('$lib/api/rpc-client')
-			).rpcClient.auth.getOIDCLoginURL({});
+			const response = await rpcClient.auth.getOIDCLoginURL({});
 			if (response.loginUrl) {
 				window.location.href = response.loginUrl;
 			}
@@ -187,7 +192,7 @@
 		loading = true;
 		try {
 			await authStore.useRecoveryKey(recoveryKey);
-			toast.success('Panel reset to first-user setup');
+			notify.success('Panel reset to first-user setup');
 			window.location.reload();
 		} catch (err: unknown) {
 			error = err instanceof Error ? err.message : 'Invalid recovery key';
@@ -205,6 +210,10 @@
 		}
 	}
 </script>
+
+<svelte:head>
+	<title>Sign in · DiscoPanel</title>
+</svelte:head>
 
 {#snippet loginForm()}
 	<div class="space-y-4">
@@ -232,12 +241,12 @@
 						placeholder="Enter your password"
 					/>
 				</div>
-				<Button type="submit" class="w-full" disabled={loading}>
+				<Button type="submit" class="glow-primary w-full" disabled={loading}>
 					{#if loading}
-						<Loader2 class="mr-2 h-4 w-4 animate-spin" />
+						<Loader2 class="size-4 animate-spin" />
 						Signing in...
 					{:else}
-						Sign In
+						Sign in
 					{/if}
 				</Button>
 			</form>
@@ -250,7 +259,7 @@
 						<span class="w-full border-t"></span>
 					</div>
 					<div class="relative flex justify-center text-xs uppercase">
-						<span class="bg-background px-2 text-muted-foreground">Or</span>
+						<span class="bg-card px-2 text-muted-foreground">Or</span>
 					</div>
 				</div>
 			{/if}
@@ -271,7 +280,7 @@
 	<form onsubmit={handleSubmit} class="space-y-4">
 		{#if inviteValid && inviteDescription}
 			<Alert>
-				<TicketCheck class="h-4 w-4" />
+				<TicketCheck class="size-4" />
 				<AlertDescription>{inviteDescription}</AlertDescription>
 			</Alert>
 		{/if}
@@ -308,7 +317,7 @@
 			/>
 		</div>
 		<div class="space-y-2">
-			<Label for="reg-confirm">Confirm Password</Label>
+			<Label for="reg-confirm">Confirm password</Label>
 			<Input
 				id="reg-confirm"
 				type="password"
@@ -331,203 +340,215 @@
 				/>
 			</div>
 		{/if}
-		<Button type="submit" class="w-full" disabled={loading}>
+		<Button type="submit" class="glow-primary w-full" disabled={loading}>
 			{#if loading}
-				<Loader2 class="mr-2 h-4 w-4 animate-spin" />
+				<Loader2 class="size-4 animate-spin" />
 				Creating account...
 			{:else}
-				Create Account
+				Create account
 			{/if}
 		</Button>
 	</form>
 {/snippet}
 
-<div class="flex min-h-screen items-center justify-center bg-background p-4">
-	<Card class="w-full max-w-md">
-		<CardHeader class="space-y-1">
-			<div class="mb-4 flex items-center justify-center">
-				<img src="/g1_24x24.png" alt="DiscoPanel Logo" class="mr-2 h-8 w-8" />
-				<CardTitle class="text-2xl">DiscoPanel</CardTitle>
+<div
+	class="relative flex min-h-screen items-center justify-center overflow-hidden bg-background p-4"
+>
+	<!-- Single deliberate brand glow -->
+	<div
+		class="pointer-events-none absolute top-1/2 left-1/2 size-[42rem] -translate-x-1/2 -translate-y-1/2 rounded-full opacity-40 blur-3xl"
+		style="background: radial-gradient(circle, color-mix(in oklch, var(--primary) 22%, transparent) 0%, transparent 65%)"
+	></div>
+
+	<div class="relative w-full max-w-md space-y-6">
+		<div class="flex flex-col items-center gap-3">
+			<div class="flex items-center gap-3">
+				<DiscoLogo class="size-12" spotlight />
+				<span class="font-mono text-3xl font-bold tracking-tight"
+					>disco<span class="text-[#55aa55]">panel</span></span
+				>
 			</div>
-			{#if authStatus.firstUserSetup}
-				<CardDescription class="text-center">
+			<p class="text-sm text-muted-foreground">
+				{#if authStatus.firstUserSetup}
 					Welcome! Create your admin account to get started.
-				</CardDescription>
-			{:else}
-				<CardDescription class="text-center">
+				{:else}
 					Sign in to manage your Minecraft servers
-				</CardDescription>
-			{/if}
-		</CardHeader>
+				{/if}
+			</p>
+		</div>
 
-		<CardContent>
-			{#if error}
-				<Alert variant="destructive" class="mb-4">
-					<AlertCircle class="h-4 w-4" />
-					<AlertDescription>{error}</AlertDescription>
-				</Alert>
-			{/if}
-
-			{#if authStatus.firstUserSetup}
-				<!-- First user setup -->
-				<form onsubmit={handleSubmit} class="space-y-4">
-					<div class="space-y-2">
-						<Label for="admin-username">Admin Username</Label>
-						<Input
-							id="admin-username"
-							type="text"
-							bind:value={username}
-							required
-							disabled={loading}
-							placeholder="Choose admin username"
-						/>
-					</div>
-					<div class="space-y-2">
-						<Label for="admin-email">Email (optional)</Label>
-						<Input
-							id="admin-email"
-							type="email"
-							bind:value={email}
-							disabled={loading}
-							placeholder="admin@example.com"
-						/>
-					</div>
-					<div class="space-y-2">
-						<Label for="admin-password">Password</Label>
-						<Input
-							id="admin-password"
-							type="password"
-							bind:value={password}
-							required
-							disabled={loading}
-							placeholder="Choose a strong password"
-						/>
-					</div>
-					<div class="space-y-2">
-						<Label for="admin-confirm">Confirm Password</Label>
-						<Input
-							id="admin-confirm"
-							type="password"
-							bind:value={confirmPassword}
-							required
-							disabled={loading}
-							placeholder="Confirm your password"
-						/>
-					</div>
-					<Alert>
-						<AlertCircle class="h-4 w-4" />
-						<AlertDescription>
-							{#if oidcEnabled}
-								A local admin account is required for initial setup, even with SSO enabled. This
-								ensures you always have a fallback login to manage the system if your identity
-								provider becomes unavailable.
-							{:else}
-								This will be the admin account with full system access.
-							{/if}
-						</AlertDescription>
+		<Card>
+			<CardContent>
+				{#if error}
+					<Alert variant="destructive" class="mb-4">
+						<AlertCircle class="size-4" />
+						<AlertDescription>{error}</AlertDescription>
 					</Alert>
-					<Button type="submit" class="w-full" disabled={loading}>
-						{#if loading}
-							<Loader2 class="mr-2 h-4 w-4 animate-spin" />
-							Creating admin account...
-						{:else}
-							Create Admin Account
-						{/if}
-					</Button>
-				</form>
-			{:else if (authStatus.allowRegistration || inviteValid) && localAuthEnabled}
-				<!-- Login + Registration tabs -->
-				<Tabs bind:value={mode} class="w-full">
-					<TabsList class="grid w-full grid-cols-2">
-						<TabsTrigger value="login">Login</TabsTrigger>
-						<TabsTrigger value="register">Register</TabsTrigger>
-					</TabsList>
+				{/if}
 
-					<TabsContent value="login">
-						{@render loginForm()}
-					</TabsContent>
-
-					<TabsContent value="register">
-						{@render registerForm()}
-					</TabsContent>
-				</Tabs>
-			{:else}
-				<!-- Login only (no registration) / SSO only -->
-				{@render loginForm()}
-			{/if}
-
-			{#if showRecovery}
-				<div class="mt-4 space-y-4">
-					<Alert variant="destructive">
-						<AlertCircle class="h-4 w-4" />
-						<AlertDescription>
-							This will delete all users, sessions, and invites. Server configs and data are
-							preserved. This cannot be undone.
-						</AlertDescription>
-					</Alert>
-					<div class="space-y-2">
-						<Label for="recovery-key">Recovery Key</Label>
-						<Input
-							id="recovery-key"
-							type="password"
-							bind:value={recoveryKey}
-							disabled={loading}
-							placeholder="Paste your recovery key"
-						/>
+				{#if validatingSso}
+					<div class="flex flex-col items-center gap-3 py-10 text-muted-foreground">
+						<Loader2 class="size-6 animate-spin" />
+						<p class="text-sm">Completing sign in...</p>
 					</div>
-					<div class="flex gap-2">
-						<Button
-							variant="outline"
-							class="flex-1"
-							onclick={() => {
-								showRecovery = false;
-								error = '';
-							}}
-							disabled={loading}
-						>
-							Cancel
-						</Button>
-						<Button
-							variant="destructive"
-							class="flex-1"
-							onclick={handleRecovery}
-							disabled={loading || !recoveryKey}
-						>
+				{:else if authStatus.firstUserSetup}
+					<form onsubmit={handleSubmit} class="space-y-4">
+						<div class="space-y-2">
+							<Label for="admin-username">Admin username</Label>
+							<Input
+								id="admin-username"
+								type="text"
+								bind:value={username}
+								required
+								disabled={loading}
+								placeholder="Choose admin username"
+							/>
+						</div>
+						<div class="space-y-2">
+							<Label for="admin-email">Email (optional)</Label>
+							<Input
+								id="admin-email"
+								type="email"
+								bind:value={email}
+								disabled={loading}
+								placeholder="admin@example.com"
+							/>
+						</div>
+						<div class="space-y-2">
+							<Label for="admin-password">Password</Label>
+							<Input
+								id="admin-password"
+								type="password"
+								bind:value={password}
+								required
+								disabled={loading}
+								placeholder="Choose a strong password"
+							/>
+						</div>
+						<div class="space-y-2">
+							<Label for="admin-confirm">Confirm password</Label>
+							<Input
+								id="admin-confirm"
+								type="password"
+								bind:value={confirmPassword}
+								required
+								disabled={loading}
+								placeholder="Confirm your password"
+							/>
+						</div>
+						<Alert>
+							<AlertCircle class="size-4" />
+							<AlertDescription>
+								{#if oidcEnabled}
+									A local admin account is required for initial setup, even with SSO enabled. This
+									ensures you always have a fallback login to manage the system if your identity
+									provider becomes unavailable.
+								{:else}
+									This will be the admin account with full system access.
+								{/if}
+							</AlertDescription>
+						</Alert>
+						<Button type="submit" class="glow-primary w-full" disabled={loading}>
 							{#if loading}
-								<Loader2 class="mr-2 h-4 w-4 animate-spin" />
-								Resetting...
+								<Loader2 class="size-4 animate-spin" />
+								Creating admin account...
 							{:else}
-								Reset Panel
+								Create admin account
 							{/if}
 						</Button>
-					</div>
-				</div>
-			{:else if !authStatus.firstUserSetup}
-				<div class="mt-4 text-center">
-					<button
-						type="button"
-						class="inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
-						onclick={() => (showRecovery = true)}
-					>
-						<KeyRound class="h-3 w-3" />
-						Forgot access? Recovery
-					</button>
-				</div>
-			{/if}
+					</form>
+				{:else if (authStatus.allowRegistration || inviteValid) && localAuthEnabled}
+					<Tabs bind:value={mode} class="w-full">
+						<TabsList class="grid w-full grid-cols-2">
+							<TabsTrigger value="login">Log in</TabsTrigger>
+							<TabsTrigger value="register">Register</TabsTrigger>
+						</TabsList>
 
-			{#if $authStore.anonymousAccessEnabled}
-				<div class="relative my-4">
-					<div class="absolute inset-0 flex items-center">
-						<span class="w-full border-t"></span>
+						<TabsContent value="login" class="pt-2">
+							{@render loginForm()}
+						</TabsContent>
+
+						<TabsContent value="register" class="pt-2">
+							{@render registerForm()}
+						</TabsContent>
+					</Tabs>
+				{:else}
+					{@render loginForm()}
+				{/if}
+
+				{#if showRecovery}
+					<div class="mt-4 space-y-4">
+						<Alert variant="destructive">
+							<AlertCircle class="size-4" />
+							<AlertDescription>
+								This will delete all users, sessions, and invites. Server configs and data are
+								preserved. This cannot be undone.
+							</AlertDescription>
+						</Alert>
+						<div class="space-y-2">
+							<Label for="recovery-key">Recovery key</Label>
+							<Input
+								id="recovery-key"
+								type="password"
+								bind:value={recoveryKey}
+								disabled={loading}
+								placeholder="Paste your recovery key"
+							/>
+						</div>
+						<div class="flex gap-2">
+							<Button
+								variant="outline"
+								class="flex-1"
+								onclick={() => {
+									showRecovery = false;
+									error = '';
+								}}
+								disabled={loading}
+							>
+								Cancel
+							</Button>
+							<Button
+								variant="destructive"
+								class="flex-1"
+								onclick={handleRecovery}
+								disabled={loading || !recoveryKey}
+							>
+								{#if loading}
+									<Loader2 class="size-4 animate-spin" />
+									Resetting...
+								{:else}
+									Reset panel
+								{/if}
+							</Button>
+						</div>
 					</div>
-					<div class="relative flex justify-center text-xs uppercase">
-						<span class="bg-background px-2 text-muted-foreground">Or</span>
+				{:else if !authStatus.firstUserSetup}
+					<div class="mt-4 text-center">
+						<button
+							type="button"
+							class="inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+							onclick={() => (showRecovery = true)}
+						>
+							<KeyRound class="size-3" />
+							Forgot access? Recovery
+						</button>
 					</div>
-				</div>
-				<Button variant="ghost" class="w-full" onclick={() => goto(resolve('/'))}>
-					Continue as Guest
-				</Button>
-			{/if}
-		</CardContent>
-	</Card>
+				{/if}
+
+				{#if $authStore.anonymousAccessEnabled}
+					<div class="relative my-4">
+						<div class="absolute inset-0 flex items-center">
+							<span class="w-full border-t"></span>
+						</div>
+						<div class="relative flex justify-center text-xs uppercase">
+							<span class="bg-card px-2 text-muted-foreground">Or</span>
+						</div>
+					</div>
+					<Button variant="ghost" class="w-full" onclick={() => goto(resolve('/'))}>
+						Continue as guest
+					</Button>
+				{/if}
+			</CardContent>
+		</Card>
+	</div>
 </div>

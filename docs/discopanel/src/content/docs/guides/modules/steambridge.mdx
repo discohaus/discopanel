@@ -1,0 +1,31 @@
+---
+title: Steam Bridge
+description: Expose your server over Steam's own network so friends join without port forwarding or a public IP.
+---
+
+import chip from '../../../../../../../identity/assets/steambridge/chip.svg';
+
+<img class="module-mark" src={chip.src} alt="" />
+
+Steam Bridge exposes your server over **Steam's own network** (the same relay tech Steam games use). Nobody port forwards anything and your IP stays hidden - players connect through Steam using the bridge's SteamID64 instead of an IP address. Two catches: every player needs a small helper on their machine (no mods required, see below).
+
+## Setup
+
+1. It's reccomended to use another steam account for the steam bridge. The bridge runs as Steam AppID 480 ("Spacewar") and stays logged in around the clock.
+2. Add the Steam Bridge module to your server and fill in the **Steam username** and **Steam password** fields on its Configuration tab. Both are required unless you flip on the external session toggle.
+3. Start the module. When Steam needs a **Steam Guard code**, the module dialog shows an input prompt at the top. Enter the current code from the account's email or authenticator app and login retries automatically. The session is remembered afterwards.
+4. The logs and the module's status endpoint show the bridge's **SteamID64**. Share that number with your players.
+
+## Joining as a player
+
+1. Download **DiscoPanel Bridge** for your OS from the [releases page](https://github.com/discohaus/discomodule-releases/releases) - a single small program, nothing to install and no mods needed. Works with any Minecraft version and any launcher.
+2. Make sure Steam is running (your normal account is fine), then run DiscoPanel Bridge and paste the server's SteamID64 when it asks.
+3. Keep it open and join `localhost` in Minecraft's multiplayer screen. That's it.
+
+Prefer a mod? The open source [Steam Bridge mod](https://github.com/Ragalikx/steam-bridge-mc) also works with this module for the Minecraft versions it supports.
+
+## Access and voice
+
+The **Access policy** field controls who may connect: everyone, friends (friends of the bridge's Steam account - have players friend it), or allowlist (only the SteamID64s you list). Voice mod traffic tunnels through Steam automatically.
+
+Connections flow through the DiscoPanel proxy like any other join, so wake-on-connect, autopause, and proxy stats all keep working. Expect the first start to take a few minutes while the Steam client downloads itself into the module's data folder.

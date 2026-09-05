@@ -2,20 +2,42 @@ syntax = "proto3";
 
 package discopanel.v1;
 
+import "discopanel/options/v1/options.proto";
+import "discopanel/v1/storage.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
 // Support and diagnostic tools
 service SupportService {
   // Create diagnostic archive
-  rpc GenerateSupportBundle(GenerateSupportBundleRequest) returns (GenerateSupportBundleResponse);
+  rpc GenerateSupportBundle(GenerateSupportBundleRequest) returns (GenerateSupportBundleResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SUPPORT
+      action: ACTION_TYPE_CREATE
+    };
+  }
   // Download diagnostic archive
-  rpc DownloadSupportBundle(DownloadSupportBundleRequest) returns (DownloadSupportBundleResponse);
+  rpc DownloadSupportBundle(DownloadSupportBundleRequest) returns (DownloadSupportBundleResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SUPPORT
+      action: ACTION_TYPE_READ
+    };
+  }
   // Upload support bundle to support server
-  rpc UploadSupportBundle(UploadSupportBundleRequest) returns (UploadSupportBundleResponse);
+  rpc UploadSupportBundle(UploadSupportBundleRequest) returns (UploadSupportBundleResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SUPPORT
+      action: ACTION_TYPE_CREATE
+    };
+  }
   // Get application logs
-  rpc GetApplicationLogs(GetApplicationLogsRequest) returns (GetApplicationLogsResponse);
+  rpc GetApplicationLogs(GetApplicationLogsRequest) returns (GetApplicationLogsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SUPPORT
+      action: ACTION_TYPE_READ
+    };
+  }
 }
 
 // Application logs request
@@ -113,7 +135,8 @@ message ProxyListenerInfo {
 // Proxy configuration info for bundle
 message ProxyConfigInfo {
   bool enabled = 1;
-  string base_url = 2;
+  // Hostnames the panel answers on
+  repeated string hostnames = 2;
   repeated ProxyListenerInfo listeners = 3;
 }
 
@@ -121,9 +144,9 @@ message ProxyConfigInfo {
 message ServerSummary {
   string id = 1;
   string name = 2;
-  string mod_loader = 3;
+  ModLoader mod_loader = 3;
   string mc_version = 4;
-  string status = 5;
+  ServerStatus status = 5;
   int32 port = 6;
   int32 memory = 7;
   bool auto_start = 8;

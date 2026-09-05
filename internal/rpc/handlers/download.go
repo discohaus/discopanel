@@ -7,18 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nickheyer/discopanel/internal/auth"
-	"github.com/nickheyer/discopanel/internal/rbac"
-	"github.com/nickheyer/discopanel/pkg/download"
-	"github.com/nickheyer/discopanel/pkg/logger"
+	"github.com/discohaus/discopanel/pkg/logger"
+	"github.com/discohaus/discopanel/pkg/transfer"
 )
 
-// NewDownloadStreamHandler creates an HTTP handler for streaming file downloads.
-//
-//	GET /api/v1/download/{sessionId}
-//	Auth: Authorization header OR ?token= query param
-//	Response: file bytes with Content-Disposition, supports Range headers for resume.
-func NewDownloadStreamHandler(downloadManager *download.Manager, authManager *auth.Manager, enforcer *rbac.Enforcer, log *logger.Logger) http.Handler {
+// Handles GET download streaming with range resume
+func NewDownloadStreamHandler(downloadManager *transfer.DownloadManager, log *logger.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -32,30 +26,7 @@ func NewDownloadStreamHandler(downloadManager *download.Manager, authManager *au
 			return
 		}
 
-		// Get auth header, fall back to ?token= query param
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			if token := r.URL.Query().Get("token"); token != "" {
-				authHeader = "Bearer " + token
-			}
-		}
-
-		user, err := authManager.AuthenticateFromHeader(r.Context(), authHeader)
-		if err != nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		// Check RBAC permission (files:read)
-		if enforcer != nil {
-			allowed, rbacErr := enforcer.Enforce(user.Roles, rbac.ResourceFiles, rbac.ActionRead, "*")
-			if rbacErr != nil || !allowed {
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return
-			}
-		}
-
-		// Look up download session
+		// Random expiring session id from an authed rpc grants access
 		session, err := downloadManager.GetSession(sessionID)
 		if err != nil {
 			http.Error(w, "download session not found or expired", http.StatusNotFound)
@@ -65,7 +36,7 @@ func NewDownloadStreamHandler(downloadManager *download.Manager, authManager *au
 		// Open the temp file
 		file, err := os.Open(session.FilePath)
 		if err != nil {
-			log.Error("Failed to open download file for session %s: %v", sessionID, err)
+			log.Error("Failed to open download file %s: %v", session.Filename, err)
 			http.Error(w, "download file not available", http.StatusInternalServerError)
 			return
 		}
@@ -73,7 +44,7 @@ func NewDownloadStreamHandler(downloadManager *download.Manager, authManager *au
 
 		stat, err := file.Stat()
 		if err != nil {
-			log.Error("Failed to stat download file for session %s: %v", sessionID, err)
+			log.Error("Failed to stat download file %s: %v", session.Filename, err)
 			http.Error(w, "download file not available", http.StatusInternalServerError)
 			return
 		}

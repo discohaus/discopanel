@@ -2,48 +2,45 @@ package docker
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 
 	shellparse "github.com/arkady-emelyanov/go-shellparse"
+	"github.com/discohaus/discopanel/internal/alias"
+	models "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/pkg/config"
+	"github.com/discohaus/discopanel/pkg/files"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/protometa"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/go-connections/nat"
-	"github.com/nickheyer/discopanel/internal/alias"
-	"github.com/nickheyer/discopanel/internal/config"
-	models "github.com/nickheyer/discopanel/internal/db"
+	"google.golang.org/protobuf/proto"
 )
 
-// ModuleVolumeMount represents a volume mount from module configuration
-type ModuleVolumeMount struct {
-	Source    string `json:"source"`
-	Target    string `json:"target"`
-	ReadOnly  bool   `json:"read_only,omitempty"`
-	Type      string `json:"type,omitempty"`       // "bind" or "volume"
-	CreateDir bool   `json:"create_dir,omitempty"` // Pre-create source dirs
-}
-
-// Create container for a module w/ optional map of sibling modules by name for inter-module references
-func (c *Client) CreateModuleContainer(ctx context.Context, module *models.Module, template *models.ModuleTemplate, server *models.Server, serverConfig *models.ServerConfig, cfg *config.Config, siblingModules ...map[string]*models.Module) (string, error) {
+// Creates a module container, optionally given sibling modules by name
+func (c *Client) CreateModuleContainer(ctx context.Context, module *v1.Module, template *v1.ModuleTemplate, server *v1.Server, serverConfig *v1.ServerProperties, cfg *config.Config, siblingModules ...map[string]*v1.Module) (string, error) {
 	// Determine the Docker image to use
 	imageName := template.DockerImage
 	if imageName == "" {
 		return "", fmt.Errorf("module template has no Docker image configured")
 	}
 
-	// Try pulling the image
-	if err := c.pullImage(ctx, imageName); err != nil {
-		c.log.Warn("Failed to pull image %s: %v, attempting to use local", imageName, err)
+	if err := c.ensureImage(ctx, imageName, nil); err != nil {
+		return "", err
 	}
 
 	// Build alias context for substitution (needed for env and volumes)
 	aliasCtx := &alias.Context{
-		Server:       server,
-		ServerConfig: serverConfig,
-		Module:       module,
-		Config:       cfg,
+		Server:           server,
+		ServerProperties: serverConfig,
+		Module:           module,
+		Config:           cfg,
 	}
 	// Add sibling modules for inter-module references
 	if len(siblingModules) > 0 && siblingModules[0] != nil {
@@ -53,7 +50,7 @@ func (c *Client) CreateModuleContainer(ctx context.Context, module *models.Modul
 	// Build environment variables
 	env := c.buildModuleEnv(module, server, aliasCtx)
 
-	c.log.Debug("Creating container for module %s with image %s", module.ID, imageName)
+	c.log.Debug("Creating container for module %s with image %s", module.Id, imageName)
 
 	// Build exposed ports and port bindings from module.Ports
 	exposedPorts := nat.PortSet{}
@@ -64,15 +61,11 @@ func (c *Client) CreateModuleContainer(ctx context.Context, module *models.Modul
 			continue
 		}
 
-		dockerProto := "tcp"
-		if port.Protocol == "udp" {
-			dockerProto = "udp"
-		}
-
+		dockerProto := protometa.Name(models.TransportOf(port.Protocol))
 		natPort := nat.Port(fmt.Sprintf("%d/%s", port.ContainerPort, dockerProto))
 		exposedPorts[natPort] = struct{}{}
 
-		// Bind host port when proxy is not enabled for this port
+		// Binds host port only when proxy is disabled
 		if port.HostPort > 0 && !port.ProxyEnabled {
 			portBindings[natPort] = []nat.PortBinding{
 				{HostIP: "0.0.0.0", HostPort: fmt.Sprintf("%d", port.HostPort)},
@@ -80,25 +73,41 @@ func (c *Client) CreateModuleContainer(ctx context.Context, module *models.Modul
 		}
 
 		c.log.Debug("Added port for module %s: %s (%d:%d/%s, proxy=%t)",
-			module.ID, port.Name, port.HostPort, port.ContainerPort, port.Protocol, port.ProxyEnabled)
+			module.Id, port.Name, port.HostPort, port.ContainerPort, port.Protocol, port.ProxyEnabled)
 	}
 
 	// Build mounts from module configuration only (frontend sends complete config)
-	vols := c.parseModuleVolumes(module.VolumeOverrides, aliasCtx)
+	vols := c.resolveVolumes(module.VolumeOverrides, aliasCtx)
+	if server != nil {
+		resolveWorldSources(vols, server.DataPath)
+	}
 
-	// Pre-create bind mounts
+	vols, err := c.mountModuleCerts(module, template, cfg, vols)
+	if err != nil {
+		return "", err
+	}
+
+	// Pre-create bind sources, read-only ones must exist before create
 	for _, vol := range vols {
-		if vol.CreateDir && !vol.ReadOnly && (vol.Type == "" || vol.Type == "bind") {
-			if _, err := os.Stat(vol.Source); os.IsNotExist(err) {
-				if err := os.MkdirAll(vol.Source, 0755); err != nil {
-					c.log.Warn("Failed to pre-create mount directory %s: %v", vol.Source, err)
-				}
+		if vol.Type != "" && vol.Type != "bind" {
+			continue
+		}
+		if !vol.CreateDir && !vol.ReadOnly {
+			continue
+		}
+		if _, err := os.Stat(vol.Source); os.IsNotExist(err) {
+			if err := os.MkdirAll(vol.Source, 0755); err != nil {
+				c.log.Warn("Failed to pre-create mount directory %s: %v", vol.Source, err)
 			}
 		}
 	}
 
-	mounts := c.moduleVolumesToMounts(vols)
+	mounts := c.volumesToMounts(vols)
 
+	siblings := map[string]*v1.Module{}
+	if len(siblingModules) > 0 && siblingModules[0] != nil {
+		siblings = siblingModules[0]
+	}
 	config := &container.Config{
 		Image:        imageName,
 		Env:          env,
@@ -107,21 +116,27 @@ func (c *Client) CreateModuleContainer(ctx context.Context, module *models.Modul
 		AttachStderr: true,
 		ExposedPorts: exposedPorts,
 		Labels: map[string]string{
-			"discopanel.module.id":          module.ID,
+			"discopanel.module.id":          module.Id,
 			"discopanel.module.name":        module.Name,
-			"discopanel.module.server_id":   module.ServerID,
-			"discopanel.module.template_id": module.TemplateID,
+			"discopanel.module.server_id":   module.ServerId,
+			"discopanel.module.template_id": module.TemplateId,
 			"discopanel.managed":            "true",
+			LabelModuleConfigHash:           c.DesiredModuleConfigHash(module, template, server, serverConfig, cfg, siblings),
 		},
 	}
 
+	// Apply global labels from config
+	if c.config.Labels != nil {
+		maps.Copy(config.Labels, c.config.Labels)
+	}
+
 	// Set uid + gid
-	uid, gid := alias.Substitute(module.UID, aliasCtx), alias.Substitute(module.GID, aliasCtx)
+	uid, gid := alias.Substitute(module.Uid, aliasCtx), alias.Substitute(module.Gid, aliasCtx)
 	if uid != "" || gid != "" {
 		config.User = fmt.Sprintf("%s:%s", uid, gid)
 	}
 
-	// Set container command if specified (module override takes precedence over template default)
+	// Module command override takes precedence over template default
 	cmd := module.CmdOverride
 	if cmd == "" {
 		cmd = template.DefaultCmd
@@ -134,7 +149,7 @@ func (c *Client) CreateModuleContainer(ctx context.Context, module *models.Modul
 			cmdArgs = []string{cmd}
 		}
 		config.Cmd = cmdArgs
-		c.log.Debug("Setting container command for module %s: %v", module.ID, config.Cmd)
+		c.log.Debug("Setting container command for module %s: %v", module.Id, config.Cmd)
 	}
 
 	// Configure resources
@@ -160,9 +175,14 @@ func (c *Client) CreateModuleContainer(ctx context.Context, module *models.Modul
 		ExtraHosts: []string{"host.docker.internal:host-gateway"},
 	}
 
+	// Sandboxed clients like Steam need user namespaces
+	if len(template.DefaultSecurityOpt) > 0 {
+		hostConfig.SecurityOpt = template.DefaultSecurityOpt
+	}
+
 	// Apply CPU limit if specified
-	if module.CPULimit > 0 {
-		hostConfig.Resources.NanoCPUs = int64(module.CPULimit * 1e9)
+	if module.CpuLimit > 0 {
+		hostConfig.Resources.NanoCPUs = int64(module.CpuLimit * 1e9)
 	}
 
 	// Network configuration - same network as server for communication
@@ -176,7 +196,7 @@ func (c *Client) CreateModuleContainer(ctx context.Context, module *models.Modul
 	// Create the container
 	resp, err := c.docker.ContainerCreate(
 		ctx, config, hostConfig, networkConfig, nil,
-		fmt.Sprintf("discopanel-module-%s", module.ID),
+		models.ModuleContainerName(module.Id),
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed to create module container: %w", err)
@@ -185,62 +205,107 @@ func (c *Client) CreateModuleContainer(ctx context.Context, module *models.Modul
 	return resp.ID, nil
 }
 
-// buildModuleEnv builds environment variables for a module container
-func (c *Client) buildModuleEnv(module *models.Module, server *models.Server, aliasCtx *alias.Context) []string {
+// Builds environment variables for a module container
+func (c *Client) buildModuleEnv(module *v1.Module, server *v1.Server, aliasCtx *alias.Context) []string {
 	env := make([]string, 0)
 
-	// Add DiscoPanel context variables
+	// Add DiscoPanel context variables, global modules have no server
+	if server != nil {
+		env = append(env,
+			fmt.Sprintf("DISCOPANEL_SERVER_ID=%s", server.Id),
+			fmt.Sprintf("DISCOPANEL_SERVER_NAME=%s", server.Name),
+			fmt.Sprintf("DISCOPANEL_SERVER_HOST=discopanel-server-%s", server.Id),
+			fmt.Sprintf("DISCOPANEL_SERVER_PORT=%d", models.InContainerPort(server)),
+		)
+	}
 	env = append(env,
-		fmt.Sprintf("DISCOPANEL_SERVER_ID=%s", server.ID),
-		fmt.Sprintf("DISCOPANEL_SERVER_NAME=%s", server.Name),
-		fmt.Sprintf("DISCOPANEL_SERVER_HOST=discopanel-server-%s", server.ID),
-		fmt.Sprintf("DISCOPANEL_SERVER_PORT=%d", DefaultMinecraftPort),
-		fmt.Sprintf("DISCOPANEL_MODULE_ID=%s", module.ID),
+		fmt.Sprintf("DISCOPANEL_MODULE_ID=%s", module.Id),
 		fmt.Sprintf("DISCOPANEL_MODULE_NAME=%s", module.Name),
 	)
+
+	// Deploy-agnostic panel URL, later env overrides still win
+	if aliasCtx != nil && aliasCtx.Config != nil {
+		env = append(env, fmt.Sprintf("DISCOPANEL_URL=%s", c.ModulePanelURL(aliasCtx.Config.Server.Port)))
+	}
 
 	// Add module API token if available
 	if module.TokenPlaintext != "" {
 		env = append(env, fmt.Sprintf("DISCOPANEL_API_TOKEN=%s", module.TokenPlaintext))
 	}
 
-	// Add module environment variables (frontend sends complete config with alias substitution)
-	if module.EnvOverrides != "" {
-		var envOverrides map[string]string
-		if err := json.Unmarshal([]byte(module.EnvOverrides), &envOverrides); err == nil {
-			for key, value := range envOverrides {
-				resolvedValue := alias.Substitute(value, aliasCtx)
-				env = append(env, fmt.Sprintf("%s=%s", key, resolvedValue))
-			}
-		}
+	// Adds env vars sorted for a stable config hash
+	for _, key := range slices.Sorted(maps.Keys(module.EnvOverrides)) {
+		resolvedValue := alias.Substitute(module.EnvOverrides[key], aliasCtx)
+		env = append(env, fmt.Sprintf("%s=%s", key, resolvedValue))
 	}
 
 	return env
 }
 
-// JSON volume configuration and substitutes
-func (c *Client) parseModuleVolumes(volumeJSON string, aliasCtx *alias.Context) []ModuleVolumeMount {
-	if volumeJSON == "" || volumeJSON == "[]" {
-		return nil
+// Repoints default world binds at the server's real world dir
+func resolveWorldSources(vols []*v1.VolumeMount, dataPath string) {
+	worldDir, err := files.FindWorldDir(dataPath)
+	if err != nil || worldDir == "" {
+		return
 	}
-
-	var volumes []ModuleVolumeMount
-	if err := json.Unmarshal([]byte(volumeJSON), &volumes); err != nil {
-		c.log.Warn("Failed to parse volume configuration: %v", err)
-		return nil
+	declared := filepath.Join(dataPath, "world")
+	if filepath.Clean(worldDir) == declared {
+		return
 	}
-
-	// Sub aliases in paths
-	for i := range volumes {
-		volumes[i].Source = alias.Substitute(volumes[i].Source, aliasCtx)
-		volumes[i].Target = alias.Substitute(volumes[i].Target, aliasCtx)
+	for i := range vols {
+		if vols[i].Type != "" && vols[i].Type != "bind" {
+			continue
+		}
+		src := filepath.Clean(vols[i].Source)
+		if src == declared {
+			vols[i].Source = worldDir
+		} else if strings.HasPrefix(src, declared+string(filepath.Separator)) {
+			vols[i].Source = filepath.Join(worldDir, src[len(declared):])
+		}
 	}
-
-	return volumes
 }
 
-// Module volumes to Docker mount specs
-func (c *Client) moduleVolumesToMounts(volumes []ModuleVolumeMount) []mount.Mount {
+// Writes the stored cert pair and mounts it read only
+func (c *Client) mountModuleCerts(module *v1.Module, template *v1.ModuleTemplate, cfg *config.Config, vols []*v1.VolumeMount) ([]*v1.VolumeMount, error) {
+	if template.CertMountPath == "" || module.CertPem == "" || module.KeyPem == "" {
+		return vols, nil
+	}
+	// Parent stays private, mounted dir stays container readable
+	base := models.ModuleDataDir(cfg.Storage.DataDir, module.Id)
+	if err := os.MkdirAll(base, 0700); err != nil {
+		return nil, fmt.Errorf("failed to create module data dir: %w", err)
+	}
+	dir := filepath.Join(base, "certs")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create module cert dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tls.crt"), []byte(module.CertPem), 0644); err != nil {
+		return nil, fmt.Errorf("failed to write module certificate: %w", err)
+	}
+	// Any container uid must read the key through the mount
+	if err := os.WriteFile(filepath.Join(dir, "tls.key"), []byte(module.KeyPem), 0644); err != nil {
+		return nil, fmt.Errorf("failed to write module key: %w", err)
+	}
+	return append(vols, &v1.VolumeMount{Source: dir, Target: template.CertMountPath, ReadOnly: true}), nil
+}
+
+// Clones volume mounts and substitutes aliases in paths
+func (c *Client) resolveVolumes(vols []*v1.VolumeMount, aliasCtx *alias.Context) []*v1.VolumeMount {
+	resolved := make([]*v1.VolumeMount, 0, len(vols))
+	for _, vol := range vols {
+		if vol == nil {
+			continue
+		}
+		clone := proto.Clone(vol).(*v1.VolumeMount)
+		clone.Source = alias.Substitute(clone.Source, aliasCtx)
+		clone.Target = alias.Substitute(clone.Target, aliasCtx)
+		resolved = append(resolved, clone)
+	}
+	return resolved
+}
+
+// Volume mounts to Docker mount specs
+func (c *Client) volumesToMounts(volumes []*v1.VolumeMount) []mount.Mount {
 	var mounts []mount.Mount
 
 	for _, vol := range volumes {
@@ -255,44 +320,21 @@ func (c *Client) moduleVolumesToMounts(volumes []ModuleVolumeMount) []mount.Moun
 			continue
 		}
 
-		// Translate bind mount sources to host paths when running in a container
+		// Translates bind mount sources to host paths in-container
 		source := vol.Source
+		m := mount.Mount{
+			Type:     mountType,
+			Source:   source,
+			Target:   vol.Target,
+			ReadOnly: vol.ReadOnly,
+		}
 		if mountType == mount.TypeBind {
-			source = TranslateToHostPath(source)
+			m.Source = TranslateToHostPath(source)
+			m.BindOptions = &mount.BindOptions{CreateMountpoint: true}
 		}
 
-		mounts = append(mounts, mount.Mount{
-			Type:        mountType,
-			Source:      source,
-			Target:      vol.Target,
-			ReadOnly:    vol.ReadOnly,
-			BindOptions: &mount.BindOptions{CreateMountpoint: !vol.ReadOnly},
-		})
+		mounts = append(mounts, m)
 	}
 
 	return mounts
-}
-
-// GetModuleContainerIP gets the IP address of a module container on the discopanel network
-func (c *Client) GetModuleContainerIP(ctx context.Context, containerID string) (string, error) {
-	inspect, err := c.docker.ContainerInspect(ctx, containerID)
-	if err != nil {
-		return "", err
-	}
-
-	// Try to get IP from the configured network
-	if c.config.NetworkName != "" {
-		if endpoint, ok := inspect.NetworkSettings.Networks[c.config.NetworkName]; ok {
-			return endpoint.IPAddress, nil
-		}
-	}
-
-	// Fallback to any available network
-	for _, endpoint := range inspect.NetworkSettings.Networks {
-		if endpoint.IPAddress != "" {
-			return endpoint.IPAddress, nil
-		}
-	}
-
-	return "", fmt.Errorf("no IP address found for container")
 }

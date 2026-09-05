@@ -2,288 +2,200 @@ syntax = "proto3";
 
 package discopanel.v1;
 
-import "discopanel/v1/event.proto";
+import "discopanel/options/v1/options.proto";
 import "discopanel/v1/server.proto";
+import "discopanel/v1/storage.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
-// ModuleService manages module templates and module instances attached to servers.
+// Manages module templates and instances on servers
 service ModuleService {
-  // ListModuleTemplates returns all module templates, optionally filtered by type or category.
-  rpc ListModuleTemplates(ListModuleTemplatesRequest) returns (ListModuleTemplatesResponse);
-  // GetModuleTemplate retrieves a single module template by ID.
-  rpc GetModuleTemplate(GetModuleTemplateRequest) returns (GetModuleTemplateResponse);
-  // CreateModuleTemplate creates a new custom module template.
-  rpc CreateModuleTemplate(CreateModuleTemplateRequest) returns (CreateModuleTemplateResponse);
-  // UpdateModuleTemplate modifies an existing custom module template.
-  rpc UpdateModuleTemplate(UpdateModuleTemplateRequest) returns (UpdateModuleTemplateResponse);
-  // DeleteModuleTemplate removes a custom module template.
-  rpc DeleteModuleTemplate(DeleteModuleTemplateRequest) returns (DeleteModuleTemplateResponse);
+  // Lists module templates with optional filters
+  rpc ListModuleTemplates(ListModuleTemplatesRequest) returns (ListModuleTemplatesResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULE_TEMPLATES
+      action: ACTION_TYPE_READ
+    };
+  }
+  // Gets one module template by ID
+  rpc GetModuleTemplate(GetModuleTemplateRequest) returns (GetModuleTemplateResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULE_TEMPLATES
+      action: ACTION_TYPE_READ
+      object_id_field: "id"
+    };
+  }
+  // Creates a custom module template
+  rpc CreateModuleTemplate(CreateModuleTemplateRequest) returns (CreateModuleTemplateResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULE_TEMPLATES
+      action: ACTION_TYPE_CREATE
+    };
+  }
+  // Updates a custom module template
+  rpc UpdateModuleTemplate(UpdateModuleTemplateRequest) returns (UpdateModuleTemplateResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULE_TEMPLATES
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "id"
+    };
+  }
+  // Deletes a custom module template
+  rpc DeleteModuleTemplate(DeleteModuleTemplateRequest) returns (DeleteModuleTemplateResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULE_TEMPLATES
+      action: ACTION_TYPE_DELETE
+      object_id_field: "id"
+    };
+  }
 
-  // ListModules returns all module instances, optionally filtered by server or template.
-  rpc ListModules(ListModulesRequest) returns (ListModulesResponse);
-  // GetModule retrieves a single module instance by ID.
-  rpc GetModule(GetModuleRequest) returns (GetModuleResponse);
-  // CreateModule creates a new module instance from a template and attaches it to a server.
-  rpc CreateModule(CreateModuleRequest) returns (CreateModuleResponse);
-  // UpdateModule modifies an existing module instance configuration.
-  rpc UpdateModule(UpdateModuleRequest) returns (UpdateModuleResponse);
-  // DeleteModule removes a module instance and its associated container.
-  rpc DeleteModule(DeleteModuleRequest) returns (DeleteModuleResponse);
+  // Lists module instances with optional filters
+  rpc ListModules(ListModulesRequest) returns (ListModulesResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULES
+      action: ACTION_TYPE_READ
+    };
+  }
+  // Gets one module instance by ID
+  rpc GetModule(GetModuleRequest) returns (GetModuleResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULES
+      action: ACTION_TYPE_READ
+      object_id_field: "id"
+      scope: OBJECT_SCOPE_MODULE
+    };
+  }
+  // Creates a module from a template on a server
+  rpc CreateModule(CreateModuleRequest) returns (CreateModuleResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULES
+      action: ACTION_TYPE_CREATE
+      object_id_field: "server_id"
+    };
+  }
+  // Updates a module instance configuration
+  rpc UpdateModule(UpdateModuleRequest) returns (UpdateModuleResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULES
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "id"
+      scope: OBJECT_SCOPE_MODULE
+    };
+  }
+  // Deletes a module and its container
+  rpc DeleteModule(DeleteModuleRequest) returns (DeleteModuleResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULES
+      action: ACTION_TYPE_DELETE
+      object_id_field: "id"
+      scope: OBJECT_SCOPE_MODULE
+    };
+  }
 
-  // StartModule starts a stopped module's container.
-  rpc StartModule(StartModuleRequest) returns (StartModuleResponse);
-  // StopModule stops a running module's container.
-  rpc StopModule(StopModuleRequest) returns (StopModuleResponse);
-  // RestartModule stops and then starts a module's container.
-  rpc RestartModule(RestartModuleRequest) returns (RestartModuleResponse);
-  // RecreateModule destroys and recreates a module's container with current configuration.
-  rpc RecreateModule(RecreateModuleRequest) returns (RecreateModuleResponse);
+  // Starts a stopped module container
+  rpc StartModule(StartModuleRequest) returns (StartModuleResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULES
+      action: ACTION_TYPE_START
+      object_id_field: "id"
+      scope: OBJECT_SCOPE_MODULE
+    };
+  }
+  // Stops a running module container
+  rpc StopModule(StopModuleRequest) returns (StopModuleResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULES
+      action: ACTION_TYPE_STOP
+      object_id_field: "id"
+      scope: OBJECT_SCOPE_MODULE
+    };
+  }
+  // Restarts a module container
+  rpc RestartModule(RestartModuleRequest) returns (RestartModuleResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULES
+      action: ACTION_TYPE_RESTART
+      object_id_field: "id"
+      scope: OBJECT_SCOPE_MODULE
+    };
+  }
+  // Recreates a module container with current config
+  rpc RecreateModule(RecreateModuleRequest) returns (RecreateModuleResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULES
+      action: ACTION_TYPE_RESTART
+      object_id_field: "id"
+      scope: OBJECT_SCOPE_MODULE
+    };
+  }
 
-  // GetModuleLogs retrieves recent log lines from a module's container.
-  rpc GetModuleLogs(GetModuleLogsRequest) returns (GetModuleLogsResponse);
-  // GetNextAvailableModulePort finds the next unused port for module allocation.
-  rpc GetNextAvailableModulePort(GetNextAvailableModulePortRequest) returns (GetNextAvailableModulePortResponse);
-  // GetAvailableAliases returns all template aliases with optional context-resolved example values.
-  rpc GetAvailableAliases(GetAvailableAliasesRequest) returns (GetAvailableAliasesResponse);
-  // GetResolvedAliases returns all aliases with their resolved values for a given context.
-  rpc GetResolvedAliases(GetResolvedAliasesRequest) returns (GetResolvedAliasesResponse);
-}
+  // Fetches recent module container logs
+  rpc GetModuleLogs(GetModuleLogsRequest) returns (GetModuleLogsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULES
+      action: ACTION_TYPE_READ
+      object_id_field: "id"
+      scope: OBJECT_SCOPE_MODULE
+    };
+  }
+  // Finds next unused module port
+  rpc GetNextAvailableModulePort(GetNextAvailableModulePortRequest) returns (GetNextAvailableModulePortResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULES
+      action: ACTION_TYPE_READ
+    };
+  }
+  // Lists template aliases with example values
+  rpc GetAvailableAliases(GetAvailableAliasesRequest) returns (GetAvailableAliasesResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULES
+      action: ACTION_TYPE_READ
+    };
+  }
+  // Resolves all aliases for a given context
+  rpc GetResolvedAliases(GetResolvedAliasesRequest) returns (GetResolvedAliasesResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULES
+      action: ACTION_TYPE_READ
+    };
+  }
 
-// ModuleTemplateType distinguishes built-in templates from user-created ones.
-enum ModuleTemplateType {
-  MODULE_TEMPLATE_TYPE_UNSPECIFIED = 0;
-  // Built-in templates shipped with DiscoPanel.
-  MODULE_TEMPLATE_TYPE_BUILTIN = 1;
-  // User-created custom templates.
-  MODULE_TEMPLATE_TYPE_CUSTOM = 2;
-}
+  // Reads any input a running module is waiting on
+  rpc GetModulePrompt(GetModulePromptRequest) returns (GetModulePromptResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULES
+      action: ACTION_TYPE_READ
+      object_id_field: "id"
+      scope: OBJECT_SCOPE_MODULE
+    };
+  }
+  // Delivers a user's answer to a waiting module
+  rpc AnswerModulePrompt(AnswerModulePromptRequest) returns (AnswerModulePromptResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULES
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "id"
+      scope: OBJECT_SCOPE_MODULE
+    };
+  }
+  // Lists pending input prompts across modules
+  rpc ListModulePrompts(ListModulePromptsRequest) returns (ListModulePromptsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULES
+      action: ACTION_TYPE_READ
+    };
+  }
 
-// ModuleProtocol specifies the transport layer protocol for a port.
-enum ModuleProtocol {
-  MODULE_PROTOCOL_UNSPECIFIED = 0;
-  // Raw TCP forwarding without protocol parsing.
-  MODULE_PROTOCOL_TCP = 1;
-  MODULE_PROTOCOL_UDP = 2;
-  // Minecraft protocol with handshake parsing for hostname-based routing.
-  MODULE_PROTOCOL_MINECRAFT = 3;
-  // HTTP reverse proxy with Host header parsing for hostname-based routing.
-  MODULE_PROTOCOL_HTTP = 4;
-}
-
-// ModuleStatus represents the runtime state of a module instance.
-enum ModuleStatus {
-  MODULE_STATUS_UNSPECIFIED = 0;
-  // Container is not running.
-  MODULE_STATUS_STOPPED = 1;
-  // Container is starting up.
-  MODULE_STATUS_STARTING = 2;
-  // Container is running and healthy.
-  MODULE_STATUS_RUNNING = 3;
-  // Container is shutting down.
-  MODULE_STATUS_STOPPING = 4;
-  // Container encountered an error.
-  MODULE_STATUS_ERROR = 5;
-  // Container is being created.
-  MODULE_STATUS_CREATING = 6;
-}
-
-// ModuleEventAction defines actions that can be triggered by module event hooks.
-enum ModuleEventAction {
-  MODULE_EVENT_ACTION_UNSPECIFIED = 0;
-  // Start this module's container.
-  MODULE_EVENT_ACTION_START = 1;
-  // Stop this module's container.
-  MODULE_EVENT_ACTION_STOP = 2;
-  // Restart this module's container.
-  MODULE_EVENT_ACTION_RESTART = 3;
-  // Execute a command inside this module's container.
-  MODULE_EVENT_ACTION_EXEC = 4;
-  // Send an RCON command to the parent server.
-  MODULE_EVENT_ACTION_RCON = 5;
-}
-
-// ModulePort defines a port mapping for a module container.
-message ModulePort {
-  // User-friendly name for this port (e.g., "Web UI", "API").
-  string name = 1;
-  // Port number inside the container.
-  int32 container_port = 2;
-  // Port number on the host. 0 means auto-allocate.
-  int32 host_port = 3;
-  // Protocol: "tcp" or "udp". Defaults to "tcp".
-  string protocol = 4;
-  // Whether to route traffic through the DiscoPanel proxy.
-  bool proxy_enabled = 5;
-}
-
-// ModuleDependency declares a dependency on another module.
-message ModuleDependency {
-  // ID of the module this module depends on.
-  string module_id = 1;
-  // Wait for the dependency to pass its health check before starting.
-  bool wait_for_healthy = 2;
-  // Maximum seconds to wait for the dependency. 0 uses the default (60s).
-  int32 timeout_seconds = 3;
-}
-
-// ModuleEventHook configures an action to take when a server event occurs.
-message ModuleEventHook {
-  // The event that triggers this hook.
-  TriggeredEventType event = 1;
-  // The action to perform when triggered.
-  ModuleEventAction action = 2;
-  // Command to execute for EXEC or RCON actions.
-  string command = 3;
-  // Seconds to wait before executing the action.
-  int32 delay_seconds = 4;
-  // Optional condition expression (e.g., "{{server.players_online}} == 0").
-  string condition = 5;
-}
-
-// ModuleTemplate defines a reusable blueprint for creating module instances.
-message ModuleTemplate {
-  // Unique identifier.
-  string id = 1;
-  // Display name.
-  string name = 2;
-  // Human-readable description.
-  string description = 3;
-  // Whether this is a built-in or custom template.
-  ModuleTemplateType type = 4;
-  // Docker image to use (e.g., "nginx:latest").
-  string docker_image = 5;
-  // JSON Schema for dynamic UI form generation.
-  string config_schema = 6;
-  // JSON object of default environment variables.
-  string default_env = 7;
-  // JSON array of default volume mounts.
-  string default_volumes = 8;
-  // HTTP path for health checks (e.g., "/health").
-  string health_check_path = 9;
-  // Port to use for health checks. 0 uses the first configured port.
-  int32 health_check_port = 10;
-  // Whether instances must be attached to a server.
-  bool requires_server = 11;
-  // Whether instances can be proxied through the server's hostname.
-  bool supports_proxy = 12;
-  // Lucide icon name for UI display.
-  string icon = 13;
-  // Category for grouping templates (e.g., "monitoring", "maps").
-  string category = 14;
-  // Usage instructions and notes.
-  string documentation = 15;
-  // When this template was created.
-  google.protobuf.Timestamp created_at = 16;
-  // When this template was last updated.
-  google.protobuf.Timestamp updated_at = 17;
-  // Default port configurations.
-  repeated ModulePort ports = 18;
-  // Template IDs this module commonly depends on.
-  repeated string suggested_dependencies = 19;
-  // Default event hooks for server lifecycle integration.
-  repeated ModuleEventHook default_hooks = 20;
-  // Custom key-value metadata. Values support alias substitution.
-  map<string, string> metadata = 21;
-  // Optional CMD override to run in the container
-  string default_cmd = 22;
-  // Default access URL templates
-  repeated string default_access_urls = 23;
-  // Default memory allocation in MB
-  int32 default_memory = 24;
-  // Default UID to run the container
-  string default_uid = 25;
-  // Default GID to run the container
-  string default_gid = 26;
-  // Command to exec inside the container after start (e.g., sed to patch config files)
-  string default_init_command = 27;
-  // Seconds to wait after container is healthy before running init command
-  int32 default_init_command_delay = 28;
-  // Whether to restart the container after init command completes
-  bool default_restart_after_init = 29;
-}
-
-// Module represents a running module instance attached to a server.
-message Module {
-  // Unique identifier.
-  string id = 1;
-  // Display name.
-  string name = 2;
-  // ID of the server this module is attached to.
-  string server_id = 3;
-  // ID of the template this module was created from.
-  string template_id = 4;
-  // Docker container ID when running.
-  string container_id = 5;
-  // Current runtime status.
-  ModuleStatus status = 6;
-  // JSON module configuration.
-  string config = 7;
-  // JSON object of environment variable overrides.
-  string env_overrides = 8;
-  // JSON array of volume mount overrides.
-  string volume_overrides = 9;
-  // Memory limit in MB.
-  int32 memory = 10;
-  // CPU limit as a fraction (e.g., 0.5 = 50%).
-  double cpu_limit = 11;
-  // Start automatically when the parent server starts.
-  bool auto_start = 12;
-  // Stop when the parent server stops.
-  bool follow_server_lifecycle = 13;
-  // Run independently of server lifecycle.
-  bool detached = 14;
-  // Path to module's persistent data directory.
-  string data_path = 15;
-  // When this module was created.
-  google.protobuf.Timestamp created_at = 16;
-  // When this module was last updated.
-  google.protobuf.Timestamp updated_at = 17;
-  // When this module was last started.
-  optional google.protobuf.Timestamp last_started = 18;
-  // Current memory usage in MB.
-  double memory_usage = 19;
-  // Current CPU usage as a percentage.
-  double cpu_percent = 20;
-  // Name of the parent server (for display).
-  string server_name = 21;
-  // Name of the source template (for display).
-  string template_name = 22;
-  // Parent server's proxy hostname (for building access URLs).
-  string server_proxy_hostname = 23;
-  // Port configurations.
-  repeated ModulePort ports = 24;
-  // Module dependencies.
-  repeated ModuleDependency dependencies = 25;
-  // Seconds between health checks.
-  int32 health_check_interval = 26;
-  // Seconds to wait for health check response.
-  int32 health_check_timeout = 27;
-  // Failed checks before marking unhealthy.
-  int32 health_check_retries = 28;
-  // Event hooks for server lifecycle integration.
-  repeated ModuleEventHook event_hooks = 29;
-  // Custom key-value metadata. Values support alias substitution.
-  map<string, string> metadata = 30;
-  // Optional CMD override to run in the container
-  string cmd_override = 31;
-  // Access URL templates
-  repeated string access_urls = 32;
-  // User ID of the user who created this module.
-  string created_by_user_id = 33;
-  // Username of the user who created this module (for display).
-  string created_by_username = 34;
-  // UID to run the container
-  string uid = 35;
-  // GID to run the container
-  string gid = 36;
-  // Command to exec inside the container after start
-  string init_command = 37;
-  // Seconds to wait after container is healthy before running init command
-  int32 init_command_delay = 38;
-  // Whether to restart the container after init command completes
-  bool restart_after_init = 39;
+  // Reads the status snapshot a running module serves
+  rpc GetModuleStatusSnapshot(GetModuleStatusSnapshotRequest) returns (GetModuleStatusSnapshotResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODULES
+      action: ACTION_TYPE_READ
+      object_id_field: "id"
+      scope: OBJECT_SCOPE_MODULE
+    };
+  }
 }
 
 // ListModuleTemplatesRequest filters the template list.
@@ -318,12 +230,12 @@ message CreateModuleTemplateRequest {
   string description = 2;
   // Docker image to use.
   string docker_image = 3;
-  // JSON Schema for dynamic UI form generation.
-  string config_schema = 4;
-  // JSON object of default environment variables.
-  string default_env = 5;
-  // JSON array of default volume mounts.
-  string default_volumes = 6;
+  // Typed config inputs shown when creating instances.
+  repeated ModuleConfigField config_fields = 4;
+  // Default environment variables.
+  map<string, string> default_env = 5;
+  // Default volume mounts.
+  repeated VolumeMount default_volumes = 6;
   // HTTP path for health checks.
   string health_check_path = 7;
   // Port to use for health checks.
@@ -339,7 +251,7 @@ message CreateModuleTemplateRequest {
   // Usage documentation.
   string documentation = 13;
   // Default port configurations.
-  repeated ModulePort ports = 14;
+  repeated NetworkPort ports = 14;
   // Suggested dependency template IDs.
   repeated string suggested_dependencies = 15;
   // Default event hooks.
@@ -360,6 +272,10 @@ message CreateModuleTemplateRequest {
   int32 default_init_command_delay = 23;
   // Default restart after init
   bool default_restart_after_init = 24;
+  // Container security options
+  repeated string default_security_opt = 25;
+  // Container dir an uploaded cert pair mounts into
+  string cert_mount_path = 26;
 }
 
 // CreateModuleTemplateResponse contains the created template.
@@ -374,9 +290,9 @@ message UpdateModuleTemplateRequest {
   optional string name = 2;
   optional string description = 3;
   optional string docker_image = 4;
-  optional string config_schema = 5;
-  optional string default_env = 6;
-  optional string default_volumes = 7;
+  repeated ModuleConfigField config_fields = 5;
+  map<string, string> default_env = 6;
+  repeated VolumeMount default_volumes = 7;
   optional string health_check_path = 8;
   optional int32 health_check_port = 9;
   optional bool requires_server = 10;
@@ -384,7 +300,7 @@ message UpdateModuleTemplateRequest {
   optional string icon = 12;
   optional string category = 13;
   optional string documentation = 14;
-  repeated ModulePort ports = 15;
+  repeated NetworkPort ports = 15;
   repeated string suggested_dependencies = 16;
   repeated ModuleEventHook default_hooks = 17;
   map<string, string> metadata = 18;
@@ -395,6 +311,9 @@ message UpdateModuleTemplateRequest {
   optional string default_init_command = 23;
   optional int32 default_init_command_delay = 24;
   optional bool default_restart_after_init = 25;
+  repeated string default_security_opt = 26;
+  // Container dir an uploaded cert pair mounts into
+  optional string cert_mount_path = 27;
 }
 
 // UpdateModuleTemplateResponse contains the updated template.
@@ -417,6 +336,8 @@ message ListModulesRequest {
   optional string server_id = 1;
   // Filter by source template ID.
   optional string template_id = 2;
+  // Resolve live docker status and stats per module.
+  optional bool full_stats = 3;
 }
 
 // ListModulesResponse contains matching modules.
@@ -443,12 +364,10 @@ message CreateModuleRequest {
   string server_id = 2;
   // ID of the template to create this module from.
   string template_id = 3;
-  // JSON module configuration.
-  string config = 4;
-  // JSON object of environment variable overrides.
-  string env_overrides = 5;
-  // JSON array of volume mount overrides.
-  string volume_overrides = 6;
+  // Environment variable overrides.
+  map<string, string> env_overrides = 5;
+  // Volume mount overrides.
+  repeated VolumeMount volume_overrides = 6;
   // Memory limit in MB.
   int32 memory = 7;
   // CPU limit as a fraction.
@@ -462,7 +381,7 @@ message CreateModuleRequest {
   // Start the container immediately after creation.
   bool start_immediately = 12;
   // Port configurations. Defaults to template ports if empty.
-  repeated ModulePort ports = 13;
+  repeated NetworkPort ports = 13;
   // Module dependencies.
   repeated ModuleDependency dependencies = 14;
   // Seconds between health checks.
@@ -489,6 +408,10 @@ message CreateModuleRequest {
   int32 init_command_delay = 25;
   // Restart after init
   bool restart_after_init = 26;
+  // Pem chain for templates that mount certificates
+  string cert_pem = 27;
+  // Matching pem private key
+  string key_pem = 28;
 }
 
 // CreateModuleResponse contains the created module.
@@ -501,15 +424,14 @@ message UpdateModuleRequest {
   // Module ID to update.
   string id = 1;
   optional string name = 2;
-  optional string config = 3;
-  optional string env_overrides = 4;
-  optional string volume_overrides = 5;
+  map<string, string> env_overrides = 4;
+  repeated VolumeMount volume_overrides = 5;
   optional int32 memory = 6;
   optional double cpu_limit = 7;
   optional bool auto_start = 8;
   optional bool follow_server_lifecycle = 9;
   optional bool detached = 10;
-  repeated ModulePort ports = 11;
+  repeated NetworkPort ports = 11;
   repeated ModuleDependency dependencies = 12;
   optional int32 health_check_interval = 13;
   optional int32 health_check_timeout = 14;
@@ -524,6 +446,12 @@ message UpdateModuleRequest {
   optional string init_command = 22;
   optional int32 init_command_delay = 23;
   optional bool restart_after_init = 24;
+  // Empty repeated cannot signal removal on its own
+  bool clear_ports = 25;
+  // Pem chain replacing the mounted certificate
+  optional string cert_pem = 26;
+  // Matching pem private key
+  optional string key_pem = 27;
 }
 
 // UpdateModuleResponse contains the updated module.
@@ -548,8 +476,7 @@ message StartModuleRequest {
 
 // StartModuleResponse contains the operation result.
 message StartModuleResponse {
-  // Status message (e.g., "started", "already running").
-  string status = 1;
+  ModuleStatus status = 1;
 }
 
 // StopModuleRequest specifies which module to stop.
@@ -560,8 +487,7 @@ message StopModuleRequest {
 
 // StopModuleResponse contains the operation result.
 message StopModuleResponse {
-  // Status message (e.g., "stopped", "already stopped").
-  string status = 1;
+  ModuleStatus status = 1;
 }
 
 // RestartModuleRequest specifies which module to restart.
@@ -572,8 +498,7 @@ message RestartModuleRequest {
 
 // RestartModuleResponse contains the operation result.
 message RestartModuleResponse {
-  // Status message.
-  string status = 1;
+  ModuleStatus status = 1;
 }
 
 // RecreateModuleRequest specifies which module to recreate.
@@ -584,8 +509,7 @@ message RecreateModuleRequest {
 
 // RecreateModuleResponse contains the operation result.
 message RecreateModuleResponse {
-  // Status message.
-  string status = 1;
+  ModuleStatus status = 1;
 }
 
 // GetModuleLogsRequest specifies log retrieval parameters.
@@ -620,13 +544,14 @@ message GetNextAvailableModulePortResponse {
 
 // AliasCategory groups aliases by their source.
 enum AliasCategory {
-  ALIAS_CATEGORY_UNSPECIFIED = 0;
+  option (discopanel.options.v1.enum_type) = {label: "Alias Category"};
+  ALIAS_CATEGORY_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Other"}];
   // Aliases for server fields (e.g., {{server.id}}).
-  ALIAS_CATEGORY_SERVER = 1;
+  ALIAS_CATEGORY_SERVER = 1 [(discopanel.options.v1.value) = {label: "Server"}];
   // Aliases for module fields (e.g., {{module.name}}).
-  ALIAS_CATEGORY_MODULE = 2;
+  ALIAS_CATEGORY_MODULE = 2 [(discopanel.options.v1.value) = {label: "Module"}];
   // Special computed aliases (e.g., {{timestamp}}).
-  ALIAS_CATEGORY_SPECIAL = 3;
+  ALIAS_CATEGORY_SPECIAL = 3 [(discopanel.options.v1.value) = {label: "Special"}];
 }
 
 // AliasInfo describes an available template alias.
@@ -639,6 +564,10 @@ message AliasInfo {
   AliasCategory category = 3;
   // Example resolved value when context is available.
   string example_value = 4;
+  // Dotted lookup path inside the source struct.
+  string path = 5;
+  // Go type name of the resolved field.
+  string field_type = 6;
 }
 
 // GetAvailableAliasesRequest optionally provides context for alias resolution.
@@ -666,4 +595,87 @@ message GetResolvedAliasesRequest {
 message GetResolvedAliasesResponse {
   // Map of alias (ie "{{server.id}}") to resolved value.
   map<string, string> aliases = 1;
+}
+
+// One piece of input a running module awaits.
+message ModulePrompt {
+  // Stable id for this prompt within the module.
+  string id = 1;
+  // Short heading shown to the user.
+  string title = 2;
+  // Longer explanation of what is needed.
+  string message = 3;
+  // Input widget kind, reuses the config field types.
+  ModuleConfigFieldType kind = 4;
+  // Choices when kind is select.
+  repeated ModuleConfigOption options = 5;
+  // Placeholder hint for the input.
+  string placeholder = 6;
+  // When the module raised this prompt.
+  google.protobuf.Timestamp created_at = 7;
+}
+
+// GetModulePromptRequest specifies which module to poll.
+message GetModulePromptRequest {
+  // Module ID to poll.
+  string id = 1;
+}
+
+// GetModulePromptResponse carries any pending prompt.
+message GetModulePromptResponse {
+  // True when the module is waiting on input.
+  bool pending = 1;
+  // The pending prompt, set only when pending.
+  ModulePrompt prompt = 2;
+}
+
+// AnswerModulePromptRequest delivers a user answer.
+message AnswerModulePromptRequest {
+  // Module ID to answer.
+  string id = 1;
+  // Prompt id the answer belongs to.
+  string prompt_id = 2;
+  // The user provided value.
+  string value = 3;
+}
+
+// AnswerModulePromptResponse reports whether the module took the answer.
+message AnswerModulePromptResponse {
+  // True when the module accepted the value.
+  bool accepted = 1;
+}
+
+// ListModulePromptsRequest scopes the prompt scan.
+message ListModulePromptsRequest {
+  // Filter by parent server ID.
+  optional string server_id = 1;
+}
+
+// PendingModulePrompt pairs a waiting module with its prompt.
+message PendingModulePrompt {
+  // Module that raised the prompt.
+  string module_id = 1;
+  // Module display name.
+  string module_name = 2;
+  // The input being waited on.
+  ModulePrompt prompt = 3;
+}
+
+// ListModulePromptsResponse lists modules awaiting user input.
+message ListModulePromptsResponse {
+  repeated PendingModulePrompt prompts = 1;
+}
+
+// GetModuleStatusSnapshotRequest specifies which module to read.
+message GetModuleStatusSnapshotRequest {
+  // Module ID to read.
+  string id = 1;
+}
+
+// GetModuleStatusSnapshotResponse carries module reported status fields.
+message GetModuleStatusSnapshotResponse {
+  // True when the module served a snapshot.
+  bool available = 1;
+  // Snapshot fields as display strings.
+  map<string, string> fields = 2;
 }

@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+// Shared journal contract between panel and doctor module
+package discopanel.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+
+// Repair step kinds a doctor incident may record
+enum DoctorActionKind {
+  DOCTOR_ACTION_KIND_UNSPECIFIED = 0;
+  DOCTOR_ACTION_KIND_DISABLE = 1;
+  DOCTOR_ACTION_KIND_ENABLE = 2;
+  DOCTOR_ACTION_KIND_INSTALL = 3;
+  DOCTOR_ACTION_KIND_DISABLE_PACK = 4;
+}
+
+// Evidence grades ordered strongest first
+enum DoctorEvidence {
+  DOCTOR_EVIDENCE_UNSPECIFIED = 0;
+  DOCTOR_EVIDENCE_VERDICT = 1;
+  DOCTOR_EVIDENCE_SOLVER = 2;
+  DOCTOR_EVIDENCE_REGISTRY = 3;
+  DOCTOR_EVIDENCE_FRAME = 4;
+}
+
+// How a repair campaign ended
+enum DoctorOutcome {
+  DOCTOR_OUTCOME_UNSPECIFIED = 0;
+  DOCTOR_OUTCOME_REPAIRED = 1;
+  DOCTOR_OUTCOME_GAVE_UP = 2;
+}
+
+// Remedy class for one loader-blamed mod failure
+enum FailedModClass {
+  FAILED_MOD_CLASS_UNSPECIFIED = 0;
+  FAILED_MOD_CLASS_MISSING_DEPENDENCY = 1;
+  FAILED_MOD_CLASS_DUPLICATE = 2;
+  FAILED_MOD_CLASS_JAVA_VERSION = 3;
+  FAILED_MOD_CLASS_MOD_ERROR = 4;
+}
+
+// One reversible repair step
+message DoctorAction {
+  DoctorActionKind kind = 1;
+  string file = 2;
+  string mod_id = 3;
+  string reason = 4;
+  // Version range for installs
+  string range = 5;
+  // Metadata dialect for installs
+  string dialect = 6;
+  DoctorEvidence evidence = 7;
+  // Crash signature a frame guess answered
+  string cause = 8;
+  google.protobuf.Timestamp applied_at = 9;
+  bool reverted = 10;
+}
+
+// One repair campaign, opened on crash and closed on outcome
+message DoctorIncident {
+  google.protobuf.Timestamp opened_at = 1;
+  google.protobuf.Timestamp closed_at = 2;
+  int32 passes = 3;
+  int32 budget = 4;
+  repeated DoctorAction actions = 5;
+  repeated string tried = 6;
+  DoctorOutcome outcome = 7;
+  string summary = 8;
+  // Plain language crash classification
+  string cause = 9;
+}
+
+// Durable record of the doctor's work on one server
+message DoctorState {
+  int32 version = 1;
+  DoctorIncident incident = 2;
+  DoctorIncident resolved = 3;
+  // Files the doctor never wants provisioned again
+  repeated string excludes = 4;
+  // Newest exit the doctor already responded to
+  int64 last_handled_ms = 5;
+}

@@ -1,55 +1,97 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import ServerConfiguration from '$lib/components/server-configuration.svelte';
-	import ScrollToTop from '$lib/components/scroll-to-top.svelte';
+	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
+	import DefaultProperties from '$lib/components/default-properties.svelte';
 	import UserSettings from '$lib/components/user-settings.svelte';
 	import RoleSettings from '$lib/components/role-settings.svelte';
-	import { Card, CardContent } from '$lib/components/ui/card';
-	import { Tabs, TabsContent, TabsList, TabsTrigger } from '$lib/components/ui/tabs';
-	import { toast } from 'svelte-sonner';
-	import {
-		Settings,
-		Globe,
-		Server,
-		Shield,
-		HelpCircle,
-		ScrollText,
-		Users,
-		KeyRound
-	} from '@lucide/svelte';
-	import type { ConfigCategory } from '$lib/proto/discopanel/v1/config_pb';
-	import { rpcClient } from '$lib/api/rpc-client';
-	import RoutingSettings from '$lib/components/routing-settings.svelte';
+	import NetworkTopology from '$lib/components/network/network-topology.svelte';
 	import AuthSettings from '$lib/components/auth-settings.svelte';
 	import SupportSettings from '$lib/components/support-settings.svelte';
 	import LogsSettings from '$lib/components/logs-settings.svelte';
-	import { canReadSettings, canReadUsers, canReadRoles, authEnabled } from '$lib/stores/auth';
+	import { PageHeader, EmptyState, TabRail } from '$lib/components/app';
+	import { Skeleton } from '$lib/components/ui/skeleton';
+	import { registerRefresh } from '$lib/stores/refresh';
+	import { notify } from '$lib/stores/activity.svelte';
+	import { Settings } from '@lucide/svelte';
+	import type { PropertyCategory } from '$lib/proto/discopanel/v1/properties_pb';
+	import { rpcClient } from '$lib/api/rpc-client';
+	import {
+		authStore,
+		canReadSettings,
+		canReadUsers,
+		canReadRoles,
+		authEnabled
+	} from '$lib/stores/auth';
 
-	let globalConfig = $state<ConfigCategory[]>([]);
+	const TABS = [
+		{
+			key: 'server-defaults',
+			label: 'Server defaults',
+			desc: 'Default properties applied to newly created servers'
+		},
+		{
+			key: 'network',
+			label: 'Network',
+			desc: 'Live map of listeners, routes, and everything they reach'
+		},
+		{ key: 'auth', label: 'Auth', desc: 'Login methods, registration, and single sign-on' },
+		{ key: 'logs', label: 'Logs', desc: 'Live DiscoPanel application logs' },
+		{ key: 'support', label: 'Support', desc: 'Diagnostic bundles for troubleshooting' },
+		{ key: 'users', label: 'Users', desc: 'Accounts, roles, and registration invites' },
+		{ key: 'roles', label: 'Roles', desc: 'Permission sets assignable to users' }
+	] as const;
+
+	let globalConfig = $state<PropertyCategory[]>([]);
 	let loading = $state(true);
 	let saving = $state(false);
+	let tabPane = $state<HTMLDivElement | null>(null);
 
 	let showSettings = $derived($canReadSettings);
 	let showUsers = $derived($canReadUsers && $authEnabled);
 	let showRoles = $derived($canReadRoles && $authEnabled);
 
-	// Pick the first visible tab as default
-	let activeTab = $state('');
-	$effect(() => {
-		if (!activeTab) {
-			if (showSettings) activeTab = 'server-config';
-			else if (showUsers) activeTab = 'users';
-			else if (showRoles) activeTab = 'roles';
-		}
+	let visibleTabs = $derived(
+		TABS.filter((t) => {
+			if (t.key === 'users') return showUsers;
+			if (t.key === 'roles') return showRoles;
+			return showSettings;
+		})
+	);
+
+	let defaultTab = $derived(
+		showSettings ? 'server-defaults' : showUsers ? 'users' : showRoles ? 'roles' : ''
+	);
+
+	let activeTab = $derived.by(() => {
+		// Old routing bookmarks land on the network tab
+		const raw = page.url.searchParams.get('tab');
+		const requested = raw === 'routing' ? 'network' : raw;
+		if (requested && visibleTabs.some((t) => t.key === requested)) return requested;
+		return defaultTab;
 	});
 
-	async function loadGlobalSettings() {
-		loading = true;
+	// Fresh tab always opens scrolled to the top
+	$effect(() => {
+		void activeTab;
+		tabPane?.scrollTo({ top: 0 });
+	});
+
+	function setTab(tab: string | undefined) {
+		if (!tab || tab === activeTab) return;
+		const base = resolve('/settings');
+		const target = tab === defaultTab ? base : `${base}?tab=${tab}`;
+		// eslint-disable-next-line svelte/no-navigation-without-resolve -- base is resolved, only query varies
+		goto(target, { noScroll: true, keepFocus: true });
+	}
+
+	async function loadGlobalSettings(silent = false) {
+		if (!silent) loading = true;
 		try {
-			const response = await rpcClient.config.getGlobalSettings({});
+			const response = await rpcClient.properties.getGlobalSettings({});
 			globalConfig = response.categories;
 		} catch (error) {
-			toast.error('Failed to load global settings');
+			notify.error('Failed to load global settings');
 			console.error(error);
 		} finally {
 			loading = false;
@@ -59,139 +101,91 @@
 	async function saveGlobalSettings(updates: Record<string, string>) {
 		saving = true;
 		try {
-			const response = await rpcClient.config.updateGlobalSettings({
+			const response = await rpcClient.properties.updateGlobalSettings({
 				updates
 			});
 
 			globalConfig = response.categories;
-			toast.success('Global settings saved successfully');
+			notify.success('Global settings saved successfully');
 		} catch (error) {
-			toast.error('Failed to save global settings');
+			notify.error('Failed to save global settings');
 			console.error(error);
 		} finally {
 			saving = false;
 		}
 	}
 
-	onMount(() => {
-		if (showSettings) {
+	// Fetch once when permission is known
+	let fetchedGlobal = false;
+	$effect(() => {
+		if (showSettings && !fetchedGlobal) {
+			fetchedGlobal = true;
 			loadGlobalSettings();
-		} else {
-			loading = false;
 		}
+	});
+
+	$effect(() => {
+		if (activeTab !== 'server-defaults' || !showSettings) return;
+		return registerRefresh(() => loadGlobalSettings(true));
 	});
 </script>
 
-<div class="h-full flex-1 space-y-8 bg-linear-to-br from-background to-muted/10 p-8 pt-6">
-	<div class="flex items-center justify-between border-b-2 border-border/50 pb-6">
-		<div class="flex items-center gap-4">
-			<div
-				class="flex h-16 w-16 items-center justify-center rounded-2xl bg-linear-to-br from-primary/20 to-primary/10 shadow-lg"
-			>
-				<Settings class="h-8 w-8 text-primary" />
-			</div>
-			<div class="space-y-1">
-				<h2
-					class="bg-linear-to-r from-foreground to-foreground/70 bg-clip-text text-4xl font-bold tracking-tight text-transparent"
-				>
-					Settings
-				</h2>
-				<p class="text-base text-muted-foreground">
-					Configure DiscoPanel and default server settings
-				</p>
+<svelte:head>
+	<title>Settings · DiscoPanel</title>
+</svelte:head>
+
+<div class="flex min-h-0 flex-1 flex-col">
+	<TabRail tabs={visibleTabs} value={activeTab} onValueChange={setTab}>
+		{#snippet header()}
+			<PageHeader
+				title="Settings"
+				description={visibleTabs.find((t) => t.key === activeTab)?.desc ??
+					'Configure DiscoPanel and default server settings'}
+				class="pt-5 pb-4"
+			/>
+		{/snippet}
+	</TabRail>
+
+	{#if showSettings && activeTab === 'network'}
+		<NetworkTopology />
+	{:else if showSettings && (activeTab === 'server-defaults' || activeTab === 'logs')}
+		<div class="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col p-4 sm:p-6 2xl:max-w-7xl">
+			{#if activeTab === 'server-defaults'}
+				{#if loading}
+					<div class="space-y-3">
+						<Skeleton class="h-10 rounded-lg" />
+						<Skeleton class="h-72 rounded-lg" />
+					</div>
+				{:else}
+					<DefaultProperties categories={globalConfig} onSave={saveGlobalSettings} {saving} />
+				{/if}
+			{:else}
+				<LogsSettings />
+			{/if}
+		</div>
+	{:else}
+		<div bind:this={tabPane} class="min-h-0 flex-1 overflow-y-auto">
+			<div class="mx-auto w-full max-w-6xl p-4 sm:p-6 2xl:max-w-7xl">
+				{#if visibleTabs.length > 0}
+					{#if activeTab === 'auth' && showSettings}
+						<AuthSettings />
+					{:else if activeTab === 'support' && showSettings}
+						<SupportSettings />
+					{:else if activeTab === 'users' && showUsers}
+						<UserSettings />
+					{:else if activeTab === 'roles' && showRoles}
+						<RoleSettings />
+					{/if}
+				{:else if !$authStore.isLoading}
+					<div class="rounded-lg border bg-card">
+						<EmptyState
+							icon={Settings}
+							title="No settings available"
+							description="You do not have permission to view any settings sections."
+						/>
+					</div>
+				{/if}
 			</div>
 		</div>
-	</div>
-
-	<Tabs value={activeTab} onValueChange={(v) => (activeTab = v || activeTab)} class="space-y-6">
-		<TabsList class="flex w-fit gap-1">
-			{#if showSettings}
-				<TabsTrigger value="server-config" class="flex items-center gap-2 px-4">
-					<Server class="h-4 w-4" />
-					Server Defaults
-				</TabsTrigger>
-				<TabsTrigger value="routing" class="flex items-center gap-2 px-4">
-					<Globe class="h-4 w-4" />
-					Routing
-				</TabsTrigger>
-				<TabsTrigger value="auth" class="flex items-center gap-2 px-4">
-					<Shield class="h-4 w-4" />
-					Auth
-				</TabsTrigger>
-				<TabsTrigger value="logs" class="flex items-center gap-2 px-4">
-					<ScrollText class="h-4 w-4" />
-					Logs
-				</TabsTrigger>
-				<TabsTrigger value="support" class="flex items-center gap-2 px-4">
-					<HelpCircle class="h-4 w-4" />
-					Support
-				</TabsTrigger>
-			{/if}
-			{#if showUsers}
-				<TabsTrigger value="users" class="flex items-center gap-2 px-4">
-					<Users class="h-4 w-4" />
-					Users
-				</TabsTrigger>
-			{/if}
-			{#if showRoles}
-				<TabsTrigger value="roles" class="flex items-center gap-2 px-4">
-					<KeyRound class="h-4 w-4" />
-					Roles
-				</TabsTrigger>
-			{/if}
-		</TabsList>
-
-		{#if showSettings}
-			<TabsContent value="server-config" class="space-y-4">
-				{#if loading}
-					<Card>
-						<CardContent class="py-16">
-							<div class="flex items-center justify-center">
-								<div class="space-y-3 text-center">
-									<div
-										class="mx-auto flex h-12 w-12 animate-pulse items-center justify-center rounded-full bg-primary/10"
-									>
-										<Settings class="h-6 w-6 text-primary" />
-									</div>
-									<div class="font-medium text-muted-foreground">Loading settings...</div>
-								</div>
-							</div>
-						</CardContent>
-					</Card>
-				{:else}
-					<ServerConfiguration config={globalConfig} onSave={saveGlobalSettings} {saving} />
-				{/if}
-			</TabsContent>
-
-			<TabsContent value="routing" class="space-y-4">
-				<RoutingSettings />
-			</TabsContent>
-
-			<TabsContent value="auth" class="space-y-4">
-				<AuthSettings />
-			</TabsContent>
-
-			<TabsContent value="logs" class="space-y-4">
-				<LogsSettings />
-			</TabsContent>
-
-			<TabsContent value="support" class="space-y-4">
-				<SupportSettings />
-			</TabsContent>
-		{/if}
-
-		{#if showUsers}
-			<TabsContent value="users" class="space-y-4">
-				<UserSettings />
-			</TabsContent>
-		{/if}
-
-		{#if showRoles}
-			<TabsContent value="roles" class="space-y-4">
-				<RoleSettings />
-			</TabsContent>
-		{/if}
-	</Tabs>
+	{/if}
 </div>
-
-<ScrollToTop />

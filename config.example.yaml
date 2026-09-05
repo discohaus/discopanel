@@ -1,8 +1,8 @@
 # DiscoPanel Configuration File
 # This file contains all configuration options for DiscoPanel
-# 
+#
 # These can all be set via env, like we do in our docker compose example(s). For example:
-# 
+#
 # server:
 #   port: "8080"
 #
@@ -14,14 +14,14 @@
 server:
   port: "8080"
   host: "0.0.0.0"
-  read_timeout: 15
-  write_timeout: 15
+  read_header_timeout: 15
   idle_timeout: 60
-  user_agent: "DiscoPanel/1.0 (github.com/nickheyer/discopanel)"
+  user_agent: "DiscoPanel/1.0 (github.com/discohaus/discopanel)"
 
 # Database configuration
 database:
   path: "./data/discopanel.db"
+  auto_migrate: true
   max_connections: 25
   max_idle_conns: 5
   conn_max_lifetime: 300
@@ -31,7 +31,9 @@ docker:
   host: "unix:///var/run/docker.sock"
   version: ""
   network_name: "discopanel-network"
-  registry_url: ""
+  runtime_image: ""  # Overrides the runtime image repo, default ghcr.io/discohaus/discoruntime
+  agent_url: ""  # Panel URL for container telemetry, auto detected when empty
+  dns: ""  # Custom DNS server for containers (empty = docker default)
   sync_interval: 5  # Seconds between docker state sync
   # Can be configure like labels: {"your.label.key": "your_label_value", "other.label.key": "other_label_value"}
   # or
@@ -45,7 +47,6 @@ storage:
   data_dir: "./data"
   backup_dir: "./backups"
   temp_dir: "./tmp"
-  max_upload_size: 524288000  # 500MB in bytes
 
 # Authentication configuration
 auth:
@@ -68,6 +69,12 @@ auth:
     scopes: ["openid", "profile", "email"]
     role_claim: "groups"  # The token claim that contains the user's groups (usually "groups")
     role_mapping: {}  # Mapping to groups if they arent the same name as discopanels (ie: {"my-admins": "admin", "my-users": "user"})
+    reject_unmapped: false  # Deny login when no group maps to a role
+    required_claim: ""  # Claim required to log in, ie "groups"
+    required_values: []  # Values required in that claim (any match allows login)
+    extra_claims_url: ""  # Endpoint queried for additional claims like userinfo
+    extra_claims_key: ""  # JSON key holding the claim list in that response
+    extra_claims_name: ""  # Claim name the fetched values are merged under
     skip_tls_verify: false  # Skip TLS certificate verification (for self-signed certs)
 
 # Upload configuration
@@ -82,27 +89,24 @@ module:
   enabled: true
   port_range_min: 8100
   port_range_max: 8199
+  doctor_enabled: true # Built-in Doctor module
 
 # Proxy configuration - ENABLE THIS FOR MINECRAFT ROUTING
 proxy:
   enabled: true
-  base_url: "mc.example.com" # Your domain for Minecraft servers
-  listen_port: 25565 # Primary port to listen on (can also use 443)
-  listen_ports: [25565] # Multiple ports to listen on (listen_port will be added if not present)
+  public_ip: "" # Public address for hostname suggestions
+  base_url: "" # Base domain seed, saved network settings win
+  listen_port: 25565 # First run default listener port (can also use 443)
   port_range_min: 25565
-  port_range_max: 25665
-
-# Example usage:
-# With proxy enabled and base_url set to "mc.example.com":
-# - Server named "survival" → Connect via: survival.mc.example.com:25565
-# - Server named "creative" → Connect via: creative.mc.example.com:25565
-# - Server named "modded" → Connect via: modded.mc.example.com:25565
-#
-# All servers use the same port (25565) and are routed based on hostname!
-# 
-# DNS Setup Required:
-# Add a wildcard DNS record: *.mc.example.com → Your server's IP
-# Or add individual A records for each server subdomain
+  trusted_edge: false # For external proxy headers: X-Forwarded-Proto / X-Forwarded-For
+  ingress_proxy_protocol: false # Enable parsing PROXY protocol v1/v2 on ingress listeners (VPS tunnel / Pangolin)
+  # trusted_proxies: # Optional CIDR whitelist for PROXY protocol upstream IP addresses
+  #   - "10.0.0.0/8"
+  # Optional TLS for the panel ui
+  # tls:
+  #   certificates:
+  #     - cert_file: /etc/discopanel/certs/example.com.crt
+  #       key_file: /etc/discopanel/certs/example.com.key
 
 
 # Minecraft server global configuration defaults
@@ -112,27 +116,27 @@ minecraft:
     # JVM Configuration
     uid: 1000
     gid: 1000
-    memory: "1G"
     initMemory: "1G"
     maxMemory: "1G"
     tz: "UTC"
-    enableRollingLogs: false
     enableJmx: false
     jmxHost: ""
+    enableAgent: true  # DiscoPanel telemetry agent attached to server JVM
     useAikarFlags: false
     useMeowiceFlags: false
-    useMeowiceGraalvmFlags: true
+    useFlareFlags: false
+    useSimdFlags: false
+    useZgcFlags: false  # Use generational ZGC instead of G1
     jvmOpts: ""
     jvmXxOpts: ""
     jvmDdOpts: ""
     extraArgs: ""
-    logTimestamp: false
 
     # Server Configuration
-    type: "VANILLA"
     eula: "TRUE"
-    version: "LATEST"
+    forceProvision: false  # Forces reprovision on next start then clears
     motd: ""
+    offlineMotd: ""  # MOTD line shown while server is offline
     difficulty: "easy"
     icon: ""
     overrideIcon: false
@@ -171,15 +175,8 @@ minecraft:
     preventProxyConnections: false
     useNativeTransport: false
     simulationDistance: 0
-    execDirectly: false
     stopServerAnnounceDelay: 0
-    proxy: ""
-    console: true
-    gui: true
     stopDuration: 60
-    setupOnly: false
-    useFlareFlags: false
-    useSimdFlags: false
 
     # Custom Resource Pack
     resourcePack: ""
@@ -189,7 +186,6 @@ minecraft:
     # Whitelist
     enableWhitelist: false
     whitelist: ""
-    whitelistFile: ""
     overrideWhitelist: false
 
     # RCON
@@ -204,20 +200,20 @@ minecraft:
     rconCmdsLastDisconnect: ""
 
     # Auto-Pause
-    enableAutopause: false
+    enableAutopause: false # Requires the server to be behind the DiscoPanel proxy
     autopauseTimeoutEst: 3600
     autopauseTimeoutInit: 600
-    autopauseTimeoutKn: 120
-    autopausePeriod: 10
-    autopauseKnockInterface: "eth0"
-    debugAutopause: false
 
     # Auto-Stop
     enableAutostop: false
-    autostopTimeoutEst: 3600
+    autostopTimeoutEst: 3600 # Timers restart on autopause
     autostopTimeoutInit: 1800
-    autostopPeriod: 10
-    debugAutostop: false
+
+    # Proxy (requires proxy enabled)
+    enableWakeOnConnect: false  # Joining a stopped server starts it up
+    enableOfflineStatus: false  # Answer status pings while server is stopped
+    enableProxyProtocol: false  # Send PROXY protocol v2 headers to server
+    proxyPreserveHostname: false  # Forward original client hostname to server
 
     # Forge Configuration
     forgeVersion: ""
@@ -226,36 +222,23 @@ minecraft:
 
     # CurseForge Configuration
     cfApiKey: ""
-    cfApiKeyFile: ""
     cfPageUrl: ""
     cfSlug: ""
     cfFileId: ""
     cfModpackZip: ""
-    cfFilenameMatcher: ""
-    cfExcludeIncludeFile: ""
     cfExcludeMods: ""
     cfForceIncludeMods: ""
-    cfForceSynchronize: false
-    cfSetLevelFrom: ""
-    cfParallelDownloads: 4
-    cfOverridesSkipExisting: false
-    cfForceReinstallModloader: false
 
     # Modrinth Configuration
     modrinthModpack: ""
     modrinthModpackVersionType: "release"
     modrinthVersion: ""
     modrinthLoader: ""
-    modrinthIgnoreMissingFiles: ""
     modrinthExcludeFiles: ""
     modrinthForceIncludeFiles: ""
-    modrinthForceSynchronize: false
-    modrinthDefaultExcludeIncludes: ""
-    modrinthOverridesExclusions: ""
     modrinthProjects: ""
     modrinthDownloadDependencies: "none"
     modrinthProjectsDefaultVersionType: "release"
-    versionFromModrinthProjects: false
 
     # Custom Server Configuration
     customServer: ""
@@ -282,15 +265,26 @@ minecraft:
     statusHeartbeatInterval: 0
     customServerProperties: ""
 
+    # Management Server
+    managementServerEnabled: false  # Enable management server interface
+    managementServerHost: "0.0.0.0"  # Host address for management server
+    managementServerPort: 0  # Port for management server
+    managementServerSecret: ""  # Shared secret for management server auth
+    managementServerTlsEnabled: false  # Enable TLS for management server
+    managementServerTlsKeystore: ""  # Path to TLS keystore
+    managementServerTlsKeystorePassword: ""  # Password for TLS keystore
+    managementServerAllowedOrigins: ""  # Allowed CORS origins for management server
+
     # Ops / Admins
-    userApiProvider: "playerdb"
     ops: ""
-    opsFile: ""
-    existingOpsFile: "SYNC_FILE_MERGE_LIST"
 
     # Additional Whitelist Options
-    existingWhitelistFile: "SYNC_FILE_MERGE_LIST"
     enforceWhitelist: false
+
+    # Doctor
+    doctorEnabled: true  # Doctor watches this server and reports findings
+    doctorMode: "repair"  # Repair crashes or observe and report only
+    doctorInstallDeps: true  # Doctor may download missing mod dependencies
 
 # Logging configuration
 logging:

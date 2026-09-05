@@ -2,6 +2,7 @@ package logger
 
 import (
 	"fmt"
+	"github.com/discohaus/discopanel/pkg/config"
 	"io"
 	"log"
 	"os"
@@ -19,15 +20,7 @@ type Logger struct {
 	maxBuffer  int
 }
 
-type Config struct {
-	Enabled    bool
-	FilePath   string
-	MaxSize    int
-	MaxBackups int
-	MaxAge     int
-	Compress   bool
-}
-
+// Plain stdout logger, used by tests
 func New() *Logger {
 	return &Logger{
 		Logger:    log.New(os.Stdout, "", 0),
@@ -36,7 +29,7 @@ func New() *Logger {
 	}
 }
 
-func NewWithConfig(cfg *Config) *Logger {
+func NewWithConfig(cfg *config.LoggingConfig) *Logger {
 	writers := []io.Writer{os.Stdout}
 
 	var fileLogger *lumberjack.Logger

@@ -10,6 +10,15 @@ discopanel
 web/discopanel/build/
 web/discopanel/node_modules/
 web/discopanel/.svelte-kit/
+discomodule/
+discoruntime/.git/
+discoruntime/build/
+discoruntime/agent/.gradle-home/
+discoruntime/agent/.gradle/
+discoruntime/agent/build/
+discoruntime/agent/src/generated/
+go.work
+go.work.sum
 data/
 tmp/
 sandbox/

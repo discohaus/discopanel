@@ -14,131 +14,100 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
+	storage "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/internal/docker"
+	"github.com/discohaus/discopanel/pkg/config"
+	"github.com/discohaus/discopanel/pkg/logger"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
 	"github.com/google/uuid"
-	"github.com/nickheyer/discopanel/internal/config"
-	storage "github.com/nickheyer/discopanel/internal/db"
-	"github.com/nickheyer/discopanel/internal/docker"
-	"github.com/nickheyer/discopanel/pkg/logger"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
-	"github.com/nickheyer/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 // Compile-time check that SupportService implements the interface
 var _ discopanelv1connect.SupportServiceHandler = (*SupportService)(nil)
 
-// SupportService implements the Support service
+// Largest slice read from the tail of the app log
+const maxAppLogTailBytes = 1 << 20
+
+// Implements the Support service
 type SupportService struct {
 	store  *storage.Store
 	docker *docker.Client
 	config *config.Config
 	log    *logger.Logger
-	// Store generated bundles temporarily
-	bundles map[string]*BundleInfo
+	// Guards the temporary bundle registry
+	bundlesMu sync.Mutex
+	bundles   map[string]*v1.GenerateSupportBundleResponse
 }
 
-// BundleInfo stores information about a generated bundle
-type BundleInfo struct {
-	ID        string
-	Filename  string
-	Path      string
-	Size      int64
-	CreatedAt time.Time
-}
-
-// UploadUserInfo contains user-provided contact and issue information
-type UploadUserInfo struct {
-	DiscordUsername  string
-	Email            string
-	GithubUsername   string
-	IssueDescription string
-	StepsToReproduce string
-}
-
-// NewSupportService creates a new support service
+// Creates a new support service
 func NewSupportService(store *storage.Store, docker *docker.Client, config *config.Config, log *logger.Logger) *SupportService {
 	return &SupportService{
 		store:   store,
 		docker:  docker,
 		config:  config,
 		log:     log,
-		bundles: make(map[string]*BundleInfo),
+		bundles: make(map[string]*v1.GenerateSupportBundleResponse),
 	}
 }
 
-// GenerateSupportBundle generates a support bundle
-func (s *SupportService) GenerateSupportBundle(ctx context.Context, req *connect.Request[v1.GenerateSupportBundleRequest]) (*connect.Response[v1.GenerateSupportBundleResponse], error) {
-	msg := req.Msg
+// Bundle archives live in the temp dir under their filename
+func (s *SupportService) bundlePath(filename string) string {
+	return filepath.Join(s.config.Storage.TempDir, filename)
+}
 
-	// Default all options to true if not specified
-	includeLogs := msg.IncludeLogs
-	includeConfigs := msg.IncludeConfigs
-	includeSystemInfo := msg.IncludeSystemInfo
-
-	s.log.Info("Generating support bundle (logs=%v, configs=%v, system=%v)", includeLogs, includeConfigs, includeSystemInfo)
-
-	// Create temporary directory for bundle
-	tempDir := filepath.Join(s.config.Storage.TempDir, fmt.Sprintf("support-bundle-%d", time.Now().Unix()))
-	if err := os.MkdirAll(tempDir, 0755); err != nil {
-		s.log.Error("Failed to create temp directory: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create temp directory"))
+// Assembles a support bundle archive on disk
+func (s *SupportService) buildBundle(ctx context.Context, includeLogs, includeConfigs, includeSystemInfo bool, serverIDs []string) (*v1.GenerateSupportBundleResponse, error) {
+	// Scratch space for the scrubbed database copy
+	tempDir, err := os.MkdirTemp(s.config.Storage.TempDir, "support-bundle-")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp directory: %w", err)
 	}
-	defer os.RemoveAll(tempDir) // Clean up temp directory when done
+	defer os.RemoveAll(tempDir)
 
-	// Prepare bundle file path
-	bundleID := uuid.New().String()
 	bundleFileName := fmt.Sprintf("discopanel-support-%s.tar.gz", time.Now().Format("20060102-150405"))
 	bundlePath := filepath.Join(s.config.Storage.TempDir, bundleFileName)
 
-	// Create the tar.gz file
 	bundleFile, err := os.Create(bundlePath)
 	if err != nil {
-		s.log.Error("Failed to create bundle file: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create bundle file"))
+		return nil, fmt.Errorf("failed to create bundle file: %w", err)
 	}
 	defer bundleFile.Close()
 
-	// Create gzip writer
 	gzipWriter := gzip.NewWriter(bundleFile)
 	defer gzipWriter.Close()
 
-	// Create tar writer
 	tarWriter := tar.NewWriter(gzipWriter)
 	defer tarWriter.Close()
 
-	// 1. Add logs to bundle if requested
 	if includeLogs {
-		if err := s.addLogsToBundle(ctx, tarWriter, msg.ServerIds); err != nil {
-			s.log.Error("Failed to add logs to bundle: %v", err)
-			// Continue without failing the entire bundle
-			s.log.Warn("Continuing without logs")
+		if err := s.addLogsToBundle(ctx, tarWriter, serverIDs); err != nil {
+			s.log.Warn("Continuing without logs: %v", err)
 		}
 	}
 
-	// 2. Add database/configs to bundle if requested
 	if includeConfigs {
-		if err := s.addDatabaseToBundle(tarWriter); err != nil {
-			s.log.Error("Failed to add database to bundle: %v", err)
-			// Continue without failing
-			s.log.Warn("Continuing without database")
+		if err := s.addDatabaseToBundle(ctx, tarWriter, tempDir); err != nil {
+			s.log.Warn("Continuing without database: %v", err)
 		}
-
-		// Add server configurations
-		if err := s.addServerConfigsToBundle(ctx, tarWriter, msg.ServerIds); err != nil {
-			s.log.Error("Failed to add server configs: %v", err)
-			s.log.Warn("Continuing without server configs")
+		if err := s.addServerPropertiesToBundle(ctx, tarWriter, serverIDs); err != nil {
+			s.log.Warn("Continuing without server configs: %v", err)
 		}
 	}
 
-	// 3. Add system information if requested
 	if includeSystemInfo {
 		if err := s.addSystemInfoToBundle(ctx, tarWriter); err != nil {
-			s.log.Error("Failed to add system info to bundle: %v", err)
-			// Don't fail the entire bundle if system info fails
-			s.log.Warn("Continuing without system info")
+			s.log.Warn("Continuing without system info: %v", err)
 		}
 	}
 
@@ -147,47 +116,56 @@ func (s *SupportService) GenerateSupportBundle(ctx context.Context, req *connect
 	gzipWriter.Close()
 	bundleFile.Close()
 
-	// Get file size
 	fileInfo, err := os.Stat(bundlePath)
 	if err != nil {
-		s.log.Error("Failed to stat bundle file: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get bundle info"))
+		return nil, fmt.Errorf("failed to stat bundle file: %w", err)
 	}
 
-	// Store bundle info for download
-	bundleInfo := &BundleInfo{
-		ID:        bundleID,
+	return &v1.GenerateSupportBundleResponse{
+		BundleId:  uuid.New().String(),
 		Filename:  bundleFileName,
-		Path:      bundlePath,
 		Size:      fileInfo.Size(),
-		CreatedAt: time.Now(),
+		CreatedAt: timestamppb.Now(),
+	}, nil
+}
+
+// Generates a support bundle
+func (s *SupportService) GenerateSupportBundle(ctx context.Context, req *connect.Request[v1.GenerateSupportBundleRequest]) (*connect.Response[v1.GenerateSupportBundleResponse], error) {
+	msg := req.Msg
+	s.log.Info("Generating support bundle (logs=%v, configs=%v, system=%v)", msg.IncludeLogs, msg.IncludeConfigs, msg.IncludeSystemInfo)
+
+	bundle, err := s.buildBundle(ctx, msg.IncludeLogs, msg.IncludeConfigs, msg.IncludeSystemInfo, msg.ServerIds)
+	if err != nil {
+		s.log.Error("Failed to build support bundle: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create support bundle"))
 	}
-	s.bundles[bundleID] = bundleInfo
+	bundle.Message = "Support bundle created successfully"
+
+	// Store bundle info for download
+	s.bundlesMu.Lock()
+	s.bundles[bundle.BundleId] = bundle
+	s.bundlesMu.Unlock()
 
 	// Clean up old bundles after 1 hour
 	go func() {
 		time.Sleep(1 * time.Hour)
-		s.cleanupBundle(bundleID)
+		s.cleanupBundle(bundle.BundleId)
 	}()
 
-	return connect.NewResponse(&v1.GenerateSupportBundleResponse{
-		BundleId:  bundleID,
-		Filename:  bundleFileName,
-		Size:      fileInfo.Size(),
-		CreatedAt: timestamppb.New(bundleInfo.CreatedAt),
-		Message:   "Support bundle created successfully",
-	}), nil
+	return connect.NewResponse(bundle), nil
 }
 
-// DownloadSupportBundle downloads a support bundle
+// Downloads a support bundle
 func (s *SupportService) DownloadSupportBundle(ctx context.Context, req *connect.Request[v1.DownloadSupportBundleRequest]) (*connect.Response[v1.DownloadSupportBundleResponse], error) {
-	bundleInfo, exists := s.bundles[req.Msg.BundleId]
+	s.bundlesMu.Lock()
+	bundle, exists := s.bundles[req.Msg.BundleId]
+	s.bundlesMu.Unlock()
 	if !exists {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("bundle not found or expired"))
 	}
 
 	// Read the bundle file
-	bundleData, err := os.ReadFile(bundleInfo.Path)
+	bundleData, err := os.ReadFile(s.bundlePath(bundle.Filename))
 	if err != nil {
 		s.log.Error("Failed to read bundle file: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to read bundle"))
@@ -198,108 +176,29 @@ func (s *SupportService) DownloadSupportBundle(ctx context.Context, req *connect
 
 	return connect.NewResponse(&v1.DownloadSupportBundleResponse{
 		Content:  bundleData,
-		Filename: bundleInfo.Filename,
+		Filename: bundle.Filename,
 		MimeType: "application/gzip",
 	}), nil
 }
 
-// UploadSupportBundle generates and uploads a support bundle to the support server
+// Generates and uploads a support bundle to server
 func (s *SupportService) UploadSupportBundle(ctx context.Context, req *connect.Request[v1.UploadSupportBundleRequest]) (*connect.Response[v1.UploadSupportBundleResponse], error) {
 	msg := req.Msg
+	s.log.Info("Generating support bundle for upload (logs=%v, configs=%v, system=%v)", msg.IncludeLogs, msg.IncludeConfigs, msg.IncludeSystemInfo)
 
-	// Default all options to true if not specified
-	includeLogs := msg.IncludeLogs
-	includeConfigs := msg.IncludeConfigs
-	includeSystemInfo := msg.IncludeSystemInfo
-
-	s.log.Info("Generating support bundle for upload (logs=%v, configs=%v, system=%v)", includeLogs, includeConfigs, includeSystemInfo)
-
-	// Create temporary directory for bundle
-	tempDir := filepath.Join(s.config.Storage.TempDir, fmt.Sprintf("support-bundle-%d", time.Now().Unix()))
-	if err := os.MkdirAll(tempDir, 0755); err != nil {
-		s.log.Error("Failed to create temp directory: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create temp directory"))
-	}
-	defer os.RemoveAll(tempDir) // Clean up temp directory when done
-
-	// Prepare bundle file path
-	bundleFileName := fmt.Sprintf("discopanel-support-%s.tar.gz", time.Now().Format("20060102-150405"))
-	bundlePath := filepath.Join(s.config.Storage.TempDir, bundleFileName)
-
-	// Create the tar.gz file
-	bundleFile, err := os.Create(bundlePath)
+	bundle, err := s.buildBundle(ctx, msg.IncludeLogs, msg.IncludeConfigs, msg.IncludeSystemInfo, msg.ServerIds)
 	if err != nil {
-		s.log.Error("Failed to create bundle file: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create bundle file"))
+		s.log.Error("Failed to build support bundle: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create support bundle"))
 	}
-	defer bundleFile.Close()
-
-	// Create gzip writer
-	gzipWriter := gzip.NewWriter(bundleFile)
-	defer gzipWriter.Close()
-
-	// Create tar writer
-	tarWriter := tar.NewWriter(gzipWriter)
-	defer tarWriter.Close()
-
-	// 1. Add logs to bundle if requested
-	if includeLogs {
-		if err := s.addLogsToBundle(ctx, tarWriter, msg.ServerIds); err != nil {
-			s.log.Error("Failed to add logs to bundle: %v", err)
-			// Continue without failing the entire bundle
-			s.log.Warn("Continuing without logs")
-		}
-	}
-
-	// 2. Add database/configs to bundle if requested
-	if includeConfigs {
-		if err := s.addDatabaseToBundle(tarWriter); err != nil {
-			s.log.Error("Failed to add database to bundle: %v", err)
-			// Continue without failing
-			s.log.Warn("Continuing without database")
-		}
-
-		// Add server configurations
-		if err := s.addServerConfigsToBundle(ctx, tarWriter, msg.ServerIds); err != nil {
-			s.log.Error("Failed to add server configs: %v", err)
-			s.log.Warn("Continuing without server configs")
-		}
-	}
-
-	// 3. Add system information if requested
-	if includeSystemInfo {
-		if err := s.addSystemInfoToBundle(ctx, tarWriter); err != nil {
-			s.log.Error("Failed to add system info to bundle: %v", err)
-			// Don't fail the entire bundle if system info fails
-			s.log.Warn("Continuing without system info")
-		}
-	}
-
-	// Close writers to flush all data
-	tarWriter.Close()
-	gzipWriter.Close()
-	bundleFile.Close()
-
-	// Build user info for upload
-	userInfo := &UploadUserInfo{
-		DiscordUsername:  msg.DiscordUsername,
-		Email:            msg.Email,
-		GithubUsername:   msg.GithubUsername,
-		IssueDescription: msg.IssueDescription,
-		StepsToReproduce: msg.StepsToReproduce,
-	}
+	defer os.Remove(s.bundlePath(bundle.Filename))
 
 	// Upload the bundle to support server
-	referenceID, err := s.uploadBundleToServer(bundlePath, bundleFileName, userInfo)
+	referenceID, err := s.uploadBundleToServer(s.bundlePath(bundle.Filename), bundle.Filename, msg)
 	if err != nil {
 		s.log.Error("Failed to upload support bundle: %v", err)
-		// Clean up the bundle file
-		os.Remove(bundlePath)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to upload support bundle: %v", err))
 	}
-
-	// Clean up the bundle file after successful upload
-	os.Remove(bundlePath)
 
 	return connect.NewResponse(&v1.UploadSupportBundleResponse{
 		ReferenceId: referenceID,
@@ -308,8 +207,8 @@ func (s *SupportService) UploadSupportBundle(ctx context.Context, req *connect.R
 	}), nil
 }
 
-// uploadBundleToServer uploads a bundle file to the support server
-func (s *SupportService) uploadBundleToServer(bundlePath, fileName string, userInfo *UploadUserInfo) (string, error) {
+// Uploads a bundle file to the support server
+func (s *SupportService) uploadBundleToServer(bundlePath, fileName string, userInfo *v1.UploadSupportBundleRequest) (string, error) {
 	supportURL := s.getUploadSupportUrl()
 
 	// Open the bundle file
@@ -395,7 +294,7 @@ func (s *SupportService) uploadBundleToServer(bundlePath, fileName string, userI
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&uploadResp); err != nil {
-		// If we can't decode the response, just return the support URL
+		// Falls back to support URL if response can't decode
 		return supportURL, nil
 	}
 
@@ -421,18 +320,22 @@ func (s *SupportService) getUploadSupportUrl() string {
 	return s.getSupportUrl() + "/api/v1/uploads"
 }
 
-// cleanupBundle removes a bundle from memory and disk
+// Removes a bundle from memory and disk
 func (s *SupportService) cleanupBundle(bundleID string) {
-	if bundleInfo, exists := s.bundles[bundleID]; exists {
-		// Remove file
-		os.Remove(bundleInfo.Path)
-		// Remove from map
+	s.bundlesMu.Lock()
+	bundleInfo, exists := s.bundles[bundleID]
+	if exists {
 		delete(s.bundles, bundleID)
+	}
+	s.bundlesMu.Unlock()
+
+	if exists {
+		os.Remove(s.bundlePath(bundleInfo.Filename))
 		s.log.Debug("Cleaned up support bundle %s", bundleID)
 	}
 }
 
-// addLogsToBundle adds logs to the tar archive
+// Adds logs to the tar archive
 func (s *SupportService) addLogsToBundle(ctx context.Context, tarWriter *tar.Writer, serverIDs []string) error {
 	// Get recent logs from memory buffer
 	recentLogs := s.log.GetRecentLogs()
@@ -468,6 +371,10 @@ func (s *SupportService) addLogsToBundle(ctx context.Context, tarWriter *tar.Wri
 		if logDir != "" && logDir != "." {
 			files, _ := os.ReadDir(logDir)
 			for _, file := range files {
+				// Main log already added above
+				if file.Name() == filepath.Base(logFilePath) {
+					continue
+				}
 				if strings.HasPrefix(file.Name(), "discopanel") && strings.Contains(file.Name(), ".log") {
 					fullPath := filepath.Join(logDir, file.Name())
 					if err := addFileToTar(tarWriter, fullPath, filepath.Join("logs", file.Name())); err != nil {
@@ -501,21 +408,156 @@ func (s *SupportService) addLogsToBundle(ctx context.Context, tarWriter *tar.Wri
 	return nil
 }
 
-// addDatabaseToBundle adds the database to the tar archive
-func (s *SupportService) addDatabaseToBundle(tarWriter *tar.Writer) error {
-	dbPath := s.config.Database.Path
+// Substrings marking a name as secret bearing
+var secretNameMarkers = []string{"secret", "password", "passwd", "api_key", "apikey", "token"}
 
-	if !fileExists(dbPath) {
-		return fmt.Errorf("database file not found at %s", dbPath)
+// True when a column or key name holds secret material
+func isSensitiveName(name string) bool {
+	n := strings.ToLower(name)
+	if strings.HasPrefix(n, "is_") || strings.HasSuffix(n, "_id") {
+		return false
 	}
-
-	// Copy database file to tar
-	return addFileToTar(tarWriter, dbPath, "database/discopanel.db")
+	for _, marker := range secretNameMarkers {
+		if strings.Contains(n, marker) {
+			return true
+		}
+	}
+	return false
 }
 
-// addServerConfigsToBundle adds server configuration files to the bundle
-func (s *SupportService) addServerConfigsToBundle(ctx context.Context, tarWriter *tar.Writer, serverIDs []string) error {
-	var servers []*storage.Server
+// Adds a secret-scrubbed database snapshot to the tar archive
+func (s *SupportService) addDatabaseToBundle(ctx context.Context, tarWriter *tar.Writer, tempDir string) error {
+	copyPath := filepath.Join(tempDir, "discopanel-scrubbed.db")
+
+	// Snapshot through the live connection stays WAL consistent
+	snapshotSQL := fmt.Sprintf("VACUUM INTO '%s'", strings.ReplaceAll(copyPath, "'", "''"))
+	if err := s.store.DB().WithContext(ctx).Exec(snapshotSQL).Error; err != nil {
+		return fmt.Errorf("failed to snapshot database: %w", err)
+	}
+
+	if err := scrubDatabaseCopy(copyPath); err != nil {
+		return fmt.Errorf("failed to scrub database copy: %w", err)
+	}
+
+	return addFileToTar(tarWriter, copyPath, "database/discopanel.db")
+}
+
+// Overwrites secret columns and truncates sessions in the copy
+func scrubDatabaseCopy(path string) error {
+	db, err := gorm.Open(sqlite.Open(path), &gorm.Config{
+		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to open database copy: %w", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return fmt.Errorf("failed to get database handle: %w", err)
+	}
+	defer sqlDB.Close()
+
+	var tables []string
+	if err := db.Table("sqlite_master").Where("type = ?", "table").Pluck("name", &tables).Error; err != nil {
+		return fmt.Errorf("failed to list tables: %w", err)
+	}
+
+	for _, table := range tables {
+		// Session rows are live JWTs, drop them whole
+		if table == "sessions" {
+			if err := db.Exec("DELETE FROM sessions").Error; err != nil {
+				return fmt.Errorf("failed to truncate sessions: %w", err)
+			}
+			continue
+		}
+
+		var cols []struct{ Name string }
+		if err := db.Raw(fmt.Sprintf("PRAGMA table_info(%q)", table)).Scan(&cols).Error; err != nil {
+			return fmt.Errorf("failed to read columns of %s: %w", table, err)
+		}
+		for _, col := range cols {
+			redact := isSensitiveName(col.Name)
+			// Invite codes and pins gate account creation
+			if table == "registration_invites" && (strings.EqualFold(col.Name, "code") || strings.EqualFold(col.Name, "pin_hash")) {
+				redact = true
+			}
+			if !redact {
+				continue
+			}
+			stmt := fmt.Sprintf("UPDATE %q SET %q = 'REDACTED' WHERE %q IS NOT NULL AND %q != ''", table, col.Name, col.Name, col.Name)
+			if err := db.Exec(stmt).Error; err != nil {
+				return fmt.Errorf("failed to scrub %s.%s: %w", table, col.Name, err)
+			}
+		}
+
+		// Key value settings hide secrets behind the key name
+		if table == "system_settings" {
+			if err := db.Exec("UPDATE system_settings SET value = 'REDACTED' WHERE " + settingKeyPredicate()).Error; err != nil {
+				return fmt.Errorf("failed to scrub system settings: %w", err)
+			}
+		}
+
+		// Webhook secrets hide inside task config JSON
+		if table == "scheduled_tasks" {
+			if err := scrubTaskConfigs(db); err != nil {
+				return fmt.Errorf("failed to scrub task configs: %w", err)
+			}
+		}
+	}
+
+	// Vacuum drops overwritten row images from free pages
+	if err := db.Exec("VACUUM").Error; err != nil {
+		return fmt.Errorf("failed to vacuum database copy: %w", err)
+	}
+	return nil
+}
+
+// Builds a where clause matching secret bearing setting keys
+func settingKeyPredicate() string {
+	parts := make([]string, 0, len(secretNameMarkers))
+	for _, marker := range secretNameMarkers {
+		parts = append(parts, fmt.Sprintf("lower(key) LIKE '%%%s%%'", marker))
+	}
+	return strings.Join(parts, " OR ")
+}
+
+// Redacts secret shaped keys in each webhook task config
+func scrubTaskConfigs(db *gorm.DB) error {
+	var rows []struct {
+		ID            string
+		WebhookConfig string
+	}
+	if err := db.Raw("SELECT id, webhook_config FROM scheduled_tasks WHERE webhook_config IS NOT NULL AND webhook_config != ''").Scan(&rows).Error; err != nil {
+		return err
+	}
+	for _, row := range rows {
+		var m map[string]any
+		if json.Unmarshal([]byte(row.WebhookConfig), &m) != nil {
+			continue
+		}
+		changed := false
+		for k, v := range m {
+			if str, ok := v.(string); ok && str != "" && isSensitiveName(k) {
+				m[k] = "REDACTED"
+				changed = true
+			}
+		}
+		if !changed {
+			continue
+		}
+		out, err := json.Marshal(m)
+		if err != nil {
+			continue
+		}
+		if err := db.Exec("UPDATE scheduled_tasks SET webhook_config = ? WHERE id = ?", string(out), row.ID).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Adds server configuration files to the bundle
+func (s *SupportService) addServerPropertiesToBundle(ctx context.Context, tarWriter *tar.Writer, serverIDs []string) error {
+	var servers []*v1.Server
 	var err error
 
 	if len(serverIDs) > 0 {
@@ -537,14 +579,14 @@ func (s *SupportService) addServerConfigsToBundle(ctx context.Context, tarWriter
 	// Add each server's configuration
 	for _, server := range servers {
 		// Get server config from database
-		serverConfig, err := s.store.GetServerConfig(ctx, server.ID)
+		serverConfig, err := s.store.GetServerProperties(ctx, server.Id)
 		if err != nil {
 			s.log.Warn("Failed to get config for server %s: %v", server.Name, err)
 			continue
 		}
 
-		// Marshal server config to JSON
-		configData, err := json.MarshalIndent(serverConfig, "", "  ")
+		// Marshal server config to JSON with secrets redacted
+		configData, err := redactedConfigJSON(serverConfig)
 		if err != nil {
 			s.log.Warn("Failed to marshal config for server %s: %v", server.Name, err)
 			continue
@@ -570,7 +612,7 @@ func (s *SupportService) addServerConfigsToBundle(ctx context.Context, tarWriter
 		serverPropsPath := filepath.Join(server.DataPath, "server.properties")
 		if fileExists(serverPropsPath) {
 			targetPath := fmt.Sprintf("configs/servers/%s_server.properties", server.Name)
-			if err := addFileToTar(tarWriter, serverPropsPath, targetPath); err != nil {
+			if err := addRedactedPropertiesToTar(tarWriter, serverPropsPath, targetPath); err != nil {
 				s.log.Warn("Failed to add server.properties for %s: %v", server.Name, err)
 			}
 		}
@@ -579,7 +621,63 @@ func (s *SupportService) addServerConfigsToBundle(ctx context.Context, tarWriter
 	return nil
 }
 
-// addSystemInfoToBundle adds system and configuration information to bundle
+// Marshals a settings message with secret values redacted
+func redactedConfigJSON(cfg proto.Message) ([]byte, error) {
+	raw, err := protojson.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	for k, v := range m {
+		if str, ok := v.(string); ok && str != "" && isSensitiveName(k) {
+			m[k] = "REDACTED"
+		}
+	}
+	return json.MarshalIndent(m, "", "  ")
+}
+
+// Copies a properties file with secret values redacted
+func addRedactedPropertiesToTar(tw *tar.Writer, sourcePath, destPath string) error {
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return err
+	}
+
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		key, val, ok := strings.Cut(trimmed, "=")
+		if !ok || strings.TrimSpace(val) == "" {
+			continue
+		}
+		// Property keys use dots and dashes, normalize before matching
+		normalized := strings.NewReplacer(".", "_", "-", "_").Replace(strings.TrimSpace(key))
+		if isSensitiveName(normalized) {
+			lines[i] = strings.TrimSpace(key) + "=REDACTED"
+		}
+	}
+
+	content := []byte(strings.Join(lines, "\n"))
+	header := &tar.Header{
+		Name:    destPath,
+		Size:    int64(len(content)),
+		Mode:    0644,
+		ModTime: time.Now(),
+	}
+	if err := tw.WriteHeader(header); err != nil {
+		return err
+	}
+	_, err = tw.Write(content)
+	return err
+}
+
+// Adds system and configuration information to bundle
 func (s *SupportService) addSystemInfoToBundle(ctx context.Context, tarWriter *tar.Writer) error {
 	servers, _ := s.store.ListServers(ctx)
 
@@ -602,13 +700,28 @@ func (s *SupportService) addSystemInfoToBundle(ctx context.Context, tarWriter *t
 		}
 	}
 
+	// Database rows carry the live proxy truth
+	proxyEnabled := false
+	var proxyPorts []int32
+	if proxyConfig, _, err := s.store.GetProxyConfig(ctx); err == nil {
+		proxyEnabled = proxyConfig.Enabled
+	}
+	listeners, listenersErr := s.store.ListProxyListeners(ctx)
+	if listenersErr == nil {
+		for _, l := range listeners {
+			if l.Enabled {
+				proxyPorts = append(proxyPorts, l.Port)
+			}
+		}
+	}
+
 	// Build config info
 	configInfo := &v1.ConfigInfo{
 		StorageDir:     s.config.Storage.DataDir,
 		TempDir:        s.config.Storage.TempDir,
 		DatabasePath:   s.config.Database.Path,
-		ProxyEnabled:   s.config.Proxy.Enabled,
-		ProxyPorts:     toInt32Slice(s.config.Proxy.ListenPorts),
+		ProxyEnabled:   proxyEnabled,
+		ProxyPorts:     proxyPorts,
 		ServerHost:     s.config.Server.Host,
 		ServerPort:     s.config.Server.Port,
 		LoggingEnabled: s.config.Logging.Enabled,
@@ -618,17 +731,14 @@ func (s *SupportService) addSystemInfoToBundle(ctx context.Context, tarWriter *t
 
 	// Build proxy config if enabled
 	var proxyConfigInfo *v1.ProxyConfigInfo
-	if s.config.Proxy.Enabled {
+	if proxyEnabled {
 		proxyConfig, _, err := s.store.GetProxyConfig(ctx)
 		if err == nil {
 			proxyConfigInfo = &v1.ProxyConfigInfo{
-				Enabled: proxyConfig.Enabled,
-				BaseUrl: proxyConfig.BaseURL,
+				Enabled:   proxyConfig.Enabled,
+				Hostnames: proxyConfig.Hostnames,
 			}
-
-			// Get proxy listeners
-			listeners, err := s.store.GetProxyListeners(ctx)
-			if err == nil {
+			if listenersErr == nil {
 				for _, listener := range listeners {
 					proxyConfigInfo.Listeners = append(proxyConfigInfo.Listeners, &v1.ProxyListenerInfo{
 						Name:      listener.Name,
@@ -645,11 +755,11 @@ func (s *SupportService) addSystemInfoToBundle(ctx context.Context, tarWriter *t
 	serverSummaries := make([]*v1.ServerSummary, 0, len(servers))
 	for _, server := range servers {
 		serverSummaries = append(serverSummaries, &v1.ServerSummary{
-			Id:          server.ID,
+			Id:          server.Id,
 			Name:        server.Name,
-			ModLoader:   string(server.ModLoader),
-			McVersion:   server.MCVersion,
-			Status:      string(server.Status),
+			ModLoader:   server.ModLoader,
+			McVersion:   server.McVersion,
+			Status:      server.Status,
 			Port:        int32(server.Port),
 			Memory:      int32(server.Memory),
 			AutoStart:   server.AutoStart,
@@ -668,7 +778,7 @@ func (s *SupportService) addSystemInfoToBundle(ctx context.Context, tarWriter *t
 		Servers:     serverSummaries,
 	}
 
-	jsonData, err := json.MarshalIndent(systemInfo, "", "  ")
+	jsonData, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(systemInfo)
 	if err != nil {
 		return fmt.Errorf("failed to marshal system info: %w", err)
 	}
@@ -691,7 +801,7 @@ func (s *SupportService) addSystemInfoToBundle(ctx context.Context, tarWriter *t
 	return nil
 }
 
-// addFileToTar adds a file to the tar archive
+// Adds a file to the tar archive
 func addFileToTar(tw *tar.Writer, sourcePath, destPath string) error {
 	file, err := os.Open(sourcePath)
 	if err != nil {
@@ -719,24 +829,16 @@ func addFileToTar(tw *tar.Writer, sourcePath, destPath string) error {
 	return err
 }
 
-// fileExists checks if a file exists
+// Checks if a file exists
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return !os.IsNotExist(err)
 }
 
-func toInt32Slice(intSlice []int) []int32 {
-	result := make([]int32, len(intSlice))
-	for i, v := range intSlice {
-		result[i] = int32(v)
-	}
-	return result
-}
-
-// getVersionInfo gets version information for the application
+// Gets version information for the application
 func getVersionInfo() string {
-	// Check env var first
-	if appV := os.Getenv("APP_VERSION"); appV != "" {
+	// Env then stamped build version win first
+	if appV := config.AppVersion(); appV != "" {
 		return appV
 	}
 
@@ -764,7 +866,7 @@ func getVersionInfo() string {
 	return "unknown"
 }
 
-// GetApplicationLogs returns the application log file content
+// Returns the application log file content
 func (s *SupportService) GetApplicationLogs(ctx context.Context, req *connect.Request[v1.GetApplicationLogsRequest]) (*connect.Response[v1.GetApplicationLogsResponse], error) {
 	logFilePath := s.log.GetLogFilePath()
 	if logFilePath == "" {
@@ -775,18 +877,39 @@ func (s *SupportService) GetApplicationLogs(ctx context.Context, req *connect.Re
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("log file not found"))
 	}
 
-	// Get file info for size
-	fileInfo, err := os.Stat(logFilePath)
+	logFile, err := os.Open(logFilePath)
+	if err != nil {
+		s.log.Error("Failed to open log file: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to read log file"))
+	}
+	defer logFile.Close()
+
+	fileInfo, err := logFile.Stat()
 	if err != nil {
 		s.log.Error("Failed to stat log file: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get log file info"))
 	}
 
-	// Read log file content
-	content, err := os.ReadFile(logFilePath)
-	if err != nil {
+	// Reads at most the last megabyte of the file
+	readSize := fileInfo.Size()
+	var offset int64
+	if readSize > maxAppLogTailBytes {
+		offset = readSize - maxAppLogTailBytes
+		readSize = maxAppLogTailBytes
+	}
+	buf := make([]byte, readSize)
+	n, err := logFile.ReadAt(buf, offset)
+	if err != nil && err != io.EOF {
 		s.log.Error("Failed to read log file: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to read log file"))
+	}
+	content := buf[:n]
+
+	// Drops the partial first line after a mid file start
+	if offset > 0 {
+		if i := bytes.IndexByte(content, '\n'); i >= 0 {
+			content = content[i+1:]
+		}
 	}
 
 	// If tail is specified, only return the last N lines

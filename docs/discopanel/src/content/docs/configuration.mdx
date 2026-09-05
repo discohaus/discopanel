@@ -8,7 +8,7 @@ import configExample from '../../../../../config.example.yaml?raw';
 
 DiscoPanel can be configured via a YAML config file, environment variables, or both. Environment variables take precedence over the config file.
 
-For Minecraft server-specific configuration (server.properties, JVM flags, mod loader settings, etc.), see the [itzg/minecraft-server docs](https://docker-minecraft-server.readthedocs.io/).
+This page covers the panel's own settings. For per-server settings like server.properties, memory, mod loaders and modpacks, use each server's Properties tab in the UI. The guides on [server software](/guides/server-software/), [modpacks](/guides/modpacks/) and [performance](/guides/performance/) cover those.
 
 ## Config file
 
@@ -35,6 +35,20 @@ is equivalent to:
 ```bash
 DISCOPANEL_SERVER_PORT="8080"
 ```
+
+## The sections that matter
+
+Most installs only ever touch a few of these:
+
+| Section | What it controls |
+|---|---|
+| `server` | The port and address the panel's web UI listens on. |
+| `storage` | Where server files, backups, and temp files live on disk. |
+| `proxy` | The Minecraft proxy - domain, ports, and TLS. See [Proxy & Domains](/guides/proxy/) and [HTTPS & Certificates](/guides/tls/). |
+| `auth` | Login: local accounts, self-registration, and [OIDC providers](/guides/oidc/keycloak/). |
+| `minecraft.global_config` | Defaults applied to every **new** server. Each server's Properties tab overrides these per server. |
+| `module` | [Modules](/guides/modules/): the host port range they're assigned from, and `doctor_enabled` to turn the built-in Doctor off. |
+| `docker` | Advanced: the Docker socket, container labels, `runtime_image` to pull server images from your own registry mirror, and `agent_url` if servers need a specific address to reach the panel for live telemetry (it's auto-detected otherwise). |
 
 ## All options
 
