@@ -2,6 +2,8 @@ package mcconsole
 
 import (
 	"regexp"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -15,11 +17,16 @@ var paperHelpNamespaceRegex = regexp.MustCompile(`(?m)^\s*([a-zA-Z0-9][a-zA-Z0-9
 // Slash commands listed on a Bukkit help page
 var paperHelpCommandRegex = regexp.MustCompile(`(?m)^\s*/([^\s:]+(?::[^\s:]+)*):`)
 
+// Alias entries listed under the Bukkit Aliases topic
+var paperHelpAliasRegex = regexp.MustCompile(`(?m)^\s*/([^\s:]+(?::[^\s:]+)*):\s*Alias for\s+/(\S+)`)
+
+// Help topic Bukkit fills with command aliases
+const paperAliasesTopic = "Aliases"
+
 // One command parsed from Bukkit help pages
 type PaperCommand struct {
-	Name        string
-	Description string
-	Aliases     []string
+	Name    string
+	Aliases []string
 }
 
 // Predicts commands from paginated Bukkit help output
@@ -50,7 +57,9 @@ func (e *PaperEngine) GetPredictions(command string) ([]*Token, error) {
 			}
 		}
 	}
-
+	sort.Slice(predictions, func(i, j int) bool {
+		return predictions[i].Text < predictions[j].Text
+	})
 	return predictions, nil
 }
 
@@ -61,107 +70,124 @@ func (e *PaperEngine) EnsureCommandsLoaded() error {
 	return nil
 }
 
+// Reads the index and every namespace, then attaches aliases
 func (e *PaperEngine) LoadCommands() error {
-	rawHelp, err := e.helpFunc("")
+	indexPages, err := e.helpPages("")
 	if err != nil {
 		return err
 	}
-	normalizedRawHelp := StripMinecraftColors(strings.TrimSpace(rawHelp))
-	nameSpaces := parseHelpNamespaces(normalizedRawHelp)
-	e.Commands = make([]*PaperCommand, 0, len(nameSpaces)*10)
-	for _, namespace := range nameSpaces {
-		if namespace == "Aliases" {
+
+	byName := make(map[string]*PaperCommand)
+	commands := make([]*PaperCommand, 0)
+	add := func(name string) {
+		if _, ok := byName[name]; ok {
+			return
+		}
+		cmd := &PaperCommand{Name: name}
+		byName[name] = cmd
+		commands = append(commands, cmd)
+	}
+
+	var namespaces []string
+	for _, page := range indexPages {
+		namespaces = append(namespaces, parseHelpNamespaces(page)...)
+		for _, name := range parseHelpCommands(page) {
+			add(name)
+		}
+	}
+
+	for _, namespace := range namespaces {
+		if namespace == paperAliasesTopic {
 			continue
 		}
-		commands, err := e.GetCommandsForNamespace(namespace)
+		pages, err := e.helpPages(namespace)
 		if err != nil {
 			return err
 		}
-		e.Commands = append(e.Commands, commands...)
+		for _, page := range pages {
+			for _, name := range parseHelpCommands(page) {
+				add(name)
+			}
+		}
 	}
+
+	if slices.Contains(namespaces, paperAliasesTopic) {
+		pages, err := e.helpPages(paperAliasesTopic)
+		if err != nil {
+			return err
+		}
+		for _, page := range pages {
+			for _, pair := range parseHelpAliases(page) {
+				cmd, ok := byName[pair[1]]
+				if ok && !slices.Contains(cmd.Aliases, pair[0]) {
+					cmd.Aliases = append(cmd.Aliases, pair[0])
+				}
+			}
+		}
+	}
+
+	e.Commands = commands
 	return nil
 }
 
-func (e *PaperEngine) GetCommandsForNamespace(namespace string) ([]*PaperCommand, error) {
-	rawHelp, err := e.helpFunc(namespace)
+// Fetches every page of one help topic with colors stripped
+func (e *PaperEngine) helpPages(topic string) ([]string, error) {
+	first, err := e.helpPage(topic, 1)
 	if err != nil {
 		return nil, err
 	}
-	normalizedRawHelp := StripMinecraftColors(strings.TrimSpace(rawHelp))
-
-	matches := paperHelpPageRegex.FindStringSubmatch(normalizedRawHelp)
-	if len(matches) < 3 {
-		return convertHelpCommandsToPaperCommands(parseHelpCommands(normalizedRawHelp)), nil
+	pages := []string{first}
+	total := 1
+	if match := paperHelpPageRegex.FindStringSubmatch(first); len(match) == 3 {
+		total, _ = strconv.Atoi(match[2])
 	}
-	total, _ := strconv.Atoi(matches[2])
-
-	commands := convertHelpCommandsToPaperCommands(parseHelpCommands(normalizedRawHelp))
-
-	for i := 2; i <= total; i++ {
-		rawHelp, err := e.helpFunc(strings.Join([]string{namespace, strconv.Itoa(i)}, " "))
+	for page := 2; page <= total; page++ {
+		text, err := e.helpPage(topic, page)
 		if err != nil {
 			return nil, err
 		}
-		normalizedRawHelp := StripMinecraftColors(strings.TrimSpace(rawHelp))
-		commands = append(convertHelpCommandsToPaperCommands(parseHelpCommands(normalizedRawHelp)), commands...)
+		pages = append(pages, text)
 	}
-
-	return commands, nil
+	return pages, nil
 }
 
-func (e *PaperEngine) GetBaseCommands() ([]*BaseCommand, error) {
-	err := e.EnsureCommandsLoaded()
+// Requests one help page, the first page needs no number
+func (e *PaperEngine) helpPage(topic string, page int) (string, error) {
+	query := topic
+	if page > 1 {
+		query = strings.TrimSpace(topic + " " + strconv.Itoa(page))
+	}
+	raw, err := e.helpFunc(query)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-
-	commands := make([]*BaseCommand, 0, len(e.Commands))
-	for _, cmd := range e.Commands {
-		commands = append(commands, &BaseCommand{
-			Name:        cmd.Name,
-			Description: nil,
-			Aliases:     cmd.Aliases,
-		})
-	}
-	return commands, nil
+	return StripMinecraftColors(strings.TrimSpace(raw)), nil
 }
 
-func parseHelpNamespaces(input string) []string {
-	cleanInput := StripMinecraftColors(input)
-
-	matches := paperHelpNamespaceRegex.FindAllStringSubmatch(cleanInput, -1)
+func parseHelpNamespaces(page string) []string {
+	matches := paperHelpNamespaceRegex.FindAllStringSubmatch(page, -1)
 	results := make([]string, 0, len(matches))
-
 	for _, match := range matches {
-		key := strings.TrimSpace(match[1])
-		results = append(results, key)
+		results = append(results, match[1])
 	}
-
 	return results
 }
 
-func convertHelpCommandsToPaperCommands(commands []string) []*PaperCommand {
-	baseCommands := make([]*PaperCommand, 0, len(commands))
-	for _, cmd := range commands {
-		baseCommands = append(baseCommands, &PaperCommand{
-			Name:        cmd,
-			Description: "",
-			Aliases:     nil,
-		})
+func parseHelpCommands(page string) []string {
+	matches := paperHelpCommandRegex.FindAllStringSubmatch(page, -1)
+	results := make([]string, 0, len(matches))
+	for _, match := range matches {
+		results = append(results, match[1])
 	}
-	return baseCommands
+	return results
 }
 
-func parseHelpCommands(input string) []string {
-	cleanInput := StripMinecraftColors(input)
-
-	matches := paperHelpCommandRegex.FindAllStringSubmatch(cleanInput, -1)
-	results := make([]string, 0, len(matches))
-
+// Pairs each alias with the command it stands for
+func parseHelpAliases(page string) [][2]string {
+	matches := paperHelpAliasRegex.FindAllStringSubmatch(page, -1)
+	pairs := make([][2]string, 0, len(matches))
 	for _, match := range matches {
-		key := strings.TrimSpace(match[1])
-		results = append(results, key)
+		pairs = append(pairs, [2]string{match[1], match[2]})
 	}
-
-	return results
+	return pairs
 }

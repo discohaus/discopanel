@@ -2,6 +2,7 @@ package mcconsole
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -181,17 +182,13 @@ func TestVanillaEngine_LoadCompletions(t *testing.T) {
 		if !msgExists {
 			t.Fatalf("Target command 'msg' not found")
 		}
-
-		tellCmd, tellExists := cmdMap["tell"]
-		if !tellExists {
-			t.Fatalf("Alias 'tell' was not created")
+		if want := []string{"tell", "w"}; !reflect.DeepEqual(msgCmd.Aliases, want) {
+			t.Errorf("msg aliases = %v, want %v", msgCmd.Aliases, want)
 		}
-		if len(tellCmd.Children) != len(msgCmd.Children) {
-			t.Errorf("Alias 'tell' does not have the same number of children as 'msg'")
-		}
-
-		if _, wExists := cmdMap["w"]; !wExists {
-			t.Fatalf("Alias 'w' was not created")
+		for _, alias := range []string{"tell", "w"} {
+			if _, exists := cmdMap[alias]; exists {
+				t.Errorf("Alias %q was registered as its own command", alias)
+			}
 		}
 	})
 
@@ -502,6 +499,51 @@ func newEmptyVanillaEngine(playerListProvider PlayerListFunc) *VanillaEngine {
 	})
 
 	return NewVanillaEngine(commandProvider, playerListProvider)
+}
+
+func TestDynamicExpansion_AliasUsesTarget(t *testing.T) {
+	helpResponses := map[string]string{
+		"help":          "/teleport <destination>/tp -> teleport",
+		"help teleport": "/teleport <destination>",
+	}
+	var requested []string
+	commandProvider := CommandFunc(func(cmd string) (string, error) {
+		requested = append(requested, cmd)
+		return helpResponses[cmd], nil
+	})
+	engine := NewVanillaEngine(commandProvider, nil)
+
+	// Offers the alias beside its command
+	preds, err := engine.GetPredictions("t")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	got := make([]string, len(preds))
+	for i, p := range preds {
+		got[i] = p.Text
+	}
+	if want := []string{"teleport", "tp"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("GetPredictions(\"t\") = %v, want %v", got, want)
+	}
+
+	// Expands the alias through its target command
+	preds, err = engine.GetPredictions("tp ")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	got = make([]string, len(preds))
+	for i, p := range preds {
+		got[i] = p.Text
+	}
+	if want := []string{"destination"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("GetPredictions(\"tp \") = %v, want %v", got, want)
+	}
+	if !slices.Contains(requested, "help teleport") {
+		t.Errorf("expected help lookup for teleport, got %v", requested)
+	}
+	if slices.Contains(requested, "help tp") {
+		t.Errorf("alias must not be expanded on its own, got %v", requested)
+	}
 }
 
 func TestDynamicExpansion_Advancement(t *testing.T) {

@@ -2,6 +2,7 @@ package mcconsole
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -33,147 +34,170 @@ func TestNewPaperEngine(t *testing.T) {
 }
 
 func TestParseHelpNamespaces(t *testing.T) {
-	input := `§e--------- §fHelp: §rIndex (1/23) §e--------------------------
+	input := StripMinecraftColors(`§e--------- §fHelp: §rIndex (1/23) §e--------------------------
 §7Use /help [n] to get page n of help.
 §7§6Aliases: §fLists command aliases
 §f§6Bukkit: §fAll commands for Bukkit
 §f§6Minecraft: §fAll commands for Minecraft
 §f§6Paper: §fAll commands for Paper
-§f§6/about: §fGets the version of this server including any plugins in use`
+§f§6/about: §fGets the version of this server including any plugins in use`)
 
 	expected := []string{"Aliases", "Bukkit", "Minecraft", "Paper"}
-	results := parseHelpNamespaces(input)
-
-	if len(results) != len(expected) {
-		t.Fatalf("Expected: %d Namespaces, Got: %d", len(expected), len(results))
-	}
-	for i, name := range expected {
-		if results[i] != name {
-			t.Errorf("Index %d: Expected %q, Got %q", i, name, results[i])
-		}
+	if got := parseHelpNamespaces(input); !reflect.DeepEqual(got, expected) {
+		t.Errorf("parseHelpNamespaces = %v, want %v", got, expected)
 	}
 }
 
 func TestParseHelpCommands(t *testing.T) {
-	input := `§e--------- §fHelp: §rPaper (1/3) §e---------------------------
+	input := StripMinecraftColors(`§e--------- §fHelp: §rPaper (1/3) §e---------------------------
 §7Below is a list of all Paper commands:
 §7§6/about: §fGets the version of this server including any §fplugins in use
 §f§6/bukkit:about: §fGets the version of this server
-§f§6/plugins: §fGets a list of plugins`
+§f§6/plugins: §fGets a list of plugins`)
 
 	expected := []string{"about", "bukkit:about", "plugins"}
-	results := parseHelpCommands(input)
-
-	if len(results) != len(expected) {
-		t.Fatalf("Expected: %d Commands, Got: %d", len(expected), len(results))
-	}
-	for i, cmd := range expected {
-		if results[i] != cmd {
-			t.Errorf("Index %d: Expected %q, Got %q", i, cmd, results[i])
-		}
+	if got := parseHelpCommands(input); !reflect.DeepEqual(got, expected) {
+		t.Errorf("parseHelpCommands = %v, want %v", got, expected)
 	}
 }
 
-func TestConvertHelpCommandsToPaperCommands(t *testing.T) {
-	input := []string{"about", "reload"}
-	results := convertHelpCommandsToPaperCommands(input)
+func TestParseHelpAliases(t *testing.T) {
+	input := StripMinecraftColors(`§e--------- §fHelp: §rAliases (1/1) §e-------------------------
+§7Below is a list of all command aliases:
+§6/pl: §f§eAlias for §f/plugins
+§6/ver: §f§eAlias for §f/version
+§6/about: §fGets the version of this server`)
 
-	if len(results) != 2 {
-		t.Fatalf("Expected: 2 PaperCommands, Got: %d", len(results))
-	}
-	if results[0].Name != "about" || results[1].Name != "reload" {
-		t.Errorf("Not Expected Command-Names: %+v", results)
+	expected := [][2]string{{"pl", "plugins"}, {"ver", "version"}}
+	if got := parseHelpAliases(input); !reflect.DeepEqual(got, expected) {
+		t.Errorf("parseHelpAliases = %v, want %v", got, expected)
 	}
 }
 
-func TestPaperEngine_GetCommandsForNamespace(t *testing.T) {
-	t.Run("Single Page Namespace", func(t *testing.T) {
-		engine := &PaperEngine{
-			helpFunc: func(cmd string) (string, error) {
-				return `§e--------- §fHelp: §rBukkit §e--------------------------------
-§7§6/help: §fShows the help menu
-§f§6/reload: §fA Mojang provided command.`, nil
-			},
+// Serves canned help pages keyed by the exact help query
+func pagedHelp(pages map[string]string) func(string) (string, error) {
+	return func(query string) (string, error) {
+		page, ok := pages[query]
+		if !ok {
+			return "", errors.New("no help for " + query)
 		}
+		return page, nil
+	}
+}
 
-		cmds, err := engine.GetCommandsForNamespace("Bukkit")
+func commandNames(pages []string) [][]string {
+	names := make([][]string, 0, len(pages))
+	for _, page := range pages {
+		names = append(names, parseHelpCommands(page))
+	}
+	return names
+}
+
+func TestPaperEngine_helpPages(t *testing.T) {
+	t.Run("Single page without counter", func(t *testing.T) {
+		engine := &PaperEngine{helpFunc: pagedHelp(map[string]string{
+			"Bukkit": "§e--------- §fHelp: §rBukkit §e--------------------------------\n§6/help: §fShows the help menu\n§6/reload: §fA Mojang provided command.",
+		})}
+		pages, err := engine.helpPages("Bukkit")
 		if err != nil {
-			t.Fatalf("Not Expected Error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
-		if len(cmds) != 2 {
-			t.Fatalf("Expected: 2 Commands, Got: %d", len(cmds))
-		}
-		if cmds[0].Name != "help" || cmds[1].Name != "reload" {
-			t.Errorf("Wrong commands derived: %v, %v", cmds[0].Name, cmds[1].Name)
+		want := [][]string{{"help", "reload"}}
+		if got := commandNames(pages); !reflect.DeepEqual(got, want) {
+			t.Errorf("helpPages(Bukkit) commands = %v, want %v", got, want)
 		}
 	})
 
-	t.Run("Multi Page Namespace", func(t *testing.T) {
-		engine := &PaperEngine{
-			helpFunc: func(cmd string) (string, error) {
-				switch cmd {
-				case "Aliases":
-					return `§e--------- §fHelp: §rPaper (1/2) §e---------------------------
-§7§6/about: §fGets version`, nil
-				case "Aliases 2":
-					return `§e--------- §fHelp: §rPaper (2/2) §e---------------------------
-§f§6/mspt: §fView server tick times`, nil
-				default:
-					return "", errors.New("command not found")
-				}
-			},
-		}
-
-		cmds, err := engine.GetCommandsForNamespace("Aliases")
+	t.Run("Index pages use bare page numbers", func(t *testing.T) {
+		engine := &PaperEngine{helpFunc: pagedHelp(map[string]string{
+			"":  "§e--------- §fHelp: §rIndex (1/2) §e-----\n§6Aliases: §fLists command aliases",
+			"2": "§e--------- §fHelp: §rIndex (2/2) §e-----\n§6Paper: §fAll commands for Paper",
+		})}
+		pages, err := engine.helpPages("")
 		if err != nil {
-			t.Fatalf("Not expected Error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
-		if len(cmds) != 2 {
-			t.Fatalf("Expected: 2 Commands, Got: %d", len(cmds))
+		if len(pages) != 2 {
+			t.Fatalf("Expected 2 index pages, got %d", len(pages))
 		}
-		if cmds[0].Name != "mspt" || cmds[1].Name != "about" {
-			t.Errorf("Not Expected command sequence: %v, %v", cmds[0].Name, cmds[1].Name)
+		want := []string{"Paper"}
+		if got := parseHelpNamespaces(pages[1]); !reflect.DeepEqual(got, want) {
+			t.Errorf("second index page namespaces = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("Namespace pages stay in page order", func(t *testing.T) {
+		engine := &PaperEngine{helpFunc: pagedHelp(map[string]string{
+			"Paper":   "§e--------- §fHelp: §rPaper (1/2) §e-----\n§6/about: §fGets version",
+			"Paper 2": "§e--------- §fHelp: §rPaper (2/2) §e-----\n§6/mspt: §fView server tick times",
+		})}
+		pages, err := engine.helpPages("Paper")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		want := [][]string{{"about"}, {"mspt"}}
+		if got := commandNames(pages); !reflect.DeepEqual(got, want) {
+			t.Errorf("helpPages(Paper) commands = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("Failing later page returns the error", func(t *testing.T) {
+		engine := &PaperEngine{helpFunc: pagedHelp(map[string]string{
+			"Paper": "§e--------- §fHelp: §rPaper (1/2) §e-----\n§6/about: §fGets version",
+		})}
+		if _, err := engine.helpPages("Paper"); err == nil {
+			t.Error("Expected error for missing second page")
 		}
 	})
 }
 
 func TestPaperEngine_LoadCommands(t *testing.T) {
-	t.Run("Success", func(t *testing.T) {
-		engine := &PaperEngine{
-			helpFunc: func(cmd string) (string, error) {
-				if cmd == "" {
-					return `§e--------- §fHelp: §rIndex (1/1) §e--------------------------
-§f§6Bukkit: §fLists command aliases`, nil
-				}
-				if cmd == "Bukkit" {
-					return `§e--------- §fHelp: §rBukkit §e--------------------------------
-§7§6/alias1: §fTest Alias`, nil
-				}
-				return "", nil
-			},
+	t.Run("Collects index, namespaces, and aliases", func(t *testing.T) {
+		engine := &PaperEngine{helpFunc: pagedHelp(map[string]string{
+			"": `§e--------- §fHelp: §rIndex (1/2) §e-----
+§7Use /help [n] to get page n of help.
+§6Aliases: §fLists command aliases
+§6Bukkit: §fAll commands for Bukkit
+§6/about: §fGets the version`,
+			"2": `§e--------- §fHelp: §rIndex (2/2) §e-----
+§6Paper: §fAll commands for Paper
+§6/plugins: §fGets a list of plugins`,
+			"Bukkit": `§e--------- §fHelp: §rBukkit §e-----
+§6/plugins: §fGets a list of plugins
+§6/version: §fGets the version`,
+			"Paper": `§e--------- §fHelp: §rPaper (1/2) §e-----
+§6/about: §fGets the version`,
+			"Paper 2": `§e--------- §fHelp: §rPaper (2/2) §e-----
+§6/mspt: §fView server tick times`,
+			"Aliases": `§e--------- §fHelp: §rAliases §e-----
+§6/pl: §f§eAlias for §f/plugins
+§6/ver: §f§eAlias for §f/version
+§6/nope: §f§eAlias for §f/missing`,
+		})}
+
+		if err := engine.LoadCommands(); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
 		}
 
-		err := engine.LoadCommands()
-		if err != nil {
-			t.Fatalf("Not Expected Error: %v", err)
+		want := []*PaperCommand{
+			{Name: "about"},
+			{Name: "plugins", Aliases: []string{"pl"}},
+			{Name: "version", Aliases: []string{"ver"}},
+			{Name: "mspt"},
 		}
-		if len(engine.Commands) != 1 {
-			t.Fatalf("Expected: 1 Command, Got: %d", len(engine.Commands))
-		}
-		if engine.Commands[0].Name != "alias1" {
-			t.Errorf("Expected: 'alias1', Got: %q", engine.Commands[0].Name)
+		if !reflect.DeepEqual(engine.Commands, want) {
+			t.Errorf("Commands = %+v, want %+v", engine.Commands, want)
 		}
 	})
 
-	t.Run("Help Error", func(t *testing.T) {
+	t.Run("Help error", func(t *testing.T) {
 		engine := &PaperEngine{
 			helpFunc: func(cmd string) (string, error) {
 				return "", errors.New("help failed")
 			},
 		}
 
-		err := engine.LoadCommands()
-		if err == nil {
+		if err := engine.LoadCommands(); err == nil {
 			t.Error("Expected Error wasn't returned")
 		}
 	})
@@ -201,23 +225,33 @@ func TestPaperEngine_EnsureCommandsLoaded(t *testing.T) {
 	}
 }
 
-func TestPaperEngine_GetBaseCommands(t *testing.T) {
-	engine := &PaperEngine{
-		Commands: []*PaperCommand{
-			{Name: "tp", Aliases: []string{"teleport"}},
-			{Name: "ban"},
-		},
-	}
+func TestPaperEngine_GetPredictions(t *testing.T) {
+	engine := &PaperEngine{Commands: []*PaperCommand{
+		{Name: "version", Aliases: []string{"ver"}},
+		{Name: "plugins", Aliases: []string{"pl"}},
+		{Name: "about"},
+	}}
 
-	baseCmds, err := engine.GetBaseCommands()
-	if err != nil {
-		t.Fatalf("Not expected error: %v", err)
+	cases := []struct {
+		input string
+		want  []string
+	}{
+		{"", []string{"about", "pl", "plugins", "ver", "version"}},
+		{"p", []string{"pl", "plugins"}},
+		{"ver", []string{"ver", "version"}},
+		{"zzz", []string{}},
 	}
-
-	if len(baseCmds) != 2 {
-		t.Fatalf("Expected: 2 BaseCommands, Got: %d", len(baseCmds))
-	}
-	if baseCmds[0].Name != "tp" || len(baseCmds[0].Aliases) != 1 {
-		t.Errorf("First command incomplete: %+v", baseCmds[0])
+	for _, c := range cases {
+		predictions, err := engine.GetPredictions(c.input)
+		if err != nil {
+			t.Fatalf("GetPredictions(%q) error: %v", c.input, err)
+		}
+		got := make([]string, 0, len(predictions))
+		for _, p := range predictions {
+			got = append(got, p.Text)
+		}
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("GetPredictions(%q) = %v, want %v", c.input, got, c.want)
+		}
 	}
 }
