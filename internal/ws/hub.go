@@ -10,10 +10,12 @@ import (
 
 	"github.com/discohaus/discopanel/internal/auth"
 	"github.com/discohaus/discopanel/internal/command"
+	cc "github.com/discohaus/discopanel/internal/command-completion"
 	storage "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/docker"
 	"github.com/discohaus/discopanel/internal/metrics"
 	"github.com/discohaus/discopanel/internal/rbac"
+	"github.com/discohaus/discopanel/pkg/events"
 	"github.com/discohaus/discopanel/pkg/logger"
 	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
@@ -49,6 +51,7 @@ type Hub struct {
 	sender      *command.Sender
 	metrics     *metrics.Collector
 	rec         *metrics.Recorder
+	completion  *cc.Completion
 
 	upgrader websocket.Upgrader
 
@@ -81,7 +84,7 @@ type Client struct {
 }
 
 // Creates a new WebSocket hub
-func NewHub(logStreamer *logger.LogStreamer, authManager *auth.Manager, enforcer *rbac.Enforcer, store *storage.Store, docker *docker.Client, sender *command.Sender, metricsCollector *metrics.Collector, rec *metrics.Recorder, log *logger.Logger) *Hub {
+func NewHub(logStreamer *logger.LogStreamer, authManager *auth.Manager, enforcer *rbac.Enforcer, store *storage.Store, docker *docker.Client, sender *command.Sender, metricsCollector *metrics.Collector, bus *events.Bus, rec *metrics.Recorder, log *logger.Logger) *Hub {
 	return &Hub{
 		logStreamer: logStreamer,
 		authManager: authManager,
@@ -92,6 +95,7 @@ func NewHub(logStreamer *logger.LogStreamer, authManager *auth.Manager, enforcer
 		sender:      sender,
 		metrics:     metricsCollector,
 		rec:         rec,
+		completion:  cc.NewCompletion(log, store, sender, metricsCollector, bus),
 		upgrader: websocket.Upgrader{
 			// Same-origin check blocks cross-site hijack, non-browser clients pass through
 			CheckOrigin: func(r *http.Request) bool {
@@ -288,6 +292,8 @@ func (c *Client) handleMessage(data []byte) {
 		c.handleUnsubscribe(msg.GetUnsubscribe())
 	case v1.WSMessageType_WS_MESSAGE_TYPE_COMMAND:
 		c.handleCommand(msg.GetCommand())
+	case v1.WSMessageType_WS_MESSAGE_TYPE_COMMAND_COMPLETIONS:
+		c.handleCommandCompletions(msg.GetCommandCompletions())
 	case v1.WSMessageType_WS_MESSAGE_TYPE_PING:
 		c.sendPong()
 	default:
@@ -480,6 +486,60 @@ func (c *Client) handleCommand(msg *v1.CommandMessage) {
 	}
 
 	c.sendCommandResult(msg.ServerId, true, output, "")
+}
+
+// Predicts completions for a command
+func (c *Client) handleCommandCompletions(msg *v1.CommandCompletionsMessage) {
+	if !c.authenticated {
+		c.sendError("not authenticated")
+		return
+	}
+
+	if msg == nil || msg.ServerId == "" {
+		c.sendError("missing server_id")
+		return
+	}
+
+	if c.user != nil {
+		allowed, err := c.hub.enforcer.Enforce(c.user.Roles, optionsv1.ResourceType_RESOURCE_TYPE_SERVERS, optionsv1.ActionType_ACTION_TYPE_READ, msg.ServerId)
+		if err != nil || !allowed {
+			c.sendCommandCompletionsResult(msg.ServerId, nil)
+			return
+		}
+	}
+
+	ctx := context.Background()
+	tokens, err := c.hub.completion.GetCompletion(ctx, msg.ServerId, msg.Command)
+	if err != nil {
+		c.hub.log.Warn("Failed to get WS completions for server %s: %v", msg.ServerId, err)
+		c.sendCommandCompletionsResult(msg.ServerId, nil)
+		return
+	}
+
+	pbTokens := make([]*v1.CommandToken, 0, len(tokens))
+	for _, t := range tokens {
+		pbTokens = append(pbTokens, &v1.CommandToken{
+			Text:       t.Text,
+			IsOptional: t.IsOptional,
+			IsArgument: t.IsArgument,
+			IsStatic:   t.IsStatic,
+			IsPlayer:   t.IsPlayer,
+		})
+	}
+
+	c.sendCommandCompletionsResult(msg.ServerId, pbTokens)
+}
+
+func (c *Client) sendCommandCompletionsResult(serverId string, tokens []*v1.CommandToken) {
+	c.sendMessage(&v1.WebSocketServerMessage{
+		Type: v1.WSMessageType_WS_MESSAGE_TYPE_COMMAND_COMPLETIONS_RESULT,
+		Payload: &v1.WebSocketServerMessage_CommandCompletionsResult{
+			CommandCompletionsResult: &v1.CommandCompletionsResultMessage{
+				ServerId: serverId,
+				Tokens:   tokens,
+			},
+		},
+	})
 }
 
 // Removes all subscriptions when client disconnects

@@ -10,11 +10,13 @@ import (
 )
 
 type VanillaToken struct {
-	Children   []*VanillaToken
-	Text       string
-	isArgument bool
-	isOptional bool
-	isExpanded bool
+	Children       []*VanillaToken
+	Text           string
+	isArgument     bool
+	isOptional     bool
+	isExpanded     bool
+	redirectTarget string
+	isWildcard     bool
 }
 
 type VanillaCommand struct {
@@ -26,7 +28,8 @@ type VanillaCommand struct {
 type VanillaEngine struct {
 	Commands         []*VanillaCommand
 	helpFunc         func(command string) (string, error)
-	argumentMappings map[string]func() []string
+	argumentMappings map[string]func() []engine.MappedValue
+	expandedPaths    map[string]bool
 }
 
 func CreateVanillaEngine(commandProvider engine.CommandProvider, playerListProvider engine.PlayListProvider) *VanillaEngine {
@@ -39,39 +42,55 @@ func CreateVanillaEngine(commandProvider engine.CommandProvider, playerListProvi
 	return &VanillaEngine{
 		helpFunc:         helpFunc,
 		argumentMappings: GetMappings(playerListProvider),
+		expandedPaths:    make(map[string]bool),
 	}
 }
 
-func GetMappings(playerListProvider engine.PlayListProvider) map[string]func() []string {
-	return map[string]func() []string{
-		"gamemode": func() []string {
-			return []string{"adventure", "survival", "creative", "spectator"}
+func GetMappings(playerListProvider engine.PlayListProvider) map[string]func() []engine.MappedValue {
+	return map[string]func() []engine.MappedValue{
+		"gamemode": func() []engine.MappedValue {
+			return []engine.MappedValue{
+				{Text: "adventure"}, {Text: "survival"}, {Text: "creative"}, {Text: "spectator"},
+			}
 		},
-		"targets": func() []string {
-			var targets []string
+		"targets": func() []engine.MappedValue {
+			var targets []engine.MappedValue
 
 			if playerListProvider != nil {
 				players, err := playerListProvider.GetPlayers()
 				if err == nil && len(players) > 0 {
-					targets = players
+					for _, p := range players {
+						targets = append(targets, engine.MappedValue{Text: p, IsPlayer: true})
+					}
 				}
 			}
-			targets = append(targets, []string{"@a", "@e", "@n", "@s", "@p", "@r"}...)
+			for _, sel := range []string{"@a", "@e", "@n", "@s", "@p", "@r"} {
+				targets = append(targets, engine.MappedValue{Text: sel, IsPlayer: false})
+			}
 
 			return targets
 		},
-		"target": func() []string {
-			var targets []string
+		"target": func() []engine.MappedValue {
+			var targets []engine.MappedValue
 
 			if playerListProvider != nil {
 				players, err := playerListProvider.GetPlayers()
 				if err == nil && len(players) > 0 {
-					targets = players
+					for _, p := range players {
+						targets = append(targets, engine.MappedValue{Text: p, IsPlayer: true})
+					}
 				}
 			}
-			targets = append(targets, []string{"@a", "@e", "@s", "@p", "@r"}...)
+			for _, sel := range []string{"@a", "@e", "@s", "@p", "@r"} {
+				targets = append(targets, engine.MappedValue{Text: sel, IsPlayer: false})
+			}
 
 			return targets
+		},
+		"dimension": func() []engine.MappedValue {
+			return []engine.MappedValue{
+				{Text: "minecraft:overworld"}, {Text: "minecraft:the_nether"}, {Text: "minecraft:the_end"},
+			}
 		},
 	}
 }
@@ -90,6 +109,28 @@ func (e *VanillaEngine) LoadCommands() error {
 	}
 	e.Commands = e.loadCommandsFromRawHelp(rawHelp)
 	return nil
+}
+
+func (e *VanillaEngine) expandPath(path []string) {
+	if e.expandedPaths == nil {
+		e.expandedPaths = make(map[string]bool)
+	}
+	pathKey := strings.Join(path, " ")
+	if pathKey == "" || e.expandedPaths[pathKey] {
+		return
+	}
+
+	e.expandedPaths[pathKey] = true
+	if e.helpFunc == nil {
+		return
+	}
+
+	rawHelp, err := e.helpFunc(pathKey)
+	if err != nil || strings.TrimSpace(rawHelp) == "" {
+		return
+	}
+
+	e.Commands = e.loadCommandsFromRawHelpWithQuery(rawHelp, path)
 }
 
 func (e *VanillaEngine) GetBaseCommands() ([]*engine.BaseCommand, error) {
@@ -115,12 +156,11 @@ func (e *VanillaEngine) GetPredictions(command string) ([]*engine.Token, error) 
 		return nil, err
 	}
 
-	// Behält Trailing Spaces bei ("advancement " -> ["advancement", ""])
 	tokens := strings.Split(command, " ")
 	firstToken := tokens[0]
 	remainingTokens := tokens[1:]
 
-	// 1. Fall: Nur das erste Token wird eingegeben (Basisbefehl-Vorschläge)
+	// 1. Base command suggestions
 	if len(remainingTokens) == 0 {
 		predictions := make([]*engine.Token, 0)
 		for _, cmd := range e.Commands {
@@ -139,7 +179,7 @@ func (e *VanillaEngine) GetPredictions(command string) ([]*engine.Token, error) 
 		return predictions, nil
 	}
 
-	// 2. Finde den exakt passenden Basisbefehl
+	// 2. Find matching base command
 	var targetCmd *VanillaCommand
 	for _, cmd := range e.Commands {
 		if cmd.Text == firstToken {
@@ -154,40 +194,85 @@ func (e *VanillaEngine) GetPredictions(command string) ([]*engine.Token, error) 
 		}
 	}
 
-	// Wenn der Basisbefehl nicht existiert, gibt es keine Unter-Vorschläge
 	if targetCmd == nil {
 		return []*engine.Token{}, nil
 	}
 
-	// 3. Traversiere den Parameter-Baum (Children)
+	if !e.expandedPaths[targetCmd.Text] {
+		e.expandPath([]string{targetCmd.Text})
+	}
+
 	currentNodes := targetCmd.Children
+	path := []string{targetCmd.Text}
 
 	for i, token := range remainingTokens {
 		isLastToken := i == len(remainingTokens)-1
 
-		if isLastToken {
-			predictions := make([]*engine.Token, 0)
+		// Check for wildcard (...)
+		hasWildcard := false
+		for _, node := range currentNodes {
+			if node.isWildcard || node.Text == "..." {
+				hasWildcard = true
+				break
+			}
+		}
 
-			for _, node := range currentNodes {
+		if hasWildcard {
+			if isLastToken {
+				baseCmds, err := e.GetBaseCommands()
+				if err != nil {
+					return nil, err
+				}
+				predictions := make([]*engine.Token, 0)
+				for _, baseCmd := range baseCmds {
+					if strings.HasPrefix(baseCmd.Name, token) {
+						predictions = append(predictions, &engine.Token{Text: baseCmd.Name})
+					}
+				}
+				sort.Slice(predictions, func(i, j int) bool {
+					return predictions[i].Text < predictions[j].Text
+				})
+				return predictions, nil
+			} else {
+				// Delegate remaining command tokens
+				subCommand := strings.Join(remainingTokens[i:], " ")
+				return e.GetPredictions(subCommand)
+			}
+		}
+
+		if len(currentNodes) == 0 {
+			e.expandPath(path)
+			currentNodes = e.getNodesAtPath(path)
+		}
+
+		if isLastToken {
+			if len(currentNodes) == 0 {
+				e.expandPath(path)
+				currentNodes = e.getNodesAtPath(path)
+			}
+
+			predictions := make([]*engine.Token, 0)
+			effectiveNodes := currentNodes
+
+			for _, node := range effectiveNodes {
 				if node.isArgument {
 					hasMappedMatches := false
 
-					// 1. Statische Mappings hinzufügen
 					if mappingFunc, exists := e.argumentMappings[node.Text]; exists {
-						for _, val := range mappingFunc() {
-							if strings.HasPrefix(val, token) {
+						for _, mv := range mappingFunc() {
+							if strings.HasPrefix(mv.Text, token) {
 								hasMappedMatches = true
 								predictions = append(predictions, &engine.Token{
-									Text:       val,
+									Text:       mv.Text,
 									IsArgument: true,
 									IsOptional: node.isOptional,
 									IsStatic:   true,
+									IsPlayer:   mv.IsPlayer,
 								})
 							}
 						}
 					}
 
-					// 2. Platzhalter (z. B. "targets") als Option mitgeben
 					if token == "" || strings.HasPrefix(node.Text, token) || hasMappedMatches {
 						predictions = append(predictions, &engine.Token{
 							Text:       node.Text,
@@ -197,7 +282,6 @@ func (e *VanillaEngine) GetPredictions(command string) ([]*engine.Token, error) 
 						})
 					}
 				} else if strings.HasPrefix(node.Text, token) {
-					// Subbefehle
 					predictions = append(predictions, &engine.Token{
 						Text:       node.Text,
 						IsArgument: node.isArgument,
@@ -206,7 +290,6 @@ func (e *VanillaEngine) GetPredictions(command string) ([]*engine.Token, error) 
 				}
 			}
 
-			// Sortierung: Static -> Normale Werte / Platzhalter -> Optional
 			sort.Slice(predictions, func(i, j int) bool {
 				iIsStatic := predictions[i].IsStatic
 				jIsStatic := predictions[j].IsStatic
@@ -225,31 +308,132 @@ func (e *VanillaEngine) GetPredictions(command string) ([]*engine.Token, error) 
 			return predictions, nil
 		}
 
-		// Noch nicht beim letzten Token -> Navigiere eine Ebene tiefer
 		var nextNodes []*VanillaToken
+		var matchedNode *VanillaToken
+
 		for _, node := range currentNodes {
-			// Passt, wenn der Text übereinstimmt ODER wenn es ein beliebiges Argument (<...>) akzeptiert
-			if node.isArgument || node.Text == token {
+			if node.redirectTarget != "" {
+				var redirCmd *VanillaCommand
+				for _, cmd := range e.Commands {
+					if cmd.Text == node.redirectTarget {
+						redirCmd = cmd
+						break
+					}
+				}
+				if redirCmd != nil {
+					nextNodes = append(nextNodes, redirCmd.Children...)
+					matchedNode = node
+				}
+			} else if node.isArgument || node.Text == token {
 				nextNodes = append(nextNodes, node.Children...)
+				if matchedNode == nil || node.Text == token {
+					matchedNode = node
+				}
 			}
 		}
+
+		if matchedNode != nil {
+			path = append(path, matchedNode.Text)
+		} else {
+			path = append(path, token)
+		}
+
 		currentNodes = nextNodes
 
-		// Sackgasse im Baum erreicht
 		if len(currentNodes) == 0 {
-			return []*engine.Token{}, nil
+			e.expandPath(path)
+			currentNodes = e.getNodesAtPath(path)
 		}
 	}
 
 	return []*engine.Token{}, nil
 }
 
-func (e *VanillaEngine) loadCommandsFromRawHelp(rawHelpString string) []*VanillaCommand {
-	normalizedRawHelp := strings.ReplaceAll(strings.TrimSpace(utils.StripMinecraftColors(rawHelpString)), "\n", "")
-	rawCommands := strings.Split(normalizedRawHelp, "/")
-	commands := make([]*VanillaCommand, 0, len(rawCommands))
+func (e *VanillaEngine) getNodesAtPath(path []string) []*VanillaToken {
+	if len(path) == 0 {
+		return nil
+	}
 
-	// Map für Aliase: AliasName -> ZielName (z.B. "tell" -> "msg")
+	var targetCmd *VanillaCommand
+	for _, cmd := range e.Commands {
+		if cmd.Text == path[0] || slices.Contains(cmd.Aliases, path[0]) {
+			targetCmd = cmd
+			break
+		}
+	}
+
+	if targetCmd == nil {
+		return nil
+	}
+
+	currentNodes := targetCmd.Children
+	for idx := 1; idx < len(path); idx++ {
+		step := path[idx]
+		var nextNodes []*VanillaToken
+		for _, node := range currentNodes {
+			if node.redirectTarget != "" {
+				var redirCmd *VanillaCommand
+				for _, c := range e.Commands {
+					if c.Text == node.redirectTarget {
+						redirCmd = c
+						break
+					}
+				}
+				if redirCmd != nil {
+					nextNodes = append(nextNodes, redirCmd.Children...)
+				}
+			} else if node.Text == step || node.isArgument {
+				nextNodes = append(nextNodes, node.Children...)
+			}
+		}
+		currentNodes = nextNodes
+		if len(currentNodes) == 0 {
+			break
+		}
+	}
+	return currentNodes
+}
+
+func cleanHelpOutput(rawHelpString string) string {
+	lines := strings.Split(rawHelpString, "\n")
+	var cleanedLines []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if idx := strings.Index(trimmed, "> "); idx != -1 && strings.HasPrefix(trimmed, "RCON@") {
+			trimmed = strings.TrimSpace(trimmed[idx+2:])
+		}
+		if trimmed != "" {
+			cleanedLines = append(cleanedLines, trimmed)
+		}
+	}
+	joined := strings.Join(cleanedLines, "")
+	return strings.TrimSpace(utils.StripMinecraftColors(joined))
+}
+
+func cleanTokenText(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if len(raw) == 0 {
+		return ""
+	}
+	for len(raw) > 1 && ((raw[0] == '<' && raw[len(raw)-1] == '>') || (raw[0] == '[' && raw[len(raw)-1] == ']') || (raw[0] == '(' && raw[len(raw)-1] == ')')) {
+		raw = raw[1 : len(raw)-1]
+	}
+	return raw
+}
+
+func (e *VanillaEngine) loadCommandsFromRawHelp(rawHelpString string) []*VanillaCommand {
+	return e.loadCommandsFromRawHelpWithQuery(rawHelpString, nil)
+}
+
+func (e *VanillaEngine) loadCommandsFromRawHelpWithQuery(rawHelpString string, queryPath []string) []*VanillaCommand {
+	cleaned := cleanHelpOutput(rawHelpString)
+	rawCommands := strings.Split(cleaned, "/")
+
+	commands := e.Commands
+	if commands == nil {
+		commands = make([]*VanillaCommand, 0)
+	}
+
 	aliasesMap := make(map[string]string)
 
 	for _, rawCommand := range rawCommands {
@@ -258,57 +442,147 @@ func (e *VanillaEngine) loadCommandsFromRawHelp(rawHelpString string) []*Vanilla
 			continue
 		}
 
-		rawTokens := strings.Fields(normalizedRawCommand) // Handles multiple spaces automatically
+		rawTokens := strings.Fields(normalizedRawCommand)
 		if len(rawTokens) == 0 {
 			continue
 		}
 
-		// Alias-Sonderfall sicher prüfen (z.B. ["tell", "->", "msg"])
 		if len(rawTokens) >= 3 && rawTokens[1] == "->" {
 			aliasesMap[rawTokens[0]] = rawTokens[2]
 			continue
 		}
 
-		command := &VanillaCommand{
-			Text:     rawTokens[0],
-			Children: make([]*VanillaToken, 0),
+		redirectTarget := ""
+		if len(rawTokens) >= 4 && rawTokens[len(rawTokens)-2] == "->" {
+			redirectTarget = rawTokens[len(rawTokens)-1]
+			rawTokens = rawTokens[:len(rawTokens)-2]
 		}
 
-		// Baumstruktur für Argumente aufbauen
-		for index := 1; index < len(rawTokens); index++ {
-			rawToken := rawTokens[index]
-			tokens := ComposeTokens(rawToken, false, false)
-
-			if index == 1 {
-				command.Children = append(command.Children, tokens...)
-			} else {
-				// Blätter der untersten Ebene ermitteln
-				leafs := getLeafTokens(command.Children)
-				for _, leaf := range leafs {
-					// Wichtig: Kopien/neue Instanzen anfügen, falls "tokens" mehrfach verwendet wird
-					leaf.Children = append(leaf.Children, tokens...)
+		// If a queryPath is provided (e.g. ["fill", "from", "to", "block"]),
+		// verify if rawTokens start with queryPath and strip redundant schema parameter prefixes.
+		if len(queryPath) > 0 && len(rawTokens) >= len(queryPath) {
+			matchesQuery := true
+			for qIdx := 0; qIdx < len(queryPath); qIdx++ {
+				if cleanTokenText(rawTokens[qIdx]) != queryPath[qIdx] {
+					matchesQuery = false
+					break
 				}
+			}
+
+			if matchesQuery {
+				remaining := rawTokens[len(queryPath):]
+				// Remove leading tokens in remaining that repeat query path arguments (e.g. <from> <to> <block>)
+				for len(remaining) > 0 {
+					tokClean := cleanTokenText(remaining[0])
+					matchedQueryArg := false
+					for _, qArg := range queryPath[1:] {
+						if tokClean == qArg {
+							matchedQueryArg = true
+							break
+						}
+					}
+					if matchedQueryArg {
+						remaining = remaining[1:]
+					} else {
+						break
+					}
+				}
+				// Check if remaining tokens repeat the last query token (indicating fallback help output)
+				if len(remaining) > 0 {
+					lastQueryToken := queryPath[len(queryPath)-1]
+					firstRemTokens := ComposeTokens(remaining[0], false, false)
+					isFallback := false
+					for _, t := range firstRemTokens {
+						if t.Text == lastQueryToken {
+							isFallback = true
+							break
+						}
+					}
+					if isFallback {
+						remaining = nil
+					}
+				}
+
+				// Reassemble rawTokens from queryPath + remaining tokens
+				rawTokens = append(slices.Clone(queryPath), remaining...)
 			}
 		}
 
-		// WICHTIG: Befehl zum Array hinzufügen!
-		commands = append(commands, command)
+		baseCmdText := rawTokens[0]
+		var cmd *VanillaCommand
+		for _, existingCmd := range commands {
+			if existingCmd.Text == baseCmdText {
+				cmd = existingCmd
+				break
+			}
+		}
+
+		if cmd == nil {
+			cmd = &VanillaCommand{
+				Text:     baseCmdText,
+				Children: make([]*VanillaToken, 0),
+			}
+			commands = append(commands, cmd)
+		}
+
+		if len(rawTokens) == 1 {
+			continue
+		}
+
+		currentLevelNodes := []*VanillaToken(nil)
+
+		for index := 1; index < len(rawTokens); index++ {
+			rawToken := rawTokens[index]
+			isWildcard := (rawToken == "...")
+			tokens := ComposeTokens(rawToken, false, false)
+
+			for _, tok := range tokens {
+				if isWildcard {
+					tok.isWildcard = true
+				}
+				if index == len(rawTokens)-1 && redirectTarget != "" {
+					tok.redirectTarget = redirectTarget
+				}
+			}
+
+			if index == 1 {
+				cmd.Children = mergeTokenList(cmd.Children, tokens)
+				currentLevelNodes = findMatchingTokens(cmd.Children, tokens)
+			} else {
+				var nextLevel []*VanillaToken
+				for _, parent := range currentLevelNodes {
+					parent.Children = mergeTokenList(parent.Children, tokens)
+					nextLevel = append(nextLevel, findMatchingTokens(parent.Children, tokens)...)
+				}
+				currentLevelNodes = nextLevel
+			}
+		}
 	}
 
-	// Aliase verarbeiten (Kopieren des Ziel-Befehls unter dem Alias-Namen)
 	if len(aliasesMap) > 0 {
 		cmdLookup := make(map[string]*VanillaCommand)
-		for _, cmd := range commands {
-			cmdLookup[cmd.Text] = cmd
+		for _, c := range commands {
+			cmdLookup[c.Text] = c
 		}
 
 		for alias, target := range aliasesMap {
 			if targetCmd, exists := cmdLookup[target]; exists {
-				aliasCmd := &VanillaCommand{
-					Text:     alias,
-					Children: targetCmd.Children, // teilt sich die Argument-Struktur
+				var aliasCmd *VanillaCommand
+				for _, c := range commands {
+					if c.Text == alias {
+						aliasCmd = c
+						break
+					}
 				}
-				commands = append(commands, aliasCmd)
+				if aliasCmd == nil {
+					aliasCmd = &VanillaCommand{
+						Text:     alias,
+						Children: targetCmd.Children,
+					}
+					commands = append(commands, aliasCmd)
+				} else {
+					aliasCmd.Children = targetCmd.Children
+				}
 			}
 		}
 	}
@@ -316,7 +590,43 @@ func (e *VanillaEngine) loadCommandsFromRawHelp(rawHelpString string) []*Vanilla
 	return commands
 }
 
-// Hilfsfunktion: Findet alle tiefsten Tokens im aktuellen Baum
+func mergeTokenList(existing []*VanillaToken, incoming []*VanillaToken) []*VanillaToken {
+	result := existing
+	for _, inc := range incoming {
+		var matched *VanillaToken
+		for _, ext := range result {
+			if ext.Text == inc.Text {
+				matched = ext
+				break
+			}
+		}
+		if matched != nil {
+			if inc.redirectTarget != "" {
+				matched.redirectTarget = inc.redirectTarget
+			}
+			if inc.isWildcard {
+				matched.isWildcard = true
+			}
+		} else {
+			result = append(result, inc)
+		}
+	}
+	return result
+}
+
+func findMatchingTokens(haystack []*VanillaToken, query []*VanillaToken) []*VanillaToken {
+	var matches []*VanillaToken
+	for _, q := range query {
+		for _, h := range haystack {
+			if h.Text == q.Text {
+				matches = append(matches, h)
+			}
+		}
+	}
+	return matches
+}
+
+// Helper: Finds all deepest tokens in the current tree
 func getLeafTokens(tokens []*VanillaToken) []*VanillaToken {
 	var leafs []*VanillaToken
 	for _, token := range tokens {
@@ -330,7 +640,6 @@ func getLeafTokens(tokens []*VanillaToken) []*VanillaToken {
 }
 
 func ComposeTokens(rawToken string, isOptional bool, isArgument bool) []*VanillaToken {
-	// switch on first character
 	tokens := make([]*VanillaToken, 0, 1)
 	switch rawToken[0] {
 	case '(':
@@ -364,7 +673,7 @@ func ComposeTokens(rawToken string, isOptional bool, isArgument bool) []*Vanilla
 			Text:       rawToken,
 			isOptional: isOptional,
 			isArgument: isArgument,
-			isExpanded: isOptional,
+			isExpanded: false,
 		}
 		return []*VanillaToken{token}
 	}

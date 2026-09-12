@@ -14,11 +14,17 @@ type BaseCommand struct {
 	Aliases     []string
 }
 
+type MappedValue struct {
+	Text     string
+	IsPlayer bool
+}
+
 type Token struct {
 	Text       string
 	IsOptional bool
 	IsArgument bool
 	IsStatic   bool
+	IsPlayer   bool
 }
 
 type CompletionEngine interface {

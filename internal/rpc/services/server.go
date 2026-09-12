@@ -17,6 +17,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/discohaus/discopanel/internal/auth"
 	"github.com/discohaus/discopanel/internal/command"
+	cc "github.com/discohaus/discopanel/internal/command-completion"
 	storage "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/docker"
 	"github.com/discohaus/discopanel/internal/lifecycle"
@@ -61,6 +62,7 @@ type ServerService struct {
 	moduleManager    *module.Manager
 	bus              *events.Bus
 	uploadManager    *transfer.UploadManager
+	completion       *cc.Completion
 
 	// Encoded server icons cached by file identity
 	favicons minecraft.FaviconCache
@@ -173,6 +175,7 @@ func NewServerService(store *storage.Store, docker *docker.Client, sender *comma
 		moduleManager:    moduleManager,
 		bus:              bus,
 		uploadManager:    uploadManager,
+		completion:       cc.NewCompletion(log, store, sender, metricsCollector, bus),
 	}
 }
 
@@ -1102,6 +1105,30 @@ func (s *ServerService) SendCommand(ctx context.Context, req *connect.Request[v1
 	return connect.NewResponse(&v1.SendCommandResponse{
 		Success: true,
 		Output:  output,
+	}), nil
+}
+
+// GetCommandCompletions fetches command completion predictions
+func (s *ServerService) GetCommandCompletions(ctx context.Context, req *connect.Request[v1.GetCommandCompletionsRequest]) (*connect.Response[v1.GetCommandCompletionsResponse], error) {
+	tokens, err := s.completion.GetCompletion(ctx, req.Msg.Id, req.Msg.Command)
+	if err != nil {
+		s.log.Warn("Failed to get command completions for server %s: %v", req.Msg.Id, err)
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	pbTokens := make([]*v1.CommandToken, 0, len(tokens))
+	for _, t := range tokens {
+		pbTokens = append(pbTokens, &v1.CommandToken{
+			Text:       t.Text,
+			IsOptional: t.IsOptional,
+			IsArgument: t.IsArgument,
+			IsStatic:   t.IsStatic,
+			IsPlayer:   t.IsPlayer,
+		})
+	}
+
+	return connect.NewResponse(&v1.GetCommandCompletionsResponse{
+		Tokens: pbTokens,
 	}), nil
 }
 

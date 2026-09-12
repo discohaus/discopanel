@@ -126,6 +126,14 @@ service ServerService {
       object_id_field: "id"
     };
   }
+  // Get command completion predictions
+  rpc GetCommandCompletions(GetCommandCompletionsRequest) returns (GetCommandCompletionsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_READ
+      object_id_field: "id"
+    };
+  }
   // Show a chat line in game under a display name
   rpc SendChat(SendChatRequest) returns (SendChatResponse) {
     option (discopanel.options.v1.perm) = {
@@ -542,4 +550,24 @@ message GetServerMetricsHistoryRequest {
 message GetServerMetricsHistoryResponse {
   repeated MetricsSample samples = 1;
   int32 resolution = 2; // bucket seconds actually served
+}
+
+// A token parsed from a command string
+message CommandToken {
+  string text = 1;
+  bool is_optional = 2;
+  bool is_argument = 3;
+  bool is_static = 4;
+  bool is_player = 5;
+}
+
+// Request for command completions
+message GetCommandCompletionsRequest {
+  string id = 1;
+  string command = 2;
+}
+
+// Response for command completions
+message GetCommandCompletionsResponse {
+  repeated CommandToken tokens = 1;
 }

@@ -106,7 +106,7 @@ func NewServer(store *storage.Store, docker *docker.Client, sender *command.Send
 	downloadManager := transfer.NewDownloadManager(cfg.Storage.TempDir, uploadTTL, log)
 
 	// Initialize WebSocket hub
-	wsHub := ws.NewHub(logStreamer, authManager, enforcer, store, docker, sender, metricsCollector, rec, log)
+	wsHub := ws.NewHub(logStreamer, authManager, enforcer, store, docker, sender, metricsCollector, bus, rec, log)
 	go wsHub.Run()
 
 	// Self checks and release probes, started by main once serving
