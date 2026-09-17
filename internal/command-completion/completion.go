@@ -49,7 +49,7 @@ var registry = map[v1.ModLoader]func(ctx FactoryContext) engine.CompletionEngine
 	},
 }
 
-func isVanillaLike(loader v1.ModLoader) bool {
+func isVanillaHelpSyntaxCompatible(loader v1.ModLoader) bool {
 	switch loader {
 	case v1.ModLoader_MOD_LOADER_VANILLA,
 		v1.ModLoader_MOD_LOADER_FORGE,
@@ -94,6 +94,24 @@ func NewCompletion(logger *log.Logger, store *db.Store, sender *command.Sender, 
 	return c
 }
 
+func (c *Completion) IsAvailable(ctx context.Context, serverID string) (bool, error) {
+	props, err := c.store.GetServer(ctx, serverID)
+	if err != nil {
+		return false, fmt.Errorf("failed to fetch server properties: %w", err)
+	}
+
+	_, exists := registry[props.ModLoader]
+	if !exists {
+		return false, nil
+	}
+
+	if isVanillaHelpSyntaxCompatible(props.ModLoader) && props.McVersion != "" && minecraft.CompareGameVersions(props.McVersion, "1.13") < 0 {
+		return false, nil
+	}
+
+	return true, nil
+}
+
 func (c *Completion) GetCompletion(ctx context.Context, serverID string, cmd string) ([]*engine.Token, error) {
 	engine, ok := c.engineCache.GetEngine(serverID)
 	if !ok || engine == nil {
@@ -132,7 +150,7 @@ func (c *Completion) CreateEngine(ctx context.Context, serverID string) (engine.
 		return nil, fmt.Errorf("unsupported mod loader: %v", props.ModLoader)
 	}
 
-	if isVanillaLike(props.ModLoader) && props.McVersion != "" && minecraft.CompareGameVersions(props.McVersion, "1.13") < 0 {
+	if isVanillaHelpSyntaxCompatible(props.ModLoader) && props.McVersion != "" && minecraft.CompareGameVersions(props.McVersion, "1.13") < 0 {
 		return nil, fmt.Errorf("vanilla completion is only supported for Minecraft version 1.13 or newer (server version: %s)", props.McVersion)
 	}
 

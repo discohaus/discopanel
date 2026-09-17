@@ -1132,6 +1132,19 @@ func (s *ServerService) GetCommandCompletions(ctx context.Context, req *connect.
 	}), nil
 }
 
+// IsCommandCompletionAvailable checks if command completion is available for a server
+func (s *ServerService) IsCommandCompletionAvailable(ctx context.Context, req *connect.Request[v1.IsCommandCompletionAvailableRequest]) (*connect.Response[v1.IsCommandCompletionAvailableResponse], error) {
+	available, err := s.completion.IsAvailable(ctx, req.Msg.Id)
+	if err != nil {
+		s.log.Warn("Failed to check command completion availability for server %s: %v", req.Msg.Id, err)
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	return connect.NewResponse(&v1.IsCommandCompletionAvailableResponse{
+		Available: available,
+	}), nil
+}
+
 // Broadcasts a chat line in game under the given sender
 func (s *ServerService) SendChat(ctx context.Context, req *connect.Request[v1.SendChatRequest]) (*connect.Response[v1.SendChatResponse], error) {
 	err := s.sender.Chat(ctx, req.Msg.Id, req.Msg.Sender, req.Msg.Message)

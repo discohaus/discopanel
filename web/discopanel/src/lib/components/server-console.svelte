@@ -5,7 +5,7 @@
 	import { create } from '@bufbuild/protobuf';
 	import { timestampDate } from '@bufbuild/protobuf/wkt';
 	import type { Server, ServerAction } from '$lib/proto/discopanel/v1/storage_pb';
-	import { ServerStatus, ServerActionKindSchema, ModLoader } from '$lib/proto/discopanel/v1/storage_pb';
+	import { ServerStatus, ServerActionKindSchema } from '$lib/proto/discopanel/v1/storage_pb';
 	import { enumLabel } from '$lib/proto-meta';
 	import type { LogEntry, CommandToken } from '$lib/proto/discopanel/v1/server_pb';
 	import {
@@ -13,7 +13,8 @@
 		ClearServerLogsRequestSchema,
 		SendCommandRequestSchema,
 		UploadToMCLogsRequestSchema,
-		GetCommandCompletionsRequestSchema
+		GetCommandCompletionsRequestSchema,
+		IsCommandCompletionAvailableRequestSchema
 	} from '$lib/proto/discopanel/v1/server_pb';
 	import CommandCompletionOverlay from './command-completion-overlay.svelte';
 	import { Button } from '$lib/components/ui/button';
@@ -369,58 +370,24 @@
 		command = history[historyIndex] ?? '';
 	}
 
-	function splitVersionSegments(v: string): number[] {
-		const out: number[] = [];
-		for (const seg of (v || '').trim().split('.')) {
-			let n = 0;
-			let digits = 0;
-			for (const ch of seg) {
-				if (ch < '0' || ch > '9') break;
-				n = n * 10 + parseInt(ch, 10);
-				digits++;
-			}
-			if (digits === 0) return out;
-			out.push(n);
+	let completionSupported = $state(false);
+
+	$effect(() => {
+		const serverId = server.id;
+		if (!serverId) {
+			completionSupported = false;
+			return;
 		}
-		return out;
-	}
-
-	function compareGameVersions(a: string, b: string): number {
-		const as = splitVersionSegments(a);
-		const bs = splitVersionSegments(b);
-		for (let i = 0; i < Math.max(as.length, bs.length); i++) {
-			const av = as[i] ?? 0;
-			const bv = bs[i] ?? 0;
-			if (av !== bv) {
-				return av < bv ? -1 : 1;
-			}
-		}
-		return 0;
-	}
-
-	function isVanillaModLoader(loader: ModLoader): boolean {
-		return (
-			loader === ModLoader.VANILLA ||
-			loader === ModLoader.FORGE ||
-			loader === ModLoader.NEOFORGE ||
-			loader === ModLoader.FABRIC ||
-			loader === ModLoader.QUILT
-		);
-	}
-
-	function isCompletionSupported(s: Server): boolean {
-		if (!s) return false;
-		if (
-			isVanillaModLoader(s.modLoader) &&
-			s.mcVersion &&
-			compareGameVersions(s.mcVersion, '1.13') < 0
-		) {
-			return false;
-		}
-		return true;
-	}
-
-	let completionSupported = $derived(isCompletionSupported(server));
+		const req = create(IsCommandCompletionAvailableRequestSchema, { id: serverId });
+		rpcClient.server
+			.isCommandCompletionAvailable(req, silentCallOptions)
+			.then((res) => {
+				completionSupported = res.available;
+			})
+			.catch(() => {
+				completionSupported = false;
+			});
+	});
 
 	// Command completion state
 	let completionTokens = $state<CommandToken[]>([]);

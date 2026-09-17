@@ -134,6 +134,14 @@ service ServerService {
       object_id_field: "id"
     };
   }
+  // Check if command completion is available for a server
+  rpc IsCommandCompletionAvailable(IsCommandCompletionAvailableRequest) returns (IsCommandCompletionAvailableResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_READ
+      object_id_field: "id"
+    };
+  }
   // Show a chat line in game under a display name
   rpc SendChat(SendChatRequest) returns (SendChatResponse) {
     option (discopanel.options.v1.perm) = {
@@ -570,4 +578,14 @@ message GetCommandCompletionsRequest {
 // Response for command completions
 message GetCommandCompletionsResponse {
   repeated CommandToken tokens = 1;
+}
+
+// Request to check if command completion is available
+message IsCommandCompletionAvailableRequest {
+  string id = 1;
+}
+
+// Response indicating if command completion is available
+message IsCommandCompletionAvailableResponse {
+  bool available = 1;
 }
