@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 const BASE = process.env.PANEL_URL || 'http://localhost:8080';
 const USER = process.env.PANEL_USER || 'admin';
-const PASS = process.env.PANEL_PASS || '12345678';
+const PASS = process.env.PANEL_PASS || '';
 const CHROME = process.env.CHROME_BIN || '/usr/bin/chromium';
 const OUT = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'assets', 'screenshots');
 
