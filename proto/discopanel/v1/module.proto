@@ -412,6 +412,8 @@ message CreateModuleRequest {
   string cert_pem = 27;
   // Matching pem private key
   string key_pem = 28;
+  // Log driver override (e.g. "local", "json-file")
+  string log_driver = 29;
 }
 
 // CreateModuleResponse contains the created module.
@@ -452,6 +454,8 @@ message UpdateModuleRequest {
   optional string cert_pem = 26;
   // Matching pem private key
   optional string key_pem = 27;
+  // Log driver override (e.g. "local", "json-file")
+  optional string log_driver = 28;
 }
 
 // UpdateModuleResponse contains the updated module.

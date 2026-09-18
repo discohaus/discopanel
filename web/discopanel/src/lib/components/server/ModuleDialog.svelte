@@ -137,6 +137,7 @@
 	let initCommand = $state('');
 	let initCommandDelay = $state(0);
 	let restartAfterInit = $state(false);
+	let logDriver = $state('');
 	let startImmediately = $state(true);
 	let envVars = $state<KvRow[]>([]);
 	let volumes = $state<VolumeMount[]>([]);
@@ -282,6 +283,7 @@
 		initCommand = '';
 		initCommandDelay = 0;
 		restartAfterInit = false;
+		logDriver = '';
 		envVars = [];
 		volumes = [];
 		startImmediately = true;
@@ -323,6 +325,7 @@
 		initCommand = template.defaultInitCommand;
 		initCommandDelay = template.defaultInitCommandDelay;
 		restartAfterInit = template.defaultRestartAfterInit;
+		logDriver = '';
 		eventHooks = template.defaultHooks.map((h) => clone(ModuleEventHookSchema, h));
 		metadata = mapToKv(template.metadata);
 		step = 'configure';
@@ -420,6 +423,7 @@
 				initCommand = module.initCommand;
 				initCommandDelay = module.initCommandDelay;
 				restartAfterInit = module.restartAfterInit;
+				logDriver = module.logDriver || '';
 				envVars = mapToKv(module.envOverrides);
 				volumes = module.volumeOverrides.map((v) => clone(VolumeMountSchema, v));
 				ports = module.ports.map((p) => clone(NetworkPortSchema, p));
@@ -567,6 +571,7 @@
 					initCommand,
 					initCommandDelay,
 					restartAfterInit,
+					logDriver,
 					certPem: certPem.trim(),
 					keyPem: keyPem.trim()
 				});
@@ -606,6 +611,7 @@
 					initCommand,
 					initCommandDelay,
 					restartAfterInit,
+					logDriver,
 					// Full typed pair rotates, untouched blanks keep the mount
 					...(certPem.trim() && keyPem.trim()
 						? { certPem: certPem.trim(), keyPem: keyPem.trim() }
@@ -1249,6 +1255,26 @@
 								bind:delay={initCommandDelay}
 								bind:restartAfterInit
 							/>
+						</section>
+
+						<section class="space-y-3">
+							<div>
+								<h3 class="text-sm font-semibold">Log driver</h3>
+								<p class="mt-0.5 text-xs text-muted-foreground">
+									Configure the Docker logging driver for this module (e.g. local, json-file)
+								</p>
+							</div>
+
+							<div class="rounded-lg border bg-card p-4">
+								<LabeledInput
+									id="module-log-driver"
+									label="Log Type"
+									type="text"
+									placeholder="local (default)"
+									bind:value={logDriver}
+									hint="Leave blank to use system default"
+								/>
+							</div>
 						</section>
 
 						<CollectionSection

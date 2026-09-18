@@ -158,6 +158,15 @@ func (c *Client) CreateModuleContainer(ctx context.Context, module *v1.Module, t
 		memory = 512 // Default 512MB
 	}
 
+	// Log driver via config or explicitly
+	logDriver := module.LogDriver
+	if logDriver == "" {
+		logDriver = c.config.LogDriver
+	}
+	if logDriver == "" {
+		logDriver = "local"
+	}
+
 	hostConfig := &container.HostConfig{
 		PortBindings: portBindings,
 		Mounts:       mounts,
@@ -169,7 +178,7 @@ func (c *Client) CreateModuleContainer(ctx context.Context, module *v1.Module, t
 			MemorySwap: memory * 1024 * 1024,
 		},
 		LogConfig: container.LogConfig{
-			Type:   "json-file",
+			Type:   logDriver,
 			Config: map[string]string{"max-size": "10m", "max-file": "3"},
 		},
 		ExtraHosts: []string{"host.docker.internal:host-gateway"},
