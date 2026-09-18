@@ -73,6 +73,7 @@ func main() {
 		RuntimeImage: cfg.Docker.RuntimeImage,
 		DNS:          cfg.Docker.DNS,
 		Labels:       cfg.Docker.Labels,
+		LogDriver:    cfg.Docker.LogDriver,
 	})
 	if err != nil {
 		log.Fatal("Failed to initialize Docker client: %v", err)
