@@ -31,17 +31,17 @@ func TestGreatePaperEngine(t *testing.T) {
 
 	engine := CreatePaperEngine(mock)
 	if engine == nil {
-		t.Fatal("Erwartet: Engine-Instanz, Got: nil")
+		t.Fatal("Expected: Engine-instance, Got: nil")
 	}
 
 	res, err := engine.helpFunc("")
 	if err != nil || res != "help output" {
-		t.Errorf("helpFunc(\"\") fehlgeschlagen: got %q, err %v", res, err)
+		t.Errorf("helpFunc(\"\") error: got %q, err %v", res, err)
 	}
 
 	res, err = engine.helpFunc("Bukkit")
 	if err != nil || res != "bukkit output" {
-		t.Errorf("helpFunc(\"Bukkit\") fehlgeschlagen: got %q, err %v", res, err)
+		t.Errorf("helpFunc(\"Bukkit\") error: got %q, err %v", res, err)
 	}
 }
 
@@ -58,11 +58,11 @@ func TestParseHelpNamespaces(t *testing.T) {
 	results := parseHelpNamespaces(input)
 
 	if len(results) != len(expected) {
-		t.Fatalf("Erwartet: %d Namespaces, Got: %d", len(expected), len(results))
+		t.Fatalf("Expected: %d Namespaces, Got: %d", len(expected), len(results))
 	}
 	for i, name := range expected {
 		if results[i] != name {
-			t.Errorf("Index %d: Erwartet %q, Got %q", i, name, results[i])
+			t.Errorf("Index %d: Expected %q, Got %q", i, name, results[i])
 		}
 	}
 }
@@ -78,11 +78,11 @@ func TestParseHelpCommands(t *testing.T) {
 	results := parseHelpCommands(input)
 
 	if len(results) != len(expected) {
-		t.Fatalf("Erwartet: %d Commands, Got: %d", len(expected), len(results))
+		t.Fatalf("Expected: %d Commands, Got: %d", len(expected), len(results))
 	}
 	for i, cmd := range expected {
 		if results[i] != cmd {
-			t.Errorf("Index %d: Erwartet %q, Got %q", i, cmd, results[i])
+			t.Errorf("Index %d: Expected %q, Got %q", i, cmd, results[i])
 		}
 	}
 }
@@ -92,10 +92,10 @@ func TestConvertHelpCommandsToPaperCommands(t *testing.T) {
 	results := convertHelpCommandsToPaperCommands(input)
 
 	if len(results) != 2 {
-		t.Fatalf("Erwartet: 2 PaperCommands, Got: %d", len(results))
+		t.Fatalf("Expected: 2 PaperCommands, Got: %d", len(results))
 	}
 	if results[0].Name != "about" || results[1].Name != "reload" {
-		t.Errorf("Unerwartete Command-Namen: %+v", results)
+		t.Errorf("Not Expected Command-Names: %+v", results)
 	}
 }
 
@@ -111,13 +111,13 @@ func TestGetCommandsForNameSpace(t *testing.T) {
 
 		cmds, err := engine.GetCommandsForNameSpace("Bukkit")
 		if err != nil {
-			t.Fatalf("Unerwarteter Fehler: %v", err)
+			t.Fatalf("Not Expected Error: %v", err)
 		}
 		if len(cmds) != 2 {
-			t.Fatalf("Erwartet: 2 Commands, Got: %d", len(cmds))
+			t.Fatalf("Expected: 2 Commands, Got: %d", len(cmds))
 		}
 		if cmds[0].Name != "help" || cmds[1].Name != "reload" {
-			t.Errorf("Falsche Commands ausgelesen: %v, %v", cmds[0].Name, cmds[1].Name)
+			t.Errorf("Wrong commands derived: %v, %v", cmds[0].Name, cmds[1].Name)
 		}
 	})
 
@@ -139,13 +139,13 @@ func TestGetCommandsForNameSpace(t *testing.T) {
 
 		cmds, err := engine.GetCommandsForNameSpace("Aliases")
 		if err != nil {
-			t.Fatalf("Unerwarteter Fehler: %v", err)
+			t.Fatalf("Not expected Error: %v", err)
 		}
 		if len(cmds) != 2 {
-			t.Fatalf("Erwartet: 2 Commands, Got: %d", len(cmds))
+			t.Fatalf("Expected: 2 Commands, Got: %d", len(cmds))
 		}
 		if cmds[0].Name != "mspt" || cmds[1].Name != "about" {
-			t.Errorf("Unerwartete Command-Reihenfolge: %v, %v", cmds[0].Name, cmds[1].Name)
+			t.Errorf("Not Expected command sequence: %v, %v", cmds[0].Name, cmds[1].Name)
 		}
 	})
 }
@@ -168,13 +168,13 @@ func TestLoadCommands(t *testing.T) {
 
 		err := engine.LoadCommands()
 		if err != nil {
-			t.Fatalf("Unerwarteter Fehler: %v", err)
+			t.Fatalf("Not Expected Error: %v", err)
 		}
 		if len(engine.Commands) != 1 {
-			t.Fatalf("Erwartet: 1 Command, Got: %d", len(engine.Commands))
+			t.Fatalf("Expected: 1 Command, Got: %d", len(engine.Commands))
 		}
 		if engine.Commands[0].Name != "alias1" {
-			t.Errorf("Erwartet: 'alias1', Got: %q", engine.Commands[0].Name)
+			t.Errorf("Expected: 'alias1', Got: %q", engine.Commands[0].Name)
 		}
 	})
 
@@ -187,7 +187,7 @@ func TestLoadCommands(t *testing.T) {
 
 		err := engine.LoadCommands()
 		if err == nil {
-			t.Error("Erwarteter Fehler wurde nicht zurückgegeben")
+			t.Error("Expected Error wasn't returned")
 		}
 	})
 }
@@ -201,16 +201,16 @@ func TestEnsureCommandsLoaded(t *testing.T) {
 
 	err := engine.EnsureCommandsLoaded()
 	if err != nil {
-		t.Fatalf("Fehler beim ersten Laden: %v", err)
+		t.Fatalf("Error on first load: %v", err)
 	}
 
 	engine.Commands = []*PaperCommand{{Name: "manual"}}
 	err = engine.EnsureCommandsLoaded()
 	if err != nil {
-		t.Fatalf("Fehler beim zweites Laden: %v", err)
+		t.Fatalf("Error on second load: %v", err)
 	}
 	if len(engine.Commands) != 1 || engine.Commands[0].Name != "manual" {
-		t.Errorf("EnsureCommandsLoaded hat geladene Befehle überschrieben")
+		t.Errorf("EnsureCommandsLoaded overwrote commands")
 	}
 }
 
@@ -224,13 +224,13 @@ func TestGetBaseCommands(t *testing.T) {
 
 	baseCmds, err := engine.GetBaseCommands()
 	if err != nil {
-		t.Fatalf("Unerwarteter Fehler: %v", err)
+		t.Fatalf("Not expected error: %v", err)
 	}
 
 	if len(baseCmds) != 2 {
-		t.Fatalf("Erwartet: 2 BaseCommands, Got: %d", len(baseCmds))
+		t.Fatalf("Expected: 2 BaseCommands, Got: %d", len(baseCmds))
 	}
 	if baseCmds[0].Name != "tp" || len(baseCmds[0].Aliases) != 1 {
-		t.Errorf("Erster Command unvollständig: %+v", baseCmds[0])
+		t.Errorf("First command incomplete: %+v", baseCmds[0])
 	}
 }

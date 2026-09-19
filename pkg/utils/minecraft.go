@@ -6,7 +6,7 @@ import (
 
 var minecraftColorRegex = regexp.MustCompile(`(?i)[§&][0-9a-fk-or]`)
 
-// StripMinecraftColors entfernt alle Minecraft-Farbcodes und Formatierungen aus einem String.
+// Removes all Minecraft color codes and formatting from a string
 func StripMinecraftColors(input string) string {
 	return minecraftColorRegex.ReplaceAllString(input, "")
 }

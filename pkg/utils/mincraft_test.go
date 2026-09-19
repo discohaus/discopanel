@@ -11,39 +11,39 @@ func TestStripMinecraftColors(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "Standard Farbcodes",
-			input:    "§aHallo §bWelt",
-			expected: "Hallo Welt",
+			name:     "Standard color codes",
+			input:    "§aHello §bWorld",
+			expected: "Hello World",
 		},
 		{
-			name:     "Aufeinanderfolgende Farbcodes",
+			name:     "Consecutive color codes",
 			input:    "§7§6/about: §fGets the version",
 			expected: "/about: Gets the version",
 		},
 		{
-			name:     "Formatierungscodes (Fett, Kursiv, Reset)",
-			input:    "§lFett §oKursiv §rNormal",
-			expected: "Fett Kursiv Normal",
+			name:     "Formatting codes (Bold, Italic, Reset)",
+			input:    "§lBold §oItalic §rNormal",
+			expected: "Bold Italic Normal",
 		},
 		{
-			name:     "Help Header aus Paper/Spigot",
+			name:     "Help header from Paper/Spigot",
 			input:    "§e--------- §fHelp: §rPaper (1/3) §e---------------------------",
 			expected: "--------- Help: Paper (1/3) ---------------------------",
 		},
 		{
-			name:     "Keine Farbcodes enthalten",
-			input:    "Ein normaler Text ohne Codes",
-			expected: "Ein normaler Text ohne Codes",
+			name:     "No color codes present",
+			input:    "A plain text without codes",
+			expected: "A plain text without codes",
 		},
 		{
-			name:     "Leerer String",
+			name:     "Empty string",
 			input:    "",
 			expected: "",
 		},
 		{
-			name:     "Isoliertes § Symbol am Ende (Edge Case)",
-			input:    "Text mit §",
-			expected: "Text mit §",
+			name:     "Isolated § symbol at the end (Edge Case)",
+			input:    "Text with §",
+			expected: "Text with §",
 		},
 	}
 
