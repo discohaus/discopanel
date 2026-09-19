@@ -84,7 +84,7 @@ type Client struct {
 }
 
 // Creates a new WebSocket hub
-func NewHub(logStreamer *logger.LogStreamer, authManager *auth.Manager, enforcer *rbac.Enforcer, store *storage.Store, docker *docker.Client, sender *command.Sender, metricsCollector *metrics.Collector, bus *events.Bus, rec *metrics.Recorder, log *logger.Logger) *Hub {
+func NewHub(logStreamer *logger.LogStreamer, authManager *auth.Manager, enforcer *rbac.Enforcer, store *storage.Store, docker *docker.Client, sender *command.Sender, metricsCollector *metrics.Collector, bus *events.Bus, rec *metrics.Recorder, log *logger.Logger, completion *cc.Completion) *Hub {
 	return &Hub{
 		logStreamer: logStreamer,
 		authManager: authManager,
@@ -95,7 +95,7 @@ func NewHub(logStreamer *logger.LogStreamer, authManager *auth.Manager, enforcer
 		sender:      sender,
 		metrics:     metricsCollector,
 		rec:         rec,
-		completion:  cc.NewCompletion(log, store, sender, metricsCollector, bus),
+		completion:  completion,
 		upgrader: websocket.Upgrader{
 			// Same-origin check blocks cross-site hijack, non-browser clients pass through
 			CheckOrigin: func(r *http.Request) bool {

@@ -159,7 +159,7 @@ func networkPortsEqual(a, b []*v1.NetworkPort) bool {
 }
 
 // NewServerService creates a new server service
-func NewServerService(store *storage.Store, docker *docker.Client, sender *command.Sender, config *config.Config, proxy *proxy.Manager, lifecycleManager *lifecycle.Manager, authManager *auth.Manager, logStreamer *logger.LogStreamer, metricsCollector *metrics.Collector, moduleManager *module.Manager, bus *events.Bus, uploadManager *transfer.UploadManager, rec *metrics.Recorder, log *logger.Logger) *ServerService {
+func NewServerService(store *storage.Store, docker *docker.Client, sender *command.Sender, config *config.Config, proxy *proxy.Manager, lifecycleManager *lifecycle.Manager, authManager *auth.Manager, logStreamer *logger.LogStreamer, metricsCollector *metrics.Collector, moduleManager *module.Manager, bus *events.Bus, uploadManager *transfer.UploadManager, completion *cc.Completion, rec *metrics.Recorder, log *logger.Logger) *ServerService {
 	return &ServerService{
 		store:            store,
 		docker:           docker,
@@ -175,7 +175,7 @@ func NewServerService(store *storage.Store, docker *docker.Client, sender *comma
 		moduleManager:    moduleManager,
 		bus:              bus,
 		uploadManager:    uploadManager,
-		completion:       cc.NewCompletion(log, store, sender, metricsCollector, bus),
+		completion:       completion,
 	}
 }
 
