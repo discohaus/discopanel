@@ -73,12 +73,13 @@ type Config struct {
 	ListenAddr           string // Host and port to listen on
 	Logger               *logger.Logger
 	Gate                 ServerGate
-	Certs                *certIndex   // File loaded termination material
-	TrustedEdge          bool         // Keeps forwarded headers from an upstream edge
-	IngressProxyProtocol bool         // Parses PROXY protocol v1/v2 on incoming connections
-	TrustedProxies       []string     // CIDR whitelist for PROXY protocol upstream addresses
-	Intents              *IntentTable // Shared reroute claims across sockets
-	Hub                  *HubRuntime  // Panel hosted lobby shared across sockets
+	Certs                *certIndex    // File loaded termination material
+	TrustedEdge          bool          // Keeps forwarded headers from an upstream edge
+	IngressProxyProtocol bool          // Parses PROXY protocol v1/v2 on incoming connections
+	TrustedProxies       []string      // CIDR whitelist for PROXY protocol upstream addresses
+	Intents              *IntentTable  // Shared reroute claims across sockets
+	Hub                  *HubRuntime   // Panel hosted lobby shared across sockets
+	Observer             *EdgeObserver // Traffic shape counters diagnostics read
 }
 
 const (

@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -24,16 +25,55 @@ func AppVersion() string {
 }
 
 type Config struct {
-	Server    ServerConfig    `mapstructure:"server" json:"server"`
-	Database  DatabaseConfig  `mapstructure:"database" json:"database"`
-	Docker    DockerConfig    `mapstructure:"docker" json:"docker"`
-	Storage   StorageConfig   `mapstructure:"storage" json:"storage"`
-	Proxy     ProxyConfig     `mapstructure:"proxy" json:"proxy"`
-	Module    ModuleConfig    `mapstructure:"module" json:"module"`
-	Minecraft MinecraftConfig `mapstructure:"minecraft" json:"minecraft"`
-	Logging   LoggingConfig   `mapstructure:"logging" json:"logging"`
-	Upload    UploadConfig    `mapstructure:"upload" json:"upload"`
-	Auth      AuthConfig      `mapstructure:"auth" json:"auth"`
+	Server      ServerConfig      `mapstructure:"server" json:"server"`
+	Database    DatabaseConfig    `mapstructure:"database" json:"database"`
+	Docker      DockerConfig      `mapstructure:"docker" json:"docker"`
+	Storage     StorageConfig     `mapstructure:"storage" json:"storage"`
+	Proxy       ProxyConfig       `mapstructure:"proxy" json:"proxy"`
+	Module      ModuleConfig      `mapstructure:"module" json:"module"`
+	Minecraft   MinecraftConfig   `mapstructure:"minecraft" json:"minecraft"`
+	Logging     LoggingConfig     `mapstructure:"logging" json:"logging"`
+	Upload      UploadConfig      `mapstructure:"upload" json:"upload"`
+	Auth        AuthConfig        `mapstructure:"auth" json:"auth"`
+	Diagnostics DiagnosticsConfig `mapstructure:"diagnostics" json:"diagnostics"`
+	Telemetry   TelemetryConfig   `mapstructure:"telemetry" json:"telemetry"`
+	Support     SupportConfig     `mapstructure:"support" json:"support"`
+	Index       IndexConfig       `mapstructure:"index" json:"index"`
+}
+
+// Hourly heartbeat to the discohaus hub
+type TelemetryConfig struct {
+	Enabled bool `mapstructure:"enabled" json:"enabled"` // False forces the heartbeat off and locks the ui switch
+}
+
+// Where support bundles, heartbeats, and reachability checks go
+type SupportConfig struct {
+	BaseURL string `mapstructure:"base_url" json:"base_url"` // Support service origin, SUPPORT_BASE_URL overrides it
+}
+
+// Where modpack, loader, and version manifests are fetched from
+type IndexConfig struct {
+	BaseURL string `mapstructure:"base_url" json:"base_url"` // Upstream index origin, DISCOHAUS_INDEX_BASE_URL overrides it
+	Enabled bool   `mapstructure:"enabled" json:"enabled"`   // Routes every upstream through the index
+}
+
+// Hub set env on hosted panels, wins over the file
+const (
+	SupportBaseEnv = "SUPPORT_BASE_URL"
+	IndexBaseEnv   = "DISCOHAUS_INDEX_BASE_URL"
+	TenantTokenEnv = "DISCOHAUS_TENANT_TOKEN"
+)
+
+// Hub origins when nothing overrides them
+const (
+	DefaultSupportBaseURL = "https://support.discohaus.app"
+	DefaultIndexBaseURL   = "https://index.discohaus.app"
+)
+
+// Startup self checks and release probing
+type DiagnosticsConfig struct {
+	RunOnStartup bool `mapstructure:"run_on_startup" json:"run_on_startup"` // Runs every check once the panel is up
+	VersionCheck bool `mapstructure:"version_check" json:"version_check"`   // Probes GitHub for newer releases
 }
 
 type AuthConfig struct {
@@ -98,9 +138,9 @@ type ProxyConfig struct {
 	BaseURL              string         `mapstructure:"base_url" json:"base_url"`       // Seeds the base domain when the db has none
 	ListenPort           int            `mapstructure:"listen_port" json:"listen_port"` // Primary listen port
 	PortRangeMin         int            `mapstructure:"port_range_min" json:"port_range_min"`
-	TrustedEdge          bool           `mapstructure:"trusted_edge" json:"trusted_edge"` // Honor forwarded headers from an upstream edge
+	TrustedEdge          bool           `mapstructure:"trusted_edge" json:"trusted_edge"`                     // Honor forwarded headers from an upstream edge
 	IngressProxyProtocol bool           `mapstructure:"ingress_proxy_protocol" json:"ingress_proxy_protocol"` // Parse PROXY protocol v1/v2 on ingress listeners
-	TrustedProxies       []string       `mapstructure:"trusted_proxies" json:"trusted_proxies"`             // Optional CIDR whitelist for PROXY protocol upstream addresses
+	TrustedProxies       []string       `mapstructure:"trusted_proxies" json:"trusted_proxies"`               // Optional CIDR whitelist for PROXY protocol upstream addresses
 	TLS                  ProxyTLSConfig `mapstructure:"tls" json:"tls"`
 }
 
@@ -203,6 +243,16 @@ func Load(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
 	}
 
+	// Hub supplied origins win over the file and the prefixed env
+	if base := os.Getenv(SupportBaseEnv); base != "" {
+		cfg.Support.BaseURL = base
+	}
+	// Hub supplied index routes upstreams through it
+	if base := os.Getenv(IndexBaseEnv); base != "" {
+		cfg.Index.BaseURL = base
+		cfg.Index.Enabled = true
+	}
+
 	// Validate and expand paths
 	if err := validateConfig(&cfg); err != nil {
 		return nil, fmt.Errorf("config validation error: %w", err)
@@ -290,6 +340,16 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.local.enabled", true)
 	v.SetDefault("auth.local.allow_registration", false)
 
+	// Diagnostics defaults
+	v.SetDefault("diagnostics.run_on_startup", true)
+	v.SetDefault("diagnostics.version_check", true)
+
+	// Hub defaults
+	v.SetDefault("telemetry.enabled", true)
+	v.SetDefault("support.base_url", DefaultSupportBaseURL)
+	v.SetDefault("index.base_url", DefaultIndexBaseURL)
+	v.SetDefault("index.enabled", true)
+
 	// Upload defaults
 	v.SetDefault("upload.session_ttl", 240)                // 4 hours (in minutes)
 	v.SetDefault("upload.default_chunk_size", 5*1024*1024) // 5MB
@@ -330,6 +390,16 @@ func validateConfig(cfg *Config) error {
 		cfg.Docker.SyncInterval = 5
 	}
 
+	// Hub origins must be plain http origins
+	cfg.Support.BaseURL, err = normalizeOrigin("support.base_url", cfg.Support.BaseURL, DefaultSupportBaseURL)
+	if err != nil {
+		return err
+	}
+	cfg.Index.BaseURL, err = normalizeOrigin("index.base_url", cfg.Index.BaseURL, DefaultIndexBaseURL)
+	if err != nil {
+		return err
+	}
+
 	// Validate custom Docker labels do not use reserved namespace 'discopanel.'
 	for k := range cfg.Docker.Labels {
 		if strings.HasPrefix(k, "discopanel.") {
@@ -338,6 +408,28 @@ func validateConfig(cfg *Config) error {
 	}
 
 	return nil
+}
+
+// Trims an origin, empty takes the default, a bare host takes https
+func normalizeOrigin(key, raw, fallback string) (string, error) {
+	trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if trimmed == "" {
+		trimmed = fallback
+	}
+	if !strings.Contains(trimmed, "://") {
+		trimmed = "https://" + trimmed
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("%s %q: %w", key, raw, err)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", fmt.Errorf("%s %q must be an http or https origin", key, raw)
+	}
+	if u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return "", fmt.Errorf("%s %q must not carry a query, fragment, or credentials", key, raw)
+	}
+	return trimmed, nil
 }
 
 // Decodes JSON object strings into map types

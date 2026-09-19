@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/discohaus/discopanel/pkg/hub"
 	"github.com/discohaus/discopanel/pkg/indexers"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
@@ -45,6 +46,8 @@ func newHasher(algo string) hash.Hash {
 var downloadClient = &http.Client{
 	// No global timeout, large modpack downloads run long
 	Timeout: 0,
+	// Artifacts fetched through the index carry the install id
+	Transport: hub.Transport(nil),
 }
 
 // Reports throttled byte progress through report

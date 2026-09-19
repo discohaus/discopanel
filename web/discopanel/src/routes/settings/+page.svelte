@@ -37,7 +37,11 @@
 		},
 		{ key: 'auth', label: 'Auth', desc: 'Login methods, registration, and single sign-on' },
 		{ key: 'logs', label: 'Logs', desc: 'Live DiscoPanel application logs' },
-		{ key: 'support', label: 'Support', desc: 'Diagnostic bundles for troubleshooting' },
+		{
+			key: 'support',
+			label: 'Support',
+			desc: 'Diagnostics and support bundles for troubleshooting'
+		},
 		{ key: 'users', label: 'Users', desc: 'Accounts, roles, and registration invites' },
 		{ key: 'roles', label: 'Roles', desc: 'Permission sets assignable to users' }
 	] as const;

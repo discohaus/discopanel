@@ -223,7 +223,7 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          # Sqlite driver dies without cgo on cross builds
+          # SQLite requires CGO, including cross builds.
           CGO_ENABLED: 1
           CC: ${{ matrix.cc || '' }}
           CXX: ${{ matrix.cxx || '' }}
@@ -343,11 +343,11 @@ jobs:
           VERSION: ${{ needs.classify.outputs.version }}
           STABLE: ${{ needs.classify.outputs.stable }}
         run: |
-          # Stable notes reach back past betas to last stable
+          # Stable release notes start at the previous stable tag.
           EXCLUDE=()
           [ "$STABLE" = "true" ] && EXCLUDE=(--exclude 'v*-*')
 
-          # Get the previous app tag, other tag families stay out
+          # Match app tags only.
           PREV_TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "${EXCLUDE[@]}" "${VERSION}^" 2>/dev/null || echo "")
           
           if [ -z "$PREV_TAG" ]; then
@@ -358,7 +358,6 @@ jobs:
             CHANGELOG=$(git log --pretty=format:"- %s (%h)" ${PREV_TAG}..${VERSION})
           fi
           
-          # Save to file for release body
           cat << EOF > RELEASE_NOTES.md
           ## What's Changed
           
@@ -393,11 +392,11 @@ jobs:
         run: |
           RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${VERSION}"
           if [ "$STABLE" = "true" ]; then
-            TITLE="DiscoPanel ${VERSION} Released!"
-            DESC="A new version of DiscoPanel has been released."
+            TITLE="DiscoPanel ${VERSION}"
+            DESC="Stable release"
           else
-            TITLE="DiscoPanel ${VERSION} Pre-release!"
-            DESC="A new pre-release of DiscoPanel is available for testing. Stable installs and Proxmox updates are not affected."
+            TITLE="DiscoPanel ${VERSION} prerelease"
+            DESC="Test release. Stable installs and Proxmox updates unchanged."
           fi
           
           curl -H "Content-Type: application/json" \

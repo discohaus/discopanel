@@ -87,6 +87,9 @@ type Manager struct {
 
 	// Panel hosted lobby shared by every socket
 	hub *HubRuntime
+
+	// Traffic shape counters diagnostics read
+	edge *EdgeObserver
 }
 
 // One cached container address with its inspect time
@@ -127,6 +130,7 @@ func NewManager(store *db.Store, dockerClient *docker.Client, cfg *config.Config
 		certs:         LoadTLSCertificates(cfg.Proxy.TLS.Certificates, logger),
 		ipCache:       make(map[string]ipEntry),
 		intents:       NewIntentTable(),
+		edge:          NewEdgeObserver(),
 	}
 	hubRT, err := NewHubRuntime(true, logger, m.intents)
 	if err != nil {
@@ -720,6 +724,7 @@ func (m *Manager) newSocketForListenerLocked(addr string, l *v1.ProxyListener) *
 		TrustedProxies:       trustedP,
 		Intents:              m.intents,
 		Hub:                  m.hub,
+		Observer:             m.edge,
 	})
 }
 

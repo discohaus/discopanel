@@ -13,13 +13,16 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/discohaus/discopanel/pkg/hub"
 	"github.com/discohaus/discopanel/pkg/minecraft"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"golang.org/x/sync/errgroup"
 )
 
-// Public FTB modpack api base url
-const ftbAPIBase = "https://api.feed-the-beast.com/v1/modpacks/public/modpack"
+// Public FTB modpack api base: api.feed-the-beast.com
+func ftbAPIBase() string {
+	return hub.FTB() + "/v1/modpacks/public/modpack"
+}
 
 // Version manifest the FTB modpack api serves
 type ftbVersionManifest struct {
@@ -115,7 +118,7 @@ func ftbStubIDs(content string) (int, int, bool) {
 
 // Installs server files straight from the FTB api
 func (p *Provisioner) installFTBPack(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, packID, versionID int, force bool) (*Result, error) {
-	manifestURL := fmt.Sprintf("%s/%d/%d", ftbAPIBase, packID, versionID)
+	manifestURL := fmt.Sprintf("%s/%d/%d", ftbAPIBase(), packID, versionID)
 	var manifest ftbVersionManifest
 	if err := p.getJSON(ctx, manifestURL, &manifest); err != nil {
 		return nil, fmt.Errorf("failed to fetch FTB manifest for pack %d version %d: %w", packID, versionID, err)

@@ -33,7 +33,7 @@ jobs:
       - name: Validate migrations
         run: make migrate-validate
 
-      # Fails when a proto change has no migration file yet
+      # Proto changes require matching migrations.
       - name: Check migrations cover the models
         run: |
           make migrate-diff NAME=ci_check
@@ -55,7 +55,7 @@ jobs:
           cd web/discopanel
           npm ci
 
-      # Go embeds web/discopanel/build, so vet and test need it first
+      # Go embeds web/discopanel/build.
       - name: Build frontend
         run: |
           cd web/discopanel

@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -148,8 +150,87 @@ func (c *Client) Close() error {
 }
 
 // Get the docker client instance from the client object
+// Version of the daemon the client talks to
+func (c *Client) ServerVersion(ctx context.Context) (string, error) {
+	v, err := c.docker.ServerVersion(ctx)
+	if err != nil {
+		return "", fmt.Errorf("docker server version: %w", err)
+	}
+	return v.Version, nil
+}
+
 func (c *Client) GetDockerClient() *client.Client {
 	return c.docker
+}
+
+// Name of the managed bridge network
+func (c *Client) NetworkName() string {
+	return c.config.NetworkName
+}
+
+// Reported when the panel process runs outside any container
+var ErrNotContainerized = errors.New("panel is not running in a container")
+
+// Full container ids as docker and podman write them
+var containerIDPattern = regexp.MustCompile(`[0-9a-f]{64}`)
+
+// Own container id candidates, mountinfo first, hostname last
+func selfContainerIDs() []string {
+	mountinfo, _ := os.ReadFile("/proc/self/mountinfo")
+	cgroup, _ := os.ReadFile("/proc/self/cgroup")
+	hostname := ""
+	// Hostname is the short id unless host networking replaced it
+	_, dockerEnv := os.Stat("/.dockerenv")
+	_, podmanEnv := os.Stat("/run/.containerenv")
+	if dockerEnv == nil || podmanEnv == nil {
+		hostname, _ = os.Hostname()
+	}
+	return parseSelfContainerIDs(mountinfo, cgroup, hostname)
+}
+
+// Container ids named by mountinfo, cgroup, then the hostname
+func parseSelfContainerIDs(mountinfo, cgroup []byte, hostname string) []string {
+	var ids []string
+	seen := map[string]bool{}
+	add := func(id string) {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	// Runtimes bind these three files from a per container dir
+	for _, line := range strings.Split(string(mountinfo), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 5 {
+			continue
+		}
+		switch f[4] {
+		case "/etc/hostname", "/etc/hosts", "/etc/resolv.conf":
+			add(containerIDPattern.FindString(f[3]))
+		}
+	}
+	for _, line := range strings.Split(string(cgroup), "\n") {
+		add(containerIDPattern.FindString(line))
+	}
+	add(hostname)
+	return ids
+}
+
+// Inspects the container the panel itself runs in
+func (c *Client) InspectSelf(ctx context.Context) (*container.InspectResponse, error) {
+	ids := selfContainerIDs()
+	if len(ids) == 0 {
+		return nil, ErrNotContainerized
+	}
+	var lastErr error
+	for _, id := range ids {
+		info, err := c.docker.ContainerInspect(ctx, id)
+		if err == nil {
+			return &info, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("inspect own container %s: %w", ids[0], lastErr)
 }
 
 // Applies DockerOverrides to container and host configs
@@ -778,6 +859,11 @@ func (c *Client) ensureImage(ctx context.Context, imageName string, progress fun
 	return nil
 }
 
+// Pulls a missing image, refreshes a present one in background
+func (c *Client) EnsureImage(ctx context.Context, imageName string, progress func(string)) error {
+	return c.ensureImage(ctx, imageName, progress)
+}
+
 // Re-pulls present image in background without blocking starts
 func (c *Client) refreshImageAsync(imageName string) {
 	c.refreshMu.Lock()
@@ -843,17 +929,13 @@ const PanelNetworkAlias = "discopanel-panel"
 
 // Resolves URL runtime containers use to reach the panel
 func (c *Client) PanelAgentURL(ctx context.Context, panelPort string) (string, error) {
-	if _, err := os.Stat("/.dockerenv"); err == nil {
-		if hostname, err := os.Hostname(); err == nil {
-			if info, err := c.docker.ContainerInspect(ctx, hostname); err == nil {
-				if ep, ok := info.NetworkSettings.Networks[c.config.NetworkName]; ok {
-					if slices.Contains(ep.Aliases, PanelNetworkAlias) {
-						return fmt.Sprintf("http://%s:%s", PanelNetworkAlias, panelPort), nil
-					}
-					if ep.IPAddress != "" {
-						return fmt.Sprintf("http://%s:%s", ep.IPAddress, panelPort), nil
-					}
-				}
+	if info, err := c.InspectSelf(ctx); err == nil {
+		if ep, ok := info.NetworkSettings.Networks[c.config.NetworkName]; ok {
+			if slices.Contains(ep.Aliases, PanelNetworkAlias) {
+				return fmt.Sprintf("http://%s:%s", PanelNetworkAlias, panelPort), nil
+			}
+			if ep.IPAddress != "" {
+				return fmt.Sprintf("http://%s:%s", ep.IPAddress, panelPort), nil
 			}
 		}
 	}
@@ -921,19 +1003,11 @@ func (c *Client) EnsureNetwork() error {
 
 // Connects panel to bridge network and registers DNS alias
 func (c *Client) attachSelfToNetwork(ctx context.Context) {
-	if _, err := os.Stat("/.dockerenv"); err != nil {
-		return
-	}
-
-	hostname, err := os.Hostname()
+	info, err := c.InspectSelf(ctx)
 	if err != nil {
-		return
-	}
-
-	// Docker sets the container hostname to its short ID
-	info, err := c.docker.ContainerInspect(ctx, hostname)
-	if err != nil {
-		c.log.Debug("Could not inspect own container %s: %v", hostname, err)
+		if !errors.Is(err, ErrNotContainerized) {
+			c.log.Debug("Could not inspect own container: %v", err)
+		}
 		return
 	}
 

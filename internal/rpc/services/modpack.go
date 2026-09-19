@@ -73,9 +73,9 @@ func (s *ModpackService) getIndexer(ctx context.Context, name string) (indexers.
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get global settings"))
 		}
 		apiKey = propertyValueByKey(globalSettings, info.CredentialProperty)
-		if apiKey == "" {
+		if apiKey == "" && indexers.CredentialRequired(info) {
 			return nil, connect.NewError(connect.CodeInvalidArgument,
-				fmt.Errorf("indexer %q requires the %s setting", name, info.CredentialProperty))
+				fmt.Errorf("indexer %q requires the %s setting while the index is off", name, info.CredentialProperty))
 		}
 	}
 	idx, err := indexers.NewIndexer(name, apiKey, s.config.Server.UserAgent)
@@ -609,13 +609,13 @@ func (s *ModpackService) GetIndexerStatus(ctx context.Context, req *connect.Requ
 		}
 	}
 
-	// Registered indexers testify availability through their credentials
+	// Registered indexers testify availability through their credentials, the index supplies its own
 	indexersAvailable := map[string]bool{
 		indexers.ManualIndexer: true, // Manual uploads always available
 	}
 	for _, info := range indexers.Indexers() {
 		available := true
-		if info.CredentialProperty != "" {
+		if indexers.CredentialRequired(info) {
 			available = propertyValueByKey(globalSettings, info.CredentialProperty) != ""
 		}
 		indexersAvailable[info.Name] = available

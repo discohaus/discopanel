@@ -31,12 +31,11 @@ docker:
   host: "unix:///var/run/docker.sock"
   version: ""
   network_name: "discopanel-network"
-  runtime_image: ""  # Overrides the runtime image repo, default ghcr.io/discohaus/discoruntime
-  agent_url: ""  # Panel URL for container telemetry, auto detected when empty
+  runtime_image: ""  # Default: ghcr.io/discohaus/discoruntime
+  agent_url: ""  # Panel URL for container telemetry, empty = auto-detect
   dns: ""  # Custom DNS server for containers (empty = docker default)
   sync_interval: 5  # Seconds between docker state sync
-  # Can be configure like labels: {"your.label.key": "your_label_value", "other.label.key": "other_label_value"}
-  # or
+  # Map or JSON string:
   # labels:
   #   your.label.key: "your_label_value"
   #   other.label.key: "other_label_value"
@@ -84,6 +83,24 @@ upload:
   max_chunk_size: 10485760  # 10MB max chunk size (server enforced)
   max_upload_size: 0  # Max total upload size in bytes (0 = unlimited)
 
+# Diagnostics configuration
+diagnostics:
+  run_on_startup: true  # Run every self check once the panel is up
+  version_check: true  # Alert when a newer release exists
+
+# Telemetry - required for index, relay, and some support features
+telemetry:
+  enabled: true  # false = locked off in Settings > Support
+
+# Support service, bundle uploads, heartbeat, and port reachability relay
+support:
+  base_url: "https://support.discohaus.app"  # SUPPORT_BASE_URL overrides
+
+# Upstream index cache for modpack, loader, and version manifests
+index:
+  enabled: true  # false = direct upstream requests, CurseForge API key required
+  base_url: "https://index.discohaus.app"  # DISCOHAUS_INDEX_BASE_URL overrides and enables the index
+
 # Module configuration
 module:
   enabled: true
@@ -91,7 +108,7 @@ module:
   port_range_max: 8199
   doctor_enabled: true # Built-in Doctor module
 
-# Proxy configuration - ENABLE THIS FOR MINECRAFT ROUTING
+# Minecraft routing
 proxy:
   enabled: true
   public_ip: "" # Public address for hostname suggestions
@@ -266,14 +283,14 @@ minecraft:
     customServerProperties: ""
 
     # Management Server
-    managementServerEnabled: false  # Enable management server interface
-    managementServerHost: "0.0.0.0"  # Host address for management server
-    managementServerPort: 0  # Port for management server
-    managementServerSecret: ""  # Shared secret for management server auth
-    managementServerTlsEnabled: false  # Enable TLS for management server
-    managementServerTlsKeystore: ""  # Path to TLS keystore
-    managementServerTlsKeystorePassword: ""  # Password for TLS keystore
-    managementServerAllowedOrigins: ""  # Allowed CORS origins for management server
+    managementServerEnabled: false
+    managementServerHost: "0.0.0.0"
+    managementServerPort: 0
+    managementServerSecret: ""
+    managementServerTlsEnabled: false
+    managementServerTlsKeystore: ""
+    managementServerTlsKeystorePassword: ""
+    managementServerAllowedOrigins: ""  # CORS origins
 
     # Ops / Admins
     ops: ""

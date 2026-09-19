@@ -9,17 +9,23 @@ import (
 	"strings"
 	"time"
 
+	"github.com/discohaus/discopanel/pkg/hub"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
-const (
-	forgePromotionsURL = "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"
-	forgeMavenURL      = "https://maven.minecraftforge.net/net/minecraftforge/forge"
-	neoforgeMavenURL   = "https://maven.neoforged.net/releases/net/neoforged/neoforge"
-	neoforgeVersionAPI = "https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge"
-	neoforgeLegacyURL  = "https://maven.neoforged.net/releases/net/neoforged/forge"
-	neoforgeLegacyAPI  = "https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/forge"
-)
+// Forge and NeoForge bases, each upstream directly or the index prefix
+func forgePromotionsURL() string {
+	return hub.ForgeFiles() + "/net/minecraftforge/forge/promotions_slim.json"
+}
+func forgeMavenURL() string    { return hub.ForgeMaven() + "/net/minecraftforge/forge" }
+func neoforgeMavenURL() string { return hub.NeoForge() + "/releases/net/neoforged/neoforge" }
+func neoforgeVersionAPI() string {
+	return hub.NeoForge() + "/api/maven/versions/releases/net/neoforged/neoforge"
+}
+func neoforgeLegacyURL() string { return hub.NeoForge() + "/releases/net/neoforged/forge" }
+func neoforgeLegacyAPI() string {
+	return hub.NeoForge() + "/api/maven/versions/releases/net/neoforged/forge"
+}
 
 // Runs Forge installer then detects launch layout
 func (p *Provisioner) installForge(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, forgeVersion string) (*Result, error) {
@@ -73,7 +79,7 @@ func (p *Provisioner) fetchForgeInstaller(ctx context.Context, server *v1.Server
 		var promotions struct {
 			Promos map[string]string `json:"promos"`
 		}
-		if err := p.getJSON(ctx, forgePromotionsURL, &promotions); err != nil {
+		if err := p.getJSON(ctx, forgePromotionsURL(), &promotions); err != nil {
 			return "", "", fmt.Errorf("failed to fetch Forge promotions: %w", err)
 		}
 		forgeVersion = promotions.Promos[mc+"-recommended"]
@@ -91,7 +97,7 @@ func (p *Provisioner) fetchForgeInstaller(ctx context.Context, server *v1.Server
 		return "", "", err
 	}
 
-	installerURL := fmt.Sprintf("%s/%s/forge-%s-installer.jar", forgeMavenURL, artifactVersion, artifactVersion)
+	installerURL := fmt.Sprintf("%s/%s/forge-%s-installer.jar", forgeMavenURL(), artifactVersion, artifactVersion)
 	sum, _ := p.fetchChecksumSidecar(ctx, installerURL, "sha256")
 
 	p.progress(server, "downloading Forge %s installer...", forgeVersion)
@@ -105,7 +111,7 @@ func (p *Provisioner) fetchForgeInstaller(ctx context.Context, server *v1.Server
 func (p *Provisioner) resolveForgeMavenVersion(ctx context.Context, mc, forgeVersion string) (string, error) {
 	want := mc + "-" + forgeVersion
 
-	body, err := p.getText(ctx, forgeMavenURL+"/maven-metadata.xml")
+	body, err := p.getText(ctx, forgeMavenURL()+"/maven-metadata.xml")
 	if err != nil {
 		// Metadata unavailable, fall back to plain naming scheme
 		return want, nil
@@ -139,7 +145,7 @@ func (p *Provisioner) resolveForgeMavenVersion(ctx context.Context, mc, forgeVer
 func (p *Provisioner) installNeoForge(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, neoVersion string) (*Result, error) {
 	mc := server.McVersion
 
-	mavenBase := neoforgeMavenURL
+	mavenBase := neoforgeMavenURL()
 	artifact := "neoforge"
 	if neoVersion == "" {
 		var err error
@@ -181,11 +187,11 @@ func (p *Provisioner) installNeoForge(ctx context.Context, server *v1.Server, cf
 
 // Picks the newest NeoForge version for an MC version
 func (p *Provisioner) resolveNeoForgeVersion(ctx context.Context, mc string) (string, string, string, error) {
-	api, maven, artifact := neoforgeVersionAPI, neoforgeMavenURL, "neoforge"
+	api, maven, artifact := neoforgeVersionAPI(), neoforgeMavenURL(), "neoforge"
 
 	prefix := neoforgePrefix(mc)
 	if mc == "1.20.1" {
-		api, maven, artifact = neoforgeLegacyAPI, neoforgeLegacyURL, "forge"
+		api, maven, artifact = neoforgeLegacyAPI(), neoforgeLegacyURL(), "forge"
 		prefix = "1.20.1-"
 	}
 

@@ -21,6 +21,7 @@ import (
 
 	_ "golang.org/x/image/webp"
 
+	"github.com/discohaus/discopanel/pkg/hub"
 	"github.com/discohaus/discopanel/pkg/indexers"
 	"github.com/discohaus/discopanel/pkg/minecraft"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
@@ -333,7 +334,7 @@ func (p *Provisioner) resolvePlayerUUID(ctx context.Context, name string, online
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	}
-	url := "https://api.mojang.com/users/profiles/minecraft/" + name
+	url := hub.MojangAPI() + "/users/profiles/minecraft/" + name
 	if err := p.getJSON(ctx, url, &result); err != nil {
 		return "", err
 	}

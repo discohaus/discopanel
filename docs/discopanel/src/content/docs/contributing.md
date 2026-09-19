@@ -1,92 +1,104 @@
 ---
 title: Contributing
-description: How the project is put together, the development workflow, and what pull requests should look like.
+description: Development setup, code generation, migrations, and pull requests.
 ---
 
-DiscoPanel lives at [github.com/discohaus/discopanel](https://github.com/discohaus/discopanel). Issues and pull requests are welcome. For questions, the [Discord](https://discord.gg/6Z9yKTbsrP) is faster.
+[Repository](https://github.com/discohaus/discopanel) | [Discord](https://discord.gg/6Z9yKTbsrP)
 
-## How the project is put together
+## Architecture
 
-The panel is one Go process: it embeds the SvelteKit web UI, keeps its state in SQLite, and talks straight to the Docker Engine API. Everything you interact with - the API, the provisioner, the proxy, the scheduler, the module orchestration - is in this repository.
+| Component | Implementation |
+|---|---|
+| Panel | One Go process with embedded SvelteKit UI, SQLite, and Docker Engine API access. |
+| Repository | API, provisioner, proxy, scheduler, and module orchestration. |
+| `ghcr.io/discohaus/discoruntime` | Private-source server image. Java supervision with server files installed by the panel. |
+| `ghcr.io/discohaus/discomodule-*` | Private-source module images, including Geyser, Steam Bridge, Playit.gg, and Doctor. |
 
-Two pieces ship as container images built from private source:
+Public image contracts:
 
-- **discoruntime** (`ghcr.io/discohaus/discoruntime`) - the minimal image every Minecraft server runs on. The panel installs server software into the data directory, and the container just supervises Java.
-- **discomodule** (`ghcr.io/discohaus/discomodule-*`) - the built-in module images (Geyser, Steam Bridge, Playit.gg, Doctor, and friends).
+| Path | Contract |
+|---|---|
+| `proto/discopanel/agent/v1` | Server telemetry stream. |
+| `proto/discopanel/v1/runtime.proto`, `pkg/runtimespec` | `launch.json`, `agent.json`, and manifest in each server's `.discopanel/` directory. |
+| `proto/discopanel/v1/doctor.proto` | Doctor incident journal. |
+| `pkg/mcproto`, `pkg/moduleprompt` | Custom module helpers. |
 
-The contracts between the panel and those images are public and live here, so panel changes never chase private code:
-
-- `proto/discopanel/agent/v1` - the telemetry stream between a running server container and the panel.
-- `proto/discopanel/v1/runtime.proto` and `pkg/runtimespec` - the file contract (`launch.json`, `agent.json`, the manifest) the panel writes into each server's `.discopanel/` folder.
-- `proto/discopanel/v1/doctor.proto` - the shared journal contract for the Doctor module.
-- `pkg/mcproto` and `pkg/moduleprompt` - helper libraries for anyone building their own module.
-
-Panel code never imports the private repos - `make check` fails the build if it does.
+`make check` rejects imports from private repositories.
 
 ## Toolchain
 
-- **Go** 1.25+
-- **Node.js** 22+
-- **Docker** - protobuf generation runs [buf](https://buf.build/) in a container, and the tests that touch containers need an engine.
-- **Make**
-
-A Nix dev shell with all of the above is available via `nix develop`.
+- Go 1.25+
+- Node.js 22+
+- Docker for [buf](https://buf.build/), Atlas, and container tests
+- Make
+- Optional: `nix develop` for the complete toolchain
 
 ## First build
 
 ```sh
 git clone --recurse-submodules https://github.com/discohaus/discopanel.git
 cd discopanel
-make gen      # generate code from the protos
+make gen      # protobuf generation
 make deps     # go mod download + npm install
-make dev      # backend (go run) + frontend (vite dev) together
+make dev      # Go backend + Vite frontend
 ```
 
-`make dev` also resets the local database from `dev/discopanel.db` (a seeded dev state). Use `make run` to keep your current data. The backend listens on 8080, the Vite dev server proxies to it with hot reload.
+- **`make dev` resets the local database from `dev/discopanel.db`.** Use `make run` to keep current data.
+- Backend port: `8080`. Vite proxies requests with hot reload.
 
-## The protobuf workflow
+## Protobuf
 
-The `.proto` files in `proto/discopanel/` are the source of truth for the entire API and every persisted data model - `storage.proto` holds all of the latter. `make gen` regenerates everything: the Go server code (`pkg/proto`), the TypeScript clients (`web/discopanel/src/lib/proto`), and the GORM storage layer (protogorm generates `internal/db/store.gen.go` from the same protos). None of it is ever edited by hand.
+- API definitions: `proto/discopanel/`.
+- Persisted models: `storage.proto`.
+- Generated files: regenerate from protos, never edit by hand.
 
-- After changing a proto, run `make gen` (cleans and regenerates all of it).
-- If the change touched a persisted model, follow it with `make migrate-diff NAME=<short_name>` (see below).
-- `make proto-lint` and `make proto-format` keep the definitions tidy.
-- `make proto-breaking` checks your branch against `main` for breaking API changes.
+| Command | Output |
+|---|---|
+| `make gen` | Go server code in `pkg/proto`, TypeScript clients in `web/discopanel/src/lib/proto`, GORM store in `internal/db/store.gen.go`, and `internal/db/schema.sql`. Cleans generated files first. |
+| `make migrate-diff NAME=<short_name>` | Migration after persisted model changes. |
+| `make proto-lint` | Definition linting. |
+| `make proto-format` | Definition formatting. |
+| `make proto-breaking` | Breaking API changes against `main`. |
 
 ## Database migrations
 
-Schema changes ship as versioned SQL files in `internal/db/migrations/`, authored with [Atlas](https://atlasgo.io) and applied by the panel itself at startup. `make gen` also loads the GORM models into `internal/db/schema.sql` (generated, not committed), which is the desired state Atlas diffs against. Atlas runs in a container like buf, so Docker is the only requirement.
+- [Atlas](https://atlasgo.io) migrations: `internal/db/migrations/`.
+- Desired schema: `internal/db/schema.sql`, generated by `make gen`, uncommitted.
+- Atlas runs in Docker. The panel applies migrations at startup.
 
 ```sh
-make migrate-diff NAME=add_server_notes   # write a migration for whatever the protos changed
-make migrate-new NAME=backfill_notes      # open an empty file for hand written SQL, then make migrate-hash
-make migrate-validate                     # replay the directory on a dev database and check atlas.sum
-make migrate-status                       # applied and pending files for ./data/discopanel.db
+make migrate-diff NAME=add_server_notes   # diff generated schema
+make migrate-new NAME=backfill_notes     # empty SQL migration, then run make migrate-hash
+make migrate-validate                    # replay migrations and check atlas.sum
+make migrate-status                      # status for ./data/discopanel.db
 ```
 
-Commit the new `.sql` file together with the updated `atlas.sum`. Setting `database.auto_migrate: false` makes the panel refuse to start when an existing database has pending work instead of applying it. Fresh database always initializes.
+- Commit the new `.sql` file and updated `atlas.sum`.
+- `database.auto_migrate: false`: refuse startup for existing databases with pending migrations.
+- Fresh databases always initialize.
 
 ## Tests and checks
 
 ```sh
 make test     # go test ./...
 make lint     # buf lint + frontend eslint/prettier
-make check    # svelte-check plus the private-import guard
+make check    # svelte-check + private-import guard
 ```
 
-## What pull requests should look like
+## Pull requests
 
-- **Complete features.** No TODOs, no placeholders, no "wire this up later". If a change spans backend and frontend, ship both halves.
-- **One implementation per concept.** Before adding a structure, a helper or an event type, read how the existing code handles the same concern and extend that instead. Parallel implementations of the same idea get rolled back.
-- **Respect the ownership boundaries.** Server state transitions go through `lifecycle.Manager`, events through the `pkg/events` bus, container work through `internal/docker`. Don't reach around them.
-- **Regenerate, don't hand-edit.** If your diff touches generated code without a matching proto change, something went wrong.
-- Target `main`, keep the diff focused, and say in the description what you tested.
+- Target `main` with a focused diff and validation notes.
+- Include backend and frontend changes for complete features. No TODOs or placeholders.
+- Extend existing structures, helpers, and event types.
+- Route state transitions through `lifecycle.Manager`, events through `pkg/events`, and containers through `internal/docker`.
+- Include proto changes with regenerated code.
 
 ## Docs
 
-This documentation site lives in `docs/discopanel/` (Astro + Starlight). `make dev-docs` serves it locally on `http://localhost:4321`. If something here is wrong or missing, open an issue or mention it in Discord.
-
-The UI screenshots are captured by `docs/discopanel/scripts/screenshots.mjs` against a running panel. Point it at one with a server or two and it refreshes every image in `src/assets/screenshots/`:
+- Source: `docs/discopanel/`, Astro + Starlight.
+- Local server: `make dev-docs`, `http://localhost:4321`.
+- Corrections: repository issues or Discord.
+- Screenshots: running panel with at least one server. Output in `src/assets/screenshots/`.
 
 ```sh
 cd docs/discopanel

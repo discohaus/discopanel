@@ -8,6 +8,8 @@ import (
 
 	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+
+	"github.com/discohaus/discopanel/pkg/hub"
 )
 
 // Pseudo indexer name for uploaded modpack archives
@@ -118,6 +120,12 @@ func NewIndexer(name string, apiKey string, userAgent string) (ModpackIndexer, e
 		return nil, fmt.Errorf("unknown indexer: %s", name)
 	}
 	return entry.factory(apiKey, userAgent), nil
+}
+
+// True when the indexer cannot work without its credential: it declares one and upstreams are contacted directly
+// Through the index the hub supplies its own credential, so the operator's is optional
+func CredentialRequired(info IndexerInfo) bool {
+	return info.CredentialProperty != "" && !hub.IndexEnabled()
 }
 
 // Looks up one registered indexer's declared facts

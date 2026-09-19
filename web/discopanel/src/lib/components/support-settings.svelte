@@ -6,6 +6,10 @@
 	import { Textarea } from '$lib/components/ui/textarea';
 	import { Label } from '$lib/components/ui/label';
 	import { Checkbox } from '$lib/components/ui/checkbox';
+	import { Switch } from '$lib/components/ui/switch';
+	import { Badge } from '$lib/components/ui/badge';
+	import { canUpdateSettings } from '$lib/stores/auth';
+	import { formatRelative } from '$lib/utils/time';
 	import {
 		Download,
 		AlertCircle,
@@ -25,13 +29,33 @@
 	} from '@lucide/svelte';
 	import { notify } from '$lib/stores/activity.svelte';
 	import { SvelteSet } from 'svelte/reactivity';
-	import { rpcClient } from '$lib/api/rpc-client';
+	import { rpcClient, rpcErrorMessage, silentCallOptions } from '$lib/api/rpc-client';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { serversStore } from '$lib/stores/servers';
+	import DiagnosticsPanel from '$lib/components/diagnostics-panel.svelte';
 	import type { Server as ServerType } from '$lib/proto/discopanel/v1/storage_pb';
+	import type {
+		DiagnosticReport,
+		GetTelemetrySettingsResponse
+	} from '$lib/proto/discopanel/v1/support_pb';
 
 	let generating = $state(false);
+	let telemetry = $state<GetTelemetrySettingsResponse | null>(null);
+	let telemetryEnabled = $state(false);
+	let loadingTelemetry = $state(true);
+	let telemetryError = $state('');
+	let savingTelemetry = $state(false);
+	let canEdit = $derived($canUpdateSettings);
+	let telemetryHint = $derived.by(() => {
+		if (!telemetry?.enabled) return '';
+		if (telemetry.lastError) return telemetry.lastError;
+		return telemetry.lastHeartbeatAt
+			? `Last heartbeat ${formatRelative(telemetry.lastHeartbeatAt)}`
+			: 'First heartbeat pending';
+	});
 	let uploading = $state(false);
+	// Bundle runs hand their fresh report to the panel above
+	let diagReport = $state<DiagnosticReport | null>(null);
 	let bundlePath = $state<string | null>(null);
 	let referenceId = $state<string | null>(null);
 	let discordUsername = $state('');
@@ -60,11 +84,12 @@
 		{
 			icon: FileArchive,
 			title: 'System information',
-			desc: 'Version and environment details'
+			desc: 'Version, environment, and a fresh diagnostics run'
 		}
 	];
 
 	onMount(async () => {
+		loadTelemetry();
 		try {
 			servers = await serversStore.fetchServers(true);
 		} catch (error) {
@@ -73,6 +98,37 @@
 			loadingServers = false;
 		}
 	});
+
+	async function loadTelemetry() {
+		loadingTelemetry = true;
+		telemetryError = '';
+		try {
+			telemetry = await rpcClient.support.getTelemetrySettings({}, silentCallOptions);
+			telemetryEnabled = telemetry.enabled;
+		} catch (error) {
+			telemetryError = rpcErrorMessage(error, 'Failed to load telemetry settings');
+		} finally {
+			loadingTelemetry = false;
+		}
+	}
+
+	async function setTelemetry(enabled: boolean) {
+		if (!telemetry || savingTelemetry) return;
+		const previous = telemetry.enabled;
+		savingTelemetry = true;
+		try {
+			const res = await rpcClient.support.updateTelemetrySettings({ enabled }, silentCallOptions);
+			if (!res.settings) throw new Error('The panel did not return telemetry settings');
+			telemetry = res.settings;
+			telemetryEnabled = res.settings.enabled;
+		} catch (error) {
+			telemetryEnabled = previous;
+			const message = rpcErrorMessage(error, 'Unknown error occurred');
+			notify.error('Failed to update telemetry', { description: message });
+		} finally {
+			savingTelemetry = false;
+		}
+	}
 
 	function toggleServer(serverId: string) {
 		if (selectedServerIds.has(serverId)) {
@@ -107,18 +163,22 @@
 
 		try {
 			if (upload) {
-				const response = await rpcClient.support.uploadSupportBundle({
-					includeLogs: true,
-					includeConfigs: true,
-					includeSystemInfo: true,
-					serverIds,
-					discordUsername: discordUsername.trim(),
-					email: email.trim(),
-					githubUsername: githubUsername.trim(),
-					issueDescription: issueDescription.trim(),
-					stepsToReproduce: stepsToReproduce.trim()
-				});
+				const response = await rpcClient.support.uploadSupportBundle(
+					{
+						includeLogs: true,
+						includeConfigs: true,
+						includeSystemInfo: true,
+						serverIds,
+						discordUsername: discordUsername.trim(),
+						email: email.trim(),
+						githubUsername: githubUsername.trim(),
+						issueDescription: issueDescription.trim(),
+						stepsToReproduce: stepsToReproduce.trim()
+					},
+					silentCallOptions
+				);
 
+				if (response.diagnostics) diagReport = response.diagnostics;
 				if (response.success && response.referenceId) {
 					referenceId = response.referenceId;
 					discordUsername = '';
@@ -135,13 +195,17 @@
 					});
 				}
 			} else {
-				const response = await rpcClient.support.generateSupportBundle({
-					includeLogs: true,
-					includeConfigs: true,
-					includeSystemInfo: true,
-					serverIds
-				});
+				const response = await rpcClient.support.generateSupportBundle(
+					{
+						includeLogs: true,
+						includeConfigs: true,
+						includeSystemInfo: true,
+						serverIds
+					},
+					silentCallOptions
+				);
 
+				if (response.diagnostics) diagReport = response.diagnostics;
 				if (response.bundleId) {
 					bundlePath = response.bundleId;
 					notify.success('Support bundle generated!', {
@@ -154,7 +218,7 @@
 				}
 			}
 		} catch (error) {
-			const message = error instanceof Error ? error.message : 'Unknown error occurred';
+			const message = rpcErrorMessage(error, 'Unknown error occurred');
 			const action = upload ? 'upload' : 'generate';
 			notify.error(`Failed to ${action} support bundle`, {
 				description: message
@@ -169,9 +233,10 @@
 		if (!bundlePath) return;
 
 		try {
-			const response = await rpcClient.support.downloadSupportBundle({
-				bundleId: bundlePath
-			});
+			const response = await rpcClient.support.downloadSupportBundle(
+				{ bundleId: bundlePath },
+				silentCallOptions
+			);
 			// Builds a download link from the response
 			const blob = new Blob([new Uint8Array(response.content)], { type: response.mimeType });
 			const url = URL.createObjectURL(blob);
@@ -184,7 +249,7 @@
 			bundlePath = null;
 			notify.success('Support bundle downloaded!');
 		} catch (error) {
-			const message = error instanceof Error ? error.message : 'Unknown error occurred';
+			const message = rpcErrorMessage(error, 'Unknown error occurred');
 			notify.error('Failed to download support bundle', {
 				description: message
 			});
@@ -203,6 +268,8 @@
 </script>
 
 <div class="space-y-4">
+	<DiagnosticsPanel bind:report={diagReport} />
+
 	<section class="overflow-hidden rounded-xl border bg-card">
 		<header class="border-b bg-muted/30 px-4 py-3">
 			<h3 class="text-sm font-semibold">Support bundle</h3>
@@ -493,4 +560,43 @@
 			you have sensitive information.
 		</p>
 	</div>
+
+	<section class="rounded-xl border bg-card px-4 py-4">
+		<div class="flex items-center justify-between gap-4">
+			<div class="min-w-0">
+				<Label for="support-telemetry" class="text-sm font-semibold">Telemetry</Label>
+				<p class="mt-1 text-xs text-muted-foreground">Send an hourly heartbeat to discohaus</p>
+				{#if telemetryHint}
+					<p class="mt-1.5 text-xs text-muted-foreground">{telemetryHint}</p>
+				{/if}
+			</div>
+			<div class="flex shrink-0 items-center gap-2">
+				{#if loadingTelemetry}
+					<Loader2 class="size-4 animate-spin text-muted-foreground" />
+					<span class="text-xs text-muted-foreground">Loading…</span>
+				{:else if telemetryError}
+					<Button variant="outline" size="sm" onclick={loadTelemetry}>Retry</Button>
+				{:else if telemetry?.managed}
+					<Badge variant="secondary">Managed by discohaus</Badge>
+				{:else if telemetry?.configDisabled}
+					<Badge variant="outline">Disabled in config</Badge>
+				{:else if canEdit}
+					<span class="text-xs text-muted-foreground" role="status">
+						{savingTelemetry ? 'Saving…' : telemetryEnabled ? 'On' : 'Off'}
+					</span>
+					<Switch
+						id="support-telemetry"
+						bind:checked={telemetryEnabled}
+						onCheckedChange={setTelemetry}
+						disabled={savingTelemetry}
+					/>
+				{:else}
+					<Badge variant="outline">{telemetry?.enabled ? 'On' : 'Off'}</Badge>
+				{/if}
+			</div>
+		</div>
+		{#if telemetryError}
+			<p class="mt-2 text-xs text-status-danger" role="alert">{telemetryError}</p>
+		{/if}
+	</section>
 </div>

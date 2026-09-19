@@ -8,6 +8,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/pkg/stdcopy"
 )
 
@@ -15,11 +16,14 @@ import (
 type OneShotOptions struct {
 	Image      string
 	Cmd        []string
-	DataPath   string // Host path mounted at /data
+	DataPath   string // Mounted at /data, no mount when empty
 	WorkingDir string
 	User       string // Format is uid then gid
 	Name       string
 	Labels     map[string]string
+	Env        []string
+	Network    string // Network to join, default bridge when empty
+	StrictData bool   // Fails when the host side of DataPath is missing
 }
 
 // Pulls image, runs command, removes container, errors on nonzero exit
@@ -43,32 +47,37 @@ func (c *Client) RunOneShot(ctx context.Context, opts OneShotOptions, logFn func
 		Entrypoint: opts.Cmd,
 		WorkingDir: opts.WorkingDir,
 		User:       opts.User,
+		Env:        opts.Env,
 		Labels:     labels,
 	}
 	hostConfig := &container.HostConfig{
-		Mounts: []mount.Mount{
-			{
-				Type:        mount.TypeBind,
-				Source:      TranslateToHostPath(opts.DataPath),
-				Target:      "/data",
-				BindOptions: &mount.BindOptions{CreateMountpoint: true},
-			},
-		},
 		AutoRemove: false, // Removed explicitly after log collection
+	}
+	if opts.DataPath != "" {
+		hostConfig.Mounts = []mount.Mount{{
+			Type:        mount.TypeBind,
+			Source:      TranslateToHostPath(opts.DataPath),
+			Target:      "/data",
+			BindOptions: &mount.BindOptions{CreateMountpoint: !opts.StrictData},
+		}}
 	}
 	if c.config.DNS != "" {
 		hostConfig.DNS = []string{c.config.DNS}
 	}
+	networkConfig := &network.NetworkingConfig{}
+	if opts.Network != "" {
+		networkConfig.EndpointsConfig = map[string]*network.EndpointSettings{opts.Network: {}}
+	}
 
-	resp, err := c.docker.ContainerCreate(ctx, config, hostConfig, nil, nil, opts.Name)
+	resp, err := c.docker.ContainerCreate(ctx, config, hostConfig, networkConfig, nil, opts.Name)
 	if err != nil {
-		return fmt.Errorf("failed to create installer container: %w", err)
+		return fmt.Errorf("failed to create container: %w", err)
 	}
 	containerID := resp.ID
 	defer c.docker.ContainerRemove(context.WithoutCancel(ctx), containerID, container.RemoveOptions{Force: true})
 
 	if err := c.docker.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
-		return fmt.Errorf("failed to start installer container: %w", err)
+		return fmt.Errorf("failed to start container: %w", err)
 	}
 
 	// Stream output while the command runs
@@ -107,13 +116,13 @@ func (c *Client) RunOneShot(ctx context.Context, opts OneShotOptions, logFn func
 	select {
 	case err := <-errCh:
 		if err != nil {
-			return fmt.Errorf("installer container wait failed: %w", err)
+			return fmt.Errorf("container wait failed: %w", err)
 		}
 	case status := <-statusCh:
 		<-logsDone
 		if status.StatusCode != 0 {
 			tail := strings.Join(lastLines, "\n")
-			return fmt.Errorf("installer exited with code %d:\n%s", status.StatusCode, tail)
+			return fmt.Errorf("command exited with code %d:\n%s", status.StatusCode, tail)
 		}
 	case <-ctx.Done():
 		return ctx.Err()

@@ -151,6 +151,7 @@ func (s *ListenerSocket) lookupMCRoute(hostname string) (Route, bool) {
 func (s *ListenerSocket) serveMinecraft(clientConn net.Conn, br *bufio.Reader, handshake *mcproto.HandshakePacket) {
 	hostname := normalizeWireHostname(handshake.ServerAddress)
 	route, ok := s.lookupMCRoute(hostname)
+	s.observer.noteMC(hostname, ok, clientConn.RemoteAddr().String())
 	if !ok {
 		s.serveHubless(clientConn, br, handshake, hostname)
 		return

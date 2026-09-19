@@ -72,6 +72,7 @@ type httpLane struct {
 	logger       *logger.Logger
 	trustedEdge  bool
 	stats        func(serverID string) *RouteStats
+	observer     *EdgeObserver
 }
 
 // Creates the http lane for one socket
@@ -168,6 +169,9 @@ func (p *httpLane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		route, exists = p.routesMap[""]
 	}
 	p.routesMutex.RUnlock()
+
+	forwarded := r.Header.Get("X-Forwarded-For") != "" || r.Header.Get("X-Forwarded-Proto") != ""
+	p.observer.noteHTTP(hostname, forwarded, exists, r.RemoteAddr)
 
 	if !exists {
 		p.logger.Debug("No route found for hostname: %s", hostname)

@@ -56,11 +56,16 @@
 		Puzzle,
 		Search,
 		ChevronRight,
-		RefreshCcw
+		RefreshCcw,
+		Info
 	} from '@lucide/svelte';
 	import type { User } from '$lib/proto/discopanel/v1/storage_pb';
+	import type { GetVersionStatusResponse } from '$lib/proto/discopanel/v1/support_pb';
+	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
+	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
 
 	let { children } = $props();
+	let versionStatus = $state<GetVersionStatusResponse | null>(null);
 
 	let servers = $derived($activitySortedServers);
 	let user = $derived($currentUser);
@@ -180,6 +185,14 @@
 		statusPollingInterval = setInterval(() => {
 			serversStore.fetchServers(true);
 		}, 10000);
+	});
+
+	$effect(() => {
+		if (sessionKey === null) return;
+		rpcClient.support
+			.getVersionStatus({}, silentCallOptions)
+			.then((res) => (versionStatus = res))
+			.catch(() => (versionStatus = null));
 	});
 
 	// System module indicator polls only for privileged sessions
@@ -420,12 +433,61 @@
 						<span>API reference</span>
 					</Button>
 				{/if}
+				{#if versionStatus?.hubNotice}
+					<div
+						class="flex items-start gap-2 rounded-md border border-primary/25 bg-primary/10 px-2 py-1.5 text-[11px] leading-snug text-foreground group-data-[collapsible=icon]:hidden"
+						role="status"
+					>
+						<Info class="mt-px size-3.5 shrink-0 text-primary" />
+						<span class="min-w-0 break-words">{versionStatus.hubNotice}</span>
+					</div>
+					<Tooltip.Root>
+						<Tooltip.Trigger
+							class="hidden size-7 items-center justify-center text-primary group-data-[collapsible=icon]:flex"
+						>
+							<Info class="size-4" />
+						</Tooltip.Trigger>
+						<Tooltip.Content class="max-w-64">{versionStatus.hubNotice}</Tooltip.Content>
+					</Tooltip.Root>
+				{/if}
 				<div class="flex items-center gap-1 group-data-[collapsible=icon]:flex-col">
 					<span
-						class="flex-1 truncate pl-2 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden"
+						class="flex min-w-0 flex-1 items-center gap-1.5 pl-2 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden"
 					>
-						{__APP_VERSION__}
+						<span class="truncate">{__APP_VERSION__}</span>
+						{#if versionStatus?.updateAvailable}
+							<Tooltip.Root>
+								<Tooltip.Trigger>
+									<!-- eslint-disable svelte/no-navigation-without-resolve -- external release URL -->
+									<a
+										href={versionStatus.releaseUrl ||
+											'https://github.com/discohaus/discopanel/releases'}
+										target="_blank"
+										rel="noopener noreferrer"
+										class="inline-flex shrink-0 items-center gap-1 rounded-full border border-status-warn/25 bg-status-warn/10 px-1.5 py-px text-[10px] font-medium text-status-warn hover:bg-status-warn/20"
+									>
+										<span class="size-1.5 animate-pulse rounded-full bg-status-warn"></span>
+										{versionStatus.latestVersion}
+									</a>
+								</Tooltip.Trigger>
+								<Tooltip.Content>
+									Update available: {versionStatus.latestVersion} (running {versionStatus.currentVersion})
+								</Tooltip.Content>
+							</Tooltip.Root>
+						{/if}
 					</span>
+					{#if versionStatus?.updateAvailable}
+						<!-- eslint-disable svelte/no-navigation-without-resolve -- external release URL -->
+						<a
+							href={versionStatus.releaseUrl || 'https://github.com/discohaus/discopanel/releases'}
+							target="_blank"
+							rel="noopener noreferrer"
+							class="hidden size-7 items-center justify-center group-data-[collapsible=icon]:flex"
+							title="Update available: {versionStatus.latestVersion}"
+						>
+							<span class="size-2 animate-pulse rounded-full bg-status-warn"></span>
+						</a>
+					{/if}
 					<Button
 						variant="ghost"
 						size="icon"

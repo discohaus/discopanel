@@ -40,15 +40,38 @@ DISCOPANEL_SERVER_PORT="8080"
 
 Most installs only ever touch a few of these:
 
-| Section | What it controls |
+| Section | Settings |
 |---|---|
-| `server` | The port and address the panel's web UI listens on. |
-| `storage` | Where server files, backups, and temp files live on disk. |
-| `proxy` | The Minecraft proxy - domain, ports, and TLS. See [Proxy & Domains](/guides/proxy/) and [HTTPS & Certificates](/guides/tls/). |
-| `auth` | Login: local accounts, self-registration, and [OIDC providers](/guides/oidc/keycloak/). |
-| `minecraft.global_config` | Defaults applied to every **new** server. Each server's Properties tab overrides these per server. |
-| `module` | [Modules](/guides/modules/): the host port range they're assigned from, and `doctor_enabled` to turn the built-in Doctor off. |
-| `docker` | Advanced: the Docker socket, container labels, `runtime_image` to pull server images from your own registry mirror, and `agent_url` if servers need a specific address to reach the panel for live telemetry (it's auto-detected otherwise). |
+| `server` | Panel listen address and port. |
+| `storage` | Server, backup, and temporary directories. |
+| `proxy` | Minecraft domain, ports, and TLS. [Proxy & Domains](/guides/proxy/), [HTTPS & Certificates](/guides/tls/). |
+| `auth` | Local accounts, registration, and [OIDC providers](/guides/oidc/keycloak/). |
+| `minecraft.global_config` | Defaults for new servers. Per-server overrides in Properties. |
+| `module` | [Module](/guides/modules/) port range and `doctor_enabled`. |
+| `docker` | Socket, container labels, `runtime_image` registry mirror, and `agent_url` telemetry address override. Agent address auto-detected by default. |
+| `diagnostics` | Startup checks and release check. |
+| `telemetry` | Hourly hub heartbeat. See [Hub](#hub). |
+| `support` | Support service origin. See [Hub](#hub). |
+| `index` | Upstream cache, disabled by default. |
+
+## Hub
+
+| Key | Default | Environment | Effect |
+|---|---|---|---|
+| `diagnostics.run_on_startup` | `true` | `DISCOPANEL_DIAGNOSTICS_RUN_ON_STARTUP` | Run all checks after startup. Results in Settings > Support. |
+| `diagnostics.version_check` | `true` | `DISCOPANEL_DIAGNOSTICS_VERSION_CHECK` | New release alert. |
+| `telemetry.enabled` | `true` | `DISCOPANEL_TELEMETRY_ENABLED` | `false`: heartbeat locked off. `true`: UI toggle controls heartbeat. |
+| `support.base_url` | `https://support.discohaus.app` | `SUPPORT_BASE_URL` takes precedence over `DISCOPANEL_SUPPORT_BASE_URL` | Bundle uploads, heartbeat, and port reachability relay. |
+| `index.enabled` | `false` | `DISCOPANEL_INDEX_ENABLED` | `false`: direct requests to Modrinth, CurseForge, Mojang, Fabric, Quilt, Paper, Purpur, Forge, NeoForge, and FTB. CurseForge packs require an API key. `true`: requests through `index.base_url`. |
+| `index.base_url` | `https://index.discohaus.app` | `DISCOHAUS_INDEX_BASE_URL` takes precedence over `DISCOPANEL_INDEX_BASE_URL` and enables the index | Index origin. |
+
+| Heartbeat | Details |
+|---|---|
+| Toggle | Settings > Support > Telemetry. Locked off by `telemetry.enabled: false`. Always on for hosted panels. |
+| Cadence | One minute after startup, then hourly unless changed by the hub. |
+| Payload | Panel version, OS, CPU architecture, Docker version, server counts by loader and Minecraft version, module template IDs, runtime images, last diagnostics pass/warn/fail counts, panel port, uptime. |
+| Response | Latest release and operator notice. GitHub release polling when heartbeat is off. |
+| Install ID | 32 hex characters at `<storage.data_dir>/install_id`. Header sent only to `support.base_url` and `index.base_url`. Delete the file to generate a new ID. |
 
 ## All options
 

@@ -5,8 +5,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"debug/buildinfo"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -19,8 +19,11 @@ import (
 
 	"connectrpc.com/connect"
 	storage "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/internal/diagnostics"
 	"github.com/discohaus/discopanel/internal/docker"
+	"github.com/discohaus/discopanel/internal/telemetry"
 	"github.com/discohaus/discopanel/pkg/config"
+	"github.com/discohaus/discopanel/pkg/hub"
 	"github.com/discohaus/discopanel/pkg/logger"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
@@ -39,11 +42,16 @@ var _ discopanelv1connect.SupportServiceHandler = (*SupportService)(nil)
 // Largest slice read from the tail of the app log
 const maxAppLogTailBytes = 1 << 20
 
+// Reports younger than this ride along instead of rerunning
+const bundleDiagnosticsMaxAge = time.Minute
+
 // Implements the Support service
 type SupportService struct {
 	store  *storage.Store
 	docker *docker.Client
 	config *config.Config
+	diag   *diagnostics.Runner
+	beat   *telemetry.Sender
 	log    *logger.Logger
 	// Guards the temporary bundle registry
 	bundlesMu sync.Mutex
@@ -51,11 +59,13 @@ type SupportService struct {
 }
 
 // Creates a new support service
-func NewSupportService(store *storage.Store, docker *docker.Client, config *config.Config, log *logger.Logger) *SupportService {
+func NewSupportService(store *storage.Store, docker *docker.Client, config *config.Config, diag *diagnostics.Runner, beat *telemetry.Sender, log *logger.Logger) *SupportService {
 	return &SupportService{
 		store:   store,
 		docker:  docker,
 		config:  config,
+		diag:    diag,
+		beat:    beat,
 		log:     log,
 		bundles: make(map[string]*v1.GenerateSupportBundleResponse),
 	}
@@ -68,6 +78,9 @@ func (s *SupportService) bundlePath(filename string) string {
 
 // Assembles a support bundle archive on disk
 func (s *SupportService) buildBundle(ctx context.Context, includeLogs, includeConfigs, includeSystemInfo bool, serverIDs []string) (*v1.GenerateSupportBundleResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// Scratch space for the scrubbed database copy
 	tempDir, err := os.MkdirTemp(s.config.Storage.TempDir, "support-bundle-")
 	if err != nil {
@@ -82,7 +95,13 @@ func (s *SupportService) buildBundle(ctx context.Context, includeLogs, includeCo
 	if err != nil {
 		return nil, fmt.Errorf("failed to create bundle file: %w", err)
 	}
-	defer bundleFile.Close()
+	complete := false
+	defer func() {
+		bundleFile.Close()
+		if !complete {
+			os.Remove(bundlePath)
+		}
+	}()
 
 	gzipWriter := gzip.NewWriter(bundleFile)
 	defer gzipWriter.Close()
@@ -111,6 +130,17 @@ func (s *SupportService) buildBundle(ctx context.Context, includeLogs, includeCo
 		}
 	}
 
+	// Every bundle carries a fresh diagnostics pass
+	report, err := s.diag.Fresh(ctx, bundleDiagnosticsMaxAge, diagnostics.TriggerBundle)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if err != nil {
+		s.log.Warn("Continuing without diagnostics: %v", err)
+	} else if err := addDiagnosticsToBundle(tarWriter, report); err != nil {
+		s.log.Warn("Continuing without diagnostics files: %v", err)
+	}
+
 	// Close writers to flush all data
 	tarWriter.Close()
 	gzipWriter.Close()
@@ -121,12 +151,95 @@ func (s *SupportService) buildBundle(ctx context.Context, includeLogs, includeCo
 		return nil, fmt.Errorf("failed to stat bundle file: %w", err)
 	}
 
+	complete = true
 	return &v1.GenerateSupportBundleResponse{
-		BundleId:  uuid.New().String(),
-		Filename:  bundleFileName,
-		Size:      fileInfo.Size(),
-		CreatedAt: timestamppb.Now(),
+		BundleId:    uuid.New().String(),
+		Filename:    bundleFileName,
+		Size:        fileInfo.Size(),
+		CreatedAt:   timestamppb.Now(),
+		Diagnostics: report,
 	}, nil
+}
+
+// Writes the report as json and readable text
+func addDiagnosticsToBundle(tw *tar.Writer, report *v1.DiagnosticReport) error {
+	raw, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(report)
+	if err != nil {
+		return fmt.Errorf("failed to marshal diagnostics: %w", err)
+	}
+	if err := addBytesToTar(tw, "diagnostics/report.json", raw); err != nil {
+		return err
+	}
+	return addBytesToTar(tw, "diagnostics/report.txt", []byte(diagnostics.RenderText(report)))
+}
+
+// Adds an in memory file to the tar archive
+func addBytesToTar(tw *tar.Writer, destPath string, content []byte) error {
+	header := &tar.Header{
+		Name:    destPath,
+		Size:    int64(len(content)),
+		Mode:    0644,
+		ModTime: time.Now(),
+	}
+	if err := tw.WriteHeader(header); err != nil {
+		return err
+	}
+	_, err := tw.Write(content)
+	return err
+}
+
+// Runs every diagnostic check on demand
+func (s *SupportService) RunDiagnostics(ctx context.Context, req *connect.Request[v1.RunDiagnosticsRequest]) (*connect.Response[v1.RunDiagnosticsResponse], error) {
+	report, err := s.diag.Run(ctx, diagnostics.TriggerManual)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("diagnostics failed: %w", err))
+	}
+	return connect.NewResponse(&v1.RunDiagnosticsResponse{Report: report}), nil
+}
+
+// Returns the newest report and whether a run is active
+func (s *SupportService) GetDiagnostics(ctx context.Context, req *connect.Request[v1.GetDiagnosticsRequest]) (*connect.Response[v1.GetDiagnosticsResponse], error) {
+	report, running := s.diag.Last()
+	return connect.NewResponse(&v1.GetDiagnosticsResponse{Report: report, Running: running}), nil
+}
+
+// Heartbeat state as the ui shows it
+func (s *SupportService) telemetrySettings() *v1.GetTelemetrySettingsResponse {
+	res := &v1.GetTelemetrySettingsResponse{
+		Enabled:        s.beat.Enabled(),
+		Managed:        s.beat.Managed(),
+		ConfigDisabled: s.beat.ConfigDisabled(),
+	}
+	resp, at, err := s.beat.LastHeartbeat()
+	if resp != nil {
+		res.LastHeartbeatAt = timestamppb.New(at)
+	}
+	if err != nil {
+		res.LastError = err.Error()
+	}
+	return res
+}
+
+// Returns whether the heartbeat is on and when it last landed
+func (s *SupportService) GetTelemetrySettings(ctx context.Context, req *connect.Request[v1.GetTelemetrySettingsRequest]) (*connect.Response[v1.GetTelemetrySettingsResponse], error) {
+	return connect.NewResponse(s.telemetrySettings()), nil
+}
+
+// Turns the heartbeat on or off, hosted panels refuse
+func (s *SupportService) UpdateTelemetrySettings(ctx context.Context, req *connect.Request[v1.UpdateTelemetrySettingsRequest]) (*connect.Response[v1.UpdateTelemetrySettingsResponse], error) {
+	if err := s.beat.SetEnabled(ctx, req.Msg.Enabled); err != nil {
+		if errors.Is(err, telemetry.ErrManaged) || errors.Is(err, telemetry.ErrConfigDisabled) {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		}
+		s.log.Error("Failed to update telemetry settings: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update telemetry settings"))
+	}
+	return connect.NewResponse(&v1.UpdateTelemetrySettingsResponse{Settings: s.telemetrySettings()}), nil
+}
+
+// Returns the cached release comparison
+func (s *SupportService) GetVersionStatus(ctx context.Context, req *connect.Request[v1.GetVersionStatusRequest]) (*connect.Response[v1.GetVersionStatusResponse], error) {
+	return connect.NewResponse(s.diag.VersionStatus(ctx)), nil
 }
 
 // Generates a support bundle
@@ -194,7 +307,7 @@ func (s *SupportService) UploadSupportBundle(ctx context.Context, req *connect.R
 	defer os.Remove(s.bundlePath(bundle.Filename))
 
 	// Upload the bundle to support server
-	referenceID, err := s.uploadBundleToServer(s.bundlePath(bundle.Filename), bundle.Filename, msg)
+	referenceID, err := s.uploadBundleToServer(ctx, s.bundlePath(bundle.Filename), bundle.Filename, msg)
 	if err != nil {
 		s.log.Error("Failed to upload support bundle: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to upload support bundle: %v", err))
@@ -204,11 +317,15 @@ func (s *SupportService) UploadSupportBundle(ctx context.Context, req *connect.R
 		ReferenceId: referenceID,
 		Message:     "Support bundle uploaded successfully",
 		Success:     true,
+		Diagnostics: bundle.Diagnostics,
 	}), nil
 }
 
 // Uploads a bundle file to the support server
-func (s *SupportService) uploadBundleToServer(bundlePath, fileName string, userInfo *v1.UploadSupportBundleRequest) (string, error) {
+func (s *SupportService) uploadBundleToServer(ctx context.Context, bundlePath, fileName string, userInfo *v1.UploadSupportBundleRequest) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	supportURL := s.getUploadSupportUrl()
 
 	// Open the bundle file
@@ -268,15 +385,15 @@ func (s *SupportService) uploadBundleToServer(bundlePath, fileName string, userI
 	}
 
 	// Create request
-	req, err := http.NewRequest(http.MethodPost, supportURL, body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, supportURL, body)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	// Send request
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Send request, the hub transport adds the install id
+	client := hub.NewHTTPClient(30 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to upload bundle: %w", err)
@@ -306,18 +423,9 @@ func (s *SupportService) uploadBundleToServer(bundlePath, fileName string, userI
 	return uploadResp.URL, nil
 }
 
-// Helper method to get the support server URL
-func (s *SupportService) getSupportUrl() string {
-	url := os.Getenv("SUPPORT_BASE_URL")
-	if url == "" {
-		url = "https://support.discopanel.app"
-	}
-	return url
-}
-
-// Helper method to get the upload support URL
+// Upload endpoint on the resolved support base
 func (s *SupportService) getUploadSupportUrl() string {
-	return s.getSupportUrl() + "/api/v1/uploads"
+	return hub.SupportBase() + "/api/v1/uploads"
 }
 
 // Removes a bundle from memory and disk
@@ -770,7 +878,7 @@ func (s *SupportService) addSystemInfoToBundle(ctx context.Context, tarWriter *t
 	// Build the complete system info
 	systemInfo := &v1.SystemInfo{
 		Timestamp:   time.Now().Format(time.RFC3339),
-		Version:     getVersionInfo(),
+		Version:     config.ResolvedVersion(),
 		ServerCount: int32(len(servers)),
 		Config:      configInfo,
 		Docker:      dockerInfo,
@@ -833,37 +941,6 @@ func addFileToTar(tw *tar.Writer, sourcePath, destPath string) error {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return !os.IsNotExist(err)
-}
-
-// Gets version information for the application
-func getVersionInfo() string {
-	// Env then stamped build version win first
-	if appV := config.AppVersion(); appV != "" {
-		return appV
-	}
-
-	// Check version file stored in home
-	if home, err := os.UserHomeDir(); err == nil {
-		versionFile := filepath.Join(home, ".discopanel")
-		if data, err := os.ReadFile(versionFile); err == nil {
-			if v := strings.TrimSpace(string(data)); v != "" {
-				return v
-			}
-		}
-	}
-
-	info, err := buildinfo.ReadFile(os.Args[0])
-	if err != nil {
-		return "unknown"
-	}
-
-	for _, setting := range info.Settings {
-		if setting.Key == "vcs.revision" {
-			return setting.Value
-		}
-	}
-
-	return "unknown"
 }
 
 // Returns the application log file content

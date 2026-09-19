@@ -12,6 +12,7 @@ import (
 	"github.com/discohaus/discopanel/internal/auth"
 	"github.com/discohaus/discopanel/internal/command"
 	storage "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/internal/diagnostics"
 	"github.com/discohaus/discopanel/internal/docker"
 	"github.com/discohaus/discopanel/internal/lifecycle"
 	"github.com/discohaus/discopanel/internal/metrics"
@@ -21,6 +22,7 @@ import (
 	"github.com/discohaus/discopanel/internal/rpc/handlers"
 	"github.com/discohaus/discopanel/internal/rpc/services"
 	"github.com/discohaus/discopanel/internal/scheduler"
+	"github.com/discohaus/discopanel/internal/telemetry"
 	"github.com/discohaus/discopanel/internal/ws"
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/events"
@@ -61,6 +63,8 @@ type Server struct {
 	uploadManager    *transfer.UploadManager
 	downloadManager  *transfer.DownloadManager
 	wsHub            *ws.Hub
+	diagnostics      *diagnostics.Runner
+	telemetry        *telemetry.Sender
 }
 
 // Creates new Connect RPC server
@@ -105,6 +109,13 @@ func NewServer(store *storage.Store, docker *docker.Client, sender *command.Send
 	wsHub := ws.NewHub(logStreamer, authManager, enforcer, store, docker, sender, metricsCollector, rec, log)
 	go wsHub.Run()
 
+	// Self checks and release probes, started by main once serving
+	diag := diagnostics.NewRunner(store, docker, cfg, proxyManager, log)
+
+	// Hub heartbeat, feeds the release check, started by main once serving
+	heartbeat := telemetry.New(store, docker, cfg, diag, log)
+	diag.SetReleaseSource(heartbeat)
+
 	s := &Server{
 		store:            store,
 		docker:           docker,
@@ -126,6 +137,8 @@ func NewServer(store *storage.Store, docker *docker.Client, sender *command.Send
 		uploadManager:    uploadManager,
 		downloadManager:  downloadManager,
 		wsHub:            wsHub,
+		diagnostics:      diag,
+		telemetry:        heartbeat,
 	}
 
 	s.setupHandler()
@@ -211,7 +224,7 @@ func (s *Server) registerServices(mux *http.ServeMux, opts []connect.HandlerOpti
 	modpackService := services.NewModpackService(s.store, s.config, s.uploadManager, s.log)
 	proxyService := services.NewProxyService(s.store, s.docker, s.proxyManager, s.moduleManager, s.config, s.rec, s.log)
 	serverService := services.NewServerService(s.store, s.docker, s.sender, s.config, s.proxyManager, s.lifecycle, s.authManager, s.logStreamer, s.metricsCollector, s.moduleManager, s.bus, s.uploadManager, s.rec, s.log)
-	supportService := services.NewSupportService(s.store, s.docker, s.config, s.log)
+	supportService := services.NewSupportService(s.store, s.docker, s.config, s.diagnostics, s.telemetry, s.log)
 	taskService := services.NewTaskService(s.store, s.scheduler, s.rec, s.log)
 	userService := services.NewUserService(s.store, s.authManager, s.log)
 	roleService := services.NewRoleService(s.store, s.enforcer, s.log)
@@ -353,6 +366,8 @@ var pollingProcedures = []string{
 	discopanelv1connect.ServerServiceGetServerLogsProcedure,
 	discopanelv1connect.ProxyServiceGetProxyStatusProcedure,
 	discopanelv1connect.SupportServiceGetApplicationLogsProcedure,
+	discopanelv1connect.SupportServiceGetDiagnosticsProcedure,
+	discopanelv1connect.SupportServiceGetVersionStatusProcedure,
 	discopanelv1connect.UploadServiceUploadChunkProcedure,
 	discopanelv1connect.UploadServiceGetUploadStatusProcedure,
 	discopanelv1connect.FileServiceGetExtractionStatusProcedure,
@@ -518,6 +533,16 @@ func (s *Server) RecoveryKey() string {
 // Exposes the streamer for cross-component wiring
 func (s *Server) LogStreamer() *logger.LogStreamer {
 	return s.logStreamer
+}
+
+// Exposes the diagnostics runner for startup wiring
+func (s *Server) Diagnostics() *diagnostics.Runner {
+	return s.diagnostics
+}
+
+// Exposes the heartbeat sender for startup wiring
+func (s *Server) Telemetry() *telemetry.Sender {
+	return s.telemetry
 }
 
 // Attaches a servers container output to its log stream

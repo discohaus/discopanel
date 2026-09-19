@@ -9,28 +9,42 @@ import (
 	"sync"
 	"time"
 
+	"github.com/discohaus/discopanel/pkg/hub"
 	"github.com/discohaus/discopanel/pkg/indexers"
 )
 
 const (
-	BaseURL         = "https://api.curseforge.com/v1"
 	MinecraftGameID = 432
 	ModpackClassID  = 4471
 	ModsClassID     = 6
 )
+
+// CurseForge v1 API base: api.curseforge.com directly, the index's /curseforge prefix otherwise
+func BaseURL() string {
+	return hub.CurseForge() + "/v1"
+}
 
 type Client struct {
 	apiKey string
 	http   *indexers.HTTPClient
 }
 
+// Builds a client, the key header goes out only when a key was given
+// Through the index the hub answers with its own key
 func NewClient(apiKey string, userAgent string) *Client {
+	var headers map[string]string
+	if apiKey != "" {
+		headers = map[string]string{"x-api-key": apiKey}
+	}
 	return &Client{
 		apiKey: apiKey,
-		http: indexers.NewHTTPClient("fuego", userAgent, map[string]string{
-			"x-api-key": apiKey,
-		}),
+		http:   indexers.NewHTTPClient("fuego", userAgent, headers),
 	}
+}
+
+// True when a request cannot proceed: no key and upstreams are contacted directly
+func (c *Client) missingKey() bool {
+	return c.apiKey == "" && !hub.IndexEnabled()
 }
 
 type SearchModsResponse struct {
@@ -179,7 +193,7 @@ func (c *Client) SearchModpacks(ctx context.Context, query string, gameVersion s
 
 // Searches projects of one class sorted by popularity
 func (c *Client) SearchProjects(ctx context.Context, query string, classID int, gameVersion string, modLoader ModLoaderType, index, pageSize int) (*SearchModsResponse, error) {
-	if c.apiKey == "" {
+	if c.missingKey() {
 		return nil, indexers.NewAuthConfigError("fuego", "API key not configured")
 	}
 
@@ -204,7 +218,7 @@ func (c *Client) SearchProjects(ctx context.Context, query string, classID int, 
 	}
 
 	var result SearchModsResponse
-	if err := c.http.DoJSON(ctx, fmt.Sprintf("%s/mods/search?%s", BaseURL, params.Encode()), &result); err != nil {
+	if err := c.http.DoJSON(ctx, fmt.Sprintf("%s/mods/search?%s", BaseURL(), params.Encode()), &result); err != nil {
 		return nil, err
 	}
 
@@ -212,7 +226,7 @@ func (c *Client) SearchProjects(ctx context.Context, query string, classID int, 
 }
 
 func (c *Client) GetModpackFiles(ctx context.Context, modID int, gameVersion string, modLoader ModLoaderType) ([]File, error) {
-	if c.apiKey == "" {
+	if c.missingKey() {
 		return nil, indexers.NewAuthConfigError("fuego", "API key not configured")
 	}
 
@@ -223,7 +237,7 @@ func (c *Client) GetModpackFiles(ctx context.Context, modID int, gameVersion str
 	if modLoader != ModLoaderAny {
 		params.Set("modLoaderType", strconv.Itoa(int(modLoader)))
 	}
-	endpoint := fmt.Sprintf("%s/mods/%d/files", BaseURL, modID)
+	endpoint := fmt.Sprintf("%s/mods/%d/files", BaseURL(), modID)
 	if len(params) > 0 {
 		endpoint += "?" + params.Encode()
 	}
@@ -239,14 +253,14 @@ func (c *Client) GetModpackFiles(ctx context.Context, modID int, gameVersion str
 }
 
 func (c *Client) GetModpack(ctx context.Context, modID int) (*Modpack, error) {
-	if c.apiKey == "" {
+	if c.missingKey() {
 		return nil, indexers.NewAuthConfigError("fuego", "API key not configured")
 	}
 
 	var result struct {
 		Data Modpack `json:"data"`
 	}
-	if err := c.http.DoJSON(ctx, fmt.Sprintf("%s/mods/%d", BaseURL, modID), &result); err != nil {
+	if err := c.http.DoJSON(ctx, fmt.Sprintf("%s/mods/%d", BaseURL(), modID), &result); err != nil {
 		return nil, err
 	}
 
@@ -255,7 +269,7 @@ func (c *Client) GetModpack(ctx context.Context, modID int) (*Modpack, error) {
 
 // Resolves a project of any class by slug
 func (c *Client) GetModBySlug(ctx context.Context, slug string, classID int) (*Modpack, error) {
-	if c.apiKey == "" {
+	if c.missingKey() {
 		return nil, indexers.NewAuthConfigError("fuego", "API key not configured")
 	}
 
@@ -267,7 +281,7 @@ func (c *Client) GetModBySlug(ctx context.Context, slug string, classID int) (*M
 	}
 
 	var result SearchModsResponse
-	if err := c.http.DoJSON(ctx, fmt.Sprintf("%s/mods/search?%s", BaseURL, params.Encode()), &result); err != nil {
+	if err := c.http.DoJSON(ctx, fmt.Sprintf("%s/mods/search?%s", BaseURL(), params.Encode()), &result); err != nil {
 		return nil, err
 	}
 	if len(result.Data) == 0 {
@@ -278,14 +292,14 @@ func (c *Client) GetModBySlug(ctx context.Context, slug string, classID int) (*M
 
 // Fetches metadata for a single mod or modpack file
 func (c *Client) GetFile(ctx context.Context, modID, fileID int) (*File, error) {
-	if c.apiKey == "" {
+	if c.missingKey() {
 		return nil, indexers.NewAuthConfigError("fuego", "API key not configured")
 	}
 
 	var result struct {
 		Data File `json:"data"`
 	}
-	if err := c.http.DoJSON(ctx, fmt.Sprintf("%s/mods/%d/files/%d", BaseURL, modID, fileID), &result); err != nil {
+	if err := c.http.DoJSON(ctx, fmt.Sprintf("%s/mods/%d/files/%d", BaseURL(), modID, fileID), &result); err != nil {
 		return nil, err
 	}
 	return &result.Data, nil
@@ -293,7 +307,7 @@ func (c *Client) GetFile(ctx context.Context, modID, fileID int) (*File, error) 
 
 // Bulk-fetches file metadata by ID
 func (c *Client) GetFilesByIDs(ctx context.Context, fileIDs []int) ([]File, error) {
-	if c.apiKey == "" {
+	if c.missingKey() {
 		return nil, indexers.NewAuthConfigError("fuego", "API key not configured")
 	}
 
@@ -301,7 +315,7 @@ func (c *Client) GetFilesByIDs(ctx context.Context, fileIDs []int) ([]File, erro
 		Data []File `json:"data"`
 	}
 	body := map[string]any{"fileIds": fileIDs}
-	if err := c.http.PostJSON(ctx, fmt.Sprintf("%s/mods/files", BaseURL), body, &result); err != nil {
+	if err := c.http.PostJSON(ctx, fmt.Sprintf("%s/mods/files", BaseURL()), body, &result); err != nil {
 		return nil, err
 	}
 	return result.Data, nil
@@ -315,7 +329,7 @@ type FingerprintMatch struct {
 
 // Identifies files by murmur2 fingerprint, unknown prints drop out
 func (c *Client) GetFingerprintMatches(ctx context.Context, fingerprints []uint32) ([]FingerprintMatch, error) {
-	if c.apiKey == "" {
+	if c.missingKey() {
 		return nil, indexers.NewAuthConfigError("fuego", "API key not configured")
 	}
 
@@ -325,7 +339,7 @@ func (c *Client) GetFingerprintMatches(ctx context.Context, fingerprints []uint3
 		} `json:"data"`
 	}
 	body := map[string]any{"fingerprints": fingerprints}
-	if err := c.http.PostJSON(ctx, fmt.Sprintf("%s/fingerprints/%d", BaseURL, MinecraftGameID), body, &result); err != nil {
+	if err := c.http.PostJSON(ctx, fmt.Sprintf("%s/fingerprints/%d", BaseURL(), MinecraftGameID), body, &result); err != nil {
 		return nil, err
 	}
 	return result.Data.ExactMatches, nil
@@ -333,7 +347,7 @@ func (c *Client) GetFingerprintMatches(ctx context.Context, fingerprints []uint3
 
 // Bulk-fetches mod metadata for class and slug resolution
 func (c *Client) GetModsByIDs(ctx context.Context, modIDs []int) ([]Modpack, error) {
-	if c.apiKey == "" {
+	if c.missingKey() {
 		return nil, indexers.NewAuthConfigError("fuego", "API key not configured")
 	}
 
@@ -341,7 +355,7 @@ func (c *Client) GetModsByIDs(ctx context.Context, modIDs []int) ([]Modpack, err
 		Data []Modpack `json:"data"`
 	}
 	body := map[string]any{"modIds": modIDs}
-	if err := c.http.PostJSON(ctx, fmt.Sprintf("%s/mods", BaseURL), body, &result); err != nil {
+	if err := c.http.PostJSON(ctx, fmt.Sprintf("%s/mods", BaseURL()), body, &result); err != nil {
 		return nil, err
 	}
 	return result.Data, nil
@@ -349,14 +363,14 @@ func (c *Client) GetModsByIDs(ctx context.Context, modIDs []int) ([]Modpack, err
 
 // Resolves CDN download url, empty if author blocked distribution
 func (c *Client) GetFileDownloadURL(ctx context.Context, modID, fileID int) (string, error) {
-	if c.apiKey == "" {
+	if c.missingKey() {
 		return "", indexers.NewAuthConfigError("fuego", "API key not configured")
 	}
 
 	var result struct {
 		Data *string `json:"data"`
 	}
-	err := c.http.DoJSON(ctx, fmt.Sprintf("%s/mods/%d/files/%d/download-url", BaseURL, modID, fileID), &result)
+	err := c.http.DoJSON(ctx, fmt.Sprintf("%s/mods/%d/files/%d/download-url", BaseURL(), modID, fileID), &result)
 	if err != nil {
 		var apiErr *indexers.IndexerError
 		if errors.As(err, &apiErr) && apiErr.StatusCode == 403 {
@@ -392,7 +406,7 @@ func (c *Client) verifyKey(ctx context.Context) error {
 			ID int `json:"id"`
 		} `json:"data"`
 	}
-	err := c.http.DoJSON(ctx, fmt.Sprintf("%s/games/%d", BaseURL, MinecraftGameID), &probe)
+	err := c.http.DoJSON(ctx, fmt.Sprintf("%s/games/%d", BaseURL(), MinecraftGameID), &probe)
 	var apiErr *indexers.IndexerError
 	switch {
 	case err == nil:
@@ -448,5 +462,5 @@ func CDNDownloadURL(fileID int, fileName string) string {
 	if fileID <= 0 || fileName == "" {
 		return ""
 	}
-	return fmt.Sprintf("https://edge.forgecdn.net/files/%d/%d/%s", fileID/1000, fileID%1000, url.PathEscape(fileName))
+	return fmt.Sprintf("%s/files/%d/%d/%s", hub.CurseForgeCDN(), fileID/1000, fileID%1000, url.PathEscape(fileName))
 }

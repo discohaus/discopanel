@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/discohaus/discopanel/pkg/hub"
 )
 
 // Wraps http.Client with common indexer request logic
@@ -33,7 +35,8 @@ func NewHTTPClient(indexer string, userAgent string, extraHeaders map[string]str
 	}
 	return &HTTPClient{
 		client: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: hub.Transport(nil),
 		},
 		userAgent:    userAgent,
 		indexer:      indexer,

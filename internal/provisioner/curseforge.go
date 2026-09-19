@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/discohaus/discopanel/pkg/hub"
 	"github.com/discohaus/discopanel/pkg/indexers/fuego"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"golang.org/x/sync/errgroup"
@@ -120,6 +121,7 @@ func (p *Provisioner) downloadCurseForgeFile(ctx context.Context, client *fuego.
 }
 
 // Builds a fuego client from server or global API key
+// Through the index the key is optional, the hub answers with its own
 func (p *Provisioner) curseForgeClient(ctx context.Context, cfg *v1.ServerProperties) (*fuego.Client, error) {
 	apiKey := strVal(cfg.CfApiKey)
 	if apiKey == "" {
@@ -127,8 +129,8 @@ func (p *Provisioner) curseForgeClient(ctx context.Context, cfg *v1.ServerProper
 			apiKey = strVal(global.CfApiKey)
 		}
 	}
-	if apiKey == "" {
-		return nil, fmt.Errorf("a CurseForge API key is required for CurseForge modpacks (set it in the server or global settings)")
+	if apiKey == "" && !hub.IndexEnabled() {
+		return nil, fmt.Errorf("a CurseForge API key is required for CurseForge modpacks while the index is off (set it in the server or global settings)")
 	}
 	return fuego.NewClient(apiKey, p.cfg.Server.UserAgent), nil
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/discohaus/discopanel/internal/scheduler"
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/events"
+	"github.com/discohaus/discopanel/pkg/hub"
 	"github.com/discohaus/discopanel/pkg/logger"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
@@ -55,6 +56,27 @@ func main() {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			log.Fatal("Failed to create directory %s: %v", dir, err)
 		}
+	}
+
+	// Every hub request carries this install's id, minted once and kept in the data dir
+	// Without one the hub refuses this panel, everything else still runs
+	installID, err := hub.LoadInstallID(cfg.Storage.DataDir)
+	if err != nil {
+		log.Error("Hub features disabled, the install id could not be stored: %v", err)
+	}
+	if err := hub.Configure(hub.Settings{
+		SupportBase:  cfg.Support.BaseURL,
+		IndexBase:    cfg.Index.BaseURL,
+		IndexEnabled: cfg.Index.Enabled,
+		InstallID:    installID,
+		TenantToken:  os.Getenv(config.TenantTokenEnv),
+	}); err != nil {
+		log.Fatal("Failed to configure the hub client: %v", err)
+	}
+	if !cfg.Index.Enabled {
+		log.Info("Install %s, support %s, upstreams contacted directly", installID, hub.SupportBase())
+	} else {
+		log.Info("Install %s, support %s, upstreams through %s", installID, hub.SupportBase(), hub.IndexBase())
 	}
 
 	// Initialize storage w/ migrations and seeding
@@ -400,6 +422,20 @@ func main() {
 		}
 	}()
 
+	// Self checks run once the panel answers requests
+	rpcServer.Diagnostics().Start()
+	defer rpcServer.Diagnostics().Stop()
+
+	// Heartbeat loop parks while turned off, first beat a minute in
+	heartbeat := rpcServer.Telemetry()
+	heartbeat.Start()
+	switch {
+	case heartbeat.ConfigDisabled():
+		log.Info("Telemetry disabled by configuration, release checks use GitHub")
+	case !heartbeat.Enabled():
+		log.Info("Telemetry turned off in settings, release checks use GitHub")
+	}
+
 	// Wait for interrupt signal
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
@@ -408,6 +444,7 @@ func main() {
 	log.Info("Shutting down server...")
 	close(stopSessionCleanup)
 	close(stopMonitor)
+	heartbeat.Stop()
 
 	// Budget must outlast the 60s graceful world save window
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

@@ -7,16 +7,16 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/discohaus/discopanel/pkg/hub"
 	"github.com/discohaus/discopanel/pkg/minecraft"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
-const (
-	fabricMetaURL = "https://meta.fabricmc.net/v2"
-	quiltMetaURL  = "https://meta.quiltmc.org/v3"
-	paperFillURL  = "https://fill.papermc.io/v3"
-	purpurAPIURL  = "https://api.purpurmc.org/v2/purpur"
-)
+// Loader metadata bases, each upstream directly or the index prefix that fronts it
+func fabricMetaURL() string { return hub.Fabric() + "/v2" }
+func quiltMetaURL() string  { return hub.Quilt() + "/v3" }
+func paperFillURL() string  { return hub.Paper() + "/v3" }
+func purpurAPIURL() string  { return hub.Purpur() + "/v2/purpur" }
 
 // Downloads the Mojang server jar for the MC version
 func (p *Provisioner) installVanilla(ctx context.Context, server *v1.Server) (*Result, error) {
@@ -52,7 +52,7 @@ func (p *Provisioner) installFabric(ctx context.Context, server *v1.Server, load
 				Stable  bool   `json:"stable"`
 			} `json:"loader"`
 		}
-		if err := p.getJSON(ctx, fmt.Sprintf("%s/versions/loader/%s", fabricMetaURL, mc), &loaders); err != nil {
+		if err := p.getJSON(ctx, fmt.Sprintf("%s/versions/loader/%s", fabricMetaURL(), mc), &loaders); err != nil {
 			return nil, fmt.Errorf("failed to resolve Fabric loader versions: %w", err)
 		}
 		if len(loaders) == 0 {
@@ -73,7 +73,7 @@ func (p *Provisioner) installFabric(ctx context.Context, server *v1.Server, load
 		Version string `json:"version"`
 		Stable  bool   `json:"stable"`
 	}
-	if err := p.getJSON(ctx, fabricMetaURL+"/versions/installer", &installers); err != nil {
+	if err := p.getJSON(ctx, fabricMetaURL()+"/versions/installer", &installers); err != nil {
 		return nil, fmt.Errorf("failed to resolve Fabric installer versions: %w", err)
 	}
 	installerVersion := ""
@@ -91,7 +91,7 @@ func (p *Provisioner) installFabric(ctx context.Context, server *v1.Server, load
 	}
 
 	p.progress(server, "downloading Fabric server launcher (loader %s)...", loaderVersion)
-	launcherURL := fmt.Sprintf("%s/versions/loader/%s/%s/%s/server/jar", fabricMetaURL, mc, loaderVersion, installerVersion)
+	launcherURL := fmt.Sprintf("%s/versions/loader/%s/%s/%s/server/jar", fabricMetaURL(), mc, loaderVersion, installerVersion)
 	if err := p.download(ctx, launcherURL, joinData(server.DataPath, "fabric-server-launch.jar"), nil, nil, p.reporter(server, "fabric-server-launch.jar")); err != nil {
 		return nil, err
 	}
@@ -119,7 +119,7 @@ func (p *Provisioner) installQuilt(ctx context.Context, server *v1.Server, cfg *
 				Version string `json:"version"`
 			} `json:"loader"`
 		}
-		if err := p.getJSON(ctx, fmt.Sprintf("%s/versions/loader/%s", quiltMetaURL, mc), &loaders); err != nil {
+		if err := p.getJSON(ctx, fmt.Sprintf("%s/versions/loader/%s", quiltMetaURL(), mc), &loaders); err != nil {
 			return nil, fmt.Errorf("failed to resolve Quilt loader versions: %w", err)
 		}
 		if len(loaders) == 0 {
@@ -141,7 +141,7 @@ func (p *Provisioner) installQuilt(ctx context.Context, server *v1.Server, cfg *
 		Version string `json:"version"`
 		URL     string `json:"url"`
 	}
-	if err := p.getJSON(ctx, quiltMetaURL+"/versions/installer", &installers); err != nil {
+	if err := p.getJSON(ctx, quiltMetaURL()+"/versions/installer", &installers); err != nil {
 		return nil, fmt.Errorf("failed to resolve Quilt installer versions: %w", err)
 	}
 	if len(installers) == 0 {
@@ -180,7 +180,7 @@ func (p *Provisioner) installPaperMC(ctx context.Context, server *v1.Server, pro
 			} `json:"checksums"`
 		} `json:"downloads"`
 	}
-	buildURL := fmt.Sprintf("%s/projects/%s/versions/%s/builds/latest", paperFillURL, project, mc)
+	buildURL := fmt.Sprintf("%s/projects/%s/versions/%s/builds/latest", paperFillURL(), project, mc)
 	if err := p.getJSON(ctx, buildURL, &build); err != nil {
 		return nil, fmt.Errorf("failed to resolve %s build for MC %s (is this version supported?): %w", project, mc, err)
 	}
@@ -213,7 +213,7 @@ func (p *Provisioner) installPurpur(ctx context.Context, server *v1.Server) (*Re
 			Latest string `json:"latest"`
 		} `json:"builds"`
 	}
-	if err := p.getJSON(ctx, fmt.Sprintf("%s/%s", purpurAPIURL, mc), &versionInfo); err != nil {
+	if err := p.getJSON(ctx, fmt.Sprintf("%s/%s", purpurAPIURL(), mc), &versionInfo); err != nil {
 		return nil, fmt.Errorf("failed to resolve Purpur builds for MC %s (is this version supported?): %w", mc, err)
 	}
 	buildNum := versionInfo.Builds.Latest
@@ -226,7 +226,7 @@ func (p *Provisioner) installPurpur(ctx context.Context, server *v1.Server) (*Re
 		Result string `json:"result"`
 		MD5    string `json:"md5"`
 	}
-	if err := p.getJSON(ctx, fmt.Sprintf("%s/%s/%s", purpurAPIURL, mc, buildNum), &buildInfo); err != nil {
+	if err := p.getJSON(ctx, fmt.Sprintf("%s/%s/%s", purpurAPIURL(), mc, buildNum), &buildInfo); err != nil {
 		return nil, err
 	}
 	if buildInfo.Result != "SUCCESS" {
@@ -234,7 +234,7 @@ func (p *Provisioner) installPurpur(ctx context.Context, server *v1.Server) (*Re
 	}
 
 	p.progress(server, "downloading Purpur build %s for MC %s...", buildNum, mc)
-	if err := p.download(ctx, fmt.Sprintf("%s/%s/%s/download", purpurAPIURL, mc, buildNum),
+	if err := p.download(ctx, fmt.Sprintf("%s/%s/%s/download", purpurAPIURL(), mc, buildNum),
 		joinData(server.DataPath, "server.jar"), &checksum{algo: "md5", value: buildInfo.MD5}, nil, p.reporter(server, "server.jar")); err != nil {
 		return nil, err
 	}

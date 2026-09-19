@@ -9,13 +9,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/discohaus/discopanel/pkg/hub"
 	"github.com/discohaus/discopanel/pkg/indexers"
 )
 
-const (
-	// Uses the v2 manifest API
-	versionManifestV2URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
+// The v2 manifest: piston-meta.mojang.com directly, the index's /mojang/meta prefix
+func versionManifestURL() string {
+	return hub.MojangMeta() + "/mc/game/version_manifest_v2.json"
+}
 
+const (
 	// Cache for 1 hour
 	cacheDuration = time.Hour
 
@@ -26,8 +29,8 @@ const (
 	pistonFetchTimeout = 30 * time.Second
 )
 
-// Shared resilience client for piston-meta requests
-var pistonHTTP = indexers.NewHTTPClient("piston-meta.mojang.com", "", nil)
+// Shared resilience client for version manifest requests
+var pistonHTTP = indexers.NewHTTPClient("mojang-meta", "", nil)
 
 type VersionManifestV2 struct {
 	Latest   LatestVersions `json:"latest"`
@@ -96,7 +99,7 @@ func fetchVersionManifest() (*VersionManifestV2, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), pistonFetchTimeout)
 	defer cancel()
 	var manifest VersionManifestV2
-	if err := pistonHTTP.DoJSON(ctx, versionManifestV2URL, &manifest); err != nil {
+	if err := pistonHTTP.DoJSON(ctx, versionManifestURL(), &manifest); err != nil {
 		if stale != nil {
 			return stale, nil
 		}

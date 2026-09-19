@@ -33,8 +33,9 @@ type ListenerSocket struct {
 	stats   map[string]*RouteStats
 	statsMu sync.Mutex
 
-	intents *IntentTable
-	hub     *HubRuntime
+	intents  *IntentTable
+	hub      *HubRuntime
+	observer *EdgeObserver
 
 	gate   ServerGate
 	gateMu sync.RWMutex
@@ -64,10 +65,12 @@ func NewListenerSocket(cfg *Config) *ListenerSocket {
 		certs:                cfg.Certs,
 		intents:              cfg.Intents,
 		hub:                  cfg.Hub,
+		observer:             cfg.Observer,
 		ingressProxyProtocol: cfg.IngressProxyProtocol,
 		trustedProxies:       cfg.TrustedProxies,
 	}
 	s.httpLane = newHTTPLane(cfg.Logger, cfg.TrustedEdge, s.statsFor)
+	s.httpLane.observer = cfg.Observer
 	return s
 }
 

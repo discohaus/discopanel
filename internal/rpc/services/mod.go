@@ -15,6 +15,7 @@ import (
 	"github.com/discohaus/discopanel/internal/metrics"
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/files"
+	"github.com/discohaus/discopanel/pkg/hub"
 	"github.com/discohaus/discopanel/pkg/indexers/fuego"
 	"github.com/discohaus/discopanel/pkg/logger"
 	"github.com/discohaus/discopanel/pkg/minecraft"
@@ -175,7 +176,8 @@ func (s *ModService) applyCFNames(ctx context.Context, serverID, modsDir string,
 	if global, _, err := s.store.GetGlobalSettings(ctx); err == nil && global != nil && global.CfApiKey != nil {
 		apiKey = *global.CfApiKey
 	}
-	if apiKey == "" {
+	// Through the index the hub answers with its own key
+	if apiKey == "" && !hub.IndexEnabled() {
 		return
 	}
 

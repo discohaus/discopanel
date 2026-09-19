@@ -8,12 +8,14 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/discohaus/discopanel/pkg/hub"
 	"github.com/discohaus/discopanel/pkg/indexers"
 )
 
-const (
-	BaseURL = "https://api.modrinth.com/v2"
-)
+// Modrinth v2 API base: api.modrinth.com directly, the index's /modrinth prefix otherwise
+func BaseURL() string {
+	return hub.Modrinth() + "/v2"
+}
 
 type Client struct {
 	http *indexers.HTTPClient
@@ -199,7 +201,7 @@ func (c *Client) SearchProjects(ctx context.Context, query, projectType string, 
 	params.Set("limit", strconv.Itoa(limit))
 
 	var searchResp SearchResponse
-	if err := c.http.DoJSON(ctx, fmt.Sprintf("%s/search?%s", BaseURL, params.Encode()), &searchResp); err != nil {
+	if err := c.http.DoJSON(ctx, fmt.Sprintf("%s/search?%s", BaseURL(), params.Encode()), &searchResp); err != nil {
 		return nil, err
 	}
 
@@ -209,7 +211,7 @@ func (c *Client) SearchProjects(ctx context.Context, query, projectType string, 
 // Retrieves detailed info for one modpack
 func (c *Client) GetModpack(ctx context.Context, modpackID string) (*ProjectDetails, error) {
 	var project ProjectDetails
-	if err := c.http.DoJSON(ctx, fmt.Sprintf("%s/project/%s", BaseURL, modpackID), &project); err != nil {
+	if err := c.http.DoJSON(ctx, fmt.Sprintf("%s/project/%s", BaseURL(), modpackID), &project); err != nil {
 		return nil, err
 	}
 
@@ -230,7 +232,7 @@ func (c *Client) GetProjectVersionsFiltered(ctx context.Context, projectID strin
 		}
 	}
 
-	endpoint := fmt.Sprintf("%s/project/%s/version", BaseURL, projectID)
+	endpoint := fmt.Sprintf("%s/project/%s/version", BaseURL(), projectID)
 	if len(params) > 0 {
 		endpoint += "?" + params.Encode()
 	}
@@ -245,7 +247,7 @@ func (c *Client) GetProjectVersionsFiltered(ctx context.Context, projectID strin
 // Retrieves a single version by its ID
 func (c *Client) GetVersion(ctx context.Context, versionID string) (*Version, error) {
 	var version Version
-	if err := c.http.DoJSON(ctx, fmt.Sprintf("%s/version/%s", BaseURL, versionID), &version); err != nil {
+	if err := c.http.DoJSON(ctx, fmt.Sprintf("%s/version/%s", BaseURL(), versionID), &version); err != nil {
 		return nil, err
 	}
 	return &version, nil
