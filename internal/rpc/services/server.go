@@ -17,7 +17,6 @@ import (
 	"connectrpc.com/connect"
 	"github.com/discohaus/discopanel/internal/auth"
 	"github.com/discohaus/discopanel/internal/command"
-	cc "github.com/discohaus/discopanel/internal/command-completion"
 	storage "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/docker"
 	"github.com/discohaus/discopanel/internal/lifecycle"
@@ -62,7 +61,7 @@ type ServerService struct {
 	moduleManager    *module.Manager
 	bus              *events.Bus
 	uploadManager    *transfer.UploadManager
-	completion       *cc.Completion
+	completion       *command.Completion
 
 	// Encoded server icons cached by file identity
 	favicons minecraft.FaviconCache
@@ -159,7 +158,7 @@ func networkPortsEqual(a, b []*v1.NetworkPort) bool {
 }
 
 // NewServerService creates a new server service
-func NewServerService(store *storage.Store, docker *docker.Client, sender *command.Sender, config *config.Config, proxy *proxy.Manager, lifecycleManager *lifecycle.Manager, authManager *auth.Manager, logStreamer *logger.LogStreamer, metricsCollector *metrics.Collector, moduleManager *module.Manager, bus *events.Bus, uploadManager *transfer.UploadManager, completion *cc.Completion, rec *metrics.Recorder, log *logger.Logger) *ServerService {
+func NewServerService(store *storage.Store, docker *docker.Client, sender *command.Sender, config *config.Config, proxy *proxy.Manager, lifecycleManager *lifecycle.Manager, authManager *auth.Manager, logStreamer *logger.LogStreamer, metricsCollector *metrics.Collector, moduleManager *module.Manager, bus *events.Bus, uploadManager *transfer.UploadManager, completion *command.Completion, rec *metrics.Recorder, log *logger.Logger) *ServerService {
 	return &ServerService{
 		store:            store,
 		docker:           docker,

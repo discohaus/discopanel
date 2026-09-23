@@ -308,7 +308,7 @@ class WebSocketClient {
 		}
 	}
 
-	private send(data: Uint8Array): boolean {
+	private send(data: Uint8Array<ArrayBuffer>): boolean {
 		if (this.socket?.readyState !== WebSocket.OPEN) {
 			console.warn('[WS] Cannot send, socket not open');
 			return false;

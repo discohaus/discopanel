@@ -10,7 +10,6 @@ import (
 
 	"github.com/discohaus/discopanel/internal/auth"
 	"github.com/discohaus/discopanel/internal/command"
-	cc "github.com/discohaus/discopanel/internal/command-completion"
 	storage "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/docker"
 	"github.com/discohaus/discopanel/internal/metrics"
@@ -51,7 +50,7 @@ type Hub struct {
 	sender      *command.Sender
 	metrics     *metrics.Collector
 	rec         *metrics.Recorder
-	completion  *cc.Completion
+	completion  *command.Completion
 
 	upgrader websocket.Upgrader
 
@@ -84,7 +83,7 @@ type Client struct {
 }
 
 // Creates a new WebSocket hub
-func NewHub(logStreamer *logger.LogStreamer, authManager *auth.Manager, enforcer *rbac.Enforcer, store *storage.Store, docker *docker.Client, sender *command.Sender, metricsCollector *metrics.Collector, bus *events.Bus, rec *metrics.Recorder, log *logger.Logger, completion *cc.Completion) *Hub {
+func NewHub(logStreamer *logger.LogStreamer, authManager *auth.Manager, enforcer *rbac.Enforcer, store *storage.Store, docker *docker.Client, sender *command.Sender, metricsCollector *metrics.Collector, bus *events.Bus, rec *metrics.Recorder, log *logger.Logger, completion *command.Completion) *Hub {
 	return &Hub{
 		logStreamer: logStreamer,
 		authManager: authManager,

@@ -11,7 +11,6 @@ import (
 	"connectrpc.com/grpcreflect"
 	"github.com/discohaus/discopanel/internal/auth"
 	"github.com/discohaus/discopanel/internal/command"
-	cc "github.com/discohaus/discopanel/internal/command-completion"
 	storage "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/diagnostics"
 	"github.com/discohaus/discopanel/internal/docker"
@@ -63,7 +62,7 @@ type Server struct {
 	agentHub         *metrics.Hub
 	uploadManager    *transfer.UploadManager
 	downloadManager  *transfer.DownloadManager
-	completion       *cc.Completion
+	completion       *command.Completion
 	wsHub            *ws.Hub
 	diagnostics      *diagnostics.Runner
 	telemetry        *telemetry.Sender
@@ -108,7 +107,7 @@ func NewServer(store *storage.Store, docker *docker.Client, sender *command.Send
 	downloadManager := transfer.NewDownloadManager(cfg.Storage.TempDir, uploadTTL, log)
 
 	// Initialize single global command completion engine manager
-	completion := cc.NewCompletion(log, store, sender, metricsCollector, bus)
+	completion := command.NewCompletion(log, store, sender, metricsCollector, bus)
 
 	// Initialize WebSocket hub
 	wsHub := ws.NewHub(logStreamer, authManager, enforcer, store, docker, sender, metricsCollector, bus, rec, log, completion)
