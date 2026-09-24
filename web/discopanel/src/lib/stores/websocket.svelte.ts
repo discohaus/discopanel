@@ -11,11 +11,13 @@ import {
 	SubscribeMessageSchema,
 	UnsubscribeMessageSchema,
 	CommandMessageSchema,
+	CommandCompletionsMessageSchema,
 	type WebSocketServerMessage,
 	type LogsMessage,
 	type LogMessage,
 	type MetricsMessage,
-	type CommandResultMessage
+	type CommandResultMessage,
+	type CommandCompletionsResultMessage
 } from '$lib/proto/discopanel/v1/websocket_pb';
 import { authStore } from '$lib/stores/auth';
 
@@ -30,6 +32,7 @@ type MessageHandler = (message: WebSocketServerMessage) => void;
 type LogHandler = (serverId: string, logs: LogEntry[]) => void;
 type LogEntryHandler = (serverId: string, logs: LogEntry[]) => void;
 type CommandResultHandler = (result: CommandResultMessage) => void;
+type CommandCompletionsResultHandler = (result: CommandCompletionsResultMessage) => void;
 type MetricsHandler = (serverId: string, sample: MetricsSample) => void;
 
 class WebSocketClient {
@@ -69,6 +72,7 @@ class WebSocketClient {
 	private logHandlers = new Set<LogHandler>();
 	private logEntryHandlers = new Set<LogEntryHandler>();
 	private commandResultHandlers = new Set<CommandResultHandler>();
+	private commandCompletionsResultHandlers = new Set<CommandCompletionsResultHandler>();
 	private metricsHandlers = new Set<MetricsHandler>();
 
 	// Active subscriptions (serverId -> tail)
@@ -270,6 +274,13 @@ class WebSocketClient {
 					}
 					break;
 
+				case WSMessageType.WS_MESSAGE_TYPE_COMMAND_COMPLETIONS_RESULT:
+					if (msg.payload.case === 'commandCompletionsResult') {
+						const result = msg.payload.value as CommandCompletionsResultMessage;
+						this.commandCompletionsResultHandlers.forEach((handler) => handler(result));
+					}
+					break;
+
 				case WSMessageType.WS_MESSAGE_TYPE_METRICS:
 					if (msg.payload.case === 'metrics') {
 						const metricsMsg = msg.payload.value as MetricsMessage;
@@ -297,7 +308,7 @@ class WebSocketClient {
 		}
 	}
 
-	private send(data: Uint8Array): boolean {
+	private send(data: Uint8Array<ArrayBuffer>): boolean {
 		if (this.socket?.readyState !== WebSocket.OPEN) {
 			console.warn('[WS] Cannot send, socket not open');
 			return false;
@@ -416,6 +427,21 @@ class WebSocketClient {
 		this.send(toBinary(WebSocketClientMessageSchema, msg));
 	}
 
+	sendCommandCompletions(serverId: string, command: string): boolean {
+		if (this.state.connectionState !== 'authenticated') {
+			return false;
+		}
+
+		const msg = create(WebSocketClientMessageSchema, {
+			type: WSMessageType.WS_MESSAGE_TYPE_COMMAND_COMPLETIONS,
+			payload: {
+				case: 'commandCompletions',
+				value: create(CommandCompletionsMessageSchema, { serverId, command })
+			}
+		});
+		return this.send(toBinary(WebSocketClientMessageSchema, msg));
+	}
+
 	private sendPing(): void {
 		if (
 			this.state.connectionState !== 'authenticated' &&
@@ -473,6 +499,11 @@ class WebSocketClient {
 	onCommandResult(handler: CommandResultHandler): () => void {
 		this.commandResultHandlers.add(handler);
 		return () => this.commandResultHandlers.delete(handler);
+	}
+
+	onCommandCompletionsResult(handler: CommandCompletionsResultHandler): () => void {
+		this.commandCompletionsResultHandlers.add(handler);
+		return () => this.commandCompletionsResultHandlers.delete(handler);
 	}
 
 	onMetrics(handler: MetricsHandler): () => void {

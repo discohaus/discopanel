@@ -62,6 +62,7 @@ type Server struct {
 	agentHub         *metrics.Hub
 	uploadManager    *transfer.UploadManager
 	downloadManager  *transfer.DownloadManager
+	completion       *command.Completion
 	wsHub            *ws.Hub
 	diagnostics      *diagnostics.Runner
 	telemetry        *telemetry.Sender
@@ -105,8 +106,11 @@ func NewServer(store *storage.Store, docker *docker.Client, sender *command.Send
 	// Initialize download manager
 	downloadManager := transfer.NewDownloadManager(cfg.Storage.TempDir, uploadTTL, log)
 
+	// Initialize single global command completion engine manager
+	completion := command.NewCompletion(log, store, sender, metricsCollector, bus)
+
 	// Initialize WebSocket hub
-	wsHub := ws.NewHub(logStreamer, authManager, enforcer, store, docker, sender, metricsCollector, rec, log)
+	wsHub := ws.NewHub(logStreamer, authManager, enforcer, store, docker, sender, metricsCollector, bus, rec, log, completion)
 	go wsHub.Run()
 
 	// Self checks and release probes, started by main once serving
@@ -136,6 +140,7 @@ func NewServer(store *storage.Store, docker *docker.Client, sender *command.Send
 		agentHub:         agentHub,
 		uploadManager:    uploadManager,
 		downloadManager:  downloadManager,
+		completion:       completion,
 		wsHub:            wsHub,
 		diagnostics:      diag,
 		telemetry:        heartbeat,
@@ -223,7 +228,7 @@ func (s *Server) registerServices(mux *http.ServeMux, opts []connect.HandlerOpti
 	modService := services.NewModService(s.store, s.docker, s.config, s.uploadManager, s.rec, s.log)
 	modpackService := services.NewModpackService(s.store, s.config, s.uploadManager, s.log)
 	proxyService := services.NewProxyService(s.store, s.docker, s.proxyManager, s.moduleManager, s.config, s.rec, s.log)
-	serverService := services.NewServerService(s.store, s.docker, s.sender, s.config, s.proxyManager, s.lifecycle, s.authManager, s.logStreamer, s.metricsCollector, s.moduleManager, s.bus, s.uploadManager, s.rec, s.log)
+	serverService := services.NewServerService(s.store, s.docker, s.sender, s.config, s.proxyManager, s.lifecycle, s.authManager, s.logStreamer, s.metricsCollector, s.moduleManager, s.bus, s.uploadManager, s.completion, s.rec, s.log)
 	supportService := services.NewSupportService(s.store, s.docker, s.config, s.diagnostics, s.telemetry, s.log)
 	taskService := services.NewTaskService(s.store, s.scheduler, s.rec, s.log)
 	userService := services.NewUserService(s.store, s.authManager, s.log)

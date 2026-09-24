@@ -1,4 +1,4 @@
-// Parses server console lines into player events
+// Parses console output and predicts console commands
 package mcconsole
 
 import (
@@ -11,21 +11,15 @@ import (
 	agentv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/agent/v1"
 )
 
-// Bracketed prefix groups every modern server prints
-var logPrefixPattern = regexp.MustCompile(`^(?:\[[^\]]*\] ?)+: `)
-
-// Dated prefix beta era servers print
-var legacyPrefixPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[[A-Z]+\] `)
-
 var (
-	uuidPattern = regexp.MustCompile(`^UUID of player (.{1,48}?) is ([0-9a-fA-F-]{32,36})$`)
-
-	loginPattern = regexp.MustCompile(`^(.{1,48}?) ?\[/[^\]]+\] logged in with entity id \d+`)
-
-	disconnectPattern = regexp.MustCompile(`^(.{1,48}?) lost connection: `)
-
-	chatPattern        = regexp.MustCompile(`^(?:\[Not Secure\] )?<([^>]{1,48})> (.*)$`)
-	advancementPattern = regexp.MustCompile(`^(.{1,48}?) has (?:made the advancement|reached the goal|completed the challenge) \[(.+)\]$`)
+	logPrefixPattern    = regexp.MustCompile(`^(?:\[[^\]]*\] ?)+: `)
+	legacyPrefixPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[[A-Z]+\] `)
+	uuidPattern         = regexp.MustCompile(`^UUID of player (.{1,48}?) is ([0-9a-fA-F-]{32,36})$`)
+	loginPattern        = regexp.MustCompile(`^(.{1,48}?) ?\[/[^\]]+\] logged in with entity id \d+`)
+	disconnectPattern   = regexp.MustCompile(`^(.{1,48}?) lost connection: `)
+	chatPattern         = regexp.MustCompile(`^(?:\[Not Secure\] )?<([^>]{1,48})> (.*)$`)
+	advancementPattern  = regexp.MustCompile(`^(.{1,48}?) has (?:made the advancement|reached the goal|completed the challenge) \[(.+)\]$`)
+	minecraftColorRegex = regexp.MustCompile(`(?i)[§&][0-9a-fk-or]`)
 )
 
 // Death message stems after the victim name
@@ -56,6 +50,11 @@ func StripLogPrefix(line string) (string, bool) {
 		return line[len(prefix):], true
 	}
 	return "", false
+}
+
+// Removes all Minecraft color codes and formatting from a string
+func StripMinecraftColors(input string) string {
+	return minecraftColorRegex.ReplaceAllString(input, "")
 }
 
 // One player event parsed out of console output
