@@ -2,79 +2,224 @@ package metrics
 
 import (
 	"context"
-	"maps"
-	"strings"
+	"errors"
+	"io/fs"
+	"slices"
 	"sync"
 	"time"
 
-	"github.com/nickheyer/discopanel/internal/command"
-	"github.com/nickheyer/discopanel/internal/config"
-	storage "github.com/nickheyer/discopanel/internal/db"
-	"github.com/nickheyer/discopanel/internal/docker"
-	"github.com/nickheyer/discopanel/internal/events"
-	"github.com/nickheyer/discopanel/internal/minecraft"
-	"github.com/nickheyer/discopanel/internal/proxy"
-	"github.com/nickheyer/discopanel/pkg/files"
-	"github.com/nickheyer/discopanel/pkg/logger"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	storage "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/internal/docker"
+	"github.com/discohaus/discopanel/pkg/config"
+	"github.com/discohaus/discopanel/pkg/events"
+	"github.com/discohaus/discopanel/pkg/files"
+	"github.com/discohaus/discopanel/pkg/logger"
+	"github.com/discohaus/discopanel/pkg/minecraft"
+	agentv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/agent/v1"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type ServerMetrics struct {
 	ServerID      string
-	CPUPercent    float64
+	CpuPercent    float64
+	CpuCount      int
 	MemoryUsage   float64 // MB
-	DiskUsage     int64   // bytes (total server data)
-	DiskTotal     int64   // bytes
-	WorldSize     int64   // bytes (world directory only)
+	DiskUsage     int64   // Bytes (total server data)
+	DiskTotal     int64   // Bytes (volume total)
+	DiskUsed      int64   // Bytes (volume used, all data)
+	WorldSize     int64   // Bytes (world directory only)
 	PlayersOnline int
-	TPS           float64
+	Tps           float64
 	LastUpdated   time.Time
 
 	// SLP fields
-	SLPAvailable    bool
-	SLPLatencyMs    int64
-	MOTD            string
+	SlpAvailable    bool
+	SlpLatencyMs    int64
+	Motd            string
 	ServerVersion   string
 	ProtocolVersion int
 	PlayerSample    []string
 	MaxPlayers      int
-	Favicon         string // Base64 PNG (data:image/png;base64,...)
 	SLPLastUpdated  time.Time
+
+	// Agent-sourced fields, take precedence over SLP when fresh
+	AgentConnected     bool
+	AgentJvmActive     bool      // Javaagent is feeding JVM/tick telemetry
+	AgentReady         bool      // Agent reported server ready this run
+	AgentTickUpdated   time.Time // Freshness of TPS/Mspt below
+	AgentRosterUpdated time.Time // Freshness of PlayerSample/PlayersOnline
+	AgentProcUpdated   time.Time // Freshness of java process attribution below
+	Mspt               float64   // Mean ms per tick
+	MsptMax            float64   // Worst tick in the sample window
+	HeapUsedMb         float64
+	HeapMaxMb          float64
+	ThreadCount        int
+	ClassCount         int
+	CpuQuotaCores      float64 // Cgroup CPU quota (0 = unlimited)
+	CpuThrottlePercent float64 // Share of CFS periods throttled (0-100)
+	GCPauseCount       int64   // Pauses in the last sample window
+	GCPauseTotalMs     float64
+	GCPauseMaxMs       float64
+	GCLogWindowAt      time.Time // Last gc.log sourced window arrival
+	StartupSeconds     float64
+	HostTHPMode        string // Host transparent hugepage mode from the runtime hello
+	PSIAvailable       bool   // Kernel exposes pressure stall info for the cgroup
+	PSICpuSome         float64
+	PSIMemSome         float64
+	PSIMemFull         float64
+	PSIIoSome          float64
+
+	// Last process exit reported by the agent (crash forensics)
+	LastExitCode       int
+	LastExitCrashed    bool
+	LastExitOomKilled  bool
+	LastExitBootFailed bool // Boot died and the runtime ended the hung JVM
+	LastExitWasReady   bool // Server reached ready before this exit
+	LastExitedAt       time.Time
+	LastExitExcerpt    string              // Crash report head for display
+	LastExitFatal      *agentv1.FatalError // Structured diagnosis from the runtime
+
+	// Live proxied connection count from the routing layer
+	ProxyActiveConns int64
+
+	// Data dir gone, disk sampling waits for the next start
+	DataPathMissing bool
+}
+
+// Renders the sampled subset as one telemetry point
+func (m *ServerMetrics) Sample(serverID string) *v1.MetricsSample {
+	// Stale heap and GC without a live agent must not report
+	var heapUsed float64
+	var gcCount int64
+	var gcTotalMs, gcMaxMs float64
+	if m.AgentConnected {
+		heapUsed = m.HeapUsedMb
+		gcCount, gcTotalMs, gcMaxMs = m.GCPauseCount, m.GCPauseTotalMs, m.GCPauseMaxMs
+	}
+	return &v1.MetricsSample{
+		ServerId:         serverID,
+		Timestamp:        timestamppb.Now(),
+		Tps:              m.Tps,
+		Mspt:             m.Mspt,
+		Players:          int32(m.PlayersOnline),
+		CpuPercent:       m.CpuPercent,
+		MemoryMb:         m.MemoryUsage,
+		HeapUsedMb:       heapUsed,
+		DiskBytes:        m.DiskUsage,
+		ProxyActiveConns: m.ProxyActiveConns,
+		GcPauseCount:     gcCount,
+		GcPauseTotalMs:   gcTotalMs,
+		GcPauseMaxMs:     gcMaxMs,
+	}
+}
+
+// Copies the metrics with slices, safe outside the lock
+func (m *ServerMetrics) snapshot() *ServerMetrics {
+	if m == nil {
+		return nil
+	}
+	cp := *m
+	cp.PlayerSample = slices.Clone(m.PlayerSample)
+	return &cp
+}
+
+// Cached usage sample for one module container
+type ModuleStats struct {
+	CpuPercent  float64
+	MemoryUsage float64
+	LastUpdated time.Time
+}
+
+// Agent process attribution younger than this beats docker stats
+const agentProcFreshFor = 45 * time.Second
+
+// Reports whether agent roster is recent enough to be authoritative
+func (m *ServerMetrics) agentRosterFresh() bool {
+	return m != nil && m.AgentConnected && time.Since(m.AgentRosterUpdated) < 90*time.Second
+}
+
+// Reports whether a live agent vouches for server health
+func (m *ServerMetrics) agentHealthProof() bool {
+	return m != nil && m.AgentConnected && m.AgentReady
 }
 
 // Configuration for metrics collector
 type CollectorConfig struct {
-	StatsInterval time.Duration // default 5s
-	RCONInterval  time.Duration // default 10s
-	DiskInterval  time.Duration // default 60s
-	SLPInterval   time.Duration // default 15s
-	SLPTimeout    time.Duration // default 5s
-	SLPEnabled    bool          // default true
+	StatsInterval   time.Duration // Default 5s
+	EventsInterval  time.Duration // Default 10s
+	DiskInterval    time.Duration // Default 60s
+	SLPInterval     time.Duration // Default 15s
+	SLPTimeout      time.Duration // Default 5s
+	SLPEnabled      bool          // Default true
+	HistoryInterval time.Duration // Default 30s
+
+	// Panel-side health, SLP is the source, replaces in-container checks
+	HealthStartupGrace  time.Duration // Starting to unhealthy without a ping, default 15m
+	HealthFailThreshold int           // Healthy to unhealthy after failed pings, default 3
 }
 
 // Get default collector configuration
 func DefaultConfig() CollectorConfig {
 	return CollectorConfig{
-		StatsInterval: 5 * time.Second,
-		RCONInterval:  10 * time.Second,
-		DiskInterval:  60 * time.Second,
-		SLPInterval:   15 * time.Second,
-		SLPTimeout:    5 * time.Second,
-		SLPEnabled:    true,
+		StatsInterval:       5 * time.Second,
+		EventsInterval:      10 * time.Second,
+		DiskInterval:        60 * time.Second,
+		SLPInterval:         15 * time.Second,
+		SLPTimeout:          5 * time.Second,
+		SLPEnabled:          true,
+		HistoryInterval:     30 * time.Second,
+		HealthStartupGrace:  15 * time.Minute,
+		HealthFailThreshold: 3,
 	}
+}
+
+// Fills unset config fields with their defaults
+func (cc CollectorConfig) withDefaults() CollectorConfig {
+	def := DefaultConfig()
+	if cc.StatsInterval <= 0 {
+		cc.StatsInterval = def.StatsInterval
+	}
+	if cc.EventsInterval <= 0 {
+		cc.EventsInterval = def.EventsInterval
+	}
+	if cc.DiskInterval <= 0 {
+		cc.DiskInterval = def.DiskInterval
+	}
+	if cc.SLPInterval <= 0 {
+		cc.SLPInterval = def.SLPInterval
+	}
+	if cc.SLPTimeout <= 0 {
+		cc.SLPTimeout = def.SLPTimeout
+	}
+	if cc.HistoryInterval <= 0 {
+		cc.HistoryInterval = def.HistoryInterval
+	}
+	if cc.HealthStartupGrace <= 0 {
+		cc.HealthStartupGrace = def.HealthStartupGrace
+	}
+	if cc.HealthFailThreshold <= 0 {
+		cc.HealthFailThreshold = def.HealthFailThreshold
+	}
+	return cc
+}
+
+// Tracks SLP results for one container run
+type containerHealth struct {
+	startedAt        time.Time
+	everHealthy      bool
+	consecutiveFails int
 }
 
 // Snapshot of a servers derived lifecycle state
 type lifecycleState struct {
-	healthy bool            // last observed docker health (StatusRunning)
-	players map[string]bool // set of online player names - nil until first sampled
+	healthy bool // Last observed docker health (StatusRunning)
 }
 
 // Collects server metrics in the background
 type Collector struct {
 	store  *storage.Store
 	docker *docker.Client
-	sender *command.Sender
 	config *config.Config
 	log    *logger.Logger
 	bus    *events.Bus
@@ -86,6 +231,22 @@ type Collector struct {
 	lifecycle   map[string]lifecycleState
 	lifecycleMu sync.Mutex
 
+	// Per-container SLP health records (the panel-side health source)
+	health   map[string]*containerHealth
+	healthMu sync.Mutex
+
+	// Containers owned by minecraft servers, modules stay out
+	serverContainers   map[string]bool
+	serverContainersMu sync.Mutex
+
+	// Cached module usage samples keyed by module id
+	moduleStats   map[string]*ModuleStats
+	moduleStatsMu sync.RWMutex
+
+	// Proxy counter totals feeding per-window history deltas
+	proxyTraffic    func() map[string]*v1.ProxyRoute
+	lastProxyTotals map[string]*v1.ProxyRoute
+
 	running  bool
 	stopChan chan struct{}
 	wg       sync.WaitGroup
@@ -93,27 +254,30 @@ type Collector struct {
 	collectorConfig CollectorConfig
 }
 
+// Wires the proxy counter source after construction
+func (c *Collector) SetProxyTrafficSource(fn func() map[string]*v1.ProxyRoute) {
+	c.proxyTraffic = fn
+}
+
 // Creates a new metrics collector
-func NewCollector(store *storage.Store, docker *docker.Client, sender *command.Sender, cfg *config.Config, bus *events.Bus, log *logger.Logger, collectorCfg ...CollectorConfig) *Collector {
-	cc := DefaultConfig()
-	if len(collectorCfg) > 0 {
-		cc = collectorCfg[0]
-	}
+func NewCollector(store *storage.Store, docker *docker.Client, cfg *config.Config, bus *events.Bus, log *logger.Logger, collectorCfg CollectorConfig) *Collector {
+	cc := collectorCfg.withDefaults()
 
 	return &Collector{
 		store:           store,
 		docker:          docker,
-		sender:          sender,
 		config:          cfg,
 		bus:             bus,
 		log:             log,
 		metrics:         make(map[string]*ServerMetrics),
 		lifecycle:       make(map[string]lifecycleState),
+		health:          make(map[string]*containerHealth),
+		moduleStats:     make(map[string]*ModuleStats),
 		collectorConfig: cc,
 	}
 }
 
-// Start background metrics collection
+// Starts background metrics collection
 func (c *Collector) Start() error {
 	c.mu.Lock()
 	if c.running {
@@ -126,24 +290,54 @@ func (c *Collector) Start() error {
 
 	c.log.Info("Starting metrics collector")
 
+	initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	c.refreshServerContainers(initCtx)
+	initCancel()
+
+	// Disk samples refresh on start and stop too
+	if c.bus != nil {
+		c.bus.Subscribe(c.onLifecycleEvent)
+	}
+
 	// Start collection goroutines
-	loopCount := 4 // stats, rcon, disk, lifecycle-events
+	loopCount := 4 // Stats, disk, lifecycle-events, history
 	if c.collectorConfig.SLPEnabled {
 		loopCount += 1
 	}
 	c.wg.Add(loopCount)
-	go c.collectDockerStatsLoop()
-	go c.collectRCONDataLoop()
-	go c.collectDiskUsageLoop()
-	go c.collectLifecycleEventsLoop()
+	go c.loop(c.collectorConfig.StatsInterval, c.collectDockerStats)
+	go c.loop(c.collectorConfig.DiskInterval, c.collectDiskUsage)
+	eventsInterval := c.collectorConfig.EventsInterval
+	if eventsInterval <= 0 {
+		eventsInterval = 10 * time.Second
+	}
+	// First pass seeds baselines so running servers stay quiet
+	go c.loop(eventsInterval, c.detectLifecycleEvents)
+	go c.collectHistoryLoop()
 	if c.collectorConfig.SLPEnabled {
-		go c.collectSLPDataLoop()
+		go c.loop(c.collectorConfig.SLPInterval, c.collectSLPData)
 	}
 
 	return nil
 }
 
-// Stop background metrics collection
+// Runs fn now then on every tick until stop
+func (c *Collector) loop(interval time.Duration, fn func()) {
+	defer c.wg.Done()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	fn()
+	for {
+		select {
+		case <-ticker.C:
+			fn()
+		case <-c.stopChan:
+			return
+		}
+	}
+}
+
+// Stops background metrics collection
 func (c *Collector) Stop() {
 	c.mu.Lock()
 	if !c.running {
@@ -158,81 +352,62 @@ func (c *Collector) Stop() {
 	c.log.Info("Metrics collector stopped")
 }
 
-// Get metrics for a specific server
+// Returns an isolated metrics snapshot, nil for unknown servers
 func (c *Collector) GetMetrics(serverID string) *ServerMetrics {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.metrics[serverID]
+	return c.metrics[serverID].snapshot()
 }
 
-// Gets a copy of all metrics
+// Returns isolated snapshots of every server's metrics
 func (c *Collector) GetAllMetrics() map[string]*ServerMetrics {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	result := make(map[string]*ServerMetrics, len(c.metrics))
-	maps.Copy(result, c.metrics)
+	for id, m := range c.metrics {
+		result[id] = m.snapshot()
+	}
 	return result
 }
 
-// Collects Docker container stats periodically
-func (c *Collector) collectDockerStatsLoop() {
-	defer c.wg.Done()
-
-	ticker := time.NewTicker(c.collectorConfig.StatsInterval)
-	defer ticker.Stop()
-
-	// Collect immediately on start
-	c.collectDockerStats()
-
-	for {
-		select {
-		case <-ticker.C:
-			c.collectDockerStats()
-		case <-c.stopChan:
-			return
-		}
+// Returns cached module usage, nil when unknown
+func (c *Collector) GetModuleStats(moduleID string) *ModuleStats {
+	c.moduleStatsMu.RLock()
+	defer c.moduleStatsMu.RUnlock()
+	s, ok := c.moduleStats[moduleID]
+	if !ok {
+		return nil
 	}
+	cp := *s
+	return &cp
 }
 
-// Collects RCON data (player count, TPS) periodically
-func (c *Collector) collectRCONDataLoop() {
-	defer c.wg.Done()
-
-	ticker := time.NewTicker(c.collectorConfig.RCONInterval)
-	defer ticker.Stop()
-
-	// Collect immediately on start
-	c.collectRCONData()
-
-	for {
-		select {
-		case <-ticker.C:
-			c.collectRCONData()
-		case <-c.stopChan:
-			return
-		}
+// Rebuilds the server container set from the store
+func (c *Collector) refreshServerContainers(ctx context.Context) {
+	servers, err := c.store.ListServers(ctx)
+	if err != nil {
+		return
 	}
+	c.setServerContainers(servers)
 }
 
-// Collects disk usage periodically
-func (c *Collector) collectDiskUsageLoop() {
-	defer c.wg.Done()
-
-	ticker := time.NewTicker(c.collectorConfig.DiskInterval)
-	defer ticker.Stop()
-
-	// Collect immediately on start
-	c.collectDiskUsage()
-
-	for {
-		select {
-		case <-ticker.C:
-			c.collectDiskUsage()
-		case <-c.stopChan:
-			return
+func (c *Collector) setServerContainers(servers []*v1.Server) {
+	ids := make(map[string]bool, len(servers))
+	for _, server := range servers {
+		if server.ContainerId != "" {
+			ids[server.ContainerId] = true
 		}
 	}
+	c.serverContainersMu.Lock()
+	c.serverContainers = ids
+	c.serverContainersMu.Unlock()
+}
+
+func (c *Collector) isServerContainer(containerID string) bool {
+	c.serverContainersMu.Lock()
+	defer c.serverContainersMu.Unlock()
+	return c.serverContainers[containerID]
 }
 
 // Collects CPU and memory stats from Docker
@@ -245,94 +420,110 @@ func (c *Collector) collectDockerStats() {
 		c.log.Debug("Metrics collector: failed to list servers: %v", err)
 		return
 	}
+	c.setServerContainers(servers)
+
+	var traffic map[string]*v1.ProxyRoute
+	if c.proxyTraffic != nil {
+		traffic = c.proxyTraffic()
+	}
 
 	for _, server := range servers {
-		if server.ContainerID == "" {
+		if server.ContainerId == "" {
 			continue
 		}
 
-		// Check if server is running
-		status, err := c.docker.GetContainerStatus(ctx, server.ContainerID)
-		if err != nil || (status != storage.StatusRunning && status != storage.StatusUnhealthy) {
+		// Transient docker error keeps last sample
+		status, err := c.docker.GetContainerStatus(ctx, server.ContainerId)
+		if err != nil {
+			continue
+		}
+		// Stopped container clears stale usage and tick stats
+		if status != v1.ServerStatus_SERVER_STATUS_RUNNING && status != v1.ServerStatus_SERVER_STATUS_UNHEALTHY && status != v1.ServerStatus_SERVER_STATUS_STARTING {
+			c.updateMetrics(server.Id, func(m *ServerMetrics) {
+				m.CpuPercent = 0
+				m.MemoryUsage = 0
+				m.Tps = 0
+				m.Mspt = 0
+				m.MsptMax = 0
+				m.HeapUsedMb = 0
+				m.HeapMaxMb = 0
+				m.PlayersOnline = 0
+				m.PlayerSample = nil
+			})
+			continue
+		}
+
+		// Fresh agent attribution skips the stats round trip
+		if m := c.GetMetrics(server.Id); m != nil && time.Since(m.AgentProcUpdated) <= agentProcFreshFor {
+			c.updateMetrics(server.Id, func(m *ServerMetrics) {
+				m.ProxyActiveConns = traffic[server.Id].GetActiveConnections()
+				m.LastUpdated = time.Now()
+			})
 			continue
 		}
 
 		// Get container stats
-		stats, err := c.docker.GetContainerStats(ctx, server.ContainerID)
+		stats, err := c.docker.GetContainerStats(ctx, server.ContainerId)
 		if err != nil {
-			c.log.Debug("Metrics collector: failed to get stats for %s: %v", server.ID, err)
+			c.log.Debug("Metrics collector: failed to get stats for %s: %v", server.Id, err)
 			continue
 		}
 
-		c.updateMetrics(server.ID, func(m *ServerMetrics) {
-			m.CPUPercent = stats.CPUPercent
-			m.MemoryUsage = stats.MemoryUsage
+		c.updateMetrics(server.Id, func(m *ServerMetrics) {
+			// Recheck inside the lock, an agent sample may have landed
+			if time.Since(m.AgentProcUpdated) > agentProcFreshFor {
+				m.CpuPercent = stats.CpuPercent
+				m.MemoryUsage = stats.MemoryUsage
+			}
+			m.CpuCount = stats.CpuCount
+			m.ProxyActiveConns = traffic[server.Id].GetActiveConnections()
 			m.LastUpdated = time.Now()
 		})
 	}
+
+	c.collectModuleStats(ctx)
 }
 
-// Collects player count and TPS via RCON
-func (c *Collector) collectRCONData() {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	servers, err := c.store.ListServers(ctx)
+// Samples module container usage in parallel
+func (c *Collector) collectModuleStats(ctx context.Context) {
+	modules, err := c.store.ListModules(ctx)
 	if err != nil {
-		c.log.Debug("Metrics collector: failed to list servers: %v", err)
+		c.log.Debug("Metrics collector: failed to list modules: %v", err)
 		return
 	}
 
-	for _, server := range servers {
-		if server.ContainerID == "" {
+	fresh := make(map[string]*ModuleStats, len(modules))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, mod := range modules {
+		if mod.ContainerId == "" {
 			continue
 		}
-
-		// Check if server is running
-		status, err := c.docker.GetContainerStatus(ctx, server.ContainerID)
-		if err != nil || status != storage.StatusRunning {
-			continue
-		}
-
-		existingMetrics := c.GetMetrics(server.ID)
-		slpHasPlayerData := existingMetrics != nil &&
-			existingMetrics.SLPAvailable &&
-			time.Since(existingMetrics.SLPLastUpdated) < c.collectorConfig.SLPInterval*2
-
-		// Get player count and roster from RCON
-		if !slpHasPlayerData {
-			output, err := c.sender.SendCommand(ctx, server.ID, "list")
-			if err == nil && output != "" {
-				count, players := minecraft.ParsePlayerListFromOutput(output)
-				c.updateMetrics(server.ID, func(m *ServerMetrics) {
-					m.PlayersOnline = count
-					m.PlayerSample = players
-					m.LastUpdated = time.Now()
-				})
+		wg.Add(1)
+		go func(moduleID, containerID string) {
+			defer wg.Done()
+			status, err := c.docker.GetContainerStatus(ctx, containerID)
+			if err != nil || status != v1.ServerStatus_SERVER_STATUS_RUNNING {
+				return
 			}
-		}
-
-		// Get TPS if configured
-		if server.TPSCommand != "" {
-			for _, cmd := range strings.Split(server.TPSCommand, " ?? ") {
-				cmd = strings.TrimSpace(cmd)
-				if cmd == "" {
-					continue
-				}
-				output, err := c.sender.SendCommand(ctx, server.ID, cmd)
-				if err == nil && output != "" {
-					tps := minecraft.ParseTPSFromOutput(output)
-					if tps > 0 {
-						c.updateMetrics(server.ID, func(m *ServerMetrics) {
-							m.TPS = tps
-							m.LastUpdated = time.Now()
-						})
-						break
-					}
-				}
+			stats, err := c.docker.GetContainerStats(ctx, containerID)
+			if err != nil {
+				return
 			}
-		}
+			mu.Lock()
+			fresh[moduleID] = &ModuleStats{
+				CpuPercent:  stats.CpuPercent,
+				MemoryUsage: stats.MemoryUsage,
+				LastUpdated: time.Now(),
+			}
+			mu.Unlock()
+		}(mod.Id, mod.ContainerId)
 	}
+	wg.Wait()
+
+	c.moduleStatsMu.Lock()
+	c.moduleStats = fresh
+	c.moduleStatsMu.Unlock()
 }
 
 // Collects disk usage for server worlds
@@ -346,30 +537,48 @@ func (c *Collector) collectDiskUsage() {
 		return
 	}
 
-	// Get total disk space once
-	diskTotal, err := files.GetDiskSpace(c.config.Storage.DataDir)
-	if err != nil {
-		c.log.Debug("Metrics collector: failed to get disk space: %v", err)
-		diskTotal = 0
+	for _, server := range servers {
+		if c.dataPathMissing(server.Id) {
+			continue
+		}
+		c.sampleDiskUsage(server.Id, server.DataPath)
+	}
+}
+
+func (c *Collector) dataPathMissing(serverID string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	m := c.metrics[serverID]
+	return m != nil && m.DataPathMissing
+}
+
+// Samples one server data dir and its volume
+func (c *Collector) sampleDiskUsage(serverID, dataPath string) {
+	if dataPath == "" {
+		return
 	}
 
-	for _, server := range servers {
-		if server.DataPath == "" {
-			continue
-		}
+	diskTotal, diskUsed, err := files.GetDiskSpace(dataPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		c.log.Warn("Metrics collector: server %s data path %s is missing, disk sampling paused until next start", serverID, dataPath)
+		c.updateMetrics(serverID, func(m *ServerMetrics) {
+			m.DataPathMissing = true
+		})
+		return
+	}
+	if err != nil {
+		c.log.Debug("Metrics collector: failed to get disk space: %v", err)
+		diskTotal, diskUsed = 0, 0
+	}
 
-		totalSize, err := files.CalculateDirSize(server.DataPath)
-		if err != nil {
-			continue
-		}
+	totalSize, err := files.CalculateDirSize(dataPath)
+	if err != nil {
+		return
+	}
 
-		// Calculate world directory size, including dimension worlds
-		worldPaths, err := files.FindWorldDirs(server.DataPath)
-		if err != nil {
-			continue
-		}
-
-		var totalWorldSize int64
+	// A missing world means zero, other data still counts
+	var totalWorldSize int64
+	if worldPaths, err := files.FindWorldDirs(dataPath); err == nil {
 		for _, worldPath := range worldPaths {
 			size, err := files.CalculateDirSize(worldPath)
 			if err != nil {
@@ -377,14 +586,36 @@ func (c *Collector) collectDiskUsage() {
 			}
 			totalWorldSize += size
 		}
-
-		c.updateMetrics(server.ID, func(m *ServerMetrics) {
-			m.DiskUsage = totalSize
-			m.DiskTotal = diskTotal
-			m.WorldSize = totalWorldSize
-			m.LastUpdated = time.Now()
-		})
 	}
+
+	c.updateMetrics(serverID, func(m *ServerMetrics) {
+		m.DiskUsage = totalSize
+		m.DiskTotal = diskTotal
+		m.DiskUsed = diskUsed
+		m.WorldSize = totalWorldSize
+		m.DataPathMissing = false
+		m.LastUpdated = time.Now()
+	})
+}
+
+// Refreshes disk usage promptly after provisioning and world saves
+func (c *Collector) onLifecycleEvent(ctx context.Context, e events.Event) {
+	switch e.Type {
+	case v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_SERVER_START,
+		v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_SERVER_STOP,
+		v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_SERVER_RESTART:
+	default:
+		return
+	}
+	go func() {
+		lookupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		server, err := c.store.GetServer(lookupCtx, e.ServerId)
+		if err != nil {
+			return
+		}
+		c.sampleDiskUsage(server.Id, server.DataPath)
+	}()
 }
 
 // Updates metrics for a server
@@ -408,24 +639,84 @@ func (c *Collector) RemoveMetrics(serverID string) {
 	c.clearLifecycle(serverID)
 }
 
-// Collects SLP data
-func (c *Collector) collectSLPDataLoop() {
-	defer c.wg.Done()
+// Folds an SLP result into the container's health record
+func (c *Collector) recordHealth(containerID string, startedAt time.Time, ok bool) {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
 
-	ticker := time.NewTicker(c.collectorConfig.SLPInterval)
-	defer ticker.Stop()
-
-	// Collect on start
-	c.collectSLPData()
-
-	for {
-		select {
-		case <-ticker.C:
-			c.collectSLPData()
-		case <-c.stopChan:
-			return
-		}
+	h := c.health[containerID]
+	// A different StartedAt means the container restarted, reset it
+	if h == nil || !h.startedAt.Equal(startedAt) {
+		h = &containerHealth{startedAt: startedAt}
+		c.health[containerID] = h
 	}
+	if !ok {
+		h.consecutiveFails++
+		return
+	}
+	h.everHealthy = true
+	h.consecutiveFails = 0
+}
+
+func (c *Collector) clearHealth(containerID string) {
+	c.healthMu.Lock()
+	delete(c.health, containerID)
+	c.healthMu.Unlock()
+}
+
+// Implements docker.HealthChecker using the SLP ping record
+func (c *Collector) ContainerHealth(containerID string, startedAt time.Time) v1.ServerStatus {
+	// Module containers skip SLP health, docker state decides
+	if !c.isServerContainer(containerID) {
+		return v1.ServerStatus_SERVER_STATUS_UNSPECIFIED
+	}
+	c.healthMu.Lock()
+	h := c.health[containerID]
+	var record containerHealth
+	if h != nil {
+		record = *h
+	}
+	c.healthMu.Unlock()
+
+	grace := c.collectorConfig.HealthStartupGrace
+	threshold := c.collectorConfig.HealthFailThreshold
+
+	// No record yet, collector hasn't pinged since (re)start
+	if h == nil || !record.startedAt.Equal(startedAt) {
+		if time.Since(startedAt) < grace {
+			return v1.ServerStatus_SERVER_STATUS_STARTING
+		}
+		// Long-running container with no data assumes healthy until proven otherwise
+		return v1.ServerStatus_SERVER_STATUS_UNSPECIFIED
+	}
+
+	if record.everHealthy {
+		if record.consecutiveFails >= threshold {
+			return v1.ServerStatus_SERVER_STATUS_UNHEALTHY
+		}
+		return v1.ServerStatus_SERVER_STATUS_RUNNING
+	}
+
+	// Never answered a ping this run
+	if time.Since(startedAt) >= grace {
+		return v1.ServerStatus_SERVER_STATUS_UNHEALTHY
+	}
+	return v1.ServerStatus_SERVER_STATUS_STARTING
+}
+
+// Implements lifecycle.PlayerCounter from agent roster or fresh SLP
+func (c *Collector) PlayersOnline(serverID string) (int, bool) {
+	m := c.GetMetrics(serverID)
+	if m == nil {
+		return 0, false
+	}
+	if m.agentRosterFresh() {
+		return m.PlayersOnline, true
+	}
+	if m.SlpAvailable && time.Since(m.SLPLastUpdated) < 2*c.collectorConfig.SLPInterval {
+		return m.PlayersOnline, true
+	}
+	return 0, false
 }
 
 func (c *Collector) collectSLPData() {
@@ -440,86 +731,90 @@ func (c *Collector) collectSLPData() {
 
 	slpClient := minecraft.NewSLPClient(c.collectorConfig.SLPTimeout)
 
+	// Recreated containers leave stale health records behind
+	live := make(map[string]bool, len(servers))
 	for _, server := range servers {
-		if server.ContainerID == "" {
+		if server.ContainerId != "" {
+			live[server.ContainerId] = true
+		}
+	}
+	c.healthMu.Lock()
+	for id := range c.health {
+		if !live[id] {
+			delete(c.health, id)
+		}
+	}
+	c.healthMu.Unlock()
+
+	for _, server := range servers {
+		if server.ContainerId == "" {
 			continue
 		}
 
-		// Check if server is running
-		status, err := c.docker.GetContainerStatus(ctx, server.ContainerID)
-		if err != nil || status != storage.StatusRunning {
-			// Mark SLP as unavailable for no op
-			c.updateMetrics(server.ID, func(m *ServerMetrics) {
-				m.SLPAvailable = false
+		// Agent-vouched servers only need a slow Motd refresh
+		if m := c.GetMetrics(server.Id); m.agentHealthProof() && m.agentRosterFresh() &&
+			time.Since(m.SLPLastUpdated) < 4*c.collectorConfig.SLPInterval {
+			continue
+		}
+
+		// Pings raw containers, must not consult GetContainerStatus here
+		info, err := c.docker.GetContainerRunInfo(ctx, server.ContainerId)
+		if err != nil || !info.Running || info.Paused {
+			c.clearHealth(server.ContainerId)
+			c.updateMetrics(server.Id, func(m *ServerMetrics) {
+				m.SlpAvailable = false
 			})
 			continue
 		}
 
 		// Get container IP
-		containerIP, err := proxy.GetContainerIP(server.ContainerID, c.config.Docker.NetworkName)
+		containerIP, err := c.docker.ContainerIP(ctx, server.ContainerId)
 		if err != nil {
-			c.log.Debug("Metrics collector SLP: failed to get container IP for %s: %v", server.ID, err)
-			c.updateMetrics(server.ID, func(m *ServerMetrics) {
-				m.SLPAvailable = false
+			c.log.Debug("Metrics collector SLP: failed to get container IP for %s: %v", server.Id, err)
+			// A live ready agent session vouches when SLP cannot
+			c.recordHealth(server.ContainerId, info.StartedAt, c.GetMetrics(server.Id).agentHealthProof())
+			c.updateMetrics(server.Id, func(m *ServerMetrics) {
+				m.SlpAvailable = false
 			})
 			continue
 		}
 
 		// SLP ping w/ server version for protocol
 		slpCtx, slpCancel := context.WithTimeout(ctx, c.collectorConfig.SLPTimeout)
-		port := server.Port
-		if server.ProxyHostname != "" || port == 0 {
+		port := int(server.Port)
+		if len(server.ProxyHostnames) > 0 || port == 0 {
 			port = docker.DefaultMinecraftPort // Proxy listens on default port (inside container)
 		}
-		result, err := slpClient.Ping(slpCtx, containerIP, port, server.MCVersion)
+		result, err := slpClient.Ping(slpCtx, containerIP, port)
 		slpCancel()
 
 		if err != nil {
-			c.log.Debug("Metrics collector SLP: failed to ping %s (%s:%d): %v", server.ID, containerIP, port, err)
-			c.updateMetrics(server.ID, func(m *ServerMetrics) {
-				m.SLPAvailable = false
+			c.log.Debug("Metrics collector SLP: failed to ping %s (%s:%d): %v", server.Id, containerIP, port, err)
+			// Blocked SLP should not read unhealthy if agent vouches
+			c.recordHealth(server.ContainerId, info.StartedAt, c.GetMetrics(server.Id).agentHealthProof())
+			c.updateMetrics(server.Id, func(m *ServerMetrics) {
+				m.SlpAvailable = false
 			})
 			continue
 		}
 
-		// Update
-		c.updateMetrics(server.ID, func(m *ServerMetrics) {
-			m.SLPAvailable = true
-			m.SLPLatencyMs = result.LatencyMs
-			m.MOTD = result.MOTD
+		c.recordHealth(server.ContainerId, info.StartedAt, true)
+
+		// Fresh agent roster is authoritative, SLP must not clobber it
+		c.updateMetrics(server.Id, func(m *ServerMetrics) {
+			m.SlpAvailable = true
+			m.SlpLatencyMs = result.LatencyMs
+			m.Motd = result.Motd
 			m.ServerVersion = result.Version.Name
 			m.ProtocolVersion = result.Version.Protocol
-			m.PlayerSample = result.PlayerNames
+			if !m.agentRosterFresh() {
+				m.PlayerSample = result.PlayerNames
+				m.PlayersOnline = result.Players.Online
+			}
 			m.MaxPlayers = result.Players.Max
-			m.PlayersOnline = result.Players.Online
-			m.Favicon = result.Favicon
 			m.SLPLastUpdated = time.Now()
 			m.LastUpdated = time.Now()
 		})
-	}
-}
-
-// Derives lifecycle events (SERVER_HEALTHY, PLAYER_JOIN, PLAYER_LEAVE) from state and emits on event bus
-func (c *Collector) collectLifecycleEventsLoop() {
-	defer c.wg.Done()
-
-	interval := c.collectorConfig.RCONInterval
-	if interval <= 0 {
-		interval = 10 * time.Second
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	// Seed baselines on start so already-running servers don't emit on boot
-	c.detectLifecycleEvents()
-
-	for {
-		select {
-		case <-ticker.C:
-			c.detectLifecycleEvents()
-		case <-c.stopChan:
-			return
-		}
 	}
 }
 
@@ -539,93 +834,41 @@ func (c *Collector) detectLifecycleEvents() {
 	}
 
 	for _, server := range servers {
-		if server.ContainerID == "" {
-			c.clearLifecycle(server.ID)
+		if server.ContainerId == "" {
+			c.clearLifecycle(server.Id)
 			continue
 		}
 
-		status, err := c.docker.GetContainerStatus(ctx, server.ContainerID)
+		status, err := c.docker.GetContainerStatus(ctx, server.ContainerId)
 		if err != nil {
-			c.clearLifecycle(server.ID)
+			c.clearLifecycle(server.Id)
 			continue
 		}
 
-		// Container that is fully down forgets its baseline so a later restart reseeds clean
-		alive := status == storage.StatusRunning || status == storage.StatusUnhealthy || status == storage.StatusStarting
+		// Fully down containers forget baseline so restart reseeds clean
+		alive := status == v1.ServerStatus_SERVER_STATUS_RUNNING || status == v1.ServerStatus_SERVER_STATUS_UNHEALTHY || status == v1.ServerStatus_SERVER_STATUS_STARTING
 		if !alive {
-			c.clearLifecycle(server.ID)
+			c.clearLifecycle(server.Id)
 			continue
 		}
 
 		// "Healthy" == docker health check passing (StatusRunning)
-		healthy := status == storage.StatusRunning
+		healthy := status == v1.ServerStatus_SERVER_STATUS_RUNNING
 
-		prev, seen := c.getLifecycle(server.ID)
-		if !seen {
-			// First sighting while alive - establish baseline
-			c.setLifecycle(server.ID, lifecycleState{
-				healthy: healthy,
-				players: c.currentRoster(server.ID),
-			})
-			continue
+		prev, seen := c.getLifecycle(server.Id)
+		if seen && healthy && !prev.healthy {
+			c.emit(ctx, v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_SERVER_HEALTHY, server.Id, nil)
 		}
-
-		next := prev
-
-		// Health transition - not-healthy -> healthy (initial pass or recovery)
-		if healthy && !prev.healthy {
-			c.emit(ctx, v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_SERVER_HEALTHY, server.ID, nil)
-		}
-		next.healthy = healthy
-
-		// Player join/leave - diff the current roster
-		if healthy {
-			if roster := c.currentRoster(server.ID); roster != nil {
-				if prev.players != nil {
-					for name := range roster {
-						if !prev.players[name] {
-							c.emit(ctx, v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_PLAYER_JOIN, server.ID, map[string]any{"player": name})
-						}
-					}
-					for name := range prev.players {
-						if !roster[name] {
-							c.emit(ctx, v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_PLAYER_LEAVE, server.ID, map[string]any{"player": name})
-						}
-					}
-				}
-				next.players = roster
-			}
-			// roster == nil means the name set is momentarily unknown
-		}
-
-		c.setLifecycle(server.ID, next)
+		c.setLifecycle(server.Id, lifecycleState{healthy: healthy})
 	}
 }
 
-// Emits a derived lifecycle event on the bus, optionally carrying event data
-func (c *Collector) emit(ctx context.Context, t v1.TriggeredEventType, serverID string, data map[string]any) {
+// Emits a derived lifecycle event with optional data
+func (c *Collector) emit(ctx context.Context, t v1.TriggeredEventType, serverID string, data map[string]string) {
 	if c.bus == nil {
 		return
 	}
-	c.bus.Emit(ctx, events.Event{Type: t, ServerID: serverID, Data: data})
-}
-
-// Returns the set of online player names for a server from latest cached metrics
-func (c *Collector) currentRoster(serverID string) map[string]bool {
-	m := c.GetMetrics(serverID)
-	if m == nil {
-		return nil
-	}
-	if len(m.PlayerSample) < m.PlayersOnline {
-		return nil
-	}
-	set := make(map[string]bool, len(m.PlayerSample))
-	for _, name := range m.PlayerSample {
-		if name != "" {
-			set[name] = true
-		}
-	}
-	return set
+	c.bus.Emit(ctx, events.Event{Type: t, ServerId: serverID, Data: data})
 }
 
 func (c *Collector) getLifecycle(serverID string) (lifecycleState, bool) {

@@ -1,13 +1,26 @@
 ARG APP_VERSION=dev
 
-# Generate protobuf code using buf
-FROM bufbuild/buf:latest AS proto-builder
-WORKDIR /app
-COPY buf.yaml buf.gen.yaml buf.lock ./
-COPY proto/ ./proto/
-RUN mkdir -p web/discopanel/static pkg/proto web/discopanel/src/lib/proto && buf generate
+# Pins build stages to native platform so multi-arch skips QEMU
+ARG BUILDPLATFORM=linux/amd64
 
-FROM node:alpine AS frontend-builder
+# Generates proto code in-image matching make proto exactly
+FROM --platform=$BUILDPLATFORM golang:alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS proto-builder
+
+COPY --from=bufbuild/buf:1.71.0 /usr/local/bin/buf /usr/local/bin/buf
+
+WORKDIR /app
+COPY go.mod go.sum buf.yaml buf.gen.yaml buf.lock ./
+COPY proto/ ./proto/
+COPY scripts/diffsql/ ./scripts/diffsql/
+
+# Materializes options, generates code, injects tags, loads schema
+RUN mkdir -p web/discopanel/static pkg/proto web/discopanel/src/lib/proto internal/db \
+    && go tool protogorm -options proto \
+    && buf generate --exclude-path proto/protogorm \
+    && buf build -o - | go tool protogorm -support pkg/proto -store internal/db/store.gen.go:db -inject pkg/proto \
+    && go run ./scripts/diffsql -out internal/db/schema.sql
+
+FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-builder
 
 ARG APP_VERSION
 ENV APP_VERSION=${APP_VERSION}
@@ -18,12 +31,13 @@ COPY web/discopanel/package*.json ./
 RUN npm ci
 
 COPY web/discopanel/ ./
+COPY identity/ /app/identity/
 COPY --from=proto-builder /app/web/discopanel/src/lib/proto ./src/lib/proto/
 COPY --from=proto-builder /app/web/discopanel/static/schemav1.yaml ./static/
 
 RUN npm run build
 
-FROM golang:alpine AS backend-builder
+FROM golang:alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS backend-builder
 
 ARG APP_VERSION
 ENV APP_VERSION=${APP_VERSION}
@@ -37,6 +51,8 @@ RUN go mod download
 
 COPY . .
 COPY --from=proto-builder /app/pkg/proto ./pkg/proto/
+COPY --from=proto-builder /app/internal/db/store.gen.go ./internal/db/store.gen.go
+COPY --from=proto-builder /app/internal/db/schema.sql ./internal/db/schema.sql
 COPY --from=frontend-builder /app/web/discopanel/build ./web/discopanel/build
 
 RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o discopanel ./cmd/discopanel

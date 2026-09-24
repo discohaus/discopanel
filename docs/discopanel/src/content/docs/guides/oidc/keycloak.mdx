@@ -22,7 +22,7 @@ cd oidc/keycloak
 docker compose up -d
 ```
 
-Keycloak takes 30–60 seconds to start. DiscoPanel waits for it via a health check.
+Keycloak takes 30-60 seconds to start. DiscoPanel waits for it via a health check.
 
 <Code code={composeFile} lang="yaml" title="oidc/keycloak/docker-compose.yaml" />
 
@@ -31,10 +31,10 @@ Keycloak takes 30–60 seconds to start. DiscoPanel waits for it via a health ch
 | Variable | Purpose |
 |---|---|
 | `DISCOPANEL_AUTH_OIDC_ENABLED` | Enables OIDC authentication |
-| `DISCOPANEL_AUTH_OIDC_ISSUER_URI` | Keycloak realm URL — change if hosting on another machine or using a different realm name |
+| `DISCOPANEL_AUTH_OIDC_ISSUER_URI` | Keycloak realm URL - change if hosting on another machine or using a different realm name |
 | `DISCOPANEL_AUTH_OIDC_CLIENT_ID` | Must match the `clientId` in the realm config |
-| `DISCOPANEL_AUTH_OIDC_CLIENT_SECRET` | Must match the `secret` in the realm config — **change this for production** |
-| `DISCOPANEL_AUTH_OIDC_REDIRECT_URL` | The callback URL — update `localhost:8080` to your public domain |
+| `DISCOPANEL_AUTH_OIDC_CLIENT_SECRET` | Must match the `secret` in the realm config - **change this for production** |
+| `DISCOPANEL_AUTH_OIDC_REDIRECT_URL` | The callback URL - update `localhost:8080` to your public domain |
 | `DISCOPANEL_AUTH_OIDC_ROLE_CLAIM` | Set to `groups` to read Keycloak group membership as DiscoPanel roles |
 
 ## Realm configuration
@@ -43,7 +43,7 @@ The included realm JSON is imported automatically on first start via `--import-r
 
 - **Client** (`discopanel`): confidential client with standard (authorization code) flow
 - **Roles**: `admin` and `user` realm roles
-- **Groups**: `admin` and `user` groups mapped to their respective roles — new users are added to the `user` group by default
+- **Groups**: `admin` and `user` groups mapped to their respective roles - new users are added to the `user` group by default
 - **Protocol mappers**: a `groups` mapper that puts group membership into the `groups` claim on all tokens, and a `realm-roles` mapper for the `roles` claim
 - **Default user**: `admin` / `admin` with both `admin` and `user` groups
 
@@ -53,9 +53,9 @@ The included realm JSON is imported automatically on first start via `--import-r
 
 | Service | URL | Username | Password |
 |---|---|---|---|
-| DiscoPanel | [http://localhost:8080](http://localhost:8080) | — | Log in via OIDC |
+| DiscoPanel | [http://localhost:8080](http://localhost:8080) | - | Log in via OIDC |
 | Keycloak Admin Console | [http://localhost:8180/admin](http://localhost:8180/admin) | `admin` | `admin` |
-| Keycloak OIDC user | — | `admin` | `admin` |
+| Keycloak OIDC user | - | `admin` | `admin` |
 
 ## Production notes
 

@@ -5,38 +5,46 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/nickheyer/discopanel/internal/auth"
-	storage "github.com/nickheyer/discopanel/internal/db"
-	"github.com/nickheyer/discopanel/internal/rbac"
-	"github.com/nickheyer/discopanel/pkg/logger"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
-	"github.com/nickheyer/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
+	"github.com/discohaus/discopanel/internal/auth"
+	storage "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/internal/module"
+	"github.com/discohaus/discopanel/internal/rbac"
+	"github.com/discohaus/discopanel/pkg/logger"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var _ discopanelv1connect.AuthServiceHandler = (*AuthService)(nil)
 
 type AuthService struct {
-	store       *storage.Store
-	authManager *auth.Manager
-	enforcer    *rbac.Enforcer
-	oidcHandler *auth.OIDCHandler
-	log         *logger.Logger
+	store         *storage.Store
+	authManager   *auth.Manager
+	enforcer      *rbac.Enforcer
+	oidcHandler   *auth.OIDCHandler
+	moduleManager *module.Manager
+	log           *logger.Logger
+
+	// Serializes registration so first admin and invites race free
+	registerMu sync.Mutex
 }
 
-func NewAuthService(store *storage.Store, authManager *auth.Manager, enforcer *rbac.Enforcer, oidcHandler *auth.OIDCHandler, log *logger.Logger) *AuthService {
+func NewAuthService(store *storage.Store, authManager *auth.Manager, enforcer *rbac.Enforcer, oidcHandler *auth.OIDCHandler, moduleManager *module.Manager, log *logger.Logger) *AuthService {
 	return &AuthService{
-		store:       store,
-		authManager: authManager,
-		enforcer:    enforcer,
-		oidcHandler: oidcHandler,
-		log:         log,
+		store:         store,
+		authManager:   authManager,
+		enforcer:      enforcer,
+		oidcHandler:   oidcHandler,
+		moduleManager: moduleManager,
+		log:           log,
 	}
 }
 
@@ -77,9 +85,10 @@ func (s *AuthService) Login(ctx context.Context, req *connect.Request[v1.LoginRe
 		return nil, connect.NewError(connect.CodeInternal, errors.New("login failed"))
 	}
 
+	user.Roles = roles
 	return connect.NewResponse(&v1.LoginResponse{
 		Token:     token,
-		User:      dbUserToProto(user, roles),
+		User:      user.Redact(),
 		ExpiresAt: timestamppb.New(expiresAt),
 	}), nil
 }
@@ -106,10 +115,13 @@ func (s *AuthService) Logout(ctx context.Context, req *connect.Request[v1.Logout
 func (s *AuthService) Register(ctx context.Context, req *connect.Request[v1.RegisterRequest]) (*connect.Response[v1.RegisterResponse], error) {
 	msg := req.Msg
 
+	s.registerMu.Lock()
+	defer s.registerMu.Unlock()
+
 	userCount, _ := s.store.CountUsers(ctx)
 	isFirstUser := userCount == 0
 
-	var invite *storage.RegistrationInvite
+	var invite *v1.RegistrationInvite
 
 	if msg.InviteCode != nil && *msg.InviteCode != "" {
 		// Validate invite
@@ -118,7 +130,7 @@ func (s *AuthService) Register(ctx context.Context, req *connect.Request[v1.Regi
 		if err != nil {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("invalid invite code"))
 		}
-		if invite.ExpiresAt != nil && invite.ExpiresAt.Before(time.Now()) {
+		if invite.ExpiresAt != nil && invite.ExpiresAt.AsTime().Before(time.Now()) {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("invite has expired"))
 		}
 		if invite.MaxUses > 0 && invite.UseCount >= invite.MaxUses {
@@ -133,42 +145,54 @@ func (s *AuthService) Register(ctx context.Context, req *connect.Request[v1.Regi
 			}
 		}
 	} else if !isFirstUser && !s.authManager.IsRegistrationAllowed() {
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("registration is disabled"))
+		return nil, connect.NewError(connect.CodePermissionDenied, auth.ErrRegistrationDisabled)
 	}
 
 	if msg.Username == "" || msg.Password == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("username and password are required"))
 	}
 
+	// Use claims atomically so max_uses cannot oversubscribe
+	if invite != nil {
+		claimed, cerr := s.store.ClaimInviteUse(ctx, invite.Id)
+		if cerr != nil {
+			s.log.Error("Failed to claim invite use: %v", cerr)
+			return nil, connect.NewError(connect.CodeInternal, errors.New("registration failed"))
+		}
+		if !claimed {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("invite has reached maximum uses"))
+		}
+	}
+
 	user, err := s.authManager.CreateLocalUser(ctx, msg.Username, msg.Email, msg.Password)
 	if err != nil {
+		if invite != nil {
+			if rerr := s.store.ReleaseInviteUse(ctx, invite.Id); rerr != nil {
+				s.log.Error("Failed to release invite use: %v", rerr)
+			}
+		}
 		s.log.Error("Registration failed: %v", err)
 		return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("registration failed"))
 	}
 
-	// Role assignment: first user → admin; invite with roles → invite roles; else → default roles
+	// First user gets admin, invite gives invite roles, else default
 	if isFirstUser {
-		_ = s.store.AssignRole(ctx, user.ID, "admin", "local")
+		_ = s.store.AssignRole(ctx, user.Id, "admin", v1.RoleSource_ROLE_SOURCE_LOCAL)
 	} else if invite != nil && len(invite.Roles) > 0 {
 		for _, roleName := range invite.Roles {
-			_ = s.store.AssignRole(ctx, user.ID, roleName, "invite")
+			_ = s.store.AssignRole(ctx, user.Id, roleName, v1.RoleSource_ROLE_SOURCE_INVITE)
 		}
 	} else {
 		defaultRoles, _ := s.store.GetDefaultRoles(ctx)
 		for _, role := range defaultRoles {
-			_ = s.store.AssignRole(ctx, user.ID, role.Name, "local")
+			_ = s.store.AssignRole(ctx, user.Id, role.Name, v1.RoleSource_ROLE_SOURCE_LOCAL)
 		}
 	}
 
-	// Increment invite use count after successful registration
-	if invite != nil {
-		_ = s.store.IncrementInviteUseCount(ctx, invite.ID)
-	}
-
-	roles, _ := s.store.GetUserRoleNames(ctx, user.ID)
+	user.Roles, _ = s.store.GetUserRoleNames(ctx, user.Id)
 
 	return connect.NewResponse(&v1.RegisterResponse{
-		User: dbUserToProto(user, roles),
+		User: user.Redact(),
 	}), nil
 }
 
@@ -178,67 +202,44 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
 	}
 
-	// When all auth is disabled, the interceptor injects a synthetic admin
-	// that doesn't exist in DB. Return it directly.
+	// Auth disabled means synthetic admin has no db row
 	if !s.authManager.IsAnyAuthEnabled() {
-		roles := authUser.Roles
-		protoUser := &v1.User{
-			Id:           authUser.ID,
-			Username:     authUser.Username,
-			AuthProvider: authUser.Provider,
-			IsActive:     true,
-			Roles:        roles,
-		}
-
 		var permissions []*v1.Permission
-		if s.enforcer != nil {
-			for _, role := range roles {
-				for _, p := range s.enforcer.GetPermissionsForRole(role) {
-					permissions = append(permissions, &v1.Permission{
-						Resource: p.Resource,
-						Action:   p.Action,
-						ObjectId: p.ObjectID,
-					})
-				}
-			}
+		for _, role := range authUser.Roles {
+			permissions = append(permissions, s.enforcer.GetPermissionsForRole(role)...)
 		}
 
 		return connect.NewResponse(&v1.GetCurrentUserResponse{
-			User:        protoUser,
+			User:        authUser,
 			Permissions: permissions,
 		}), nil
 	}
 
 	// Fetch user from db
-	dbUser, err := s.store.GetUser(ctx, authUser.ID)
+	dbUser, err := s.store.GetUser(ctx, authUser.Id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
 	}
 
 	// Fetch roles from db
-	roles, _ := s.store.GetUserRoleNames(ctx, authUser.ID)
+	roles, _ := s.store.GetUserRoleNames(ctx, authUser.Id)
 
 	// Collect permissions from all user roles via the RBAC enforcer
 	var permissions []*v1.Permission
-	if s.enforcer != nil {
-		seen := make(map[string]bool)
-		for _, role := range roles {
-			for _, p := range s.enforcer.GetPermissionsForRole(role) {
-				key := p.Resource + ":" + p.Action + ":" + p.ObjectID
-				if !seen[key] {
-					seen[key] = true
-					permissions = append(permissions, &v1.Permission{
-						Resource: p.Resource,
-						Action:   p.Action,
-						ObjectId: p.ObjectID,
-					})
-				}
+	seen := make(map[string]bool)
+	for _, role := range roles {
+		for _, p := range s.enforcer.GetPermissionsForRole(role) {
+			key := fmt.Sprintf("%d:%d:%s", p.Resource, p.Action, p.ObjectId)
+			if !seen[key] {
+				seen[key] = true
+				permissions = append(permissions, p)
 			}
 		}
 	}
 
+	dbUser.Roles = roles
 	return connect.NewResponse(&v1.GetCurrentUserResponse{
-		User:        dbUserToProto(dbUser, roles),
+		User:        dbUser.Redact(),
 		Permissions: permissions,
 	}), nil
 }
@@ -254,7 +255,7 @@ func (s *AuthService) ChangePassword(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("old and new passwords are required"))
 	}
 
-	if err := s.authManager.ChangePassword(ctx, user.ID, msg.OldPassword, msg.NewPassword); err != nil {
+	if err := s.authManager.ChangePassword(ctx, user.Id, msg.OldPassword, msg.NewPassword); err != nil {
 		if errors.Is(err, auth.ErrInvalidCredentials) {
 			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("incorrect current password"))
 		}
@@ -380,13 +381,13 @@ func (s *AuthService) CreateInvite(ctx context.Context, req *connect.Request[v1.
 		createdBy = authUser.Username
 	}
 
-	invite := &storage.RegistrationInvite{
+	invite := &v1.RegistrationInvite{
 		Code:        code,
 		Description: msg.Description,
 		Roles:       msg.Roles,
 		PinHash:     pinHash,
-		MaxUses:     int(msg.MaxUses),
-		ExpiresAt:   expiresAt,
+		MaxUses:     msg.MaxUses,
+		ExpiresAt:   expiresAtPb(expiresAt),
 		CreatedBy:   createdBy,
 	}
 
@@ -395,8 +396,9 @@ func (s *AuthService) CreateInvite(ctx context.Context, req *connect.Request[v1.
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create invite"))
 	}
 
+	invite.HasPin = invite.PinHash != ""
 	return connect.NewResponse(&v1.CreateInviteResponse{
-		Invite: dbInviteToProto(invite),
+		Invite: invite.Redact(),
 	}), nil
 }
 
@@ -409,7 +411,8 @@ func (s *AuthService) ListInvites(ctx context.Context, req *connect.Request[v1.L
 
 	protoInvites := make([]*v1.RegistrationInvite, 0, len(invites))
 	for _, inv := range invites {
-		protoInvites = append(protoInvites, dbInviteToProto(inv))
+		inv.HasPin = inv.PinHash != ""
+		protoInvites = append(protoInvites, inv.Redact())
 	}
 
 	return connect.NewResponse(&v1.ListInvitesResponse{
@@ -423,8 +426,9 @@ func (s *AuthService) GetInvite(ctx context.Context, req *connect.Request[v1.Get
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("invite not found"))
 	}
 
+	invite.HasPin = invite.PinHash != ""
 	return connect.NewResponse(&v1.GetInviteResponse{
-		Invite: dbInviteToProto(invite),
+		Invite: invite.Redact(),
 	}), nil
 }
 
@@ -447,7 +451,7 @@ func (s *AuthService) ValidateInvite(ctx context.Context, req *connect.Request[v
 		return connect.NewResponse(&v1.ValidateInviteResponse{Valid: false}), nil
 	}
 
-	if invite.ExpiresAt != nil && invite.ExpiresAt.Before(time.Now()) {
+	if invite.ExpiresAt != nil && invite.ExpiresAt.AsTime().Before(time.Now()) {
 		return connect.NewResponse(&v1.ValidateInviteResponse{Valid: false}), nil
 	}
 
@@ -473,7 +477,7 @@ func (s *AuthService) CreateAPIToken(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("token name is required"))
 	}
 
-	plaintext, apiToken, err := s.authManager.GenerateAPIToken(ctx, user.ID, msg.Name, msg.ExpiresInDays)
+	plaintext, apiToken, err := s.authManager.GenerateApiToken(ctx, user.Id, msg.Name, msg.ExpiresInDays)
 	if err != nil {
 		s.log.Error("Failed to create API token: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create API token"))
@@ -481,7 +485,7 @@ func (s *AuthService) CreateAPIToken(ctx context.Context, req *connect.Request[v
 
 	return connect.NewResponse(&v1.CreateAPITokenResponse{
 		PlaintextToken: plaintext,
-		ApiToken:       dbAPITokenToProto(apiToken),
+		ApiToken:       apiToken.Redact(),
 	}), nil
 }
 
@@ -491,7 +495,7 @@ func (s *AuthService) ListAPITokens(ctx context.Context, req *connect.Request[v1
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
 	}
 
-	tokens, err := s.store.ListAPITokensByUser(ctx, user.ID)
+	tokens, err := s.store.ListApiTokensByUser(ctx, user.Id)
 	if err != nil {
 		s.log.Error("Failed to list API tokens: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list API tokens"))
@@ -499,7 +503,7 @@ func (s *AuthService) ListAPITokens(ctx context.Context, req *connect.Request[v1
 
 	protoTokens := make([]*v1.ApiToken, 0, len(tokens))
 	for _, t := range tokens {
-		protoTokens = append(protoTokens, dbAPITokenToProto(&t))
+		protoTokens = append(protoTokens, t.Redact())
 	}
 
 	return connect.NewResponse(&v1.ListAPITokensResponse{
@@ -517,7 +521,7 @@ func (s *AuthService) DeleteAPIToken(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("token ID is required"))
 	}
 
-	if err := s.store.DeleteAPIToken(ctx, req.Msg.Id, user.ID); err != nil {
+	if err := s.store.DeleteUserApiToken(ctx, req.Msg.Id, user.Id); err != nil {
 		s.log.Error("Failed to delete API token: %v", err)
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("API token not found"))
 	}
@@ -538,40 +542,29 @@ func (s *AuthService) UseRecoveryKey(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodeInternal, errors.New("recovery reset failed"))
 	}
 
+	go s.reissueModuleTokens()
+
 	return connect.NewResponse(&v1.UseRecoveryKeyResponse{
 		Message: "panel reset to first-user setup",
 	}), nil
 }
 
-func dbAPITokenToProto(t *storage.APIToken) *v1.ApiToken {
-	pt := &v1.ApiToken{
-		Id:        t.ID,
-		Name:      t.Name,
-		CreatedAt: timestamppb.New(t.CreatedAt),
+// Rebuilds module containers so each carries a fresh token
+func (s *AuthService) reissueModuleTokens() {
+	if s.moduleManager == nil {
+		return
 	}
-	if t.ExpiresAt != nil {
-		pt.ExpiresAt = timestamppb.New(*t.ExpiresAt)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	if err := s.moduleManager.ReissueTokens(ctx); err != nil {
+		s.log.Error("Failed to reissue module tokens after recovery: %v", err)
 	}
-	if t.LastUsedAt != nil {
-		pt.LastUsedAt = timestamppb.New(*t.LastUsedAt)
-	}
-	return pt
 }
 
-func dbInviteToProto(invite *storage.RegistrationInvite) *v1.RegistrationInvite {
-	pi := &v1.RegistrationInvite{
-		Id:          invite.ID,
-		Code:        invite.Code,
-		Description: invite.Description,
-		Roles:       invite.Roles,
-		HasPin:      invite.PinHash != "",
-		MaxUses:     int32(invite.MaxUses),
-		UseCount:    int32(invite.UseCount),
-		CreatedBy:   invite.CreatedBy,
-		CreatedAt:   timestamppb.New(invite.CreatedAt),
+// Optional deadline as a proto timestamp
+func expiresAtPb(t *time.Time) *timestamppb.Timestamp {
+	if t == nil {
+		return nil
 	}
-	if invite.ExpiresAt != nil {
-		pi.ExpiresAt = timestamppb.New(*invite.ExpiresAt)
-	}
-	return pi
+	return timestamppb.New(*t)
 }

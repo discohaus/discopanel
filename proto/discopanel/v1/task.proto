@@ -2,160 +2,125 @@ syntax = "proto3";
 
 package discopanel.v1;
 
-import "discopanel/v1/event.proto";
+import "discopanel/options/v1/options.proto";
+import "discopanel/v1/storage.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
 // Task scheduling and management service
 service TaskService {
   // List all tasks for a server
-  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_TASKS
+      action: ACTION_TYPE_READ
+      object_id_field: "server_id"
+    };
+  }
   // Get a specific task
-  rpc GetTask(GetTaskRequest) returns (GetTaskResponse);
+  rpc GetTask(GetTaskRequest) returns (GetTaskResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_TASKS
+      action: ACTION_TYPE_READ
+      object_id_field: "id"
+      scope: OBJECT_SCOPE_TASK
+    };
+  }
   // Create a new scheduled task
-  rpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse);
+  rpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_TASKS
+      action: ACTION_TYPE_CREATE
+      object_id_field: "server_id"
+    };
+  }
   // Update an existing task
-  rpc UpdateTask(UpdateTaskRequest) returns (UpdateTaskResponse);
+  rpc UpdateTask(UpdateTaskRequest) returns (UpdateTaskResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_TASKS
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "id"
+      scope: OBJECT_SCOPE_TASK
+    };
+  }
   // Delete a task
-  rpc DeleteTask(DeleteTaskRequest) returns (DeleteTaskResponse);
+  rpc DeleteTask(DeleteTaskRequest) returns (DeleteTaskResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_TASKS
+      action: ACTION_TYPE_DELETE
+      object_id_field: "id"
+      scope: OBJECT_SCOPE_TASK
+    };
+  }
   // Toggle task enabled/disabled status
-  rpc ToggleTask(ToggleTaskRequest) returns (ToggleTaskResponse);
+  rpc ToggleTask(ToggleTaskRequest) returns (ToggleTaskResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_TASKS
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "id"
+      scope: OBJECT_SCOPE_TASK
+    };
+  }
   // Manually trigger a task execution
-  rpc TriggerTask(TriggerTaskRequest) returns (TriggerTaskResponse);
+  rpc TriggerTask(TriggerTaskRequest) returns (TriggerTaskResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_TASKS
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "id"
+      scope: OBJECT_SCOPE_TASK
+    };
+  }
   // Get execution history for a task
-  rpc ListTaskExecutions(ListTaskExecutionsRequest) returns (ListTaskExecutionsResponse);
+  rpc ListTaskExecutions(ListTaskExecutionsRequest) returns (ListTaskExecutionsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_TASKS
+      action: ACTION_TYPE_READ
+      object_id_field: "task_id"
+      scope: OBJECT_SCOPE_TASK
+    };
+  }
   // Get execution history for a server
-  rpc ListServerExecutions(ListServerExecutionsRequest) returns (ListServerExecutionsResponse);
+  rpc ListServerExecutions(ListServerExecutionsRequest) returns (ListServerExecutionsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_TASKS
+      action: ACTION_TYPE_READ
+      object_id_field: "server_id"
+    };
+  }
   // Get a specific execution
-  rpc GetTaskExecution(GetTaskExecutionRequest) returns (GetTaskExecutionResponse);
+  rpc GetTaskExecution(GetTaskExecutionRequest) returns (GetTaskExecutionResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_TASKS
+      action: ACTION_TYPE_READ
+      object_id_field: "id"
+      scope: OBJECT_SCOPE_TASK_EXECUTION
+    };
+  }
   // Cancel a running execution
-  rpc CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse);
+  rpc CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_TASKS
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "id"
+      scope: OBJECT_SCOPE_TASK_EXECUTION
+    };
+  }
   // Get scheduler status
-  rpc GetSchedulerStatus(GetSchedulerStatusRequest) returns (GetSchedulerStatusResponse);
+  rpc GetSchedulerStatus(GetSchedulerStatusRequest) returns (GetSchedulerStatusResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_TASKS
+      action: ACTION_TYPE_READ
+    };
+  }
 }
 
-// Task type enumeration
-enum TaskType {
-  TASK_TYPE_UNSPECIFIED = 0;
-  TASK_TYPE_COMMAND = 1;   // Execute an RCON command
-  TASK_TYPE_BACKUP = 2;    // Create a backup
-  TASK_TYPE_RESTART = 3;   // Restart the server
-  TASK_TYPE_START = 4;     // Start the server
-  TASK_TYPE_STOP = 5;      // Stop the server
-  TASK_TYPE_SCRIPT = 6;    // Run a custom script
-  TASK_TYPE_WEBHOOK = 7;   // Send an HTTP webhook
-}
-
-// Task status enumeration
-enum TaskStatus {
-  TASK_STATUS_UNSPECIFIED = 0;
-  TASK_STATUS_ENABLED = 1;
-  TASK_STATUS_DISABLED = 2;
-  TASK_STATUS_PAUSED = 3;
-}
-
-// Schedule type enumeration
-enum ScheduleType {
-  SCHEDULE_TYPE_UNSPECIFIED = 0;
-  SCHEDULE_TYPE_CRON = 1;     // Cron expression
-  SCHEDULE_TYPE_INTERVAL = 2; // Fixed interval
-  SCHEDULE_TYPE_ONCE = 3;     // Run once at specific time
-  SCHEDULE_TYPE_EVENT = 4;    // Triggered by event
-}
-
-// Execution status enumeration
-enum ExecutionStatus {
-  EXECUTION_STATUS_UNSPECIFIED = 0;
-  EXECUTION_STATUS_PENDING = 1;
-  EXECUTION_STATUS_RUNNING = 2;
-  EXECUTION_STATUS_COMPLETED = 3;
-  EXECUTION_STATUS_FAILED = 4;
-  EXECUTION_STATUS_SKIPPED = 5;
-  EXECUTION_STATUS_CANCELLED = 6;
-  EXECUTION_STATUS_TIMEOUT = 7;
-}
-
-// Scheduled task definition
-message ScheduledTask {
-  string id = 1;
-  string server_id = 2;
-  string name = 3;
-  string description = 4;
-  TaskType task_type = 5;
-  TaskStatus status = 6;
-  ScheduleType schedule = 7;
-
-  // Schedule configuration
-  string cron_expr = 8;
-  int32 interval_secs = 9;
-  google.protobuf.Timestamp run_at = 10;
-  google.protobuf.Timestamp next_run = 11;
-  google.protobuf.Timestamp last_run = 12;
-  string timezone = 13;
-
-  // Task configuration (JSON string based on task type)
-  string config = 14;
-
-  // Execution settings
-  int32 timeout = 15;
-  int32 retry_count = 16;
-  int32 retry_delay = 17;
-  bool require_online = 18;
-  bool failure_notify = 19;
-
-  google.protobuf.Timestamp created_at = 20;
-  google.protobuf.Timestamp updated_at = 21;
-
-  // Events that trigger this task. Only used when schedule == SCHEDULE_TYPE_EVENT.
-  repeated TriggeredEventType event_triggers = 22;
-}
-
-// Task execution record
-message TaskExecution {
-  string id = 1;
-  string task_id = 2;
-  string server_id = 3;
-  ExecutionStatus status = 4;
-  google.protobuf.Timestamp started_at = 5;
-  google.protobuf.Timestamp ended_at = 6;
-  int64 duration = 7; // Duration in milliseconds
-  string output = 8;
-  string error = 9;
-  int32 retry_num = 10;
-  string trigger = 11; // "scheduled", "manual", "startup"
-}
-
-// Task configuration for different task types
-message CommandTaskConfig {
-  string command = 1; // RCON command to execute
-}
-
-// Configuration for backup tasks
-message BackupTaskConfig {
-  string backup_name = 1;    // Name pattern for backup (empty = task name)
-  repeated string paths = 2; // Paths to include, relative to the server directory (empty = world directory)
-  bool compress = 3;         // Whether to compress archive contents
-  int32 retention_days = 4;  // Days to keep backups (0 = forever)
-  int32 max_backups = 5;     // Maximum number of backups to keep (0 = unlimited, takes precedence over min_backups)
-  int32 min_backups = 6;     // Never let retention_days expiry reduce the backup count below this
-}
-
-// Configuration for script execution tasks
-message ScriptTaskConfig {
-  string script_path = 1; // Path to script file
-  repeated string args = 2; // Script arguments
-}
-
-// Configuration for webhook tasks. Stored serialized as JSON in ScheduledTask.config.
-message WebhookTaskConfig {
-  string url = 1;                        // Webhook destination URL
-  string secret = 2;                     // Optional HMAC signing secret
-  string payload_template = 3;           // Go text/template rendered into the request body; falls back to a generic JSON payload when empty
-  map<string, string> headers = 4;       // Custom request headers
-  int32 max_retries = 5;                 // Retries on delivery failure (default 3)
-  int32 retry_delay_ms = 6;              // Initial retry delay in ms (default 1000)
-  int32 timeout_ms = 7;                  // HTTP timeout in ms (default 5000)
+// Outbound webhook body, unspecified event means manual delivery
+message WebhookPayload {
+  TriggeredEventType event = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  Server server = 3;
+  map<string, string> data = 4;
 }
 
 // List tasks request
@@ -192,8 +157,11 @@ message CreateTaskRequest {
   google.protobuf.Timestamp run_at = 8;
   string timezone = 9;
 
-  // Task configuration (JSON)
-  string config = 10;
+  // Typed config matching task_type
+  CommandTaskConfig command_config = 10;
+  BackupTaskConfig backup_config = 16;
+  ScriptTaskConfig script_config = 17;
+  WebhookTaskConfig webhook_config = 18;
 
   // Execution settings
   int32 timeout = 11;
@@ -224,8 +192,11 @@ message UpdateTaskRequest {
   optional google.protobuf.Timestamp run_at = 8;
   optional string timezone = 9;
 
-  // Task configuration
-  optional string config = 10;
+  // Typed config matching task_type, set replaces stored config
+  CommandTaskConfig command_config = 10;
+  BackupTaskConfig backup_config = 17;
+  ScriptTaskConfig script_config = 18;
+  WebhookTaskConfig webhook_config = 19;
 
   // Execution settings
   optional int32 timeout = 11;
@@ -235,7 +206,7 @@ message UpdateTaskRequest {
 
   // Event triggers (only used when schedule == SCHEDULE_TYPE_EVENT)
   repeated TriggeredEventType event_triggers = 15;
-  bool clear_event_triggers = 16;  // If true, clear event_triggers before applying new ones
+  bool clear_event_triggers = 16; // If true, clear event_triggers before applying new ones
 }
 
 // Updated task details

@@ -4,7 +4,9 @@ import { resolve } from '$app/paths';
 import { browser } from '$app/environment';
 import { create } from '@bufbuild/protobuf';
 import { rpcClient } from '$lib/api/rpc-client';
-import type { User, Permission } from '$lib/proto/discopanel/v1/common_pb';
+import { wsClient } from '$lib/stores/websocket.svelte';
+import type { User, Permission } from '$lib/proto/discopanel/v1/storage_pb';
+import { ResourceType, ActionType } from '$lib/proto/discopanel/options/v1/options_pb';
 import {
 	LoginRequestSchema,
 	RegisterRequestSchema,
@@ -26,17 +28,17 @@ interface AuthState {
 	anonymousAccessEnabled: boolean;
 }
 
-/** Check if a permission list grants access for the given resource/action/objectId. */
+// Unspecified resource or action means wildcard
 function checkPermission(
 	permissions: Permission[],
-	resource: string,
-	action: string,
+	resource: ResourceType,
+	action: ActionType,
 	objectId?: string
 ): boolean {
 	return permissions.some(
 		(p) =>
-			(p.resource === '*' || p.resource === resource) &&
-			(p.action === '*' || p.action === action) &&
+			(p.resource === ResourceType.UNSPECIFIED || p.resource === resource) &&
+			(p.action === ActionType.UNSPECIFIED || p.action === action) &&
 			(p.objectId === '*' || !objectId || p.objectId === objectId)
 	);
 }
@@ -81,7 +83,7 @@ function createAuthStore() {
 					anonymousAccessEnabled: response.anonymousAccessEnabled
 				}));
 
-				// If auth is enabled and we have a token, validate it
+				// Validates the stored token when auth is on
 				let currentToken: string | null = null;
 				update((state) => {
 					currentToken = state.token;
@@ -89,7 +91,7 @@ function createAuthStore() {
 				});
 
 				if (!authEnabled) {
-					// Auth is disabled - backend grants full admin access, fetch permissions
+					// Disabled auth still fetches the granted admin permissions
 					await rpcClient.auth
 						.getCurrentUser({})
 						.then((r) =>
@@ -148,6 +150,9 @@ function createAuthStore() {
 					isLoading: false
 				}));
 
+				// Swaps any open socket onto the fresh token
+				wsClient.reauthenticate();
+
 				// Fetch permissions after login
 				await this.validateSession();
 
@@ -187,6 +192,8 @@ function createAuthStore() {
 				allowRegistration: currentState.allowRegistration,
 				anonymousAccessEnabled: currentState.anonymousAccessEnabled
 			});
+
+			wsClient.disconnect();
 
 			// Redirect to login
 			goto(resolve('/login'));
@@ -316,7 +323,7 @@ function createAuthStore() {
 			return state.user?.roles?.includes(role) ?? false;
 		},
 
-		hasPermission(resource: string, action: string, objectId?: string): boolean {
+		hasPermission(resource: ResourceType, action: ActionType, objectId?: string): boolean {
 			const state = get({ subscribe });
 			return checkPermission(state.permissions, resource, action, objectId);
 		}
@@ -328,7 +335,6 @@ export const authStore = createAuthStore();
 // Derived stores for convenience
 export const isAuthenticated = derived(authStore, ($auth) => $auth.isAuthenticated);
 export const currentUser = derived(authStore, ($auth) => $auth.user);
-export const userPermissions = derived(authStore, ($auth) => $auth.permissions);
 export const authEnabled = derived(
 	authStore,
 	($auth) => $auth.localAuthEnabled || $auth.oidcEnabled
@@ -336,52 +342,43 @@ export const authEnabled = derived(
 
 // Permission-based derived stores
 export const canReadUsers = derived(authStore, ($auth) =>
-	checkPermission($auth.permissions, 'users', 'read')
+	checkPermission($auth.permissions, ResourceType.USERS, ActionType.READ)
 );
 export const canCreateUsers = derived(authStore, ($auth) =>
-	checkPermission($auth.permissions, 'users', 'create')
+	checkPermission($auth.permissions, ResourceType.USERS, ActionType.CREATE)
 );
 export const canUpdateUsers = derived(authStore, ($auth) =>
-	checkPermission($auth.permissions, 'users', 'update')
+	checkPermission($auth.permissions, ResourceType.USERS, ActionType.UPDATE)
 );
 export const canDeleteUsers = derived(authStore, ($auth) =>
-	checkPermission($auth.permissions, 'users', 'delete')
+	checkPermission($auth.permissions, ResourceType.USERS, ActionType.DELETE)
 );
 export const canReadRoles = derived(authStore, ($auth) =>
-	checkPermission($auth.permissions, 'roles', 'read')
+	checkPermission($auth.permissions, ResourceType.ROLES, ActionType.READ)
 );
 export const canCreateRoles = derived(authStore, ($auth) =>
-	checkPermission($auth.permissions, 'roles', 'create')
+	checkPermission($auth.permissions, ResourceType.ROLES, ActionType.CREATE)
 );
 export const canUpdateRoles = derived(authStore, ($auth) =>
-	checkPermission($auth.permissions, 'roles', 'update')
+	checkPermission($auth.permissions, ResourceType.ROLES, ActionType.UPDATE)
 );
 export const canDeleteRoles = derived(authStore, ($auth) =>
-	checkPermission($auth.permissions, 'roles', 'delete')
+	checkPermission($auth.permissions, ResourceType.ROLES, ActionType.DELETE)
 );
 export const canReadSettings = derived(authStore, ($auth) =>
-	checkPermission($auth.permissions, 'settings', 'read')
+	checkPermission($auth.permissions, ResourceType.SETTINGS, ActionType.READ)
 );
 export const canUpdateSettings = derived(authStore, ($auth) =>
-	checkPermission($auth.permissions, 'settings', 'update')
-);
-export const canReadServers = derived(authStore, ($auth) =>
-	checkPermission($auth.permissions, 'servers', 'read')
-);
-export const canCreateServers = derived(authStore, ($auth) =>
-	checkPermission($auth.permissions, 'servers', 'create')
-);
-export const canReadModpacks = derived(authStore, ($auth) =>
-	checkPermission($auth.permissions, 'modpacks', 'read')
+	checkPermission($auth.permissions, ResourceType.SETTINGS, ActionType.UPDATE)
 );
 
 // Check if user has any settings-adjacent permission (for sidebar visibility)
 export const canAccessSettings = derived(
 	authStore,
 	($auth) =>
-		checkPermission($auth.permissions, 'settings', 'read') ||
-		checkPermission($auth.permissions, 'users', 'read') ||
-		checkPermission($auth.permissions, 'roles', 'read')
+		checkPermission($auth.permissions, ResourceType.SETTINGS, ActionType.READ) ||
+		checkPermission($auth.permissions, ResourceType.USERS, ActionType.READ) ||
+		checkPermission($auth.permissions, ResourceType.ROLES, ActionType.READ)
 );
 
 export { checkPermission };

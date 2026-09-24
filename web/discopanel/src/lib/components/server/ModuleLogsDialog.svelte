@@ -1,24 +1,23 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
-	import { Badge } from '$lib/components/ui/badge';
 	import { Dialog, DialogContent, DialogHeader, DialogTitle } from '$lib/components/ui/dialog';
-	import { rpcClient } from '$lib/api/rpc-client';
-	import type { Module } from '$lib/proto/discopanel/v1/module_pb';
-	import { ModuleStatus } from '$lib/proto/discopanel/v1/module_pb';
+	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
+	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
+	import type { Module } from '$lib/proto/discopanel/v1/storage_pb';
+	import { ModuleStatus } from '$lib/proto/discopanel/v1/storage_pb';
 	import type { LogEntry } from '$lib/proto/discopanel/v1/server_pb';
-	import { Terminal, Download, Trash2, RefreshCw, Loader2 } from '@lucide/svelte';
-	import AnsiToHtml from 'ansi-to-html';
-	import { toast } from 'svelte-sonner';
+	import { TONE_BG } from '$lib/server-status';
+	import { moduleStatusMeta } from '$lib/module-status';
+	import { Download, Trash2, RefreshCw, Loader2, X, ArrowDown } from '@lucide/svelte';
+	import { mode } from 'mode-watcher';
+	import { themedAnsiConverter } from '$lib/ansi-console';
+	import { notify } from '$lib/stores/activity.svelte';
 
-	// Create ansi-to-html converter with proper options
-	const ansiConverter = new AnsiToHtml({
-		fg: '#e8e8e8',
-		bg: '#000000',
-		newline: false,
-		escapeXML: true,
-		stream: true
-	});
+	// Renders ansi escape codes as colored html
+	let ansiConverter = $derived(themedAnsiConverter(mode.current));
+
+	const TAIL_OPTIONS = [100, 500, 1000, 2000];
 
 	interface Props {
 		open: boolean;
@@ -28,13 +27,15 @@
 	let { open = $bindable(), module }: Props = $props();
 
 	let logEntries = $state<LogEntry[]>([]);
-	let loading = $state(false);
 	let autoScroll = $state(true);
 	let scrollAreaRef = $state<HTMLDivElement | null>(null);
 	let pollingInterval: ReturnType<typeof setInterval> | null = null;
 	let tailLines = $state(500);
+	let fetching = $state(false);
 
-	// Fetch logs when dialog opens
+	let statusMeta = $derived(moduleStatusMeta(module.status));
+
+	// Fetches on open and polls while dialog visible
 	$effect(() => {
 		if (open) {
 			fetchLogs();
@@ -42,6 +43,7 @@
 		} else {
 			stopPolling();
 			logEntries = [];
+			autoScroll = true;
 		}
 	});
 
@@ -62,7 +64,7 @@
 		}
 	}
 
-	// Handle auto-scrolling
+	// Keeps view pinned to bottom while auto scroll on
 	$effect(() => {
 		if (logEntries.length > 0 && autoScroll && scrollAreaRef) {
 			queueMicrotask(() => {
@@ -73,6 +75,7 @@
 		}
 	});
 
+	// Detaches auto scroll on scroll up, resumes at bottom
 	function handleScroll() {
 		if (!scrollAreaRef) return;
 
@@ -86,29 +89,40 @@
 		}
 	}
 
-	async function fetchLogs() {
-		if (loading) return;
+	function jumpToBottom() {
+		if (!scrollAreaRef) return;
+		scrollAreaRef.scrollTop = scrollAreaRef.scrollHeight;
+		autoScroll = true;
+	}
 
-		// Only fetch logs if the module has a container that could have logs
-		// Skip only CREATING status (no container yet) - all other states may have logs
+	async function fetchLogs() {
+		if (fetching) return;
+
+		// Creating modules have no container to read yet
 		if (module.status === ModuleStatus.CREATING) {
 			return;
 		}
 
+		fetching = true;
 		try {
-			const response = await rpcClient.module.getModuleLogs({
-				id: module.id,
-				tail: tailLines
-			});
+			const response = await rpcClient.module.getModuleLogs(
+				{
+					id: module.id,
+					tail: tailLines
+				},
+				silentCallOptions
+			);
 			logEntries = response.logs || [];
 		} catch (error) {
 			console.error('Failed to fetch module logs:', error);
+		} finally {
+			fetching = false;
 		}
 	}
 
 	function clearLogs() {
 		logEntries = [];
-		toast.success('Logs cleared (local only)');
+		notify.success('Logs cleared (local only)');
 	}
 
 	function downloadLogs() {
@@ -122,176 +136,164 @@
 		a.click();
 		document.body.removeChild(a);
 		URL.revokeObjectURL(url);
-		toast.success('Logs downloaded');
-	}
-
-	function getStatusLabel(status: ModuleStatus): string {
-		switch (status) {
-			case ModuleStatus.RUNNING:
-				return 'Running';
-			case ModuleStatus.STOPPED:
-				return 'Stopped';
-			case ModuleStatus.STARTING:
-				return 'Starting';
-			case ModuleStatus.STOPPING:
-				return 'Stopping';
-			case ModuleStatus.ERROR:
-				return 'Error';
-			case ModuleStatus.CREATING:
-				return 'Creating';
-			default:
-				return 'Unknown';
-		}
-	}
-
-	function getStatusVariant(status: ModuleStatus): 'default' | 'secondary' | 'destructive' {
-		switch (status) {
-			case ModuleStatus.RUNNING:
-				return 'default';
-			case ModuleStatus.ERROR:
-				return 'destructive';
-			default:
-				return 'secondary';
-		}
+		notify.success('Logs downloaded');
 	}
 </script>
 
 <Dialog bind:open>
-	<DialogContent class="flex h-[80vh] max-w-4xl flex-col gap-0 p-0">
-		<DialogHeader class="shrink-0 border-b border-zinc-800 bg-zinc-900 px-4 py-3">
-			<div class="flex items-center justify-between">
-				<div class="flex items-center gap-2">
-					<Terminal class="h-4 w-4 text-green-500" />
-					<DialogTitle class="font-mono text-sm text-green-500">
-						{module.name} Logs
-					</DialogTitle>
-					<Badge variant={getStatusVariant(module.status)} class="text-xs">
-						{getStatusLabel(module.status)}
-					</Badge>
-				</div>
-				<div class="mr-8 flex items-center gap-1">
-					<Button
-						size="sm"
-						variant="ghost"
-						onclick={fetchLogs}
-						disabled={loading}
-						class="h-7 w-7 p-0 text-zinc-400 hover:text-white"
-					>
-						{#if loading}
-							<Loader2 class="h-3 w-3 animate-spin" />
-						{:else}
-							<RefreshCw class="h-3 w-3" />
+	<DialogContent
+		class="flex h-[80vh]! w-[90vw]! max-w-4xl! flex-col gap-0! overflow-hidden border-terminal-foreground/10 bg-terminal p-0!"
+		showCloseButton={false}
+	>
+		<DialogHeader
+			class="shrink-0 border-b border-terminal-foreground/8 bg-terminal-foreground/4 px-3 py-2"
+		>
+			<div class="flex items-center gap-3">
+				<div class="flex min-w-0 items-center gap-2">
+					<span class="relative flex size-2 shrink-0">
+						{#if statusMeta.transitional}
+							<span
+								class="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60 {TONE_BG[
+									statusMeta.tone
+								]}"
+							></span>
 						{/if}
-					</Button>
-					<Button
-						size="sm"
-						variant="ghost"
-						onclick={downloadLogs}
-						disabled={logEntries.length === 0}
-						class="h-7 w-7 p-0 text-zinc-400 hover:text-white"
+						<span class="relative inline-flex size-2 rounded-full {TONE_BG[statusMeta.tone]}"
+						></span>
+					</span>
+					<DialogTitle
+						class="truncate font-mono text-xs font-medium tracking-wide text-terminal-foreground/85"
 					>
-						<Download class="h-3 w-3" />
-					</Button>
-					<Button
-						size="sm"
-						variant="ghost"
-						onclick={clearLogs}
-						disabled={logEntries.length === 0}
-						class="h-7 w-7 p-0 text-zinc-400 hover:text-white"
+						{module.name}
+					</DialogTitle>
+					<span class="shrink-0 font-mono text-xs text-terminal-foreground/40">
+						{statusMeta.label.toLowerCase()}
+					</span>
+				</div>
+
+				<div class="ml-auto flex shrink-0 items-center gap-2">
+					<span class="tabular hidden font-mono text-[11px] text-terminal-foreground/40 sm:inline">
+						{logEntries.length} lines
+					</span>
+					<select
+						bind:value={tailLines}
+						onchange={fetchLogs}
+						title="Lines of history to keep"
+						class="h-6 rounded border border-terminal-foreground/10 bg-transparent px-1.5 font-mono text-[11px] text-terminal-foreground/60 focus:outline-none"
 					>
-						<Trash2 class="h-3 w-3" />
+						{#each TAIL_OPTIONS as option (option)}
+							<option value={option} class="bg-terminal">tail {option}</option>
+						{/each}
+					</select>
+					<div class="flex items-center gap-0.5 border-l border-terminal-foreground/10 pl-2">
+						<Tooltip.Root>
+							<Tooltip.Trigger>
+								<Button
+									size="icon"
+									variant="ghost"
+									onclick={fetchLogs}
+									disabled={fetching}
+									class="size-6.5 text-terminal-foreground/45 hover:bg-terminal-foreground/10 hover:text-terminal-foreground"
+								>
+									{#if fetching}
+										<Loader2 class="size-3.5 animate-spin" />
+									{:else}
+										<RefreshCw class="size-3.5" />
+									{/if}
+								</Button>
+							</Tooltip.Trigger>
+							<Tooltip.Content>Refresh logs</Tooltip.Content>
+						</Tooltip.Root>
+						<Tooltip.Root>
+							<Tooltip.Trigger>
+								<Button
+									size="icon"
+									variant="ghost"
+									onclick={downloadLogs}
+									disabled={logEntries.length === 0}
+									class="size-6.5 text-terminal-foreground/45 hover:bg-terminal-foreground/10 hover:text-terminal-foreground"
+								>
+									<Download class="size-3.5" />
+								</Button>
+							</Tooltip.Trigger>
+							<Tooltip.Content>Download logs</Tooltip.Content>
+						</Tooltip.Root>
+						<Tooltip.Root>
+							<Tooltip.Trigger>
+								<Button
+									size="icon"
+									variant="ghost"
+									onclick={clearLogs}
+									disabled={logEntries.length === 0}
+									class="size-6.5 text-terminal-foreground/45 hover:bg-terminal-foreground/10 hover:text-terminal-foreground"
+								>
+									<Trash2 class="size-3.5" />
+								</Button>
+							</Tooltip.Trigger>
+							<Tooltip.Content>Clear view (local only)</Tooltip.Content>
+						</Tooltip.Root>
+					</div>
+					<div class="h-4 w-px bg-terminal-foreground/10"></div>
+					<Button
+						size="icon"
+						variant="ghost"
+						onclick={() => (open = false)}
+						class="size-6.5 text-terminal-foreground/45 hover:bg-terminal-foreground/10 hover:text-terminal-foreground"
+					>
+						<X class="size-3.5" />
 					</Button>
 				</div>
 			</div>
 		</DialogHeader>
 
-		<div
-			class="custom-scrollbar flex-1 overflow-x-auto overflow-y-auto bg-black px-4 py-2"
-			bind:this={scrollAreaRef}
-			onscroll={handleScroll}
-		>
-			<div class="font-mono text-xs text-zinc-300">
-				{#if logEntries.length === 0}
-					<div class="py-8 text-center text-zinc-500">
-						{#if module.status === ModuleStatus.STOPPED}
-							No logs available. Start the module to see output.
-						{:else if module.status === ModuleStatus.STARTING || module.status === ModuleStatus.CREATING}
-							Waiting for module to start...
-						{:else}
-							No logs available. Try refreshing.
-						{/if}
-					</div>
-				{:else}
-					{#each logEntries as entry, i (i)}
-						<div class="log-line break-all whitespace-pre-wrap" data-type={entry.level}>
-							<!-- eslint-disable-next-line svelte/no-at-html-tags -->
-							{@html ansiConverter.toHtml(entry.message)}
+		<div class="relative min-h-0 flex-1">
+			<div
+				class="absolute inset-0 overflow-x-auto overflow-y-auto px-4 py-3"
+				bind:this={scrollAreaRef}
+				onscroll={handleScroll}
+			>
+				<div class="font-mono text-xs leading-relaxed text-terminal-foreground">
+					{#if logEntries.length === 0}
+						<div class="py-8 text-center font-mono text-terminal-foreground/35">
+							{#if module.status === ModuleStatus.STOPPED}
+								No logs available. Start the module to see output.
+							{:else if module.status === ModuleStatus.STARTING || module.status === ModuleStatus.CREATING}
+								Waiting for module to start...
+							{:else}
+								No logs available. Try refreshing.
+							{/if}
 						</div>
-					{/each}
-				{/if}
-			</div>
-		</div>
-
-		<div
-			class="flex shrink-0 items-center justify-between border-t border-zinc-800 bg-zinc-950 px-4 py-2 text-xs text-zinc-500"
-		>
-			<div class="flex items-center gap-4">
-				<label class="flex items-center gap-2">
-					<input type="checkbox" bind:checked={autoScroll} class="h-3 w-3 rounded" />
-					Auto-scroll
-				</label>
-				<div class="flex items-center gap-2">
-					<span>Tail:</span>
-					<select
-						bind:value={tailLines}
-						onchange={fetchLogs}
-						class="rounded border border-zinc-800 bg-zinc-900 px-2 py-0.5 text-xs"
-					>
-						<option value={100}>100</option>
-						<option value={500}>500</option>
-						<option value={1000}>1000</option>
-						<option value={2000}>2000</option>
-					</select>
+					{:else}
+						{#each logEntries as entry, i (i)}
+							<div class="log-line break-all whitespace-pre-wrap">
+								<!-- eslint-disable-next-line svelte/no-at-html-tags -->
+								{@html ansiConverter.toHtml(entry.message)}
+							</div>
+						{/each}
+					{/if}
 				</div>
 			</div>
-			<div class="font-mono">
-				{logEntries.length} lines
-			</div>
+
+			{#if !autoScroll}
+				<button
+					class="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-terminal-foreground/15 bg-terminal/95 px-3 py-1 font-mono text-xs text-terminal-foreground/80 shadow-lg backdrop-blur-sm transition-colors hover:bg-terminal-foreground/10"
+					onclick={jumpToBottom}
+				>
+					<ArrowDown class="size-3" />
+					Follow output
+				</button>
+			{/if}
 		</div>
 	</DialogContent>
 </Dialog>
 
 <style>
-	.custom-scrollbar {
-		scrollbar-width: thin;
-		scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent;
-	}
-
-	.custom-scrollbar::-webkit-scrollbar {
-		width: 12px;
-	}
-
-	.custom-scrollbar::-webkit-scrollbar-track {
-		background: transparent;
-	}
-
-	.custom-scrollbar::-webkit-scrollbar-thumb {
-		background-color: hsl(var(--muted-foreground) / 0.3);
-		border-radius: 6px;
-		border: 3px solid transparent;
-		background-clip: content-box;
-	}
-
-	.custom-scrollbar::-webkit-scrollbar-thumb:hover {
-		background-color: hsl(var(--muted-foreground) / 0.5);
-	}
-
 	.log-line {
 		padding: 0.125rem 0;
-		line-height: 1.4;
+		line-height: 1.45;
 	}
 
 	.log-line:hover {
-		background-color: rgba(39, 39, 42, 0.5);
+		background-color: color-mix(in oklab, var(--terminal-foreground) 6%, transparent);
 	}
 </style>

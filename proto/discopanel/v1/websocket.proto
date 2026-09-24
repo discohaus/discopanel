@@ -3,8 +3,9 @@ syntax = "proto3";
 package discopanel.v1;
 
 import "discopanel/v1/server.proto";
+import "discopanel/v1/storage.proto";
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
 // WebSocket message types
 enum WSMessageType {
@@ -25,6 +26,7 @@ enum WSMessageType {
   WS_MESSAGE_TYPE_COMMAND_RESULT = 16;
   WS_MESSAGE_TYPE_ERROR = 17;
   WS_MESSAGE_TYPE_PONG = 18;
+  WS_MESSAGE_TYPE_METRICS = 19;
 }
 
 // Client -> Server messages
@@ -52,6 +54,7 @@ message WebSocketServerMessage {
     LogMessage log = 7;
     CommandResultMessage command_result = 8;
     ErrorMessage error = 9;
+    MetricsMessage metrics = 10;
   }
 }
 
@@ -60,15 +63,17 @@ message AuthMessage {
   string token = 1;
 }
 
-// Subscribe to server logs
+// Subscribe to server logs or metrics
 message SubscribeMessage {
   string server_id = 1;
   int32 tail = 2;
+  bool metrics = 3; // Subscribe to live metrics instead of logs
 }
 
-// Unsubscribe from server logs
+// Unsubscribe from server logs or metrics
 message UnsubscribeMessage {
   string server_id = 1;
+  bool metrics = 2; // Drop the metrics subscription instead of logs
 }
 
 // Send command to server
@@ -122,4 +127,10 @@ message CommandResultMessage {
 // Error message
 message ErrorMessage {
   string error = 1;
+}
+
+// Live metrics point for a subscribed server
+message MetricsMessage {
+  string server_id = 1;
+  MetricsSample sample = 2;
 }

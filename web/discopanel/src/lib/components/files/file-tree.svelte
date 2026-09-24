@@ -1,6 +1,8 @@
 <script lang="ts">
 	import type { FileInfo } from '$lib/proto/discopanel/v1/file_pb';
 	import { Checkbox } from '$lib/components/ui/checkbox';
+	import { EmptyState } from '$lib/components/app';
+	import { SearchX } from '@lucide/svelte';
 	import FileTreeRow from './file-tree-row.svelte';
 
 	interface Props {
@@ -9,6 +11,7 @@
 		selectedPaths: Set<string>;
 		focusedPath: string;
 		dragOverPath: string;
+		filterText?: string;
 		onToggleExpand: (path: string) => void;
 		onSelect: (file: FileInfo, event: MouseEvent) => void;
 		onCheckboxToggle: (file: FileInfo) => void;
@@ -28,6 +31,7 @@
 		selectedPaths,
 		focusedPath,
 		dragOverPath,
+		filterText = '',
 		onToggleExpand,
 		onSelect,
 		onCheckboxToggle,
@@ -46,32 +50,24 @@
 </script>
 
 <div
-	class="min-h-0 flex-1 overflow-auto focus:outline-none"
+	class="min-h-0 flex-1 overflow-auto focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset"
 	tabindex="0"
 	role="tree"
 	onkeydown={onKeydown}
 >
-	<!-- Column header - matches row layout exactly -->
-	<div
-		class="sticky top-0 z-10 flex h-[26px] items-center border-b bg-background pr-3 text-[11px] text-muted-foreground"
-	>
-		<!-- Checkbox column -->
+	<!-- Column header mirrors row layout exactly -->
+	<div class="sticky top-0 z-10 flex h-[26px] items-center border-b bg-card pr-3">
+		<!-- Select all column -->
 		<div
 			class="flex w-6 shrink-0 items-center justify-center {hasSelection ? 'visible' : 'invisible'}"
 		>
-			<Checkbox checked={allSelected} onCheckedChange={onSelectAll} class="h-3.5 w-3.5" />
+			<Checkbox checked={allSelected} onCheckedChange={onSelectAll} class="size-3.5" />
 		</div>
-		<!-- Indent placeholder + chevron column -->
+		<!-- Chevron placeholder -->
 		<div class="w-4 shrink-0"></div>
-		<!-- Name -->
-		<div class="flex-1 pl-1 font-medium tracking-wider uppercase">Name</div>
-		<!-- Size -->
-		<span class="w-16 shrink-0 text-right font-medium tracking-wider uppercase">Size</span>
-		<!-- Modified -->
-		<span
-			class="hidden w-20 shrink-0 text-right font-medium tracking-wider uppercase sm:inline-block"
-			>Modified</span
-		>
+		<div class="stat-label flex-1 pl-1">Name</div>
+		<span class="stat-label w-16 shrink-0 text-right">Size</span>
+		<span class="stat-label hidden w-20 shrink-0 text-right sm:inline-block">Modified</span>
 	</div>
 
 	<!-- File rows -->
@@ -96,8 +92,11 @@
 	{/each}
 
 	{#if flatFiles.length === 0}
-		<div class="flex flex-col items-center justify-center py-12 text-sm text-muted-foreground">
-			<p>No files found</p>
-		</div>
+		<EmptyState
+			icon={SearchX}
+			title={filterText ? `No matches for "${filterText}"` : 'No files found'}
+			description={filterText ? 'Try a different filter.' : ''}
+			class="py-10"
+		/>
 	{/if}
 </div>

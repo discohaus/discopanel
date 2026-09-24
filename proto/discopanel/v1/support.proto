@@ -2,20 +2,74 @@ syntax = "proto3";
 
 package discopanel.v1;
 
+import "discopanel/options/v1/options.proto";
+import "discopanel/v1/storage.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
 // Support and diagnostic tools
 service SupportService {
   // Create diagnostic archive
-  rpc GenerateSupportBundle(GenerateSupportBundleRequest) returns (GenerateSupportBundleResponse);
+  rpc GenerateSupportBundle(GenerateSupportBundleRequest) returns (GenerateSupportBundleResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SUPPORT
+      action: ACTION_TYPE_CREATE
+    };
+  }
   // Download diagnostic archive
-  rpc DownloadSupportBundle(DownloadSupportBundleRequest) returns (DownloadSupportBundleResponse);
+  rpc DownloadSupportBundle(DownloadSupportBundleRequest) returns (DownloadSupportBundleResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SUPPORT
+      action: ACTION_TYPE_READ
+    };
+  }
   // Upload support bundle to support server
-  rpc UploadSupportBundle(UploadSupportBundleRequest) returns (UploadSupportBundleResponse);
+  rpc UploadSupportBundle(UploadSupportBundleRequest) returns (UploadSupportBundleResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SUPPORT
+      action: ACTION_TYPE_CREATE
+    };
+  }
   // Get application logs
-  rpc GetApplicationLogs(GetApplicationLogsRequest) returns (GetApplicationLogsResponse);
+  rpc GetApplicationLogs(GetApplicationLogsRequest) returns (GetApplicationLogsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SUPPORT
+      action: ACTION_TYPE_READ
+    };
+  }
+  // Run every diagnostic check and return the report
+  rpc RunDiagnostics(RunDiagnosticsRequest) returns (RunDiagnosticsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SUPPORT
+      action: ACTION_TYPE_CREATE
+    };
+  }
+  // Get the most recent diagnostic report
+  rpc GetDiagnostics(GetDiagnosticsRequest) returns (GetDiagnosticsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SUPPORT
+      action: ACTION_TYPE_READ
+    };
+  }
+  // Get panel version and whether a newer release exists
+  rpc GetVersionStatus(GetVersionStatusRequest) returns (GetVersionStatusResponse) {
+    option (discopanel.options.v1.perm) = {session: true};
+  }
+  // Get whether the hub heartbeat is on and when it last landed
+  rpc GetTelemetrySettings(GetTelemetrySettingsRequest) returns (GetTelemetrySettingsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SUPPORT
+      action: ACTION_TYPE_READ
+    };
+  }
+  // Turn the hub heartbeat on or off
+  rpc UpdateTelemetrySettings(UpdateTelemetrySettingsRequest) returns (UpdateTelemetrySettingsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SUPPORT
+      action: ACTION_TYPE_UPDATE
+    };
+  }
 }
 
 // Application logs request
@@ -45,6 +99,8 @@ message GenerateSupportBundleResponse {
   int64 size = 3;
   google.protobuf.Timestamp created_at = 4;
   string message = 5;
+  // Diagnostics run while the bundle was built
+  DiagnosticReport diagnostics = 6;
 }
 
 // Bundle download request
@@ -77,6 +133,8 @@ message UploadSupportBundleResponse {
   string reference_id = 1;
   string message = 2;
   bool success = 3;
+  // Diagnostics run while the bundle was built
+  DiagnosticReport diagnostics = 4;
 }
 
 // Docker system information
@@ -113,7 +171,8 @@ message ProxyListenerInfo {
 // Proxy configuration info for bundle
 message ProxyConfigInfo {
   bool enabled = 1;
-  string base_url = 2;
+  // Hostnames the panel answers on
+  repeated string hostnames = 2;
   repeated ProxyListenerInfo listeners = 3;
 }
 
@@ -121,9 +180,9 @@ message ProxyConfigInfo {
 message ServerSummary {
   string id = 1;
   string name = 2;
-  string mod_loader = 3;
+  ModLoader mod_loader = 3;
   string mc_version = 4;
-  string status = 5;
+  ServerStatus status = 5;
   int32 port = 6;
   int32 memory = 7;
   bool auto_start = 8;
@@ -139,4 +198,162 @@ message SystemInfo {
   DockerInfo docker = 5;
   ProxyConfigInfo proxy_config = 6;
   repeated ServerSummary servers = 7;
+}
+
+// Verdict one diagnostic check reached
+enum DiagnosticSeverity {
+  option (discopanel.options.v1.enum_type) = {label: "Severity"};
+  DIAGNOSTIC_SEVERITY_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {
+    label: "Unknown"
+    desc: "Check produced no verdict"
+  }];
+  DIAGNOSTIC_SEVERITY_PASS = 1 [(discopanel.options.v1.value) = {
+    label: "Pass"
+    desc: "Everything looks right"
+  }];
+  DIAGNOSTIC_SEVERITY_INFO = 2 [(discopanel.options.v1.value) = {
+    label: "Info"
+    desc: "Facts worth knowing, nothing to fix"
+  }];
+  DIAGNOSTIC_SEVERITY_WARN = 3 [(discopanel.options.v1.value) = {
+    label: "Warning"
+    desc: "Likely to cause trouble, worth a look"
+  }];
+  DIAGNOSTIC_SEVERITY_FAIL = 4 [(discopanel.options.v1.value) = {
+    label: "Failed"
+    desc: "Something is broken and needs fixing"
+  }];
+  DIAGNOSTIC_SEVERITY_SKIP = 5 [(discopanel.options.v1.value) = {
+    label: "Skipped"
+    desc: "Check did not apply or could not run"
+  }];
+}
+
+// Area of the system a diagnostic check covers
+enum DiagnosticCategory {
+  option (discopanel.options.v1.enum_type) = {label: "Category"};
+  DIAGNOSTIC_CATEGORY_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Other"}];
+  DIAGNOSTIC_CATEGORY_ENVIRONMENT = 1 [(discopanel.options.v1.value) = {
+    label: "Environment"
+    desc: "Host, container, user, and version facts"
+  }];
+  DIAGNOSTIC_CATEGORY_STORAGE = 2 [(discopanel.options.v1.value) = {
+    label: "Storage"
+    desc: "Data folders, permissions, disk space, database"
+  }];
+  DIAGNOSTIC_CATEGORY_DOCKER = 3 [(discopanel.options.v1.value) = {
+    label: "Docker"
+    desc: "Daemon, network, images, and probes run inside containers"
+  }];
+  DIAGNOSTIC_CATEGORY_NETWORK = 4 [(discopanel.options.v1.value) = {
+    label: "Network"
+    desc: "DNS, addresses, NAT, ports, forwarding"
+  }];
+  DIAGNOSTIC_CATEGORY_PROXY = 5 [(discopanel.options.v1.value) = {
+    label: "Proxy"
+    desc: "Listeners, hostnames, certificates, upstream edges"
+  }];
+  DIAGNOSTIC_CATEGORY_UPSTREAM = 6 [(discopanel.options.v1.value) = {
+    label: "Upstream services"
+    desc: "CurseForge, Modrinth, Mojang, registries, support"
+  }];
+  DIAGNOSTIC_CATEGORY_AUTH = 7 [(discopanel.options.v1.value) = {
+    label: "Authentication"
+    desc: "Login providers and session settings"
+  }];
+}
+
+// Outcome of one diagnostic check
+message DiagnosticCheck {
+  // Stable identifier like network.dns
+  string id = 1;
+  DiagnosticCategory category = 2;
+  string title = 3;
+  DiagnosticSeverity severity = 4;
+  // One line verdict
+  string summary = 5;
+  // Evidence the verdict rests on, may span lines
+  string detail = 6;
+  // What to change to fix it
+  string remedy = 7;
+  // Documentation page for the remedy
+  string docs_url = 8;
+  int64 duration_ms = 9;
+  // Key facts the check gathered
+  map<string, string> facts = 10;
+}
+
+// One full diagnostic run
+message DiagnosticReport {
+  google.protobuf.Timestamp started_at = 1;
+  google.protobuf.Timestamp finished_at = 2;
+  // What kicked the run off, startup, manual, or bundle
+  string trigger = 3;
+  string version = 4;
+  repeated DiagnosticCheck checks = 5;
+  int32 pass_count = 6;
+  int32 info_count = 7;
+  int32 warn_count = 8;
+  int32 fail_count = 9;
+  int32 skip_count = 10;
+}
+
+// Empty run request, every check runs
+message RunDiagnosticsRequest {}
+
+// Completed run
+message RunDiagnosticsResponse {
+  DiagnosticReport report = 1;
+}
+
+// Empty request for the latest report
+message GetDiagnosticsRequest {}
+
+// Latest report, absent before the first run finishes
+message GetDiagnosticsResponse {
+  DiagnosticReport report = 1;
+  // A run is in progress right now
+  bool running = 2;
+}
+
+// Empty version status request
+message GetVersionStatusRequest {}
+
+// Running version compared to the newest release
+message GetVersionStatusResponse {
+  string current_version = 1;
+  string latest_version = 2;
+  bool update_available = 3;
+  // Release notes page for the newest version
+  string release_url = 4;
+  google.protobuf.Timestamp checked_at = 5;
+  // Release probe failed or was disabled, empty when fine
+  string check_error = 6;
+  // Message from the discohaus hub for the operator, empty when there is none
+  string hub_notice = 7;
+}
+
+// Empty telemetry settings request
+message GetTelemetrySettingsRequest {}
+
+// Heartbeat state of this panel
+message GetTelemetrySettingsResponse {
+  bool enabled = 1;
+  // Hosted panels keep the heartbeat on, the toggle is locked
+  bool managed = 2;
+  google.protobuf.Timestamp last_heartbeat_at = 3;
+  // Error of the most recent attempt, empty when it succeeded
+  string last_error = 4;
+  // telemetry.enabled is false in the config, the toggle is locked off
+  bool config_disabled = 5;
+}
+
+// Desired heartbeat state
+message UpdateTelemetrySettingsRequest {
+  bool enabled = 1;
+}
+
+// Heartbeat state after the change
+message UpdateTelemetrySettingsResponse {
+  GetTelemetrySettingsResponse settings = 1;
 }

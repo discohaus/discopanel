@@ -2,27 +2,25 @@ package module
 
 import (
 	"context"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/nickheyer/discopanel/internal/alias"
-	storage "github.com/nickheyer/discopanel/internal/db"
-	"github.com/nickheyer/discopanel/internal/events"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/internal/alias"
+	"github.com/discohaus/discopanel/pkg/events"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
 // Module subsystem subscription to the central event bus
 func (m *Manager) HandleServerEvent(ctx context.Context, event events.Event) {
 	switch event.Type {
 	case v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_SERVER_START:
-		m.autoStartModules(ctx, event.ServerID)
+		m.autoStartModules(ctx, event.ServerId)
 	case v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_SERVER_STOP:
-		m.stopLifecycleModules(ctx, event.ServerID)
+		m.stopLifecycleModules(ctx, event.ServerId)
 	}
 
 	// Execute configured event hooks for every event type
-	m.dispatchHooks(ctx, event.ServerID, event.Type)
+	m.dispatchHooks(ctx, event.ServerId, event.Type)
 }
 
 // Starts modules with AutoStart enabled when the parent server starts
@@ -35,10 +33,10 @@ func (m *Manager) autoStartModules(ctx context.Context, serverID string) {
 
 	for _, module := range modules {
 		if module.AutoStart && !module.Detached {
-			go func(mod *storage.Module) {
+			go func(mod *v1.Module) {
 				// Small delay to let the server settle before starting modules
 				time.Sleep(2 * time.Second)
-				if err := m.StartModule(context.Background(), mod.ID); err != nil {
+				if err := m.StartModule(context.Background(), mod.Id); err != nil {
 					m.logger.Error("Failed to start module %s on server start: %v", mod.Name, err)
 				} else {
 					m.logger.Info("Started module %s with server", mod.Name)
@@ -57,8 +55,8 @@ func (m *Manager) stopLifecycleModules(ctx context.Context, serverID string) {
 	}
 
 	for _, module := range modules {
-		if module.Status == storage.ModuleStatusRunning && !module.Detached {
-			if err := m.StopModule(ctx, module.ID); err != nil {
+		if module.Status == v1.ModuleStatus_MODULE_STATUS_RUNNING && !module.Detached {
+			if err := m.StopModule(ctx, module.Id); err != nil {
 				m.logger.Error("Failed to stop module %s on server stop: %v", module.Name, err)
 			} else {
 				m.logger.Info("Stopped module %s with server", module.Name)
@@ -67,7 +65,7 @@ func (m *Manager) stopLifecycleModules(ctx context.Context, serverID string) {
 	}
 }
 
-// Runs every module event hook subscribed to eventType for the server
+// Runs every module hook subscribed to the event
 func (m *Manager) dispatchHooks(ctx context.Context, serverID string, eventType v1.TriggeredEventType) {
 	modules, err := m.store.ListServerModules(ctx, serverID)
 	if err != nil {
@@ -90,7 +88,7 @@ func (m *Manager) dispatchHooks(ctx context.Context, serverID string, eventType 
 }
 
 // Executes a single module event hook
-func (m *Manager) executeHook(ctx context.Context, module *storage.Module, hook *v1.ModuleEventHook, serverID string) {
+func (m *Manager) executeHook(ctx context.Context, module *v1.Module, hook *v1.ModuleEventHook, serverID string) {
 	// Apply delay if configured
 	if hook.DelaySeconds > 0 {
 		m.logger.Debug("Delaying hook action for module %s by %d seconds", module.Name, hook.DelaySeconds)
@@ -99,7 +97,7 @@ func (m *Manager) executeHook(ctx context.Context, module *storage.Module, hook 
 
 	// Evaluate condition if specified
 	if hook.Condition != "" {
-		server, err := m.store.GetServer(ctx, serverID)
+		server, err := m.loadServer(ctx, serverID)
 		if err != nil {
 			m.logger.Error("Failed to get server for condition evaluation: %v", err)
 			return
@@ -120,12 +118,12 @@ func (m *Manager) executeHook(ctx context.Context, module *storage.Module, hook 
 		}
 
 	case v1.ModuleEventAction_MODULE_EVENT_ACTION_STOP:
-		if err := m.StopModule(ctx, module.ID); err != nil {
+		if err := m.StopModule(ctx, module.Id); err != nil {
 			m.logger.Error("Hook failed to stop module %s: %v", module.Name, err)
 		}
 
 	case v1.ModuleEventAction_MODULE_EVENT_ACTION_RESTART:
-		if err := m.RestartModule(ctx, module.ID); err != nil {
+		if err := m.RestartModule(ctx, module.Id); err != nil {
 			m.logger.Error("Hook failed to restart module %s: %v", module.Name, err)
 		}
 
@@ -145,122 +143,52 @@ func (m *Manager) executeHook(ctx context.Context, module *storage.Module, hook 
 }
 
 // Starts a module, creating its container if needed
-func (m *Manager) ensureModuleStarted(ctx context.Context, module *storage.Module) error {
-	if module.ContainerID == "" {
-		return m.CreateAndStartModule(ctx, module.ID, true)
+func (m *Manager) ensureModuleStarted(ctx context.Context, module *v1.Module) error {
+	if module.ContainerId == "" {
+		return m.CreateAndStartModule(ctx, module.Id, true)
 	}
-	return m.StartModule(ctx, module.ID)
+	return m.StartModule(ctx, module.Id)
 }
 
 // Executes a command inside a module container
-func (m *Manager) execInModule(ctx context.Context, module *storage.Module, command string) error {
-	if module.ContainerID == "" {
+func (m *Manager) execInModule(ctx context.Context, module *v1.Module, command string) error {
+	if module.ContainerId == "" {
 		return nil // Cannot exec in non-existent container
 	}
 
-	_, err := m.docker.Exec(ctx, module.ContainerID, []string{command})
+	_, _, err := m.docker.Exec(ctx, module.ContainerId, []string{"sh", "-c", command})
 	return err
 }
 
-// Sends an RCON command to the parent server via the command sender
+// Sends an RCON command to the parent server
 func (m *Manager) sendRCON(ctx context.Context, serverID string, command string) error {
 	server, err := m.store.GetServer(ctx, serverID)
 	if err != nil {
 		return err
 	}
 
-	if server.ContainerID == "" {
+	if server.ContainerId == "" {
 		m.logger.Warn("Cannot send RCON: server %s has no container", server.Name)
 		return nil
 	}
 
-	_, err = m.sender.SendCommand(ctx, server.ID, command)
+	_, err = m.sender.SendCommand(ctx, server.Id, command)
 	return err
 }
 
-// evaluateCondition evaluates a simple condition expression using the alias system.
-// Condition format: <alias> <operator> <value>
-// Examples:
-//   - "{{server.players_online}} == 0"
-//   - "{{server.players_online}} > 5"
-//   - "{{server.status}} == running"
-//   - "{{module.status}} == stopped"
-//
-// The alias system dynamically resolves any field from Server or Module structs.
-// See alias.GetAvailableAliases() for all available aliases.
-func (m *Manager) evaluateCondition(condition string, server *storage.Server, module *storage.Module) bool {
+// Evaluates a hook condition like {{server.players_online}} > 5
+func (m *Manager) evaluateCondition(condition string, server *v1.Server, module *v1.Module) bool {
 	condition = strings.TrimSpace(condition)
 	if condition == "" {
 		return true
 	}
-
-	// Build alias context for resolution
-	ctx := &alias.Context{
+	result, err := alias.EvaluateCondition(condition, &alias.Context{
 		Server: server,
 		Module: module,
-	}
-
-	// Resolve all aliases in the condition string first
-	resolved := alias.Substitute(condition, ctx)
-
-	// Parse condition: <resolved_value> <operator> <expected_value>
-	var actualValue, operator, expectedValue string
-
-	// Try different operators in order of specificity
-	operators := []string{"==", "!=", "<=", ">=", "<", ">"}
-	for _, op := range operators {
-		if parts := strings.SplitN(resolved, op, 2); len(parts) == 2 {
-			actualValue = strings.TrimSpace(parts[0])
-			operator = op
-			expectedValue = strings.TrimSpace(parts[1])
-			break
-		}
-	}
-
-	if operator == "" {
-		m.logger.Warn("Invalid condition format (no operator found): %s", condition)
+	})
+	if err != nil {
+		m.logger.Warn("Invalid hook condition %q: %v", condition, err)
 		return false
 	}
-
-	// Compare values
-	return m.compareValues(actualValue, operator, expectedValue)
-}
-
-// Compares two values using the specified operator
-// TODO: Move all of these hacky comparators to a pkg where they belond...
-func (m *Manager) compareValues(actual, operator, expected string) bool {
-	// Try numeric comparison first
-	actualNum, actualErr := strconv.ParseFloat(actual, 64)
-	expectedNum, expectedErr := strconv.ParseFloat(expected, 64)
-
-	if actualErr == nil && expectedErr == nil {
-		// Both are numeric
-		switch operator {
-		case "==":
-			return actualNum == expectedNum
-		case "!=":
-			return actualNum != expectedNum
-		case "<":
-			return actualNum < expectedNum
-		case ">":
-			return actualNum > expectedNum
-		case "<=":
-			return actualNum <= expectedNum
-		case ">=":
-			return actualNum >= expectedNum
-		}
-	}
-
-	// String comparison
-	actual = strings.ToLower(actual)
-	expected = strings.ToLower(expected)
-	switch operator {
-	case "==":
-		return actual == expected
-	case "!=":
-		return actual != expected
-	default:
-		m.logger.Warn("Operator %s not supported for string comparison", operator)
-		return false
-	}
+	return result
 }

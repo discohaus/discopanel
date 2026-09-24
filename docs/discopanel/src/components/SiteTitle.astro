@@ -1,0 +1,43 @@
+---
+import chip from '../../../../identity/assets/discopanel/chip.svg?raw';
+const { siteTitle, siteTitleHref } = Astro.locals.starlightRoute;
+---
+
+<a href={siteTitleHref} class="site-title sl-flex">
+	<span class="site-logo" aria-hidden="true" set:html={chip} />
+	<span class="wordmark" translate="no">disco<span class="wordmark-suffix">panel</span></span>
+</a>
+
+<style>
+	@layer starlight.core {
+		.site-title {
+			align-items: center;
+			gap: var(--sl-nav-gap);
+			font-size: var(--sl-text-h4);
+			font-weight: 600;
+			color: var(--sl-color-text-accent);
+			text-decoration: none;
+			white-space: nowrap;
+			min-width: 0;
+		}
+		span {
+			overflow: hidden;
+		}
+		.site-logo {
+			display: flex;
+			flex-shrink: 0;
+			overflow: visible;
+		}
+		.site-logo :global(svg) {
+			height: calc(var(--sl-nav-height) - 2 * var(--sl-nav-pad-y));
+			width: auto;
+		}
+		.wordmark {
+			font-family: 'JetBrains Mono', 'Cascadia Code', ui-monospace, Menlo, Consolas, monospace;
+			font-weight: 700;
+		}
+		.wordmark-suffix {
+			color: #55aa55;
+		}
+	}
+</style>

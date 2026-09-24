@@ -1,0 +1,189 @@
+syntax = "proto3";
+
+// Annotation vocabulary read from descriptors at runtime
+package discopanel.options.v1;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1;optionsv1";
+
+// Display metadata for one enum
+message EnumType {
+  string label = 1; // Human name for the enum itself
+}
+
+// Canonical and display strings for one enum value
+message EnumValue {
+  string name = 1; // Canonical string, default derived from value name
+  string label = 2; // Display label, default canonical name
+  string desc = 3; // Longer help text shown in pickers
+}
+
+// Settings UI and env generation metadata for one property
+message PropField {
+  string env = 1; // Environment variable consumed by the runtime
+  string prop = 2; // Key written to server.properties
+  string default_value = 3;
+  string desc = 4;
+  string input = 5; // One of text, number, checkbox, select, password
+  string label = 6;
+  string category = 7;
+  bool system = 8; // Auto populated and read only
+  bool required = 9;
+  bool ephemeral = 10; // Cleared after server start
+  repeated string options = 11; // Choices offered by select inputs
+}
+
+// One settings category, declaration order is display order
+message PropCategory {
+  string slug = 1; // Category key prop annotations reference
+  string label = 2; // Heading shown in the settings UI
+}
+
+// Category catalog annotated on a settings message
+message PropCategories {
+  repeated PropCategory categories = 1;
+}
+
+// Platform a modpack's files come from
+enum PackSource {
+  option (enum_type) = {label: "Pack Source"};
+  PACK_SOURCE_UNSPECIFIED = 0 [(value) = {label: "Unknown"}];
+  PACK_SOURCE_CURSEFORGE = 1 [(value) = {label: "CurseForge"}];
+  PACK_SOURCE_MODRINTH = 2 [(value) = {label: "Modrinth"}];
+  PACK_SOURCE_ZIP = 3 [(value) = {label: "Uploaded Archive"}];
+}
+
+// Grouping bucket for mod loaders, declaration order is display order
+enum ModLoaderCategory {
+  option (enum_type) = {label: "Loader Category"};
+  MOD_LOADER_CATEGORY_UNSPECIFIED = 0 [(value) = {label: "Unknown"}];
+  MOD_LOADER_CATEGORY_VANILLA = 1 [(value) = {label: "Vanilla"}];
+  MOD_LOADER_CATEGORY_FORGE = 2 [(value) = {label: "Forge"}];
+  MOD_LOADER_CATEGORY_FABRIC = 3 [(value) = {label: "Fabric"}];
+  MOD_LOADER_CATEGORY_BUKKIT = 4 [(value) = {label: "Bukkit"}];
+  MOD_LOADER_CATEGORY_PAPER = 5 [(value) = {label: "Paper"}];
+  MOD_LOADER_CATEGORY_HYBRID = 6 [(value) = {label: "Hybrid"}];
+  MOD_LOADER_CATEGORY_SPONGE = 7 [(value) = {label: "Sponge"}];
+  MOD_LOADER_CATEGORY_LIGHTWEIGHT = 8 [(value) = {label: "Lightweight"}];
+  MOD_LOADER_CATEGORY_MODPACK = 9 [(value) = {label: "Modpack"}];
+  MOD_LOADER_CATEGORY_OTHER = 10 [(value) = {label: "Other"}];
+}
+
+// Loader facts annotated on one ModLoader value
+message LoaderMeta {
+  ModLoaderCategory category = 1;
+  string mods_directory = 2; // Where jars install, mods or plugins, empty when none
+  repeated string dialects = 3; // Manifest formats read, native first
+  repeated string builtins = 4; // Dep ids the platform itself provides
+  bool maven_ranges = 5; // Native manifest speaks maven ranges
+  repeated string facets = 6; // Indexer loader names that source jars
+  repeated string markers = 7; // Data-dir paths proving the platform installed
+  PackSource pack_source = 8; // Set on loaders that install packs
+}
+
+// Permission domains guarding the API
+enum ResourceType {
+  option (enum_type) = {label: "Resource"};
+  RESOURCE_TYPE_UNSPECIFIED = 0 [(value) = {label: "Unknown"}];
+  RESOURCE_TYPE_SERVERS = 1 [
+    (value) = {label: "Servers"},
+    (scope_source) = RESOURCE_TYPE_SERVERS
+  ];
+  RESOURCE_TYPE_SERVER_PROPERTIES = 2 [
+    (value) = {label: "Server Properties"},
+    (scope_source) = RESOURCE_TYPE_SERVERS
+  ];
+  RESOURCE_TYPE_MODS = 3 [
+    (value) = {label: "Mods"},
+    (scope_source) = RESOURCE_TYPE_SERVERS
+  ];
+  RESOURCE_TYPE_MODPACKS = 4 [
+    (value) = {label: "Modpacks"},
+    (scope_source) = RESOURCE_TYPE_MODPACKS
+  ];
+  RESOURCE_TYPE_MODULES = 5 [
+    (value) = {label: "Modules"},
+    (scope_source) = RESOURCE_TYPE_SERVERS
+  ];
+  RESOURCE_TYPE_MODULE_TEMPLATES = 6 [
+    (value) = {label: "Module Templates"},
+    (scope_source) = RESOURCE_TYPE_MODULE_TEMPLATES
+  ];
+  RESOURCE_TYPE_FILES = 7 [
+    (value) = {label: "Files"},
+    (scope_source) = RESOURCE_TYPE_SERVERS
+  ];
+  RESOURCE_TYPE_TASKS = 8 [
+    (value) = {label: "Tasks"},
+    (scope_source) = RESOURCE_TYPE_SERVERS
+  ];
+  RESOURCE_TYPE_PROXY = 9 [
+    (value) = {label: "Proxy"},
+    (scope_source) = RESOURCE_TYPE_PROXY
+  ];
+  RESOURCE_TYPE_USERS = 10 [(value) = {label: "Users"}];
+  RESOURCE_TYPE_ROLES = 11 [(value) = {label: "Roles"}];
+  RESOURCE_TYPE_SETTINGS = 12 [(value) = {label: "Settings"}];
+  RESOURCE_TYPE_SUPPORT = 13 [(value) = {label: "Support"}];
+  RESOURCE_TYPE_UPLOADS = 14 [(value) = {label: "Uploads"}];
+}
+
+// Operations permission rows grant
+enum ActionType {
+  option (enum_type) = {label: "Action"};
+  ACTION_TYPE_UNSPECIFIED = 0 [(value) = {label: "Unknown"}];
+  ACTION_TYPE_READ = 1 [(value) = {label: "Read"}];
+  ACTION_TYPE_CREATE = 2 [(value) = {label: "Create"}];
+  ACTION_TYPE_UPDATE = 3 [(value) = {label: "Update"}];
+  ACTION_TYPE_DELETE = 4 [(value) = {label: "Delete"}];
+  ACTION_TYPE_START = 5 [(value) = {label: "Start"}];
+  ACTION_TYPE_STOP = 6 [(value) = {label: "Stop"}];
+  ACTION_TYPE_RESTART = 7 [(value) = {label: "Restart"}];
+  ACTION_TYPE_COMMAND = 8 [(value) = {label: "Command"}];
+}
+
+// Id space of a request's object id field
+enum ObjectScope {
+  option (enum_type) = {label: "Object Scope"};
+  // Field already carries the policy object id
+  OBJECT_SCOPE_UNSPECIFIED = 0;
+  // Field is a task id, resolves to server id
+  OBJECT_SCOPE_TASK = 1;
+  // Field is an execution id, resolves to server id
+  OBJECT_SCOPE_TASK_EXECUTION = 2;
+  // Field is a module id, resolves to server id
+  OBJECT_SCOPE_MODULE = 3;
+}
+
+// Permission gate annotated on one rpc method
+message RpcPerm {
+  ResourceType resource = 1;
+  ActionType action = 2;
+  string object_id_field = 3; // Request field for per-object RBAC, empty means all
+  ObjectScope scope = 4;
+  bool public = 5; // No authentication required
+  bool session = 6; // Authenticated only, no resource permission
+}
+
+extend google.protobuf.EnumOptions {
+  EnumType enum_type = 58101;
+}
+
+extend google.protobuf.EnumValueOptions {
+  EnumValue value = 58101;
+  LoaderMeta loader = 58103;
+  ResourceType scope_source = 58104;
+}
+
+extend google.protobuf.FieldOptions {
+  PropField prop = 58102;
+}
+
+extend google.protobuf.MethodOptions {
+  RpcPerm perm = 58105;
+}
+
+extend google.protobuf.MessageOptions {
+  PropCategories prop_categories = 58106;
+}

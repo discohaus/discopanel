@@ -2,46 +2,199 @@ syntax = "proto3";
 
 package discopanel.v1;
 
-import "discopanel/v1/common.proto";
+import "discopanel/options/v1/options.proto";
+import "discopanel/v1/storage.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
 // Minecraft server management
 service ServerService {
   // Get all servers with optional stats
-  rpc ListServers(ListServersRequest) returns (ListServersResponse);
+  rpc ListServers(ListServersRequest) returns (ListServersResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_READ
+    };
+  }
   // Get single server details
-  rpc GetServer(GetServerRequest) returns (GetServerResponse);
+  rpc GetServer(GetServerRequest) returns (GetServerResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_READ
+      object_id_field: "id"
+    };
+  }
   // Fetch container logs
-  rpc GetServerLogs(GetServerLogsRequest) returns (GetServerLogsResponse);
+  rpc GetServerLogs(GetServerLogsRequest) returns (GetServerLogsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_READ
+      object_id_field: "id"
+    };
+  }
   // Delete container logs
-  rpc ClearServerLogs(ClearServerLogsRequest) returns (ClearServerLogsResponse);
+  rpc ClearServerLogs(ClearServerLogsRequest) returns (ClearServerLogsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "id"
+    };
+  }
   // Find unused port
-  rpc GetNextAvailablePort(GetNextAvailablePortRequest) returns (GetNextAvailablePortResponse);
+  rpc GetNextAvailablePort(GetNextAvailablePortRequest) returns (GetNextAvailablePortResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_READ
+    };
+  }
+  // Host physical memory and per-server allocations
+  rpc GetHostMemory(GetHostMemoryRequest) returns (GetHostMemoryResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_READ
+    };
+  }
   // Create new server instance
-  rpc CreateServer(CreateServerRequest) returns (CreateServerResponse);
+  rpc CreateServer(CreateServerRequest) returns (CreateServerResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_CREATE
+    };
+  }
   // Modify server settings
-  rpc UpdateServer(UpdateServerRequest) returns (UpdateServerResponse);
+  rpc UpdateServer(UpdateServerRequest) returns (UpdateServerResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "id"
+    };
+  }
+  // Set a custom server icon from an uploaded image
+  rpc UploadServerIcon(UploadServerIconRequest) returns (UploadServerIconResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "id"
+    };
+  }
   // Remove server and data
-  rpc DeleteServer(DeleteServerRequest) returns (DeleteServerResponse);
+  rpc DeleteServer(DeleteServerRequest) returns (DeleteServerResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_DELETE
+      object_id_field: "id"
+    };
+  }
   // Start server container
-  rpc StartServer(StartServerRequest) returns (StartServerResponse);
+  rpc StartServer(StartServerRequest) returns (StartServerResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_START
+      object_id_field: "id"
+    };
+  }
   // Stop server container
-  rpc StopServer(StopServerRequest) returns (StopServerResponse);
+  rpc StopServer(StopServerRequest) returns (StopServerResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_STOP
+      object_id_field: "id"
+    };
+  }
   // Stop and start container
-  rpc RestartServer(RestartServerRequest) returns (RestartServerResponse);
+  rpc RestartServer(RestartServerRequest) returns (RestartServerResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_RESTART
+      object_id_field: "id"
+    };
+  }
   // Destroy and recreate container from scratch
-  rpc RecreateServer(RecreateServerRequest) returns (RecreateServerResponse);
+  rpc RecreateServer(RecreateServerRequest) returns (RecreateServerResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_RESTART
+      object_id_field: "id"
+    };
+  }
   // Execute console command
-  rpc SendCommand(SendCommandRequest) returns (SendCommandResponse);
+  rpc SendCommand(SendCommandRequest) returns (SendCommandResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_COMMAND
+      object_id_field: "id"
+    };
+  }
+  // Show a chat line in game under a display name
+  rpc SendChat(SendChatRequest) returns (SendChatResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_COMMAND
+      object_id_field: "id"
+    };
+  }
   // Upload server logs to mclo.gs
-  rpc UploadToMCLogs(UploadToMCLogsRequest) returns (UploadToMCLogsResponse);
+  rpc UploadToMCLogs(UploadToMCLogsRequest) returns (UploadToMCLogsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "id"
+    };
+  }
+  // Performance findings for a server (the autopilot health check)
+  rpc GetServerPerformanceReport(GetServerPerformanceReportRequest) returns (GetServerPerformanceReportResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_READ
+      object_id_field: "id"
+    };
+  }
+  // Historical metrics samples for charts
+  rpc GetServerMetricsHistory(GetServerMetricsHistoryRequest) returns (GetServerMetricsHistoryResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_READ
+      object_id_field: "id"
+    };
+  }
+  // Hide a finding until its content changes, restore un-hides
+  rpc DismissPerformanceFinding(DismissPerformanceFindingRequest) returns (DismissPerformanceFindingResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "id"
+    };
+  }
+  // Ledger of automation actions taken on a server
+  rpc GetServerActions(GetServerActionsRequest) returns (GetServerActionsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_READ
+      object_id_field: "id"
+    };
+  }
+  // List world backups for a server
+  rpc ListBackups(ListBackupsRequest) returns (ListBackupsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_READ
+      object_id_field: "id"
+    };
+  }
+  // Restore a world backup onto a stopped server
+  rpc RestoreBackup(RestoreBackupRequest) returns (RestoreBackupResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "id"
+    };
+  }
 }
 
 // Server list options
 message ListServersRequest {
-  bool full_stats = 1;
+  bool full_stats = 1; // Refresh live status and stats per server
 }
 
 // All server instances
@@ -94,8 +247,9 @@ message GetNextAvailablePortRequest {}
 
 // Port usage entry
 message UsedPort {
+  reserved 2;
+  reserved "in_use";
   int32 port = 1;
-  bool in_use = 2;
 }
 
 // Available port and usage list
@@ -104,7 +258,23 @@ message GetNextAvailablePortResponse {
   repeated UsedPort used_ports = 2;
 }
 
-// New server configuration
+// Empty host memory request
+message GetHostMemoryRequest {}
+
+// Memory one server reserves
+message ServerMemoryAllocation {
+  string server_id = 1;
+  string server_name = 2;
+  int32 memory = 3; // Container memory limit in MB
+}
+
+// Host total memory and current reservations
+message GetHostMemoryResponse {
+  int64 total_mb = 1; // Physical memory on the Docker host in MB
+  repeated ServerMemoryAllocation allocations = 2;
+}
+
+// New server settings
 message CreateServerRequest {
   string name = 1;
   string description = 2;
@@ -112,18 +282,20 @@ message CreateServerRequest {
   string mc_version = 4;
   int32 port = 5;
   int32 max_players = 6;
-  int32 memory = 7;
+  int32 memory = 7; // Container memory limit in MB
+  int32 memory_min = 19; // JVM initial heap in MB, 0 derives from memory
+  int32 memory_max = 20; // JVM max heap in MB, 0 derives from memory
   string docker_image = 8;
   bool auto_start = 9;
   bool detached = 10;
   bool start_immediately = 11;
   string modpack_id = 12;
   string modpack_version_id = 13;
-  string proxy_hostname = 14;
+  repeated string proxy_hostnames = 14;
   string proxy_listener_id = 15;
-  bool use_base_url = 16;
-  repeated AdditionalPort additional_ports = 17;
+  repeated NetworkPort additional_ports = 17;
   DockerOverrides docker_overrides = 18;
+  string world_upload_session_id = 21; // Uploaded world zip to import at create
 }
 
 // Created server instance
@@ -138,22 +310,38 @@ message UpdateServerRequest {
   string description = 3;
   optional int32 port = 4;
   int32 max_players = 5;
-  int32 memory = 6;
-  string mod_loader = 7;
+  int32 memory = 6; // Container memory limit in MB
+  int32 memory_min = 17; // JVM initial heap in MB, 0 derives from memory
+  int32 memory_max = 18; // JVM max heap in MB, 0 derives from memory
+  ModLoader mod_loader = 7;
   string mc_version = 8;
   string docker_image = 9;
   optional bool auto_start = 10;
   optional bool detached = 11;
-  optional string tps_command = 12;
+  reserved 12;
+  reserved "tps_command";
   string modpack_id = 13;
   string modpack_version_id = 14;
-  repeated AdditionalPort additional_ports = 15;
+  repeated NetworkPort additional_ports = 15;
   DockerOverrides docker_overrides = 16;
+  // Empty repeated cannot signal removal on its own
+  bool clear_additional_ports = 19;
 }
 
 // Updated server instance
 message UpdateServerResponse {
   Server server = 1;
+}
+
+// Server icon image to convert and install
+message UploadServerIconRequest {
+  string id = 1;
+  bytes image = 2; // Any common image format
+}
+
+// Installed icon as a data URI
+message UploadServerIconResponse {
+  string favicon = 1;
 }
 
 // Server to delete
@@ -171,7 +359,7 @@ message StartServerRequest {
 
 // Start operation status
 message StartServerResponse {
-  string status = 1;
+  ServerStatus status = 1;
 }
 
 // Server to stop
@@ -181,7 +369,7 @@ message StopServerRequest {
 
 // Stop operation status
 message StopServerResponse {
-  string status = 1;
+  ServerStatus status = 1;
 }
 
 // Server to restart
@@ -191,7 +379,7 @@ message RestartServerRequest {
 
 // Restart operation status
 message RestartServerResponse {
-  string status = 1;
+  ServerStatus status = 1;
 }
 
 // Server to recreate
@@ -201,7 +389,7 @@ message RecreateServerRequest {
 
 // Recreate operation status
 message RecreateServerResponse {
-  string status = 1;
+  ServerStatus status = 1;
 }
 
 // Console command to execute
@@ -218,6 +406,16 @@ message SendCommandResponse {
   string error = 3;
 }
 
+// Chat line to broadcast in game
+message SendChatRequest {
+  string id = 1;
+  string sender = 2; // Display name shown before the text
+  string message = 3;
+}
+
+// Empty chat ack
+message SendChatResponse {}
+
 // Server to upload logs for
 message UploadToMCLogsRequest {
   string id = 1;
@@ -226,4 +424,122 @@ message UploadToMCLogsRequest {
 // mclo.gs upload result
 message UploadToMCLogsResponse {
   string url = 1;
+}
+
+// Server to build a performance report for
+message GetServerPerformanceReportRequest {
+  string id = 1;
+}
+
+// Severity of one performance finding
+enum PerformanceSeverity {
+  option (discopanel.options.v1.enum_type) = {label: "Severity"};
+  PERFORMANCE_SEVERITY_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Unknown"}];
+  // Everything checked out
+  PERFORMANCE_SEVERITY_OK = 1 [(discopanel.options.v1.value) = {label: "OK"}];
+  // Informational, no action needed
+  PERFORMANCE_SEVERITY_INFO = 2 [(discopanel.options.v1.value) = {label: "Info"}];
+  // Degrades performance, worth fixing
+  PERFORMANCE_SEVERITY_WARNING = 3 [(discopanel.options.v1.value) = {label: "Warning"}];
+  // Actively harming the server (stalls, OOM risk, crash)
+  PERFORMANCE_SEVERITY_CRITICAL = 4 [(discopanel.options.v1.value) = {label: "Critical"}];
+}
+
+// What produced a finding
+enum FindingSource {
+  option (discopanel.options.v1.enum_type) = {label: "Finding Source"};
+  FINDING_SOURCE_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "unknown"}];
+  // Static config checks
+  FINDING_SOURCE_CONFIG = 1 [(discopanel.options.v1.value) = {label: "config"}];
+  // Live runtime and JVM telemetry
+  FINDING_SOURCE_TELEMETRY = 2 [(discopanel.options.v1.value) = {label: "telemetry"}];
+  // Crash forensics and automatic repair
+  FINDING_SOURCE_CRASH_DOCTOR = 3 [(discopanel.options.v1.value) = {label: "crash doctor"}];
+  // Mod dependency pre-flight validation
+  FINDING_SOURCE_PREFLIGHT = 4 [(discopanel.options.v1.value) = {label: "mod check"}];
+}
+
+// One autopilot check result in plain language
+message PerformanceFinding {
+  string id = 1;
+  PerformanceSeverity severity = 2;
+  string title = 3;
+  string detail = 4;
+  FindingSource source = 5;
+  repeated string evidence = 6; // short factual lines backing the finding
+  string action = 7; // what automation already did about it, may be empty
+  bool dismissed = 8; // hidden by the user until the finding changes
+  int64 action_log_start_ms = 9; // ledger window start for View Logs, 0 when none
+  string epoch = 10; // content version, dismissals expire when it changes
+}
+
+// The health check findings
+message GetServerPerformanceReportResponse {
+  repeated PerformanceFinding findings = 1;
+  bool agent_connected = 2;
+}
+
+// Dismissal toggle for one finding
+message DismissPerformanceFindingRequest {
+  string id = 1;
+  string finding_id = 2;
+  bool restore = 3; // true un-hides instead
+}
+
+// Empty ack
+message DismissPerformanceFindingResponse {}
+
+// Ledger query, after_id pages forward from a known row
+message GetServerActionsRequest {
+  string id = 1;
+  int64 after_id = 2;
+}
+
+// Actions ordered oldest first
+message GetServerActionsResponse {
+  repeated ServerAction actions = 1;
+}
+
+// A one-click fix to apply (fix_id from a finding)
+
+// One archived world snapshot
+message Backup {
+  string file_name = 1;
+  int64 size = 2;
+  google.protobuf.Timestamp created_at = 3;
+}
+
+// Backup listing for one server
+message ListBackupsRequest {
+  string id = 1;
+}
+
+// Backups ordered newest first
+message ListBackupsResponse {
+  repeated Backup backups = 1;
+}
+
+// Restore request, server must be stopped
+message RestoreBackupRequest {
+  string id = 1;
+  string file_name = 2;
+}
+
+// Restore outcome
+message RestoreBackupResponse {
+  string message = 1;
+}
+
+// Metrics history query for one server
+message GetServerMetricsHistoryRequest {
+  string id = 1;
+  google.protobuf.Timestamp from = 2; // defaults to one hour ago
+  google.protobuf.Timestamp to = 3; // defaults to now
+  int32 resolution = 4; // bucket seconds, 0 picks by range
+}
+
+// Samples ordered oldest first
+message GetServerMetricsHistoryResponse {
+  repeated MetricsSample samples = 1;
+  int32 resolution = 2; // bucket seconds actually served
 }

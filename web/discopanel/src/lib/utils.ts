@@ -47,19 +47,3 @@ export function getDockerImageDisplayName(
 	// Use the displayName field from the generated type
 	return image.displayName || image.tag;
 }
-
-export function getStringForEnum(map: Record<string, unknown>, val: unknown) {
-	return Object.keys(map).find((key) => map[key] === val);
-}
-
-// Convert proto enum value to the lowercase string name used by backend
-// NOTE: ModLoader.MOD_LOADER_VANILLA (1) -> "vanilla"
-export function enumToString(map: Record<string, unknown>, val: unknown): string {
-	const enumKey = getStringForEnum(map, val);
-	if (!enumKey) return '';
-	const parts = enumKey.split('_');
-	if (parts.length > 2) {
-		return parts.slice(2).join('_').toLowerCase();
-	}
-	return enumKey.toLowerCase();
-}

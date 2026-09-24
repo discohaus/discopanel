@@ -7,24 +7,53 @@ import (
 	"github.com/casbin/casbin/v3"
 	"github.com/casbin/casbin/v3/model"
 	gormadapter "github.com/casbin/gorm-adapter/v3"
+	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/protometa"
 	"gorm.io/gorm"
 )
 
-// Permission represents a single resource/action/object permission tuple.
-type Permission struct {
-	Resource string
-	Action   string
-	ObjectID string
+// Casbin rows hold canonical enum names, star means any
+
+// Casbin column for a resource
+func resourceName(r optionsv1.ResourceType) string {
+	if r == optionsv1.ResourceType_RESOURCE_TYPE_UNSPECIFIED {
+		return "*"
+	}
+	return protometa.Name(r)
 }
 
-// Enforcer wraps a Casbin enforcer with convenience methods for RBAC.
+// Casbin column for an action
+func actionName(a optionsv1.ActionType) string {
+	if a == optionsv1.ActionType_ACTION_TYPE_UNSPECIFIED {
+		return "*"
+	}
+	return protometa.Name(a)
+}
+
+// Permission row from one casbin policy, unspecified means any
+func permission(p []string) *v1.Permission {
+	perm := &v1.Permission{ObjectId: p[3]}
+	if p[1] != "*" {
+		perm.Resource, _ = protometa.FromName[optionsv1.ResourceType](p[1])
+	}
+	if p[2] != "*" {
+		perm.Action, _ = protometa.FromName[optionsv1.ActionType](p[2])
+	}
+	return perm
+}
+
+// Wraps Casbin enforcer with convenience methods for RBAC
 type Enforcer struct {
 	enforcer *casbin.Enforcer
 }
 
-// NewEnforcer creates a new Casbin RBAC enforcer backed by the given GORM database.
+// Creates Casbin RBAC enforcer backed by GORM database
+// Migration engine owns the casbin_rule table shape
 func NewEnforcer(db *gorm.DB) (*Enforcer, error) {
-	adapter, err := gormadapter.NewAdapterByDB(db)
+	session := db.Session(&gorm.Session{})
+	gormadapter.TurnOffAutoMigrate(session)
+	adapter, err := gormadapter.NewAdapterByDB(session)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create casbin adapter: %w", err)
 	}
@@ -62,41 +91,69 @@ m = g(r.sub, p.sub) && (p.res == "*" || r.res == p.res) && (p.act == "*" || r.ac
 	return &Enforcer{enforcer: e}, nil
 }
 
+// One seeded grant of an action on a resource
+type grant struct {
+	resource optionsv1.ResourceType
+	action   optionsv1.ActionType
+}
+
+// Every readable resource, the base browse grant set
+func readGrants(resources ...optionsv1.ResourceType) []grant {
+	grants := make([]grant, len(resources))
+	for i, r := range resources {
+		grants[i] = grant{resource: r, action: optionsv1.ActionType_ACTION_TYPE_READ}
+	}
+	return grants
+}
+
 // Ensures default roles have their base permissions
 func (e *Enforcer) SeedDefaultPolicies(anonymousEnabled bool) error {
-	policies := map[string][][]string{
-		"admin": {
-			{"admin", "*", "*", "*"},
-		},
-		"user": {
-			{"user", ResourceServers, ActionRead, "*"},
-			{"user", ResourceServers, ActionStart, "*"},
-			{"user", ResourceServers, ActionStop, "*"},
-			{"user", ResourceServers, ActionRestart, "*"},
-			{"user", ResourceServers, ActionCommand, "*"},
-			{"user", ResourceServerConfig, ActionRead, "*"},
-			{"user", ResourceMods, ActionRead, "*"},
-			{"user", ResourceModpacks, ActionRead, "*"},
-			{"user", ResourceModules, ActionRead, "*"},
-			{"user", ResourceModuleTemplates, ActionRead, "*"},
-			{"user", ResourceFiles, ActionRead, "*"},
-			{"user", ResourceTasks, ActionRead, "*"},
-			{"user", ResourceProxy, ActionRead, "*"},
-		},
-		"anonymous": {
-			{"anonymous", ResourceServers, ActionRead, "*"},
-			{"anonymous", ResourceServerConfig, ActionRead, "*"},
-			{"anonymous", ResourceMods, ActionRead, "*"},
-			{"anonymous", ResourceModpacks, ActionRead, "*"},
-			{"anonymous", ResourceModules, ActionRead, "*"},
-			{"anonymous", ResourceModuleTemplates, ActionRead, "*"},
-			{"anonymous", ResourceFiles, ActionRead, "*"},
-			{"anonymous", ResourceTasks, ActionRead, "*"},
-			{"anonymous", ResourceProxy, ActionRead, "*"},
-		},
+	browse := []optionsv1.ResourceType{
+		optionsv1.ResourceType_RESOURCE_TYPE_SERVERS,
+		optionsv1.ResourceType_RESOURCE_TYPE_SERVER_PROPERTIES,
+		optionsv1.ResourceType_RESOURCE_TYPE_MODS,
+		optionsv1.ResourceType_RESOURCE_TYPE_MODPACKS,
+		optionsv1.ResourceType_RESOURCE_TYPE_MODULES,
+		optionsv1.ResourceType_RESOURCE_TYPE_MODULE_TEMPLATES,
+		optionsv1.ResourceType_RESOURCE_TYPE_FILES,
+		optionsv1.ResourceType_RESOURCE_TYPE_TASKS,
+		optionsv1.ResourceType_RESOURCE_TYPE_PROXY,
+	}
+	serverOps := []grant{
+		{optionsv1.ResourceType_RESOURCE_TYPE_SERVERS, optionsv1.ActionType_ACTION_TYPE_START},
+		{optionsv1.ResourceType_RESOURCE_TYPE_SERVERS, optionsv1.ActionType_ACTION_TYPE_STOP},
+		{optionsv1.ResourceType_RESOURCE_TYPE_SERVERS, optionsv1.ActionType_ACTION_TYPE_RESTART},
 	}
 
-	for role, rolePolicies := range policies {
+	policies := map[string][]grant{
+		"admin": {{}}, // Unspecified pair seeds the star wildcard row
+		"user": append(append(readGrants(browse...), serverOps...),
+			grant{optionsv1.ResourceType_RESOURCE_TYPE_SERVERS, optionsv1.ActionType_ACTION_TYPE_COMMAND},
+		),
+		"module": readGrants(
+			optionsv1.ResourceType_RESOURCE_TYPE_SERVERS,
+			optionsv1.ResourceType_RESOURCE_TYPE_SERVER_PROPERTIES,
+			optionsv1.ResourceType_RESOURCE_TYPE_MODPACKS,
+		),
+		"doctor": append(readGrants(
+			optionsv1.ResourceType_RESOURCE_TYPE_SERVERS,
+			optionsv1.ResourceType_RESOURCE_TYPE_SERVER_PROPERTIES,
+			optionsv1.ResourceType_RESOURCE_TYPE_SETTINGS,
+			optionsv1.ResourceType_RESOURCE_TYPE_MODPACKS,
+		), serverOps...),
+		// Bot relays chat, runs commands, reads crash reports, answers prompts
+		"bot": append(append(readGrants(
+			optionsv1.ResourceType_RESOURCE_TYPE_SERVERS,
+			optionsv1.ResourceType_RESOURCE_TYPE_MODULES,
+			optionsv1.ResourceType_RESOURCE_TYPE_FILES,
+		), serverOps...),
+			grant{optionsv1.ResourceType_RESOURCE_TYPE_SERVERS, optionsv1.ActionType_ACTION_TYPE_COMMAND},
+			grant{optionsv1.ResourceType_RESOURCE_TYPE_MODULES, optionsv1.ActionType_ACTION_TYPE_UPDATE},
+		),
+		"anonymous": readGrants(browse...),
+	}
+
+	for role, grants := range policies {
 		existing, err := e.enforcer.GetFilteredPolicy(0, role)
 		if err != nil {
 			return err
@@ -105,8 +162,8 @@ func (e *Enforcer) SeedDefaultPolicies(anonymousEnabled bool) error {
 			continue
 		}
 
-		for _, p := range rolePolicies {
-			if _, err := e.enforcer.AddPolicy(p[0], p[1], p[2], p[3]); err != nil {
+		for _, g := range grants {
+			if _, err := e.enforcer.AddPolicy(role, resourceName(g.resource), actionName(g.action), "*"); err != nil {
 				return err
 			}
 		}
@@ -115,11 +172,10 @@ func (e *Enforcer) SeedDefaultPolicies(anonymousEnabled bool) error {
 	return e.enforcer.SavePolicy()
 }
 
-// Enforce checks if any of the given roles allows the specified action on a
-// resource with the given object ID. Returns true on the first matching role.
-func (e *Enforcer) Enforce(roles []string, resource, action, objectID string) (bool, error) {
+// True if any role allows action on resource/object
+func (e *Enforcer) Enforce(roles []string, resource optionsv1.ResourceType, action optionsv1.ActionType, objectID string) (bool, error) {
 	for _, role := range roles {
-		allowed, err := e.enforcer.Enforce(role, resource, action, objectID)
+		allowed, err := e.enforcer.Enforce(role, resourceName(resource), actionName(action), objectID)
 		if err != nil {
 			return false, err
 		}
@@ -130,43 +186,40 @@ func (e *Enforcer) Enforce(roles []string, resource, action, objectID string) (b
 	return false, nil
 }
 
-// GetPermissionsForRole returns all permissions currently assigned to the role.
-func (e *Enforcer) GetPermissionsForRole(role string) []Permission {
+// Returns all permissions currently assigned to role
+func (e *Enforcer) GetPermissionsForRole(role string) []*v1.Permission {
 	policies, err := e.enforcer.GetFilteredPolicy(0, role)
 	if err != nil {
 		return nil
 	}
-	perms := make([]Permission, 0, len(policies))
+	perms := make([]*v1.Permission, 0, len(policies))
 	for _, p := range policies {
 		if len(p) >= 4 {
-			perms = append(perms, Permission{
-				Resource: p[1],
-				Action:   p[2],
-				ObjectID: p[3],
-			})
+			perms = append(perms, permission(p))
 		}
 	}
 	return perms
 }
 
-// SetPermissionsForRole replaces all permissions for a role atomically.
-// The admin role cannot be modified.
-func (e *Enforcer) SetPermissionsForRole(role string, perms []Permission) error {
+// Replaces all permissions for a role, admin role blocked
+func (e *Enforcer) SetPermissionsForRole(role string, perms []*v1.Permission) error {
 	// Don't modify admin role
 	if strings.ToLower(role) == "admin" {
 		return fmt.Errorf("cannot modify admin role permissions")
 	}
 
 	// Remove existing permissions
-	e.enforcer.RemoveFilteredPolicy(0, role)
+	if _, err := e.enforcer.RemoveFilteredPolicy(0, role); err != nil {
+		return err
+	}
 
 	// Add new permissions
 	for _, p := range perms {
-		objectID := p.ObjectID
+		objectID := p.ObjectId
 		if objectID == "" {
 			objectID = "*"
 		}
-		_, err := e.enforcer.AddPolicy(role, p.Resource, p.Action, objectID)
+		_, err := e.enforcer.AddPolicy(role, resourceName(p.Resource), actionName(p.Action), objectID)
 		if err != nil {
 			return err
 		}
@@ -175,22 +228,39 @@ func (e *Enforcer) SetPermissionsForRole(role string, perms []Permission) error 
 	return e.enforcer.SavePolicy()
 }
 
-// GetPermissionMatrix returns a map of role names to their permission slices,
-// covering all roles that have any policy defined.
-func (e *Enforcer) GetPermissionMatrix() map[string][]Permission {
+// Moves a role's policies onto a new name
+func (e *Enforcer) RenameRole(oldName, newName string) error {
+	if strings.EqualFold(oldName, "admin") || strings.EqualFold(newName, "admin") {
+		return fmt.Errorf("cannot modify admin role permissions")
+	}
+	policies, err := e.enforcer.GetFilteredPolicy(0, oldName)
+	if err != nil {
+		return err
+	}
+	if _, err := e.enforcer.RemoveFilteredPolicy(0, oldName); err != nil {
+		return err
+	}
+	for _, p := range policies {
+		if len(p) < 4 {
+			continue
+		}
+		if _, err := e.enforcer.AddPolicy(newName, p[1], p[2], p[3]); err != nil {
+			return err
+		}
+	}
+	return e.enforcer.SavePolicy()
+}
+
+// Maps each role to its permission slices
+func (e *Enforcer) GetPermissionMatrix() map[string][]*v1.Permission {
 	policies, err := e.enforcer.GetPolicy()
 	if err != nil {
 		return nil
 	}
-	matrix := make(map[string][]Permission)
+	matrix := make(map[string][]*v1.Permission)
 	for _, p := range policies {
 		if len(p) >= 4 {
-			role := p[0]
-			matrix[role] = append(matrix[role], Permission{
-				Resource: p[1],
-				Action:   p[2],
-				ObjectID: p[3],
-			})
+			matrix[p[0]] = append(matrix[p[0]], permission(p))
 		}
 	}
 	return matrix

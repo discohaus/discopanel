@@ -39,8 +39,8 @@ session:
   secret: 'discopanel-dev-session-secret-change-me-in-production'
   cookies:
     - name: 'authelia_session'
-      domain: 'traefik.me'
-      authelia_url: 'https://authelia.traefik.me:9091'
+      domain: '127-0-0-1.sslip.io'
+      authelia_url: 'https://authelia.127-0-0-1.sslip.io:9091'
       expiration: '1 hour'
       inactivity: '5 minutes'
 
@@ -129,7 +129,7 @@ identity_providers:
       id_token: '1h'
       refresh_token: '90m'
 
-    # This policy puts "groups" directly in the ID token. Without it, groups only show up in the UserInfo endpoint, and Discopanel wouldn't read roles.
+    # This policy puts "groups" directly in the ID token. Without it, groups only show up in the UserInfo endpoint, and DiscoPanel wouldn't read roles.
     claims_policies:
       discopanel:
         id_token:

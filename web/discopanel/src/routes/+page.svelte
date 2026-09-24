@@ -1,759 +1,639 @@
 <script lang="ts">
-	import {
-		Card,
-		CardContent,
-		CardDescription,
-		CardHeader,
-		CardTitle
-	} from '$lib/components/ui/card';
-	import { Button } from '$lib/components/ui/button';
-	import { Progress } from '$lib/components/ui/progress';
-	import { Badge } from '$lib/components/ui/badge';
-	import { Skeleton } from '$lib/components/ui/skeleton';
-	import { Alert, AlertDescription } from '$lib/components/ui/alert';
-	import { formatBytes, getStringForEnum } from '$lib/utils';
-	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
+	import { resolve } from '$app/paths';
+	import { Button } from '$lib/components/ui/button';
+	import { Skeleton } from '$lib/components/ui/skeleton';
 	import {
-		Server,
-		MemoryStick,
+		PageHeader,
+		StatTile,
+		StatusBadge,
+		ServerAvatar,
+		EmptyState,
+		AddressSelect
+	} from '$lib/components/app';
+	import MetricsSparkline from '$lib/components/metrics-sparkline.svelte';
+	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
+	import { serverAddresses } from '$lib/hostname';
+	import { serversStore, sortServersByActivity, claimFullStats } from '$lib/stores/servers';
+	import { currentUser, canAccessSettings } from '$lib/stores/auth';
+	import {
+		tpsTone,
+		TONE_TEXT,
+		TONE_BG,
+		canStart,
+		canStop,
+		isUp,
+		statusMeta
+	} from '$lib/server-status';
+	import { formatUptime, formatRelative } from '$lib/utils/time';
+	import { formatBytes } from '$lib/utils';
+	import { runServerAction } from '$lib/server-actions';
+	import {
 		Plus,
-		LayoutDashboard,
-		AlertCircle,
-		PlayCircle,
-		StopCircle,
-		Clock,
-		TrendingUp,
+		Play,
+		Square,
+		ArrowRight,
+		Terminal,
+		Server as ServerIcon,
 		Users,
 		Zap,
-		ChevronRight,
-		Github,
-		MessageCircle,
-		HelpCircle,
-		BookOpen,
-		Shield,
-		Gauge,
-		Database,
-		Wifi,
-		WifiOff,
-		CheckCircle,
-		XCircle,
+		MemoryStick,
+		HardDrive,
 		AlertTriangle,
-		RefreshCw
+		MessageCircle,
+		Github,
+		BookOpen,
+		Package,
+		Settings,
+		FileText,
+		Loader2,
+		Moon
 	} from '@lucide/svelte';
-	import { ServerStatus, type Server as ServerType } from '$lib/proto/discopanel/v1/common_pb';
-	import { rpcClient } from '$lib/api/rpc-client';
-	import { serversStore, sortServersByActivity } from '$lib/stores/servers';
-	import type { Timestamp } from '@bufbuild/protobuf/wkt';
+	import { type Server, ServerStatus } from '$lib/proto/discopanel/v1/storage_pb';
+	import type { GetProxyStatusResponse } from '$lib/proto/discopanel/v1/proxy_pb';
 
-	// Dashboard data
-	let dashboardServers: ServerType[] = $state([]);
-	let isLoading = $state(true);
-	let isRefreshing = $state(false);
-	let currentTime = $state(new Date());
-	// Load dashboard data with full stats
-	async function loadDashboardData() {
-		try {
-			const response = await rpcClient.server.listServers({ fullStats: true });
-			dashboardServers = response.servers;
-			serversStore.set(response.servers);
-		} catch (error) {
-			console.error('Failed to load dashboard data:', error);
-		}
-	}
+	let servers = $derived($serversStore);
+	let user = $derived($currentUser);
+	let showSettingsLink = $derived($canAccessSettings);
+	let initialLoading = $state(true);
+	let actioningId = $state('');
+	let now = $state(new Date());
+	let hostTotalMb = $state(0);
+	let proxyStatus = $state<GetProxyStatusResponse | null>(null);
 
-	// Refresh function for manual updates
-	async function refreshDashboard() {
-		isRefreshing = true;
-		await loadDashboardData();
-		isRefreshing = false;
-	}
-
-	let stats = $derived({
-		total: dashboardServers.length,
-		running: dashboardServers.filter((s) => s.status === ServerStatus.RUNNING).length,
-		stopped: dashboardServers.filter((s) => s.status === ServerStatus.STOPPED).length,
-		error: dashboardServers.filter(
-			(s) => s.status === ServerStatus.ERROR || s.status === ServerStatus.UNHEALTHY
-		).length,
-		totalMemory: dashboardServers.reduce((acc, s) => acc + (s.memory || 0), 0),
-		usedMemory: dashboardServers
-			.filter((s) => s.status === ServerStatus.RUNNING)
-			.reduce((acc, s) => acc + Number(s.memoryUsage || s.memory || 0), 0),
-		totalPlayers: dashboardServers
-			.filter((s) => s.status === ServerStatus.RUNNING)
-			.reduce((acc, s) => acc + (s.playersOnline || 0), 0),
-		totalMaxPlayers: dashboardServers.reduce((acc, s) => acc + (s.maxPlayers || 0), 0),
-		avgTps: dashboardServers
-			.filter((s) => s.tps && s.tps > 0)
-			.reduce((acc, s, _, arr) => acc + (s.tps || 0) / arr.length, 0),
-		totalDiskUsage: dashboardServers.reduce((acc, s) => acc + Number(s.diskUsage || 0), 0),
-		totalDiskSize:
-			dashboardServers.length > 0
-				? ` / ${dashboardServers?.[0]?.diskTotal && formatBytes(Number(dashboardServers[0].diskTotal))}`
-				: '',
-		avgCpu: dashboardServers
-			.filter((s) => s.cpuPercent && s.cpuPercent > 0)
-			.reduce((acc, s, _, arr) => acc + (s.cpuPercent || 0) / arr.length, 0)
+	onMount(() => {
+		const release = claimFullStats();
+		serversStore
+			.fetchServers(servers.length > 0, true)
+			.catch(() => {})
+			.finally(() => (initialLoading = false));
+		rpcClient.server
+			.getHostMemory({})
+			.then((r) => (hostTotalMb = Number(r.totalMb)))
+			.catch(() => {});
+		rpcClient.proxy
+			.getProxyStatus({}, silentCallOptions)
+			.then((r) => (proxyStatus = r))
+			.catch(() => {});
+		const clock = setInterval(() => (now = new Date()), 30000);
+		return () => {
+			release();
+			clearInterval(clock);
+		};
 	});
 
-	let recentActivity = $derived(
-		dashboardServers
-			.filter((s) => s.lastStarted)
-			.sort(
-				(a, b) =>
-					new Date(Number(b.lastStarted!.seconds) * 1000).getTime() -
-					new Date(Number(a.lastStarted!.seconds) * 1000).getTime()
-			)
-			.slice(0, 5)
-			.map((s) => ({
-				server: s.name,
-				action: s.status === ServerStatus.RUNNING ? 'Started' : 'Activity',
-				time: s.lastStarted,
-				status: s.status
-			}))
-	);
+	let stats = $derived.by(() => {
+		const running = servers.filter((s) => s.status === ServerStatus.RUNNING);
+		// Offline servers keep stale tps, trust only live ones
+		const withTps = running.filter((s) => s.tps && s.tps > 0);
+		return {
+			total: servers.length,
+			running: running.length,
+			players: running.reduce((acc, s) => acc + (s.playersOnline || 0), 0),
+			playerCapacity: running.reduce((acc, s) => acc + (s.maxPlayers || 0), 0),
+			usedMemoryMb: running.reduce((acc, s) => acc + Number(s.memoryUsage || s.memory || 0), 0),
+			totalMemoryMb: servers.reduce((acc, s) => acc + (s.memory || 0), 0),
+			avgTps: withTps.length
+				? withTps.reduce((acc, s) => acc + (s.tps || 0), 0) / withTps.length
+				: 0
+		};
+	});
 
-	let serversByStatus = $derived({
-		healthy: dashboardServers.filter(
-			(s) => s.status === ServerStatus.RUNNING && (!s.tps || s.tps >= 18)
-		),
-		warning: dashboardServers.filter(
-			(s) => s.status === ServerStatus.RUNNING && s.tps && s.tps < 18 && s.tps >= 15
-		),
-		critical: dashboardServers.filter(
+	// Any sampled server carries the shared volume numbers
+	let hostDisk = $derived(servers.find((s) => Number(s.diskTotal) > 0));
+	let diskPercent = $derived(
+		hostDisk ? (Number(hostDisk.diskUsed) / Math.max(Number(hostDisk.diskTotal), 1)) * 100 : 0
+	);
+	// Host total anchors the bar, allocations as fallback
+	let memDenomMb = $derived(hostTotalMb > 0 ? hostTotalMb : stats.totalMemoryMb);
+	let memoryPercent = $derived(memDenomMb > 0 ? (stats.usedMemoryMb / memDenomMb) * 100 : 0);
+	let allocatedPercent = $derived(memDenomMb > 0 ? (stats.totalMemoryMb / memDenomMb) * 100 : 0);
+
+	function attentionReason(server: Server): string {
+		if (server.status === ServerStatus.ERROR)
+			return 'Crashed or failed to start, check the console';
+		if (server.status === ServerStatus.UNHEALTHY) return 'Running but not responding normally';
+		return `Struggling to keep up, ${server.tps.toFixed(1)} TPS`;
+	}
+
+	let attention = $derived(
+		servers.filter(
 			(s) =>
 				s.status === ServerStatus.ERROR ||
 				s.status === ServerStatus.UNHEALTHY ||
-				(s.status === ServerStatus.RUNNING && s.tps && s.tps < 15)
+				(s.status === ServerStatus.RUNNING && s.tps > 0 && s.tps < 15)
 		)
+	);
+
+	// Live grid shows anything up or on its way up
+	let liveServers = $derived(
+		sortServersByActivity([...servers]).filter(
+			(s) =>
+				isUp(s.status) ||
+				s.status === ServerStatus.STARTING ||
+				s.status === ServerStatus.PROVISIONING ||
+				s.status === ServerStatus.PAUSED
+		)
+	);
+
+	// Offline servers with history, most recently seen first
+	let recentlyOffline = $derived(
+		servers
+			.filter((s) => s.status === ServerStatus.STOPPED)
+			.sort((a, b) => Number(b.lastStarted?.seconds ?? 0n) - Number(a.lastStarted?.seconds ?? 0n))
+			.slice(0, 4)
+	);
+
+	let greeting = $derived.by(() => {
+		const hour = now.getHours();
+		const timeOfDay =
+			hour < 5 ? 'evening' : hour < 12 ? 'morning' : hour < 18 ? 'afternoon' : 'evening';
+		return user ? `Good ${timeOfDay}, ${user.username}` : `Good ${timeOfDay}`;
 	});
 
-	onMount(() => {
-		// Load dashboard data on mount
-		loadDashboardData().then(() => {
-			isLoading = false;
-		});
-
-		// Update time for relative timestamps
-		const interval = setInterval(() => {
-			currentTime = new Date();
-		}, 1000);
-		return () => clearInterval(interval);
+	let headline = $derived.by(() => {
+		if (servers.length === 0) return 'Ready when you are';
+		if (stats.running === 0) return 'Everything is quiet, all servers are stopped';
+		const players = stats.players === 1 ? '1 player' : `${stats.players} players`;
+		return `${stats.running} of ${stats.total} ${stats.total === 1 ? 'server' : 'servers'} running · ${players} online`;
 	});
 
-	const getStatusColor = (status: ServerStatus) => {
-		switch (status) {
-			case ServerStatus.RUNNING:
-				return 'text-green-500';
-			case ServerStatus.STARTING:
-			case ServerStatus.STOPPING:
-			case ServerStatus.CREATING:
-			case ServerStatus.RESTARTING:
-				return 'text-yellow-500';
-			case ServerStatus.STOPPED:
-				return 'text-gray-400';
-			case ServerStatus.ERROR:
-			case ServerStatus.UNHEALTHY:
-				return 'text-red-500';
-			default:
-				return 'text-gray-400';
-		}
-	};
-
-	const getStatusIcon = (status: ServerStatus) => {
-		switch (status) {
-			case ServerStatus.RUNNING:
-				return CheckCircle;
-			case ServerStatus.STARTING:
-			case ServerStatus.STOPPING:
-			case ServerStatus.CREATING:
-			case ServerStatus.RESTARTING:
-				return AlertCircle;
-			case ServerStatus.STOPPED:
-				return XCircle;
-			case ServerStatus.ERROR:
-			case ServerStatus.UNHEALTHY:
-				return AlertTriangle;
-			default:
-				return AlertCircle;
-		}
-	};
-
-	const getStatusBadgeColor = (status: ServerStatus) => {
-		switch (status) {
-			case ServerStatus.RUNNING:
-				return 'bg-green-500/10 text-green-500 border-green-500/20';
-			case ServerStatus.STARTING:
-			case ServerStatus.STOPPING:
-			case ServerStatus.CREATING:
-			case ServerStatus.RESTARTING:
-				return 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20';
-			case ServerStatus.STOPPED:
-				return 'bg-gray-500/10 text-gray-500 border-gray-500/20';
-			case ServerStatus.ERROR:
-			case ServerStatus.UNHEALTHY:
-				return 'bg-red-500/10 text-red-500 border-red-500/20';
-			default:
-				return 'bg-gray-500/10 text-gray-500 border-gray-500/20';
-		}
-	};
-
-	const formatUptime = (lastStarted?: Timestamp) => {
-		if (!lastStarted) return 'Never';
-		const start = new Date(Number(lastStarted.seconds) * 1000);
-		const diff = currentTime.getTime() - start.getTime();
-		const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-		const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-		const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-
-		if (days > 0) return `${days}d ${hours}h`;
-		if (hours > 0) return `${hours}h ${minutes}m`;
-		return `${minutes}m`;
-	};
-
-	const getTpsColor = (tps: number | undefined) => {
-		if (!tps) return 'text-gray-400';
-		if (tps >= 19) return 'text-green-500';
-		if (tps >= 17) return 'text-yellow-500';
-		if (tps >= 15) return 'text-orange-500';
-		return 'text-red-500';
-	};
-
-	const getCpuColor = (cpu: number | undefined) => {
-		if (!cpu) return 'text-gray-400';
-		if (cpu <= 50) return 'text-green-500';
-		if (cpu <= 70) return 'text-yellow-500';
-		if (cpu <= 85) return 'text-orange-500';
-		return 'text-red-500';
-	};
+	async function power(server: Server, start: boolean) {
+		actioningId = server.id;
+		await runServerAction(start ? 'start' : 'stop', server);
+		actioningId = '';
+	}
 </script>
 
-{#if isLoading}
-	<div class="flex h-full flex-1 items-center justify-center p-6">
-		<div class="space-y-4 text-center">
-			<div
-				class="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-primary/30 border-t-primary"
-			></div>
-			<p class="text-muted-foreground">Loading dashboard...</p>
+<svelte:head>
+	<title>Home · DiscoPanel</title>
+</svelte:head>
+
+{#snippet offlineRow(server: Server)}
+	{@const busy = actioningId === server.id}
+	<div
+		class="group relative flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-accent/40"
+	>
+		<ServerAvatar name={server.name} favicon={server.favicon} size="sm" />
+		<div class="min-w-0 flex-1">
+			<a
+				href={resolve(`/servers/${server.id}`)}
+				class="truncate text-sm font-medium after:absolute after:inset-0"
+			>
+				{server.name}
+			</a>
+			<p class="text-xs text-muted-foreground">
+				{server.lastStarted
+					? `last online ${formatRelative(server.lastStarted, now)}`
+					: 'never started'}
+				· {server.mcVersion}
+			</p>
+		</div>
+		<div class="relative z-10 shrink-0">
+			{#if busy}
+				<Loader2 class="mx-2 size-4 animate-spin text-muted-foreground" />
+			{:else if canStart(server.status)}
+				<Button
+					variant="ghost"
+					size="icon"
+					class="size-7 text-status-ok hover:bg-status-ok/10 hover:text-status-ok"
+					title="Start"
+					onclick={() => power(server, true)}
+				>
+					<Play class="size-4" />
+				</Button>
+			{/if}
 		</div>
 	</div>
-{:else}
-	<div
-		class="h-full flex-1 space-y-6 bg-linear-to-br from-background via-background to-muted/5 p-6"
-	>
-		<div class="flex items-center justify-between border-b border-border/40 pb-4">
-			<div class="flex items-center gap-4">
-				<div
-					class="flex h-14 w-14 animate-in items-center justify-center rounded-2xl bg-linear-to-br from-primary/20 to-primary/10 shadow-lg duration-500 fade-in-50"
-				>
-					<LayoutDashboard class="h-7 w-7 text-primary" />
-				</div>
-				<div class="animate-in space-y-1 duration-500 slide-in-from-left-5">
-					<h2 class="text-3xl font-bold tracking-tight">Dashboard</h2>
-					<p class="text-sm text-muted-foreground">
-						Monitor and manage your Minecraft server infrastructure
-					</p>
-				</div>
-			</div>
-			<div class="flex animate-in items-center gap-3 duration-500 slide-in-from-right-5">
-				<Button
-					variant="outline"
-					size="sm"
-					onclick={refreshDashboard}
-					disabled={isRefreshing}
-					class="flex items-center gap-2"
-				>
-					<RefreshCw class="h-4 w-4 {isRefreshing ? 'animate-spin' : ''}" />
-					Refresh
+{/snippet}
+
+<div class="border-b bg-card/40">
+	<div class="mx-auto w-full max-w-6xl px-4 pt-5 sm:px-6 2xl:max-w-7xl">
+		<PageHeader title={greeting} description={headline} class="pb-4" />
+	</div>
+</div>
+
+<div class="mx-auto w-full max-w-6xl space-y-5 p-4 sm:p-6 2xl:max-w-7xl">
+	{#if initialLoading && servers.length === 0}
+		<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+			{#each Array(4) as _, i (i)}
+				<Skeleton class="h-24 rounded-lg" />
+			{/each}
+		</div>
+		<div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_17rem]">
+			<Skeleton class="h-72 rounded-xl" />
+			<Skeleton class="h-72 rounded-xl" />
+		</div>
+	{:else if servers.length === 0}
+		<div class="rounded-xl border bg-card">
+			<EmptyState
+				icon={ServerIcon}
+				title="Welcome to DiscoPanel"
+				description="Spin up your first Minecraft server, or browse modpacks to find something fun."
+				class="py-20"
+			>
+				<Button href={resolve('/servers/new')} class="glow-primary">
+					<Plus class="size-4" />
+					Create your first server
 				</Button>
-				<Button
-					href="/servers/new"
-					size="default"
-					class="bg-linear-to-r from-primary to-primary/80 shadow-lg transition-all hover:from-primary/90 hover:to-primary/70 hover:shadow-xl"
-				>
-					<Plus class="mr-2 h-4 w-4" />
-					New Server
+				<Button href={resolve('/modpacks')} variant="outline">
+					<Package class="size-4" />
+					Browse modpacks
 				</Button>
-			</div>
+			</EmptyState>
+		</div>
+	{:else}
+		<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+			<StatTile
+				label="Servers"
+				icon={ServerIcon}
+				value={String(stats.total)}
+				sub="{stats.running} running"
+			/>
+			<StatTile
+				label="Players online"
+				icon={Users}
+				value={String(stats.players)}
+				sub={stats.running > 0
+					? `of ${stats.playerCapacity} slots on running servers`
+					: 'no servers running'}
+			/>
+			<StatTile
+				label="Memory"
+				icon={MemoryStick}
+				value="{(stats.usedMemoryMb / 1024).toFixed(1)} GB"
+				sub="committed of {(stats.totalMemoryMb / 1024).toFixed(1)} GB allocated"
+			/>
+			<StatTile
+				label="Avg TPS"
+				icon={Zap}
+				value={stats.avgTps > 0 ? stats.avgTps.toFixed(1) : '--'}
+				valueClass={stats.avgTps > 0 ? TONE_TEXT[tpsTone(stats.avgTps)] : ''}
+				sub={stats.avgTps > 0 ? 'across running servers' : 'no tick data yet'}
+			/>
 		</div>
 
-		<div class="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-			<Card
-				class="group relative animate-in overflow-hidden border-border/50 transition-all duration-500 fade-in-50 slide-in-from-bottom-2 hover:border-primary/30 hover:shadow-lg"
-			>
-				<div
-					class="absolute inset-0 bg-linear-to-br from-primary/5 via-transparent to-transparent opacity-0 transition-opacity duration-500 group-hover:opacity-100"
-				></div>
-				<CardHeader class="flex flex-row items-center justify-between space-y-0 pb-2">
-					<CardTitle class="text-xs font-medium tracking-wider text-muted-foreground uppercase"
-						>Total Servers</CardTitle
-					>
-					<div
-						class="flex h-10 w-10 items-center justify-center rounded-xl bg-linear-to-br from-blue-500/20 to-blue-600/10 transition-transform group-hover:scale-110"
-					>
-						<Server class="h-5 w-5 text-blue-500" />
-					</div>
-				</CardHeader>
-				<CardContent>
-					{#if isLoading}
-						<Skeleton class="mb-2 h-8 w-16" />
-						<Skeleton class="h-4 w-32" />
-					{:else}
-						<div class="text-2xl font-bold">{stats.total}</div>
-						<div class="mt-2 flex items-center gap-3">
-							<div class="flex items-center gap-1">
-								<div class="h-2 w-2 animate-pulse rounded-full bg-green-500"></div>
-								<span class="text-xs text-muted-foreground">{stats.running} active</span>
-							</div>
-							{#if stats.error > 0}
-								<div class="flex items-center gap-1">
-									<div class="h-2 w-2 rounded-full bg-red-500"></div>
-									<span class="text-xs text-red-500">{stats.error} issues</span>
+		{#if attention.length > 0}
+			<section class="overflow-hidden rounded-xl border border-status-warn/30 bg-card">
+				<header
+					class="flex items-center gap-2 border-b border-status-warn/20 bg-status-warn/5 px-4 py-2.5"
+				>
+					<AlertTriangle class="size-4 text-status-warn" />
+					<h2 class="text-sm font-semibold">
+						Needs attention
+						<span class="ml-1 font-normal text-muted-foreground">{attention.length}</span>
+					</h2>
+				</header>
+				<div class="divide-y">
+					{#each attention as server (server.id)}
+						{@const busy = actioningId === server.id}
+						<div
+							class="group relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/40"
+						>
+							<ServerAvatar name={server.name} favicon={server.favicon} size="md" />
+							<div class="min-w-0 flex-1">
+								<div class="flex flex-wrap items-center gap-2">
+									<a
+										href={resolve(`/servers/${server.id}`)}
+										class="truncate text-sm font-medium after:absolute after:inset-0"
+									>
+										{server.name}
+									</a>
+									<StatusBadge status={server.status} />
 								</div>
-							{/if}
+								<p class="mt-0.5 text-xs text-muted-foreground">{attentionReason(server)}</p>
+							</div>
+							<div class="relative z-10 flex shrink-0 items-center gap-1">
+								<Button
+									variant="outline"
+									size="sm"
+									class="h-7 gap-1.5 text-xs"
+									href="{resolve(`/servers/${server.id}`)}?tab=console"
+								>
+									<Terminal class="size-3.5" />
+									Console
+								</Button>
+								{#if busy}
+									<Loader2 class="mx-2 size-4 animate-spin text-muted-foreground" />
+								{:else if canStop(server.status)}
+									<Button
+										variant="ghost"
+										size="icon"
+										class="size-7 text-status-danger hover:bg-status-danger/10 hover:text-status-danger"
+										title="Stop"
+										onclick={() => power(server, false)}
+									>
+										<Square class="size-4" />
+									</Button>
+								{:else if canStart(server.status)}
+									<Button
+										variant="ghost"
+										size="icon"
+										class="size-7 text-status-ok hover:bg-status-ok/10 hover:text-status-ok"
+										title="Start"
+										onclick={() => power(server, true)}
+									>
+										<Play class="size-4" />
+									</Button>
+								{/if}
+							</div>
 						</div>
-					{/if}
-				</CardContent>
-			</Card>
-
-			<Card
-				class="group relative animate-in overflow-hidden border-border/50 transition-all duration-500 fade-in-50 slide-in-from-bottom-2 hover:border-primary/30 hover:shadow-lg"
-				style="animation-delay: 50ms"
-			>
-				<div
-					class="absolute inset-0 bg-linear-to-br from-green-500/5 via-transparent to-transparent opacity-0 transition-opacity duration-500 group-hover:opacity-100"
-				></div>
-				<CardHeader class="flex flex-row items-center justify-between space-y-0 pb-2">
-					<CardTitle class="text-xs font-medium tracking-wider text-muted-foreground uppercase"
-						>Active Players</CardTitle
-					>
-					<div
-						class="flex h-10 w-10 items-center justify-center rounded-xl bg-linear-to-br from-green-500/20 to-green-600/10 transition-transform group-hover:scale-110"
-					>
-						<Users class="h-5 w-5 text-green-500" />
-					</div>
-				</CardHeader>
-				<CardContent>
-					{#if isLoading}
-						<Skeleton class="mb-2 h-8 w-20" />
-						<Skeleton class="h-2 w-full" />
-					{:else if stats.totalPlayers > 0}
-						<div class="text-2xl font-bold">{stats.totalPlayers}</div>
-						<p class="mt-1 text-xs text-muted-foreground">
-							{stats.totalPlayers === 1 ? 'player' : 'players'} online
-						</p>
-					{:else}
-						<div class="text-2xl font-bold">0</div>
-						<p class="mt-1 text-xs text-muted-foreground">No players online</p>
-					{/if}
-				</CardContent>
-			</Card>
-
-			<Card
-				class="group relative animate-in overflow-hidden border-border/50 transition-all duration-500 fade-in-50 slide-in-from-bottom-2 hover:border-primary/30 hover:shadow-lg"
-				style="animation-delay: 100ms"
-			>
-				<div
-					class="absolute inset-0 bg-linear-to-br from-purple-500/5 via-transparent to-transparent opacity-0 transition-opacity duration-500 group-hover:opacity-100"
-				></div>
-				<CardHeader class="flex flex-row items-center justify-between space-y-0 pb-2">
-					<CardTitle class="text-xs font-medium tracking-wider text-muted-foreground uppercase"
-						>Memory Usage</CardTitle
-					>
-					<div
-						class="flex h-10 w-10 items-center justify-center rounded-xl bg-linear-to-br from-purple-500/20 to-purple-600/10 transition-transform group-hover:scale-110"
-					>
-						<MemoryStick class="h-5 w-5 text-purple-500" />
-					</div>
-				</CardHeader>
-				<CardContent>
-					{#if isLoading}
-						<Skeleton class="mb-2 h-8 w-24" />
-						<Skeleton class="h-2 w-full" />
-					{:else if stats.totalMemory > 0}
-						<div class="flex items-baseline gap-1">
-							<span class="text-2xl font-bold">{(stats.usedMemory / 1024).toFixed(1)}</span>
-							<span class="text-sm text-muted-foreground"
-								>/ {(stats.totalMemory / 1024).toFixed(1)} GB</span
-							>
-						</div>
-						<Progress
-							value={(stats.usedMemory / Math.max(stats.totalMemory, 1)) * 100}
-							class="mt-2 h-2 bg-purple-500/10"
-						/>
-						<p class="mt-1 text-xs text-muted-foreground">Used / Allocated</p>
-					{:else}
-						<div class="text-2xl font-bold text-muted-foreground">—</div>
-						<p class="mt-1 text-xs text-muted-foreground">No data available</p>
-					{/if}
-				</CardContent>
-			</Card>
-
-			<Card
-				class="group relative animate-in overflow-hidden border-border/50 transition-all duration-500 fade-in-50 slide-in-from-bottom-2 hover:border-primary/30 hover:shadow-lg"
-				style="animation-delay: 150ms"
-			>
-				<div
-					class="absolute inset-0 bg-linear-to-br from-orange-500/5 via-transparent to-transparent opacity-0 transition-opacity duration-500 group-hover:opacity-100"
-				></div>
-				<CardHeader class="flex flex-row items-center justify-between space-y-0 pb-2">
-					<CardTitle class="text-xs font-medium tracking-wider text-muted-foreground uppercase"
-						>Performance</CardTitle
-					>
-					<div
-						class="flex h-10 w-10 items-center justify-center rounded-xl bg-linear-to-br from-orange-500/20 to-orange-600/10 transition-transform group-hover:scale-110"
-					>
-						<Gauge class="h-5 w-5 text-orange-500" />
-					</div>
-				</CardHeader>
-				<CardContent>
-					{#if isLoading}
-						<Skeleton class="mb-2 h-8 w-20" />
-						<Skeleton class="h-4 w-24" />
-					{:else if stats.avgTps > 0}
-						<div class="flex items-baseline gap-2">
-							<span class="text-2xl font-bold {getTpsColor(stats.avgTps)}"
-								>{stats.avgTps.toFixed(1)}</span
-							>
-							<span class="text-sm text-muted-foreground">Avg. TPS</span>
-						</div>
-						<p class="mt-1 text-xs text-muted-foreground">
-							{stats.avgCpu > 0 ? `${stats.avgCpu.toFixed(1)}% CPU` : 'CPU data unavailable'}
-						</p>
-					{:else}
-						<div class="text-2xl font-bold text-muted-foreground">—</div>
-						<p class="mt-1 text-xs text-muted-foreground">Performance monitoring inactive</p>
-					{/if}
-				</CardContent>
-			</Card>
-		</div>
-
-		{#if serversByStatus.critical.length > 0 || serversByStatus.warning.length > 0}
-			<Alert
-				class="animate-in border-orange-500/20 bg-orange-500/5 duration-500 fade-in-50 slide-in-from-top-2"
-			>
-				<AlertCircle class="h-4 w-4 text-orange-500" />
-				<AlertDescription class="ml-2">
-					{#if serversByStatus.critical.length > 0}
-						<span class="font-medium text-red-500"
-							>{serversByStatus.critical.length} server{serversByStatus.critical.length > 1
-								? 's'
-								: ''} need attention.</span
-						>
-					{/if}
-					{#if serversByStatus.warning.length > 0}
-						<span class="font-medium text-yellow-500"
-							>{serversByStatus.warning.length} server{serversByStatus.warning.length > 1
-								? 's'
-								: ''} running slow.</span
-						>
-					{/if}
-					<a href={resolve('/servers')} class="ml-2 text-primary hover:underline">View details →</a>
-				</AlertDescription>
-			</Alert>
+					{/each}
+				</div>
+			</section>
 		{/if}
 
-		<div class="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
-			<Card
-				class="col-span-full animate-in duration-500 fade-in-50 slide-in-from-left-5 lg:col-span-4"
-				style="animation-delay: 200ms"
-			>
-				<CardHeader>
-					<div class="flex items-center justify-between">
-						<div>
-							<CardTitle>Server Overview</CardTitle>
-							<CardDescription>Quick status of all your servers</CardDescription>
-						</div>
-						<Button variant="ghost" size="sm" href="/servers">
-							View All
-							<ChevronRight class="ml-1 h-4 w-4" />
-						</Button>
-					</div>
-				</CardHeader>
-				<CardContent>
-					{#if dashboardServers.length === 0}
-						<div class="py-12 text-center">
-							<div
-								class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-muted"
+		<div class="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_17rem]">
+			<div class="min-w-0 space-y-4">
+				{#if liveServers.length > 0}
+					<section>
+						<div class="mb-2.5 flex items-baseline justify-between gap-2">
+							<h2 class="flex items-center gap-2 text-sm font-semibold">
+								<span class="glow-ok size-2 rounded-full bg-status-ok" aria-hidden="true"></span>
+								Live now
+							</h2>
+							<a
+								href={resolve('/servers')}
+								class="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
 							>
-								<Server class="h-6 w-6 text-muted-foreground" />
-							</div>
-							<h3 class="mb-1 text-sm font-semibold">No servers yet</h3>
-							<p class="mb-4 text-sm text-muted-foreground">
-								Create your first server to get started
-							</p>
-							<Button href="/servers/new" size="sm">
-								<Plus class="mr-2 h-4 w-4" />
-								Create Server
-							</Button>
+								Manage all {stats.total}
+								<ArrowRight class="size-3" />
+							</a>
 						</div>
-					{:else}
-						<div class="space-y-3">
-							{#each sortServersByActivity([...dashboardServers]).slice(0, 5) as server (server.id)}
-								{@const StatusIcon = getStatusIcon(server.status)}
+						<div class="grid gap-3 sm:grid-cols-2">
+							{#each liveServers as server (server.id)}
+								{@const busy = actioningId === server.id}
+								{@const meta = statusMeta(server.status)}
+								{@const maxPlayers = server.maxPlayersSlp || server.maxPlayers}
+								{@const fill =
+									maxPlayers > 0 ? ((server.playersOnline || 0) / maxPlayers) * 100 : 0}
 								<div
-									class="group flex items-center justify-between rounded-lg p-3 transition-colors hover:bg-muted/50"
+									class="group relative overflow-hidden rounded-xl border bg-card p-4 transition-all hover:border-primary/30 hover:shadow-sm"
 								>
-									<div class="flex flex-1 items-center gap-3">
-										<div class="relative">
-											<StatusIcon class="h-5 w-5 {getStatusColor(server.status)}" />
-											{#if server.status === ServerStatus.RUNNING}
-												<div
-													class="absolute -top-1 -right-1 h-2 w-2 animate-pulse rounded-full bg-green-500"
-												></div>
-											{/if}
-										</div>
+									<div class="flex items-start gap-3">
+										<ServerAvatar name={server.name} favicon={server.favicon} size="md" />
 										<div class="min-w-0 flex-1">
-											<div class="flex items-center gap-2">
-												<p class="truncate text-sm font-medium">{server.name}</p>
-												<Badge
-													variant="outline"
-													class="text-xs {getStatusBadgeColor(server.status)} border"
+											<div class="flex items-center justify-between gap-2">
+												<a
+													href={resolve(`/servers/${server.id}`)}
+													class="truncate text-sm font-semibold after:absolute after:inset-0"
 												>
-													{getStringForEnum(ServerStatus, server.status)}
-												</Badge>
-											</div>
-											<div class="mt-1 flex items-center gap-3">
-												<span class="text-xs text-muted-foreground">{server.mcVersion}</span>
-												{#if server.status === ServerStatus.RUNNING}
-													<span class="flex items-center gap-1 text-xs text-muted-foreground">
-														<Users class="h-3 w-3" />
-														{server.playersOnline || 0}/{server.maxPlayers}
-													</span>
-													{#if server.tps}
-														<span class="flex items-center gap-1 text-xs {getTpsColor(server.tps)}">
-															<Zap class="h-3 w-3" />
-															{server.tps.toFixed(1)} TPS
-														</span>
+													{server.name}
+												</a>
+												<div class="relative z-10 flex shrink-0 items-center gap-1">
+													{#if busy}
+														<Loader2 class="size-4 animate-spin text-muted-foreground" />
+													{:else if canStop(server.status)}
+														<Button
+															variant="ghost"
+															size="icon"
+															class="size-7 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:bg-status-danger/10 hover:text-status-danger focus-visible:opacity-100"
+															title="Stop"
+															onclick={() => power(server, false)}
+														>
+															<Square class="size-3.5" />
+														</Button>
 													{/if}
+												</div>
+											</div>
+											<div class="mt-0.5 flex items-center gap-1.5 text-xs {TONE_TEXT[meta.tone]}">
+												{#if server.status === ServerStatus.PAUSED}
+													<Moon class="size-3" />
+												{/if}
+												{meta.label}
+												{#if server.status === ServerStatus.RUNNING && server.lastStarted}
+													<span class="text-muted-foreground"
+														>· up {formatUptime(server.lastStarted, now)}</span
+													>
 												{/if}
 											</div>
 										</div>
 									</div>
-									<div
-										class="flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100"
-									>
-										{#if server.status === ServerStatus.STOPPED}
-											<Button variant="ghost" size="sm" class="h-8 w-8 p-0">
-												<PlayCircle class="h-4 w-4" />
-											</Button>
-										{:else if server.status === ServerStatus.RUNNING}
-											<Button variant="ghost" size="sm" class="h-8 w-8 p-0">
-												<StopCircle class="h-4 w-4" />
-											</Button>
+
+									<div class="relative z-10 mt-3">
+										<AddressSelect addresses={serverAddresses(server, proxyStatus)} />
+									</div>
+
+									<div class="mt-3 flex items-end justify-between gap-3">
+										<div class="min-w-0 flex-1 space-y-1.5">
+											<div class="flex items-center justify-between text-xs">
+												<span class="flex items-center gap-1.5 text-muted-foreground">
+													<Users class="size-3" />
+													Players
+												</span>
+												<span class="tabular font-medium">
+													{server.playersOnline || 0}<span class="text-muted-foreground"
+														>/{maxPlayers}</span
+													>
+												</span>
+											</div>
+											<div class="h-1 overflow-hidden rounded-full bg-muted">
+												<div
+													class="h-full rounded-full transition-all duration-500 {TONE_BG[
+														fill >= 90 ? 'danger' : fill >= 75 ? 'busy' : 'ok'
+													]}"
+													style="width: {Math.min(fill, 100)}%"
+												></div>
+											</div>
+										</div>
+										{#if isUp(server.status) && server.tps > 0}
+											<span
+												class="tabular flex shrink-0 items-center gap-1 text-xs font-medium {TONE_TEXT[
+													tpsTone(server.tps)
+												]}"
+												title="Ticks per second"
+											>
+												<Zap class="size-3" />
+												{server.tps.toFixed(1)}
+											</span>
 										{/if}
-										<Button variant="ghost" size="sm" href="/servers/{server.id}">Manage</Button>
+										{#if server.status === ServerStatus.RUNNING}
+											<div class="shrink-0">
+												<MetricsSparkline serverId={server.id} />
+											</div>
+										{/if}
 									</div>
 								</div>
 							{/each}
 						</div>
-					{/if}
-				</CardContent>
-			</Card>
+					</section>
+				{:else}
+					<section class="rounded-xl border bg-card">
+						<EmptyState
+							icon={Moon}
+							title="All quiet"
+							description="No servers are running right now. Start one below and it will show up here live."
+							class="py-10"
+						/>
+						{#if recentlyOffline.length > 0}
+							<div class="border-t">
+								<div class="divide-y">
+									{#each recentlyOffline as server (server.id)}
+										{@render offlineRow(server)}
+									{/each}
+								</div>
+							</div>
+						{/if}
+					</section>
+				{/if}
 
-			<Card
-				class="col-span-full animate-in duration-500 fade-in-50 slide-in-from-right-5 lg:col-span-3"
-				style="animation-delay: 250ms"
-			>
-				<CardHeader>
-					<CardTitle>Recent Activity</CardTitle>
-					<CardDescription>Latest server events and actions</CardDescription>
-				</CardHeader>
-				<CardContent>
-					{#if recentActivity.length === 0}
-						<div class="py-8 text-center text-muted-foreground">
-							<Clock class="mx-auto mb-2 h-8 w-8" />
-							<p class="text-sm">No recent activity</p>
+				{#if liveServers.length > 0 && recentlyOffline.length > 0}
+					<section class="overflow-hidden rounded-xl border bg-card">
+						<header class="flex items-center justify-between border-b px-4 py-2.5">
+							<h2 class="text-sm font-semibold">Currently Offline</h2>
+							<a
+								href={resolve('/servers')}
+								class="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+							>
+								All servers
+								<ArrowRight class="size-3" />
+							</a>
+						</header>
+						<div class="divide-y">
+							{#each recentlyOffline as server (server.id)}
+								{@render offlineRow(server)}
+							{/each}
+						</div>
+					</section>
+				{/if}
+			</div>
+
+			<div class="space-y-4">
+				<div class="rounded-xl border bg-card p-4">
+					<h2 class="mb-3 text-sm font-semibold">Host resources</h2>
+					{#if stats.totalMemoryMb > 0 || hostDisk}
+						<div class="space-y-4">
+							{#if stats.totalMemoryMb > 0}
+								<div>
+									<div class="mb-1.5 flex items-center justify-between text-xs">
+										<span class="stat-label flex items-center gap-1.5">
+											<MemoryStick class="size-3.5" />
+											Memory
+										</span>
+										<span class="tabular text-muted-foreground">
+											{(stats.usedMemoryMb / 1024).toFixed(1)} / {hostTotalMb > 0
+												? Math.round(hostTotalMb / 1024)
+												: (stats.totalMemoryMb / 1024).toFixed(1)} GB
+										</span>
+									</div>
+									<div
+										class="relative h-1.5 overflow-hidden rounded-full bg-muted"
+										title="solid committed, light allocated"
+									>
+										<div
+											class="absolute inset-y-0 left-0 rounded-full bg-primary/25 transition-all duration-500"
+											style="width: {Math.min(allocatedPercent, 100)}%"
+										></div>
+										<div
+											class="absolute inset-y-0 left-0 rounded-full transition-all duration-500 {TONE_BG[
+												memoryPercent >= 90 ? 'danger' : memoryPercent >= 75 ? 'busy' : 'ok'
+											]}"
+											style="width: {Math.min(memoryPercent, 100)}%"
+										></div>
+									</div>
+								</div>
+							{/if}
+							{#if hostDisk}
+								<div>
+									<div class="mb-1.5 flex items-center justify-between text-xs">
+										<span class="stat-label flex items-center gap-1.5">
+											<HardDrive class="size-3.5" />
+											Disk
+										</span>
+										<span class="tabular text-muted-foreground">
+											{formatBytes(Number(hostDisk.diskUsed), 0)} / {formatBytes(
+												Number(hostDisk.diskTotal),
+												0
+											)}
+										</span>
+									</div>
+									<div class="h-1.5 overflow-hidden rounded-full bg-muted">
+										<div
+											class="h-full rounded-full transition-all duration-500 {TONE_BG[
+												diskPercent >= 90 ? 'danger' : diskPercent >= 75 ? 'busy' : 'ok'
+											]}"
+											style="width: {Math.min(diskPercent, 100)}%"
+										></div>
+									</div>
+								</div>
+							{/if}
 						</div>
 					{:else}
-						<div class="space-y-3">
-							{#each recentActivity as activity, i (activity)}
-								<div
-									class="flex animate-in items-start gap-3 fade-in-50 slide-in-from-right-2"
-									style="animation-delay: {300 + i * 50}ms"
-								>
-									<div class="mt-1">
-										{#if activity.status === ServerStatus.RUNNING}
-											<div class="h-2 w-2 animate-pulse rounded-full bg-green-500"></div>
-										{:else if activity.status === ServerStatus.STOPPED}
-											<div class="h-2 w-2 rounded-full bg-gray-400"></div>
-										{:else}
-											<div class="h-2 w-2 rounded-full bg-yellow-500"></div>
-										{/if}
-									</div>
-									<div class="flex-1 space-y-1">
-										<p class="text-sm">
-											<span class="font-medium">{activity.server}</span>
-											<span class="ml-1 text-muted-foreground">{activity.action}</span>
-										</p>
-										<p class="text-xs text-muted-foreground">
-											{formatUptime(activity.time)} ago
-										</p>
-									</div>
-								</div>
-							{/each}
-						</div>
+						<p class="text-xs text-muted-foreground">
+							Start a server to see memory and disk usage.
+						</p>
 					{/if}
-				</CardContent>
-			</Card>
-		</div>
+				</div>
 
-		<div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-			<Card
-				class="group animate-in border-border/50 transition-all duration-500 fade-in-50 slide-in-from-bottom-5 hover:border-primary/30 hover:shadow-lg"
-				style="animation-delay: 350ms"
-			>
-				<CardHeader>
-					<div class="flex items-center justify-between">
-						<div class="flex items-center gap-3">
-							<div
-								class="flex h-10 w-10 items-center justify-center rounded-xl bg-linear-to-br from-blue-500/20 to-blue-600/10"
+				<div class="rounded-xl border bg-card p-4">
+					<h2 class="mb-3 text-sm font-semibold">Quick actions</h2>
+					<div class="space-y-1">
+						<a
+							href={resolve('/servers/new')}
+							class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-accent"
+						>
+							<Plus class="size-4 text-primary" />
+							Create a server
+						</a>
+						<a
+							href={resolve('/modpacks')}
+							class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-accent"
+						>
+							<Package class="size-4 text-muted-foreground" />
+							Browse modpacks
+						</a>
+						{#if showSettingsLink}
+							<a
+								href={resolve('/settings')}
+								class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-accent"
 							>
-								<HelpCircle class="h-5 w-5 text-blue-500" />
-							</div>
-							<div>
-								<CardTitle class="text-base">Need Help?</CardTitle>
-								<CardDescription class="text-xs">Get support from our community</CardDescription>
-							</div>
-						</div>
-					</div>
-				</CardHeader>
-				<CardContent class="space-y-3">
-					<Button
-						variant="outline"
-						class="w-full justify-start gap-3 transition-all hover:border-primary/50 hover:bg-muted/50"
-						onclick={() => window.open('https://discord.gg/6Z9yKTbsrP', '_blank')}
-					>
-						<MessageCircle class="h-4 w-4 text-[#5865F2]" />
-						<span class="flex-1 text-left">Join Discord Server</span>
-						<ChevronRight class="h-4 w-4 text-muted-foreground" />
-					</Button>
-					<Button
-						variant="outline"
-						class="w-full justify-start gap-3 transition-all hover:border-primary/50 hover:bg-muted/50"
-						onclick={() => window.open('https://github.com/nickheyer/discopanel/issues', '_blank')}
-					>
-						<Github class="h-4 w-4" />
-						<span class="flex-1 text-left">Report an Issue</span>
-						<ChevronRight class="h-4 w-4 text-muted-foreground" />
-					</Button>
-					<Button
-						variant="outline"
-						class="w-full justify-start gap-3 transition-all hover:border-primary/50 hover:bg-muted/50"
-						onclick={() => window.open('https://github.com/nickheyer/discopanel', '_blank')}
-					>
-						<BookOpen class="h-4 w-4 text-green-500" />
-						<span class="flex-1 text-left">Documentation</span>
-						<ChevronRight class="h-4 w-4 text-muted-foreground" />
-					</Button>
-				</CardContent>
-			</Card>
-
-			<Card
-				class="animate-in border-border/50 transition-all duration-500 fade-in-50 slide-in-from-bottom-5 hover:border-primary/30 hover:shadow-lg"
-				style="animation-delay: 400ms"
-			>
-				<CardHeader>
-					<div class="flex items-center gap-3">
-						<div
-							class="flex h-10 w-10 items-center justify-center rounded-xl bg-linear-to-br from-green-500/20 to-green-600/10"
+								<Settings class="size-4 text-muted-foreground" />
+								Panel settings
+							</a>
+						{/if}
+						<a
+							href={resolve('/docs/api')}
+							class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-accent"
 						>
-							<Shield class="h-5 w-5 text-green-500" />
-						</div>
-						<div>
-							<CardTitle class="text-base">System Health</CardTitle>
-							<CardDescription class="text-xs">Overall infrastructure status</CardDescription>
-						</div>
+							<FileText class="size-4 text-muted-foreground" />
+							API reference
+						</a>
 					</div>
-				</CardHeader>
-				<CardContent>
-					<div class="space-y-3">
-						<div class="flex items-center justify-between">
-							<span class="text-sm text-muted-foreground">Services</span>
-							<div class="flex items-center gap-1">
-								<CheckCircle class="h-4 w-4 text-green-500" />
-								<span class="text-sm font-medium">Operational</span>
-							</div>
-						</div>
-						<div class="flex items-center justify-between">
-							<span class="text-sm text-muted-foreground">Network</span>
-							<div class="flex items-center gap-1">
-								{#if dashboardServers.some((s) => s.status === ServerStatus.RUNNING)}
-									<Wifi class="h-4 w-4 text-green-500" />
-									<span class="text-sm font-medium">Connected</span>
-								{:else}
-									<WifiOff class="h-4 w-4 text-gray-400" />
-									<span class="text-sm text-muted-foreground">Idle</span>
-								{/if}
-							</div>
-						</div>
-						<div class="flex items-center justify-between">
-							<span class="text-sm text-muted-foreground">Storage</span>
-							<div class="flex items-center gap-1">
-								{#if stats.totalDiskUsage > 0}
-									<Database class="h-4 w-4 text-blue-500" />
-									<span class="text-sm font-medium"
-										>{formatBytes(stats.totalDiskUsage)}{stats.totalDiskSize}</span
-									>
-								{:else}
-									<Database class="h-4 w-4 text-gray-400" />
-									<span class="text-sm text-muted-foreground">No data</span>
-								{/if}
-							</div>
-						</div>
-					</div>
-				</CardContent>
-			</Card>
+				</div>
 
-			<Card
-				class="animate-in border-border/50 transition-all duration-500 fade-in-50 slide-in-from-bottom-5 hover:border-primary/30 hover:shadow-lg"
-				style="animation-delay: 450ms"
-			>
-				<CardHeader>
-					<div class="flex items-center gap-3">
-						<div
-							class="flex h-10 w-10 items-center justify-center rounded-xl bg-linear-to-br from-purple-500/20 to-purple-600/10"
+				<div class="rounded-xl border bg-card p-4">
+					<h2 class="mb-3 text-sm font-semibold">Community & help</h2>
+					<div class="space-y-1">
+						<a
+							href="https://discord.gg/6Z9yKTbsrP"
+							target="_blank"
+							rel="noreferrer"
+							class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
 						>
-							<TrendingUp class="h-5 w-5 text-purple-500" />
-						</div>
-						<div>
-							<CardTitle class="text-base">Quick Stats</CardTitle>
-							<CardDescription class="text-xs">Server performance metrics</CardDescription>
-						</div>
+							<MessageCircle class="size-4" />
+							Discord
+						</a>
+						<a
+							href="https://github.com/discohaus/discopanel/issues"
+							target="_blank"
+							rel="noreferrer"
+							class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+						>
+							<Github class="size-4" />
+							Report an issue
+						</a>
+						<a
+							href="https://docs.discopanel.app"
+							target="_blank"
+							rel="noreferrer"
+							class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+						>
+							<BookOpen class="size-4" />
+							Documentation
+						</a>
 					</div>
-				</CardHeader>
-				<CardContent>
-					<div class="grid grid-cols-2 gap-4">
-						<div class="space-y-1">
-							<p class="text-xs text-muted-foreground">Uptime</p>
-							<p class="text-xl font-bold">
-								{stats.running > 0
-									? `${((stats.running / Math.max(stats.total, 1)) * 100).toFixed(0)}%`
-									: '—'}
-							</p>
-						</div>
-						<div class="space-y-1">
-							<p class="text-xs text-muted-foreground">Load</p>
-							<p class="text-xl font-bold {getCpuColor(stats.avgCpu)}">
-								{stats.avgCpu > 0 ? `${stats.avgCpu.toFixed(0)}%` : '—'}
-							</p>
-						</div>
-						<div class="space-y-1">
-							<p class="text-xs text-muted-foreground">Avg TPS</p>
-							<p class="text-xl font-bold {getTpsColor(stats.avgTps)}">
-								{stats.avgTps > 0 ? stats.avgTps.toFixed(1) : '—'}
-							</p>
-						</div>
-						<div class="space-y-1">
-							<p class="text-xs text-muted-foreground">Players</p>
-							<p class="text-xl font-bold text-green-500">
-								{stats.totalPlayers}
-							</p>
-						</div>
-					</div>
-				</CardContent>
-			</Card>
+				</div>
+			</div>
 		</div>
-	</div>
-{/if}
+	{/if}
+</div>

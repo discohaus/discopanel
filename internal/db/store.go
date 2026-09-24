@@ -2,26 +2,112 @@ package db
 
 import (
 	"context"
+	"crypto/rand"
+	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
+	"slices"
+	"strings"
 	"time"
 
+	"github.com/discohaus/discopanel/pkg/config"
+	"github.com/discohaus/discopanel/pkg/minecraft"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/protometa"
+	"github.com/discohaus/discopanel/pkg/runtimespec"
 	"github.com/go-viper/mapstructure/v2"
-	"github.com/google/uuid"
-	"github.com/nickheyer/discopanel/internal/config"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
+const MinecraftDefaultPort = 25565
+
+// Docker container name for a module id
+func ModuleContainerName(moduleID string) string {
+	return "discopanel-module-" + moduleID
+}
+
+// Panel owned host dir for one module's files
+func ModuleDataDir(dataDir, moduleID string) string {
+	return filepath.Join(dataDir, "modules", moduleID)
+}
+
+// Port the server listens on inside its container
+func InContainerPort(s *v1.Server) int {
+	if len(s.ProxyHostnames) > 0 {
+		return MinecraftDefaultPort
+	}
+	return int(s.Port)
+}
+
+// Fills transient proxy port from listener rows
+func (s *Store) HydrateProxyPorts(ctx context.Context, servers ...*v1.Server) error {
+	needed := false
+	for _, server := range servers {
+		if server != nil && server.ProxyListenerId != "" {
+			needed = true
+			break
+		}
+	}
+	if !needed {
+		return nil
+	}
+	listeners, err := s.ListProxyListeners(ctx)
+	if err != nil {
+		return err
+	}
+	byID := make(map[string]int32, len(listeners))
+	for _, l := range listeners {
+		byID[l.Id] = l.Port
+	}
+	for _, server := range servers {
+		if server == nil {
+			continue
+		}
+		if len(server.ProxyHostnames) > 0 {
+			server.ProxyPort = byID[server.ProxyListenerId]
+		} else {
+			server.ProxyPort = 0
+		}
+	}
+	return nil
+}
+
+// Splits every platform force include list into patterns
+func ForceIncludePatterns(cfg *v1.ServerProperties) []string {
+	if cfg == nil {
+		return nil
+	}
+	var out []string
+	for _, field := range []*string{cfg.CfForceIncludeMods, cfg.ModrinthForceIncludeFiles} {
+		if field != nil {
+			out = append(out, minecraft.SplitPatterns(*field)...)
+		}
+	}
+	return out
+}
+
 type Store struct {
-	db  *gorm.DB
-	cfg *config.Config
+	db    *gorm.DB
+	cfg   *config.Config
+	drift []string
 }
 
 func NewSQLiteStore(cfg *config.Config) (*Store, error) {
-	db, err := gorm.Open(sqlite.Open(cfg.Database.Path), &gorm.Config{
+	dsn := cfg.Database.Path
+	// Pragmas reduce locked database errors under load
+	if dsn != ":memory:" {
+		pragmas := "_busy_timeout=5000&_journal_mode=WAL&_synchronous=NORMAL&_foreign_keys=on"
+		if strings.Contains(dsn, "?") {
+			dsn += "&" + pragmas
+		} else {
+			dsn += "?" + pragmas
+		}
+	}
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 		NowFunc: func() time.Time {
 			return time.Now().UTC()
@@ -48,9 +134,15 @@ func NewSQLiteStore(cfg *config.Config) (*Store, error) {
 
 	store := &Store{db: db, cfg: cfg}
 
-	if cfg.Database.AutoMigrate {
-		if err := store.Migrate(); err != nil {
-			return nil, fmt.Errorf("failed to migrate database: %w", err)
+	if err := store.migrate(context.Background()); err != nil {
+		return nil, fmt.Errorf("failed to migrate database: %w", err)
+	}
+	for _, seed := range []func() error{
+		store.SeedSystemRoles,
+		store.SeedGlobalSettings,
+	} {
+		if err := seed(); err != nil {
+			return nil, fmt.Errorf("seed failed: %w", err)
 		}
 	}
 
@@ -61,6 +153,11 @@ func (s *Store) DB() *gorm.DB {
 	return s.db
 }
 
+// Lines describing where the live schema left the models
+func (s *Store) SchemaDrift() []string {
+	return s.drift
+}
+
 func (s *Store) Close() error {
 	sqlDB, err := s.db.DB()
 	if err != nil {
@@ -69,193 +166,212 @@ func (s *Store) Close() error {
 	return sqlDB.Close()
 }
 
-// Server operations
-func (s *Store) CreateServer(ctx context.Context, server *Server) error {
+// Creates the server then seeds its synced properties row
+func (s *Store) CreateServer(ctx context.Context, server *v1.Server) error {
 	err := s.db.WithContext(ctx).Create(server).Error
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)
 	}
-
-	// Create and sync server config
-	return s.SyncServerConfigWithServer(ctx, server)
+	return s.SyncServerPropertiesWithServer(ctx, server)
 }
 
-func (s *Store) GetServer(ctx context.Context, id string) (*Server, error) {
-	var server Server
-	err := s.db.WithContext(ctx).First(&server, "id = ?", id).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("server not found")
-		}
-		return nil, err
-	}
-	return &server, nil
-}
-
-func (s *Store) ListServers(ctx context.Context) ([]*Server, error) {
-	var servers []*Server
-	err := s.db.WithContext(ctx).Order("created_at DESC").Find(&servers).Error
-	return servers, err
-}
-
-func (s *Store) UpdateServer(ctx context.Context, server *Server) error {
+// Saves the server then re-syncs its properties row
+func (s *Store) UpdateServer(ctx context.Context, server *v1.Server) error {
 	if err := s.db.WithContext(ctx).Save(server).Error; err != nil {
 		return err
 	}
-	// Sync config with updated server settings
-	return s.SyncServerConfigWithServer(ctx, server)
+	return s.SyncServerPropertiesWithServer(ctx, server)
 }
 
+// Sweeps every child row explicitly, old tables lack live cascades
 func (s *Store) DeleteServer(ctx context.Context, id string) error {
-	// Delete with associations
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Delete mods
-		if err := tx.Where("server_id = ?", id).Delete(&Mod{}).Error; err != nil {
+		if err := tx.Where("id IN (?)", tx.Model(&v1.Module{}).Select("token_id").Where("server_id = ? AND token_id != ''", id)).Delete(&v1.ApiToken{}).Error; err != nil {
 			return err
 		}
-
-		// Delete config
-		if err := tx.Where("server_id = ?", id).Delete(&ServerConfig{}).Error; err != nil {
-			return err
+		for _, child := range []any{
+			&v1.TaskExecution{},
+			&v1.ScheduledTask{},
+			&v1.Module{},
+			&v1.Mod{},
+			&v1.ServerProperties{},
+			&v1.MetricsSample{},
+			&v1.ServerAction{},
+			&v1.FindingDismissal{},
+		} {
+			if err := tx.Where("server_id = ?", id).Delete(child).Error; err != nil {
+				return err
+			}
 		}
-
-		// Delete server
-		return tx.Delete(&Server{}, "id = ?", id).Error
+		return tx.Delete(&v1.Server{}, "id = ?", id).Error
 	})
 }
 
-func (s *Store) GetServerByPort(ctx context.Context, port int) (*Server, error) {
-	var server Server
-	// Only check servers that don't have a proxy hostname (i.e., servers that actually bind to the port)
-	err := s.db.WithContext(ctx).Where("port = ? AND (proxy_hostname IS NULL OR proxy_hostname = '')", port).First(&server).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, nil
-		}
-		return nil, err
+// Metrics timestamps stay utc so bare comparisons hold
+
+// Returns ordered samples, aggregated into buckets when bucketSeconds is positive
+func (s *Store) GetMetricsHistory(ctx context.Context, serverID string, from, to time.Time, bucketSeconds, rawSeconds int) ([]*v1.MetricsSample, error) {
+	var samples []*v1.MetricsSample
+	err := s.db.WithContext(ctx).
+		Where("server_id = ? AND timestamp >= ? AND timestamp <= ?",
+			serverID, from.UTC(), to.UTC()).
+		Order("timestamp ASC").
+		Find(&samples).Error
+	if err != nil || bucketSeconds <= 0 {
+		return samples, err
 	}
-	return &server, nil
-}
-
-// Server config operations
-func (s *Store) GetServerConfig(ctx context.Context, serverID string) (*ServerConfig, error) {
-	var config ServerConfig
-	err := s.db.WithContext(ctx).Where("server_id = ?", serverID).First(&config).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("server config not found")
-		}
-		return nil, err
+	// Default cadence when caller cannot say
+	if rawSeconds <= 0 {
+		rawSeconds = 30
 	}
-	return &config, nil
+	return rollupSamples(samples, int64(bucketSeconds), rawSeconds), nil
 }
 
-func (s *Store) UpdateServerConfig(ctx context.Context, config *ServerConfig) error {
-	return s.db.WithContext(ctx).Save(config).Error
+// Folds raw samples older than cutoff into buckets
+func (s *Store) RollupMetricsSamples(ctx context.Context, olderThan time.Time, bucketSeconds int) error {
+	if bucketSeconds <= 0 {
+		return nil
+	}
+	// Whole buckets only so reruns never split one
+	bucket := int64(bucketSeconds)
+	cutoff := time.Unix(olderThan.Unix()/bucket*bucket, 0).UTC()
+	var raw []*v1.MetricsSample // Rows under the cutoff never change, read outside the lock
+	if err := s.db.WithContext(ctx).Where("resolution = 0 AND timestamp < ?", cutoff).Find(&raw).Error; err != nil {
+		return err
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	rolled := rollupSamples(raw, bucket, 1)
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&rolled).Error; err != nil {
+			return err
+		}
+		return tx.Where("resolution = 0 AND timestamp < ?", cutoff).
+			Delete(&v1.MetricsSample{}).Error
+	})
 }
 
-func (s *Store) SaveServerConfig(ctx context.Context, config *ServerConfig) error {
-	return s.db.WithContext(ctx).Save(config).Error
+// Folds samples into buckets, row weight is covered seconds
+func rollupSamples(samples []*v1.MetricsSample, bucket int64, rawSeconds int) []*v1.MetricsSample {
+	index := make(map[string]*v1.MetricsSample)
+	weights := make(map[*v1.MetricsSample]float64)
+	var rolled []*v1.MetricsSample
+	for _, r := range samples {
+		start := r.Timestamp.AsTime().Unix() / bucket * bucket
+		key := fmt.Sprintf("%s/%d", r.ServerId, start)
+		agg := index[key]
+		if agg == nil {
+			agg = &v1.MetricsSample{
+				ServerId:   r.ServerId,
+				Resolution: int32(bucket),
+				Timestamp:  timestamppb.New(time.Unix(start, 0).UTC()),
+			}
+			index[key] = agg
+			rolled = append(rolled, agg)
+		}
+		w := float64(rawSeconds)
+		if r.Resolution > 0 {
+			w = float64(r.Resolution)
+		}
+		agg.Tps += r.Tps * w
+		agg.Mspt += r.Mspt * w
+		agg.CpuPercent += r.CpuPercent * w
+		agg.MemoryMb += r.MemoryMb * w
+		agg.HeapUsedMb += r.HeapUsedMb * w
+		agg.Players = max(agg.Players, r.Players)
+		agg.DiskBytes = max(agg.DiskBytes, r.DiskBytes)
+		agg.ProxyActiveConns = max(agg.ProxyActiveConns, r.ProxyActiveConns)
+		agg.ProxyBytesIn += r.ProxyBytesIn
+		agg.ProxyBytesOut += r.ProxyBytesOut
+		agg.ProxyLogins += r.ProxyLogins
+		agg.GcPauseCount += r.GcPauseCount
+		agg.GcPauseTotalMs += r.GcPauseTotalMs
+		agg.GcPauseMaxMs = max(agg.GcPauseMaxMs, r.GcPauseMaxMs)
+		weights[agg] += w
+	}
+	for _, agg := range rolled {
+		w := weights[agg]
+		agg.Tps /= w
+		agg.Mspt /= w
+		agg.CpuPercent /= w
+		agg.MemoryMb /= w
+		agg.HeapUsedMb /= w
+	}
+	slices.SortFunc(rolled, func(a, b *v1.MetricsSample) int {
+		return a.Timestamp.AsTime().Compare(b.Timestamp.AsTime())
+	})
+	return rolled
 }
 
-// UpdateServerConfigMemory updates memory settings in ServerConfig
-func (s *Store) UpdateServerConfigMemory(ctx context.Context, serverID string, memory int) error {
-	config, err := s.GetServerConfig(ctx, serverID)
+// Clears all ephemeral property fields
+func (s *Store) ClearEphemeralPropertyFields(ctx context.Context, serverID string) error {
+	config, err := s.GetServerProperties(ctx, serverID)
 	if err != nil {
 		return err
 	}
-
-	// Update memory and max memory (they're the same I THINK) ... Note: They are not...
-	strServerMem := fmt.Sprintf("%dM", int64(float64(memory)*.75))
-	config.MaxMemory = &strServerMem
-
-	if config.Memory != nil {
-		config.Memory = &strServerMem
-	}
-
-	return s.SaveServerConfig(ctx, config)
+	config.ForceProvision = nil
+	return s.UpdateServerProperties(ctx, config)
 }
 
-// ClearEphemeralConfigFields clears all ephemeral configuration fields
-func (s *Store) ClearEphemeralConfigFields(ctx context.Context, serverID string) error {
-	config, err := s.GetServerConfig(ctx, serverID)
+// Syncs system fields in ServerProperties from Server settings
+func (s *Store) SyncServerPropertiesWithServer(ctx context.Context, server *v1.Server) error {
+	config, err := s.GetServerProperties(ctx, server.Id)
 	if err != nil {
-		return err
-	}
-
-	// Clear ephemeral fields
-	config.CFForceReinstallModloader = nil
-
-	return s.SaveServerConfig(ctx, config)
-}
-
-// SyncServerConfigWithServer updates system fields in ServerConfig based on Server settings
-func (s *Store) SyncServerConfigWithServer(ctx context.Context, server *Server) error {
-	// Get or create config
-	config, err := s.GetServerConfig(ctx, server.ID)
-	if err != nil {
-		if err.Error() == "server config not found" {
-			config = s.CreateDefaultServerConfig(server.ID)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			config = s.CreateDefaultServerProperties(server.Id)
 		} else {
 			return err
 		}
 	}
 
-	stringPtr := func(s string) *string { return &s }
-	intPtr := func(i int) *int { return &i }
-	config.Type = stringPtr(string(server.ModLoader))
-	config.Version = stringPtr(server.MCVersion)
-	config.ServerPort = intPtr(server.Port)
-	config.MaxPlayers = intPtr(server.MaxPlayers)
+	int32Ptr := func(i int32) *int32 { return &i }
+	config.ServerPort = int32Ptr(server.Port)
+	config.MaxPlayers = int32Ptr(server.MaxPlayers)
+	runtimespec.SyncPropertiesMemory(config, server)
 
-	return s.SaveServerConfig(ctx, config)
+	return s.UpdateServerProperties(ctx, config)
 }
 
-func (s *Store) CreateDefaultServerConfig(serverID string) *ServerConfig {
+func (s *Store) CreateDefaultServerProperties(serverID string) *v1.ServerProperties {
 	boolPtr := func(b bool) *bool { return &b }
 	stringPtr := func(s string) *string { return &s }
-	intPtr := func(i int) *int { return &i }
+	int32Ptr := func(i int32) *int32 { return &i }
 
-	// Start with basic defaults
-	rconPassword := "discopanel_default"
-	if serverID != "" && len(serverID) >= 8 {
-		rconPassword = fmt.Sprintf("discopanel_%s", serverID[:8])
-	}
-
-	config := &ServerConfig{
-		ID:           serverID + "-config",
-		ServerID:     serverID,
-		EULA:         stringPtr("TRUE"),
-		EnableRCON:   boolPtr(true),
-		RCONPassword: stringPtr(rconPassword),
-		RCONPort:     intPtr(25575),
-		Version:      stringPtr("LATEST"),
-		Type:         stringPtr("VANILLA"),
+	config := &v1.ServerProperties{
+		Id:           serverID + "-config",
+		ServerId:     serverID,
+		Eula:         stringPtr("TRUE"),
+		EnableRcon:   boolPtr(true),
+		RconPassword: stringPtr(generateRCONPassword()),
+		RconPort:     int32Ptr(25575),
 		Difficulty:   stringPtr("easy"),
 		Mode:         stringPtr("survival"),
-		MaxPlayers:   intPtr(20),
+		MaxPlayers:   int32Ptr(20),
 	}
 
-	// Don't try to get global settings if we're creating the global settings themselves
+	// Skip global settings lookup when creating global settings
 	if serverID == GlobalSettingsID {
+		seedAnnotationDefaults(config)
 		return config
 	}
 
-	// Get global settings and copy non-nil values
-	var globalSettings ServerConfig
+	// Copies non-nil global settings pointers into the new row
+	var globalSettings v1.ServerProperties
 	err := s.db.Where("id = ?", GlobalSettingsID).First(&globalSettings).Error
 	if err == nil {
-		// Use reflection to copy non-nil values from global settings
 		globalValue := reflect.ValueOf(&globalSettings).Elem()
 		configValue := reflect.ValueOf(config).Elem()
 		configType := configValue.Type()
 
 		for i := 0; i < configType.NumField(); i++ {
 			field := configType.Field(i)
-			// Skip these fields as they're server-specific
-			if field.Name == "ID" || field.Name == "ServerID" || field.Name == "UpdatedAt" ||
-				field.Name == "Server" || field.Name == "RCONPassword" ||
-				field.Name == "Type" || field.Name == "Version" || field.Name == "Memory" ||
+			if field.PkgPath != "" {
+				continue
+			}
+			// Server specific fields never inherit
+			if field.Name == "Id" || field.Name == "ServerId" || field.Name == "UpdatedAt" ||
+				field.Name == "RconPassword" ||
 				field.Name == "InitMemory" || field.Name == "MaxMemory" || field.Name == "ServerPort" ||
 				field.Name == "MaxPlayers" {
 				continue
@@ -271,91 +387,39 @@ func (s *Store) CreateDefaultServerConfig(serverID string) *ServerConfig {
 	return config
 }
 
-// Mod operations
-func (s *Store) AddMod(ctx context.Context, mod *Mod) error {
-	return s.db.WithContext(ctx).Create(mod).Error
-}
-
-func (s *Store) GetMod(ctx context.Context, id string) (*Mod, error) {
-	var mod Mod
-	err := s.db.WithContext(ctx).First(&mod, "id = ?", id).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("mod not found")
+// Fills unset fields from proto default value annotations
+func seedAnnotationDefaults(config *v1.ServerProperties) {
+	m := config.ProtoReflect()
+	for _, p := range protometa.Props(m.Descriptor()) {
+		if p.Meta.DefaultValue == "" || p.Meta.Ephemeral {
+			continue
 		}
-		return nil, err
+		if m.Has(p.Field) {
+			continue
+		}
+		_ = protometa.SetScalarString(m, p.Field, p.Meta.DefaultValue)
 	}
-	return &mod, nil
 }
 
-func (s *Store) ListServerMods(ctx context.Context, serverID string) ([]*Mod, error) {
-	var mods []*Mod
-	err := s.db.WithContext(ctx).Where("server_id = ?", serverID).Order("name").Find(&mods).Error
-	return mods, err
-}
+// Server ids are public so the secret must be random
+const rconPasswordAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
-func (s *Store) UpdateMod(ctx context.Context, mod *Mod) error {
-	return s.db.WithContext(ctx).Save(mod).Error
-}
-
-func (s *Store) DeleteMod(ctx context.Context, id string) error {
-	return s.db.WithContext(ctx).Delete(&Mod{}, "id = ?", id).Error
-}
-
-// Indexed Modpack operations
-func (s *Store) UpsertIndexedModpack(ctx context.Context, modpack *IndexedModpack) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var existing IndexedModpack
-		err := tx.Where("id = ?", modpack.ID).First(&existing).Error
-		if err == gorm.ErrRecordNotFound {
-			return tx.Create(modpack).Error
-		}
-		if err != nil {
-			return err
-		}
-		modpack.IndexedAt = existing.IndexedAt
-		return tx.Save(modpack).Error
-	})
-}
-
-func (s *Store) GetIndexedModpack(ctx context.Context, id string) (*IndexedModpack, error) {
-	var modpack IndexedModpack
-	err := s.db.WithContext(ctx).First(&modpack, "id = ?", id).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("modpack not found")
-		}
-		return nil, err
+// Generates the default RCON password once at properties creation
+func generateRCONPassword() string {
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return ""
 	}
-	return &modpack, nil
-}
-
-func (s *Store) GetModpackBySlug(ctx context.Context, slug string) (*IndexedModpack, error) {
-	var modpack IndexedModpack
-	err := s.db.WithContext(ctx).Where("slug = ?", slug).First(&modpack).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, nil
-		}
-		return nil, err
+	out := make([]byte, len(raw))
+	for i, b := range raw {
+		out[i] = rconPasswordAlphabet[int(b)%len(rconPasswordAlphabet)]
 	}
-	return &modpack, nil
+	return string(out)
 }
 
-func (s *Store) GetModpackByWebsiteURL(ctx context.Context, url string) (*IndexedModpack, error) {
-	var modpack IndexedModpack
-	err := s.db.WithContext(ctx).Where("website_url = ?", url).First(&modpack).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &modpack, nil
-}
-
-func (s *Store) SearchIndexedModpacks(ctx context.Context, query string, gameVersion string, modLoader string, indexer string, offset, limit int) ([]*IndexedModpack, int64, error) {
-	db := s.db.WithContext(ctx).Model(&IndexedModpack{})
+// Filters indexed modpacks with optional search terms
+func (s *Store) SearchIndexedModpacks(ctx context.Context, query string, gameVersion string, modLoader string, indexer string, offset, limit int) ([]*v1.IndexedModpack, int64, error) {
+	db := s.db.WithContext(ctx).Model(&v1.IndexedModpack{})
 
 	if query != "" {
 		db = db.Where("name LIKE ? OR summary LIKE ?", "%"+query+"%", "%"+query+"%")
@@ -378,7 +442,7 @@ func (s *Store) SearchIndexedModpacks(ctx context.Context, query string, gameVer
 		return nil, 0, err
 	}
 
-	var modpacks []*IndexedModpack
+	var modpacks []*v1.IndexedModpack
 	err := db.Order("download_count DESC").
 		Offset(offset).
 		Limit(limit).
@@ -387,64 +451,23 @@ func (s *Store) SearchIndexedModpacks(ctx context.Context, query string, gameVer
 	return modpacks, total, err
 }
 
-func (s *Store) ListIndexedModpacks(ctx context.Context, offset, limit int) ([]*IndexedModpack, int64, error) {
-	var total int64
-	if err := s.db.WithContext(ctx).Model(&IndexedModpack{}).Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	var modpacks []*IndexedModpack
-	err := s.db.WithContext(ctx).
-		Order("download_count DESC").
-		Offset(offset).
-		Limit(limit).
-		Find(&modpacks).Error
-
-	return modpacks, total, err
-}
-
-// Indexed Modpack File operations
-func (s *Store) UpsertIndexedModpackFile(ctx context.Context, file *IndexedModpackFile) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var existing IndexedModpackFile
-		err := tx.Where("id = ?", file.ID).First(&existing).Error
-		if err == gorm.ErrRecordNotFound {
-			return tx.Create(file).Error
-		}
-		if err != nil {
-			return err
-		}
-		return tx.Save(file).Error
-	})
-}
-
-func (s *Store) GetIndexedModpackFiles(ctx context.Context, modpackID string) ([]*IndexedModpackFile, error) {
-	var files []*IndexedModpackFile
-	err := s.db.WithContext(ctx).
-		Where("modpack_id = ?", modpackID).
-		Order("file_date DESC").
-		Find(&files).Error
-	return files, err
-}
-
 // Checks if any servers are using the specified modpack
-func (s *Store) CheckModpackInUse(ctx context.Context, modpackID string) ([]*Server, error) {
-	var servers []*Server
-	var configs []*ServerConfig
+func (s *Store) CheckModpackInUse(ctx context.Context, modpackID string) ([]*v1.Server, error) {
+	var servers []*v1.Server
+	var configs []*v1.ServerProperties
 
-	// For manual modpacks, the CFSlug is set to "manual-{modpackID}"
-	cfSlug := "manual-" + modpackID
+	// Staged archives carry the id, legacy rows used a slug
+	stagedZip := "/data/modpack-" + modpackID + ".%"
+	legacySlug := "manual-" + modpackID
 
-	// Find all configs that reference this modpack
-	if err := s.db.WithContext(ctx).Where("cf_slug = ?", cfSlug).Find(&configs).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("cf_modpack_zip LIKE ? OR cf_slug = ?", stagedZip, legacySlug).Find(&configs).Error; err != nil {
 		return nil, err
 	}
 
-	// Get the associated servers
 	if len(configs) > 0 {
 		serverIDs := make([]string, 0, len(configs))
 		for _, config := range configs {
-			serverIDs = append(serverIDs, config.ServerID)
+			serverIDs = append(serverIDs, config.ServerId)
 		}
 		if err := s.db.WithContext(ctx).Where("id IN ?", serverIDs).Find(&servers).Error; err != nil {
 			return nil, err
@@ -454,93 +477,66 @@ func (s *Store) CheckModpackInUse(ctx context.Context, modpackID string) ([]*Ser
 	return servers, nil
 }
 
-// Deletes a modpack and all related records
-func (s *Store) DeleteIndexedModpack(ctx context.Context, modpackID string) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Delete modpack files
-		if err := tx.Where("modpack_id = ?", modpackID).Delete(&IndexedModpackFile{}).Error; err != nil {
-			return err
-		}
-
-		// Delete favorites
-		if err := tx.Where("modpack_id = ?", modpackID).Delete(&ModpackFavorite{}).Error; err != nil {
-			return err
-		}
-
-		// Delete the modpack itself
-		return tx.Delete(&IndexedModpack{}, "id = ?", modpackID).Error
-	})
-}
-
-// Modpack Favorite operations
-func (s *Store) AddModpackFavorite(ctx context.Context, modpackID string) error {
-	favorite := &ModpackFavorite{
-		ID:        fmt.Sprintf("fav-%s-%d", modpackID, time.Now().Unix()),
-		ModpackID: modpackID,
-	}
-	return s.db.WithContext(ctx).Create(favorite).Error
-}
-
-func (s *Store) RemoveModpackFavorite(ctx context.Context, modpackID string) error {
-	return s.db.WithContext(ctx).Where("modpack_id = ?", modpackID).Delete(&ModpackFavorite{}).Error
-}
-
-func (s *Store) IsModpackFavorited(ctx context.Context, modpackID string) (bool, error) {
-	var count int64
-	err := s.db.WithContext(ctx).Model(&ModpackFavorite{}).Where("modpack_id = ?", modpackID).Count(&count).Error
-	return count > 0, err
-}
-
-func (s *Store) ListFavoriteModpacks(ctx context.Context) ([]*IndexedModpack, error) {
-	var favorites []*ModpackFavorite
-	err := s.db.WithContext(ctx).
-		Preload("Modpack").
-		Order("created_at DESC").
-		Find(&favorites).Error
-	if err != nil {
+// Favorited modpack ids as a lookup set
+func (s *Store) FavoriteModpackIDs(ctx context.Context) (map[string]bool, error) {
+	var ids []string
+	if err := s.db.WithContext(ctx).Model(&v1.ModpackFavorite{}).Pluck("modpack_id", &ids).Error; err != nil {
 		return nil, err
 	}
-
-	modpacks := make([]*IndexedModpack, 0, len(favorites))
-	for _, fav := range favorites {
-		if fav.Modpack != nil {
-			modpacks = append(modpacks, fav.Modpack)
-		}
+	set := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		set[id] = true
 	}
-
-	return modpacks, nil
+	return set, nil
 }
 
-// Global Settings operations (using ServerConfig with a special ID)
+// Modpack counts grouped by indexer
+func (s *Store) CountIndexedModpacksByIndexer(ctx context.Context) (map[string]int64, error) {
+	var rows []struct {
+		Indexer string
+		Count   int64
+	}
+	if err := s.db.WithContext(ctx).Model(&v1.IndexedModpack{}).
+		Select("indexer, COUNT(*) as count").Group("indexer").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	counts := make(map[string]int64, len(rows))
+	for _, r := range rows {
+		counts[r.Indexer] = r.Count
+	}
+	return counts, nil
+}
+
+// Global Settings operations (using ServerProperties with a special ID)
 const GlobalSettingsID = "global-settings"
 
-func (s *Store) GetGlobalSettings(ctx context.Context) (*ServerConfig, bool, error) {
-	var config ServerConfig
+func (s *Store) GetGlobalSettings(ctx context.Context) (*v1.ServerProperties, bool, error) {
+	var config v1.ServerProperties
 	isNew := false
 	err := s.db.WithContext(ctx).Where("id = ?", GlobalSettingsID).First(&config).Error
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			// Create EMPTY global settings - no defaults!
-			config = ServerConfig{
-				ID:       GlobalSettingsID,
-				ServerID: GlobalSettingsID,
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Create empty global settings, no defaults
+			created := &v1.ServerProperties{
+				Id:       GlobalSettingsID,
+				ServerId: GlobalSettingsID,
 			}
-			if err := s.db.WithContext(ctx).Create(&config).Error; err != nil {
+			if err := s.db.WithContext(ctx).Create(created).Error; err != nil {
 				return nil, isNew, err
 			}
 
 			isNew = true
-			return &config, isNew, nil
+			return created, isNew, nil
 		}
 		return nil, isNew, err
 	}
 	return &config, isNew, nil
 }
 
-func (s *Store) UpdateGlobalSettings(ctx context.Context, config *ServerConfig) error {
-	config.ID = GlobalSettingsID
-	config.ServerID = GlobalSettingsID
-	return s.db.WithContext(ctx).Save(config).Error
+func (s *Store) UpdateGlobalSettings(ctx context.Context, config *v1.ServerProperties) error {
+	config.Id = GlobalSettingsID
+	config.ServerId = GlobalSettingsID
+	return s.UpdateServerProperties(ctx, config)
 }
 
 func (s *Store) SeedGlobalSettings() error {
@@ -550,28 +546,30 @@ func (s *Store) SeedGlobalSettings() error {
 		return err
 	}
 	if isNew || s.cfg.Minecraft.ResetGlobal {
-		gc := s.CreateDefaultServerConfig(GlobalSettingsID)
+		gc := s.CreateDefaultServerProperties(GlobalSettingsID)
 		if len(s.cfg.Minecraft.GlobalConfig) > 0 {
-			mapstructure.WeakDecode(s.cfg.Minecraft.GlobalConfig, gc)
-			gc.ID = GlobalSettingsID + "-config"
-			gc.ServerID = GlobalSettingsID
+			if err := mapstructure.WeakDecode(s.cfg.Minecraft.GlobalConfig, gc); err != nil {
+				return fmt.Errorf("invalid minecraft.global_config: %w", err)
+			}
 		}
 		return s.UpdateGlobalSettings(ctx, gc)
 	}
 	return nil
 }
 
-// ProxyConfig operations
-func (s *Store) GetProxyConfig(ctx context.Context) (*ProxyConfig, bool, error) {
-	var config ProxyConfig
+// Returns the singleton proxy config, defaults when missing
+func (s *Store) GetProxyConfig(ctx context.Context) (*v1.ProxyConfig, bool, error) {
+	var config v1.ProxyConfig
 	err := s.db.WithContext(ctx).First(&config).Error
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			// Return default config if none exists
-			return &ProxyConfig{
-				ID:      "default",
-				Enabled: false,
-				BaseURL: "",
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Missing row mirrors the file config defaults
+			return &v1.ProxyConfig{
+				Id:          "default",
+				Enabled:     s.cfg.Proxy.Enabled,
+				CatchAll:    false,
+				Lobby:       false,
+				LobbyOnline: true,
 			}, true, nil
 		}
 		return nil, false, err
@@ -579,283 +577,112 @@ func (s *Store) GetProxyConfig(ctx context.Context) (*ProxyConfig, bool, error) 
 	return &config, false, nil
 }
 
-func (s *Store) SaveProxyConfig(ctx context.Context, config *ProxyConfig) error {
-	if config.ID == "" {
-		config.ID = "default"
+// Persists the singleton proxy config row
+func (s *Store) SaveProxyConfig(ctx context.Context, config *v1.ProxyConfig) error {
+	if config.Id == "" {
+		config.Id = "default"
 	}
-
-	// Use Save to create or update
-	return s.db.WithContext(ctx).Save(config).Error
+	return s.UpdateProxyConfig(ctx, config)
 }
 
-// ProxyListener operations
-func (s *Store) GetProxyListeners(ctx context.Context) ([]*ProxyListener, error) {
-	var listeners []*ProxyListener
-	err := s.db.WithContext(ctx).Order("is_default DESC, port ASC").Find(&listeners).Error
-	if err != nil {
-		return nil, err
-	}
-	return listeners, nil
-}
-
-func (s *Store) GetProxyListener(ctx context.Context, id string) (*ProxyListener, error) {
-	var listener ProxyListener
-	err := s.db.WithContext(ctx).First(&listener, "id = ?", id).Error
-	if err != nil {
-		return nil, err
-	}
-	return &listener, nil
-}
-
-func (s *Store) GetProxyListenerByPort(ctx context.Context, port int) (*ProxyListener, error) {
-	var listener ProxyListener
-	err := s.db.WithContext(ctx).First(&listener, "port = ?", port).Error
-	if err != nil {
-		return nil, err
-	}
-	return &listener, nil
-}
-
-func (s *Store) CreateProxyListener(ctx context.Context, listener *ProxyListener) error {
-	if listener.ID == "" {
-		listener.ID = uuid.New().String()
-	}
-	return s.db.WithContext(ctx).Create(listener).Error
-}
-
-func (s *Store) UpdateProxyListener(ctx context.Context, listener *ProxyListener) error {
-	return s.db.WithContext(ctx).Save(listener).Error
-}
-
-func (s *Store) DeleteProxyListener(ctx context.Context, id string) error {
-	// Don't delete if servers are using it
-	var count int64
-	s.db.Model(&Server{}).Where("proxy_listener_id = ?", id).Count(&count)
-	if count > 0 {
-		return fmt.Errorf("cannot delete listener: %d servers are using it", count)
-	}
-
-	return s.db.WithContext(ctx).Delete(&ProxyListener{}, "id = ?", id).Error
-}
-
-// Finds first available port for a proxy listener
-func (s *Store) FindAvailableListenerPort(ctx context.Context) (int, error) {
-	const startPort = 25565
-	const maxPort = 65535
-
-	// Get existing proxy listeners
-	listeners, err := s.GetProxyListeners(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get proxy listeners: %w", err)
-	}
-
-	// Get all servers
-	servers, err := s.ListServers(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to list servers: %w", err)
-	}
-
-	// Build set of used ports from listeners and non-proxied servers
-	usedPorts := make(map[int]bool)
-	for _, l := range listeners {
-		usedPorts[l.Port] = true
-	}
-	for _, srv := range servers {
-		if srv.ProxyHostname == "" && srv.Port > 0 {
-			usedPorts[srv.Port] = true
-		}
-	}
-
-	// Find first available port
-	for port := startPort; port <= maxPort; port++ {
-		if usedPorts[port] {
-			continue
-		}
-
-		// Check if any non-proxied module is using this port
-		// proxyEnabled=false means we're checking for direct host binding
-		conflict, err := s.CheckPortAvailability(ctx, port, "tcp", false, "", "")
-		if err != nil {
-			return 0, fmt.Errorf("failed to check port availability: %w", err)
-		}
-		if conflict != nil {
-			continue
-		}
-
-		return port, nil
-	}
-
-	return 0, fmt.Errorf("no available ports found starting from %d", startPort)
-}
-
-// User operations
-func (s *Store) CreateUser(ctx context.Context, user *User) error {
-	if user.ID == "" {
-		user.ID = uuid.New().String()
-	}
-	return s.db.WithContext(ctx).Create(user).Error
-}
-
-func (s *Store) GetUser(ctx context.Context, id string) (*User, error) {
-	var user User
-	err := s.db.WithContext(ctx).First(&user, "id = ?", id).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("user not found")
-		}
-		return nil, err
-	}
-	return &user, nil
-}
-
-func (s *Store) GetUserByUsernameAndProvider(ctx context.Context, username, provider string) (*User, error) {
-	var user User
-	err := s.db.WithContext(ctx).First(&user, "username = ? AND auth_provider = ?", username, provider).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("user not found")
-		}
-		return nil, err
-	}
-	return &user, nil
-}
-
-func (s *Store) GetUserByOIDCSubject(ctx context.Context, subject string) (*User, error) {
-	var user User
-	err := s.db.WithContext(ctx).First(&user, "oidc_subject = ?", subject).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("user not found")
-		}
-		return nil, err
-	}
-	return &user, nil
-}
-
-func (s *Store) ListUsers(ctx context.Context) ([]*User, error) {
-	var users []*User
-	err := s.db.WithContext(ctx).Order("created_at DESC").Find(&users).Error
-	return users, err
-}
-
-func (s *Store) UpdateUser(ctx context.Context, user *User) error {
-	return s.db.WithContext(ctx).Save(user).Error
-}
-
-func (s *Store) DeleteUser(ctx context.Context, id string) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("user_id = ?", id).Delete(&Session{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("user_id = ?", id).Delete(&APIToken{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("user_id = ?", id).Delete(&UserRole{}).Error; err != nil {
-			return err
-		}
-		return tx.Delete(&User{}, "id = ?", id).Error
-	})
-}
-
-func (s *Store) CountUsers(ctx context.Context) (int64, error) {
-	var count int64
-	err := s.db.WithContext(ctx).Model(&User{}).Count(&count).Error
-	return count, err
-}
-
-// Role operations
+// Seeds the fixed system roles when missing
 func (s *Store) SeedSystemRoles() error {
-	roles := []Role{
-		{ID: "role-admin", Name: "admin", Description: "Full system access", IsSystem: true},
-		{ID: "role-user", Name: "user", Description: "Standard user access", IsSystem: true, IsDefault: true},
-		{ID: "role-anonymous", Name: "anonymous", Description: "Unauthenticated user access", IsSystem: true},
+	ctx := context.Background()
+	roles := []*v1.Role{
+		{Id: "role-admin", Name: "admin", Description: "Full system access", IsSystem: true},
+		{Id: "role-user", Name: "user", Description: "Standard user access", IsSystem: true, IsDefault: true},
+		{Id: "role-anonymous", Name: "anonymous", Description: "Unauthenticated user access", IsSystem: true},
+		{Id: "role-module", Name: "module", Description: "Module container access", IsSystem: true},
 	}
 	for _, role := range roles {
-		var existing Role
-		if err := s.db.Where("name = ?", role.Name).First(&existing).Error; err == gorm.ErrRecordNotFound {
-			if err := s.db.Create(&role).Error; err != nil {
-				return err
-			}
+		_, err := s.GetRoleByName(ctx, role.Name)
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if err := s.CreateRole(ctx, role); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func (s *Store) CreateRole(ctx context.Context, role *Role) error {
-	if role.ID == "" {
-		role.ID = uuid.New().String()
-	}
-	return s.db.WithContext(ctx).Create(role).Error
-}
-
-func (s *Store) GetRole(ctx context.Context, id string) (*Role, error) {
-	var role Role
-	err := s.db.WithContext(ctx).First(&role, "id = ?", id).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("role not found")
-		}
-		return nil, err
-	}
-	return &role, nil
-}
-
-func (s *Store) ListRoles(ctx context.Context) ([]*Role, error) {
-	var roles []*Role
-	err := s.db.WithContext(ctx).Order("is_system DESC, name ASC").Find(&roles).Error
-	return roles, err
-}
-
-func (s *Store) GetDefaultRoles(ctx context.Context) ([]*Role, error) {
-	var roles []*Role
-	err := s.db.WithContext(ctx).Where("is_default = ?", true).Find(&roles).Error
-	return roles, err
-}
-
-func (s *Store) UpdateRole(ctx context.Context, role *Role) error {
-	return s.db.WithContext(ctx).Save(role).Error
-}
-
+// Deletes a role after system and assignment checks
 func (s *Store) DeleteRole(ctx context.Context, id string) error {
-	var role Role
-	if err := s.db.WithContext(ctx).First(&role, "id = ?", id).Error; err != nil {
+	role, err := s.GetRole(ctx, id)
+	if err != nil {
 		return err
 	}
 	if role.IsSystem {
 		return fmt.Errorf("cannot delete system role")
 	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("role_name = ?", role.Name).Delete(&UserRole{}).Error; err != nil {
+		if err := tx.Where("role_name = ?", role.Name).Delete(&v1.UserRole{}).Error; err != nil {
 			return err
 		}
-		return tx.Delete(&Role{}, "id = ?", id).Error
+		return tx.Delete(&v1.Role{}, "id = ?", id).Error
 	})
 }
 
-// UserRole operations
-func (s *Store) AssignRole(ctx context.Context, userID, roleName, source string) error {
-	var existing UserRole
-	err := s.db.WithContext(ctx).Where("user_id = ? AND role_name = ?", userID, roleName).First(&existing).Error
-	if err == nil {
-		return nil // Already assigned
+// Counts users holding one role
+func (s *Store) CountUsersWithRole(ctx context.Context, roleName string) (int64, error) {
+	var count int64
+	err := s.db.WithContext(ctx).Model(&v1.UserRole{}).
+		Where("role_name = ?", roleName).
+		Distinct("user_id").
+		Count(&count).Error
+	return count, err
+}
+
+// Atomically claims one invite use, false when exhausted
+func (s *Store) ClaimInviteUse(ctx context.Context, id string) (bool, error) {
+	res := s.db.WithContext(ctx).Exec(
+		"UPDATE registration_invites SET use_count = use_count + 1 WHERE id = ? AND (max_uses <= 0 OR use_count < max_uses)", id)
+	if res.Error != nil {
+		return false, res.Error
 	}
-	ur := &UserRole{
-		ID:       uuid.New().String(),
-		UserID:   userID,
+	return res.RowsAffected > 0, nil
+}
+
+// Returns a claimed invite use after a failed registration
+func (s *Store) ReleaseInviteUse(ctx context.Context, id string) error {
+	return s.db.WithContext(ctx).Exec(
+		"UPDATE registration_invites SET use_count = use_count - 1 WHERE id = ? AND use_count > 0", id).Error
+}
+
+// Renames a role and its user assignments together
+func (s *Store) RenameRole(ctx context.Context, role *v1.Role, oldName string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&v1.UserRole{}).Where("role_name = ?", oldName).Update("role_name", role.Name).Error; err != nil {
+			return err
+		}
+		return tx.Save(role).Error
+	})
+}
+
+// Assigns a role once, repeat calls are no-ops
+func (s *Store) AssignRole(ctx context.Context, userID, roleName string, source v1.RoleSource) error {
+	existing, err := s.GetUserRoleAssignment(ctx, userID, roleName)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		return nil
+	}
+	return s.CreateUserRole(ctx, &v1.UserRole{
+		UserId:   userID,
 		RoleName: roleName,
 		Source:   source,
-	}
-	return s.db.WithContext(ctx).Create(ur).Error
+	})
 }
 
-func (s *Store) UnassignRole(ctx context.Context, userID, roleName string) error {
-	return s.db.WithContext(ctx).Where("user_id = ? AND role_name = ?", userID, roleName).Delete(&UserRole{}).Error
-}
-
+// Role names for a user, system roles first
 func (s *Store) GetUserRoleNames(ctx context.Context, userID string) ([]string, error) {
 	var names []string
 	err := s.db.WithContext(ctx).
-		Model(&UserRole{}).
+		Model(&v1.UserRole{}).
 		Select("user_roles.role_name").
 		Joins("LEFT JOIN roles ON roles.name = user_roles.role_name").
 		Where("user_roles.user_id = ?", userID).
@@ -867,564 +694,55 @@ func (s *Store) GetUserRoleNames(ctx context.Context, userID string) ([]string, 
 	return names, nil
 }
 
-// Session operations
-func (s *Store) CreateSession(ctx context.Context, session *Session) error {
-	if session.ID == "" {
-		session.ID = uuid.New().String()
-	}
-	return s.db.WithContext(ctx).Create(session).Error
-}
-
-func (s *Store) GetSession(ctx context.Context, token string) (*Session, error) {
-	var session Session
-	err := s.db.WithContext(ctx).Preload("User").Where("token = ? AND expires_at > ?", token, time.Now()).First(&session).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("session not found or expired")
-		}
-		return nil, err
-	}
-	return &session, nil
-}
-
-func (s *Store) DeleteSession(ctx context.Context, token string) error {
-	return s.db.WithContext(ctx).Where("token = ?", token).Delete(&Session{}).Error
-}
-
-func (s *Store) CleanExpiredSessions(ctx context.Context) error {
-	return s.db.WithContext(ctx).Where("expires_at < ?", time.Now()).Delete(&Session{}).Error
-}
-
-// CleanAllSessions deletes all sessions (used when JWT secret changes).
-func (s *Store) CleanAllSessions(ctx context.Context) error {
-	return s.db.WithContext(ctx).Where("1 = 1").Delete(&Session{}).Error
-}
-
-// ResetAllUsers deletes all sessions, API tokens, user roles, registration invites, and users.
+// Deletes every account row and clears what pointed at them
 func (s *Store) ResetAllUsers(ctx context.Context) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("1 = 1").Delete(&Session{}).Error; err != nil {
+		if err := tx.Where("1 = 1").Delete(&v1.Session{}).Error; err != nil {
 			return fmt.Errorf("failed to delete sessions: %w", err)
 		}
-		if err := tx.Where("1 = 1").Delete(&APIToken{}).Error; err != nil {
+		if err := tx.Where("1 = 1").Delete(&v1.ApiToken{}).Error; err != nil {
 			return fmt.Errorf("failed to delete api tokens: %w", err)
 		}
-		if err := tx.Where("1 = 1").Delete(&UserRole{}).Error; err != nil {
+		if err := tx.Where("1 = 1").Delete(&v1.UserRole{}).Error; err != nil {
 			return fmt.Errorf("failed to delete user roles: %w", err)
 		}
-		if err := tx.Where("1 = 1").Delete(&RegistrationInvite{}).Error; err != nil {
+		if err := tx.Where("1 = 1").Delete(&v1.RegistrationInvite{}).Error; err != nil {
 			return fmt.Errorf("failed to delete registration invites: %w", err)
 		}
-		if err := tx.Where("1 = 1").Delete(&User{}).Error; err != nil {
+		if err := tx.Where("1 = 1").Delete(&v1.User{}).Error; err != nil {
 			return fmt.Errorf("failed to delete users: %w", err)
+		}
+
+		// Modules drop their owner and token, both just deleted
+		if err := tx.Model(&v1.Module{}).Where("1 = 1").Updates(map[string]any{"created_by": "", "token_id": ""}).Error; err != nil {
+			return fmt.Errorf("failed to clear module references: %w", err)
 		}
 		return nil
 	})
 }
 
-// APIToken operations
-func (s *Store) CreateAPIToken(ctx context.Context, token *APIToken) error {
-	if token.ID == "" {
-		token.ID = uuid.New().String()
+// Deletes task executions older than the cutoff
+func (s *Store) PruneTaskExecutions(ctx context.Context, olderThan time.Time) error {
+	return s.db.WithContext(ctx).
+		Where("datetime(started_at) < datetime(?)", olderThan.UTC()).
+		Delete(&v1.TaskExecution{}).Error
+}
+
+// Transport a protocol rides on, unspecified reads tcp
+func TransportOf(p v1.ModuleProtocol) v1.NetworkTransport {
+	if p == v1.ModuleProtocol_MODULE_PROTOCOL_UDP {
+		return v1.NetworkTransport_NETWORK_TRANSPORT_UDP
 	}
-	return s.db.WithContext(ctx).Create(token).Error
+	return v1.NetworkTransport_NETWORK_TRANSPORT_TCP
 }
 
-func (s *Store) GetAPITokenByHash(ctx context.Context, hash string) (*APIToken, error) {
-	var token APIToken
-	err := s.db.WithContext(ctx).Where("token_hash = ?", hash).First(&token).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("api token not found")
-		}
-		return nil, err
-	}
-	return &token, nil
-}
-
-func (s *Store) ListAPITokensByUser(ctx context.Context, userID string) ([]APIToken, error) {
-	var tokens []APIToken
-	err := s.db.WithContext(ctx).Where("user_id = ? AND (is_module_token = ? OR is_module_token IS NULL)", userID, false).Order("created_at DESC").Find(&tokens).Error
-	return tokens, err
-}
-
-func (s *Store) DeleteAPIToken(ctx context.Context, id, userID string) error {
-	result := s.db.WithContext(ctx).Where("id = ? AND user_id = ?", id, userID).Delete(&APIToken{})
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return fmt.Errorf("api token not found")
-	}
-	return nil
-}
-
-func (s *Store) DeleteAPITokenByID(ctx context.Context, id string) error {
-	return s.db.WithContext(ctx).Where("id = ?", id).Delete(&APIToken{}).Error
-}
-
-func (s *Store) UpdateAPITokenLastUsed(ctx context.Context, id string) error {
-	return s.db.WithContext(ctx).Model(&APIToken{}).Where("id = ?", id).Update("last_used_at", time.Now()).Error
-}
-
-// RegistrationInvite operations
-func (s *Store) CreateRegistrationInvite(ctx context.Context, invite *RegistrationInvite) error {
-	if invite.ID == "" {
-		invite.ID = uuid.New().String()
-	}
-	return s.db.WithContext(ctx).Create(invite).Error
-}
-
-func (s *Store) GetRegistrationInvite(ctx context.Context, id string) (*RegistrationInvite, error) {
-	var invite RegistrationInvite
-	err := s.db.WithContext(ctx).First(&invite, "id = ?", id).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("invite not found")
-		}
-		return nil, err
-	}
-	return &invite, nil
-}
-
-func (s *Store) GetRegistrationInviteByCode(ctx context.Context, code string) (*RegistrationInvite, error) {
-	var invite RegistrationInvite
-	err := s.db.WithContext(ctx).First(&invite, "code = ?", code).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("invite not found")
-		}
-		return nil, err
-	}
-	return &invite, nil
-}
-
-func (s *Store) ListRegistrationInvites(ctx context.Context) ([]*RegistrationInvite, error) {
-	var invites []*RegistrationInvite
-	err := s.db.WithContext(ctx).Order("created_at DESC").Find(&invites).Error
-	return invites, err
-}
-
-func (s *Store) IncrementInviteUseCount(ctx context.Context, id string) error {
-	return s.db.WithContext(ctx).Model(&RegistrationInvite{}).Where("id = ?", id).
-		Update("use_count", gorm.Expr("use_count + 1")).Error
-}
-
-func (s *Store) DeleteRegistrationInvite(ctx context.Context, id string) error {
-	return s.db.WithContext(ctx).Delete(&RegistrationInvite{}, "id = ?", id).Error
-}
-
-// SystemSetting operations
-
-func (s *Store) GetSystemSetting(ctx context.Context, key string) (string, error) {
-	var setting SystemSetting
-	err := s.db.WithContext(ctx).First(&setting, "key = ?", key).Error
-	if err != nil {
-		return "", err
-	}
-	return setting.Value, nil
-}
-
-func (s *Store) SetSystemSetting(ctx context.Context, key, value string) error {
-	setting := SystemSetting{Key: key, Value: value}
-	return s.db.WithContext(ctx).Save(&setting).Error
-}
-
-// ScheduledTask operations
-func (s *Store) CreateScheduledTask(ctx context.Context, task *ScheduledTask) error {
-	if task.ID == "" {
-		task.ID = uuid.New().String()
-	}
-	return s.db.WithContext(ctx).Create(task).Error
-}
-
-func (s *Store) GetScheduledTask(ctx context.Context, id string) (*ScheduledTask, error) {
-	var task ScheduledTask
-	err := s.db.WithContext(ctx).First(&task, "id = ?", id).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("scheduled task not found")
-		}
-		return nil, err
-	}
-	return &task, nil
-}
-
-func (s *Store) ListScheduledTasks(ctx context.Context, serverID string) ([]*ScheduledTask, error) {
-	var tasks []*ScheduledTask
-	query := s.db.WithContext(ctx)
-	if serverID != "" {
-		query = query.Where("server_id = ?", serverID)
-	}
-	err := query.Order("created_at DESC").Find(&tasks).Error
-	return tasks, err
-}
-
-func (s *Store) ListAllScheduledTasks(ctx context.Context) ([]*ScheduledTask, error) {
-	var tasks []*ScheduledTask
-	err := s.db.WithContext(ctx).Order("next_run ASC NULLS LAST").Find(&tasks).Error
-	return tasks, err
-}
-
-func (s *Store) ListDueScheduledTasks(ctx context.Context, before time.Time) ([]*ScheduledTask, error) {
-	var tasks []*ScheduledTask
-	err := s.db.WithContext(ctx).
-		Where("status = ? AND next_run IS NOT NULL AND next_run <= ?", TaskStatusEnabled, before).
-		Order("next_run ASC").
-		Find(&tasks).Error
-	return tasks, err
-}
-
-func (s *Store) UpdateScheduledTask(ctx context.Context, task *ScheduledTask) error {
-	return s.db.WithContext(ctx).Save(task).Error
-}
-
-func (s *Store) DeleteScheduledTask(ctx context.Context, id string) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Delete executions first
-		if err := tx.Where("task_id = ?", id).Delete(&TaskExecution{}).Error; err != nil {
-			return err
-		}
-		// Delete task
-		return tx.Delete(&ScheduledTask{}, "id = ?", id).Error
-	})
-}
-
-func (s *Store) UpdateTaskNextRun(ctx context.Context, taskID string, nextRun *time.Time, lastRun *time.Time) error {
-	updates := map[string]interface{}{
-		"next_run": nextRun,
-	}
-	if lastRun != nil {
-		updates["last_run"] = lastRun
-	}
-	return s.db.WithContext(ctx).Model(&ScheduledTask{}).Where("id = ?", taskID).Updates(updates).Error
-}
-
-// TaskExecution operations
-func (s *Store) CreateTaskExecution(ctx context.Context, execution *TaskExecution) error {
-	if execution.ID == "" {
-		execution.ID = uuid.New().String()
-	}
-	return s.db.WithContext(ctx).Create(execution).Error
-}
-
-func (s *Store) GetTaskExecution(ctx context.Context, id string) (*TaskExecution, error) {
-	var execution TaskExecution
-	err := s.db.WithContext(ctx).First(&execution, "id = ?", id).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("task execution not found")
-		}
-		return nil, err
-	}
-	return &execution, nil
-}
-
-func (s *Store) ListTaskExecutions(ctx context.Context, taskID string, limit int) ([]*TaskExecution, error) {
-	var executions []*TaskExecution
-	query := s.db.WithContext(ctx).Where("task_id = ?", taskID).Order("started_at DESC")
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
-	err := query.Find(&executions).Error
-	return executions, err
-}
-
-func (s *Store) ListServerTaskExecutions(ctx context.Context, serverID string, limit int) ([]*TaskExecution, error) {
-	var executions []*TaskExecution
-	query := s.db.WithContext(ctx).Where("server_id = ?", serverID).Order("started_at DESC")
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
-	err := query.Find(&executions).Error
-	return executions, err
-}
-
-func (s *Store) UpdateTaskExecution(ctx context.Context, execution *TaskExecution) error {
-	return s.db.WithContext(ctx).Save(execution).Error
-}
-
-func (s *Store) DeleteTaskExecutions(ctx context.Context, taskID string) error {
-	return s.db.WithContext(ctx).Where("task_id = ?", taskID).Delete(&TaskExecution{}).Error
-}
-
-func (s *Store) CleanOldTaskExecutions(ctx context.Context, olderThan time.Time, keepMinimum int) error {
-	// Get all task IDs
-	var taskIDs []string
-	if err := s.db.WithContext(ctx).Model(&ScheduledTask{}).Pluck("id", &taskIDs).Error; err != nil {
-		return err
-	}
-
-	for _, taskID := range taskIDs {
-		// Count total executions for this task
-		var count int64
-		if err := s.db.WithContext(ctx).Model(&TaskExecution{}).Where("task_id = ?", taskID).Count(&count).Error; err != nil {
-			continue
-		}
-
-		// Only delete if we have more than the minimum to keep
-		if count > int64(keepMinimum) {
-			// Get the IDs of executions we want to keep (the most recent ones)
-			var keepIDs []string
-			s.db.WithContext(ctx).Model(&TaskExecution{}).
-				Where("task_id = ?", taskID).
-				Order("started_at DESC").
-				Limit(keepMinimum).
-				Pluck("id", &keepIDs)
-
-			// Delete old executions that are not in the keep list
-			s.db.WithContext(ctx).
-				Where("task_id = ? AND started_at < ? AND id NOT IN ?", taskID, olderThan, keepIDs).
-				Delete(&TaskExecution{})
-		}
-	}
-	return nil
-}
-
-// ModuleTemplate operations
-func (s *Store) CreateModuleTemplate(ctx context.Context, template *ModuleTemplate) error {
-	if template.ID == "" {
-		template.ID = uuid.New().String()
-	}
-	return s.db.WithContext(ctx).Create(template).Error
-}
-
-func (s *Store) GetModuleTemplate(ctx context.Context, id string) (*ModuleTemplate, error) {
-	var template ModuleTemplate
-	err := s.db.WithContext(ctx).First(&template, "id = ?", id).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("module template not found")
-		}
-		return nil, err
-	}
-	return &template, nil
-}
-
-func (s *Store) GetModuleTemplateByName(ctx context.Context, name string) (*ModuleTemplate, error) {
-	var template ModuleTemplate
-	err := s.db.WithContext(ctx).First(&template, "name = ?", name).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("module template not found")
-		}
-		return nil, err
-	}
-	return &template, nil
-}
-
-func (s *Store) ListModuleTemplates(ctx context.Context) ([]*ModuleTemplate, error) {
-	var templates []*ModuleTemplate
-	err := s.db.WithContext(ctx).Order("type ASC, name ASC").Find(&templates).Error
-	return templates, err
-}
-
-func (s *Store) ListBuiltinModuleTemplates(ctx context.Context) ([]*ModuleTemplate, error) {
-	var templates []*ModuleTemplate
-	err := s.db.WithContext(ctx).Where("type = ?", ModuleTemplateTypeBuiltin).Order("name ASC").Find(&templates).Error
-	return templates, err
-}
-
-func (s *Store) UpdateModuleTemplate(ctx context.Context, template *ModuleTemplate) error {
-	return s.db.WithContext(ctx).Save(template).Error
-}
-
-func (s *Store) DeleteModuleTemplate(ctx context.Context, id string) error {
-	// Check if any modules use this template
-	var count int64
-	s.db.Model(&Module{}).Where("template_id = ?", id).Count(&count)
-	if count > 0 {
-		return fmt.Errorf("cannot delete template: %d modules are using it", count)
-	}
-	return s.db.WithContext(ctx).Delete(&ModuleTemplate{}, "id = ?", id).Error
-}
-
-// UpsertModuleTemplate creates or updates a module template by ID
-func (s *Store) UpsertModuleTemplate(ctx context.Context, template *ModuleTemplate) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var existing ModuleTemplate
-		err := tx.Where("id = ?", template.ID).First(&existing).Error
-		if err == gorm.ErrRecordNotFound {
-			return tx.Create(template).Error
-		}
-		if err != nil {
-			return err
-		}
-		// Preserve created_at when updating
-		template.CreatedAt = existing.CreatedAt
-		// Use Select("*") to force update of all columns including JSON-serialized fields
-		return tx.Model(&existing).Select("*").Omit("created_at").Updates(template).Error
-	})
-}
-
-// Module operations
-func (s *Store) CreateModule(ctx context.Context, module *Module) error {
-	if module.ID == "" {
-		module.ID = uuid.New().String()
-	}
-	return s.db.WithContext(ctx).Create(module).Error
-}
-
-func (s *Store) GetModule(ctx context.Context, id string) (*Module, error) {
-	var module Module
-	err := s.db.WithContext(ctx).First(&module, "id = ?", id).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("module not found")
-		}
-		return nil, err
-	}
-	return &module, nil
-}
-
-func (s *Store) ListModules(ctx context.Context) ([]*Module, error) {
-	var modules []*Module
-	err := s.db.WithContext(ctx).Order("created_at DESC").Find(&modules).Error
-	return modules, err
-}
-
-func (s *Store) ListServerModules(ctx context.Context, serverID string) ([]*Module, error) {
-	var modules []*Module
-	err := s.db.WithContext(ctx).Where("server_id = ?", serverID).Order("name ASC").Find(&modules).Error
-	return modules, err
-}
-
-func (s *Store) ListModulesByTemplate(ctx context.Context, templateID string) ([]*Module, error) {
-	var modules []*Module
-	err := s.db.WithContext(ctx).Where("template_id = ?", templateID).Order("created_at DESC").Find(&modules).Error
-	return modules, err
-}
-
-func (s *Store) UpdateModule(ctx context.Context, module *Module) error {
-	return s.db.WithContext(ctx).Save(module).Error
-}
-
-func (s *Store) DeleteModule(ctx context.Context, id string) error {
-	return s.db.WithContext(ctx).Delete(&Module{}, "id = ?", id).Error
-}
-
-// GetModuleByHostPort finds a module that uses the specified host port
-func (s *Store) GetModuleByHostPort(ctx context.Context, port int) (*Module, error) {
-	var modules []*Module
-	if err := s.db.WithContext(ctx).Find(&modules).Error; err != nil {
-		return nil, err
-	}
-
-	for _, module := range modules {
-		for _, p := range module.Ports {
-			if p != nil && int(p.HostPort) == port {
-				return module, nil
-			}
-		}
-	}
-
-	return nil, nil
-}
-
-// PortConflict represents a port conflict with details
-type PortConflict struct {
-	Module   *Module
-	Port     int
-	Protocol string
-	Reason   string
-}
-
-// CheckPortAvailability checks if a port can be used by a module, considering:
-// - Non-proxied ports: exclusive (Docker binds to host)
-// - Proxied TCP: can share if different hostname (TCP proxy routes by hostname)
-// - Proxied UDP: exclusive (UDP proxy only supports one route per port)
-//
-// Returns nil if port is available, or a PortConflict if not.
-// excludeModuleID allows excluding the current module when updating.
-func (s *Store) CheckPortAvailability(ctx context.Context, hostPort int, protocol string, proxyEnabled bool, hostname string, excludeModuleID string) (*PortConflict, error) {
-	var modules []*Module
-	if err := s.db.WithContext(ctx).Find(&modules).Error; err != nil {
-		return nil, err
-	}
-
-	for _, module := range modules {
-		if module.ID == excludeModuleID {
-			continue
-		}
-
-		for _, p := range module.Ports {
-			if p == nil || int(p.HostPort) != hostPort {
-				continue
-			}
-
-			existingProtocol := p.Protocol
-			if existingProtocol == "" {
-				existingProtocol = "tcp"
-			}
-
-			// TCP and UDP use separate port spaces
-			if existingProtocol != protocol {
-				continue
-			}
-
-			// Non-proxied ports bind directly to host
-			if !proxyEnabled || !p.ProxyEnabled {
-				return &PortConflict{
-					Module:   module,
-					Port:     hostPort,
-					Protocol: protocol,
-					Reason:   "port is bound directly to host by another module",
-				}, nil
-			}
-
-			// Proxied UDP: exclusive (no hostname routing)
-			if protocol == "udp" {
-				return &PortConflict{
-					Module:   module,
-					Port:     hostPort,
-					Protocol: protocol,
-					Reason:   "UDP proxy port already in use",
-				}, nil
-			}
-
-			// Proxied TCP: allows hostname-based routing, no conflict here
-		}
-	}
-
-	return nil, nil
-}
-
-func (s *Store) GetModuleByContainerID(ctx context.Context, containerID string) (*Module, error) {
-	var module Module
-	err := s.db.WithContext(ctx).Where("container_id = ?", containerID).First(&module).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &module, nil
-}
-
-func (s *Store) ListAutoStartModules(ctx context.Context) ([]*Module, error) {
-	var modules []*Module
-	err := s.db.WithContext(ctx).Where("auto_start = ? AND detached = ?", true, false).Find(&modules).Error
-	return modules, err
-}
-
-func (s *Store) ListModulesFollowingServerLifecycle(ctx context.Context, serverID string) ([]*Module, error) {
-	var modules []*Module
-	err := s.db.WithContext(ctx).Where("server_id = ? AND follow_server_lifecycle = ?", serverID, true).Find(&modules).Error
-	return modules, err
-}
-
-// ListEventTriggeredTasks returns all enabled tasks subscribed to the given event for a server.
-// EventTriggers is stored as a JSON array, so we filter in Go.
-func (s *Store) ListEventTriggeredTasks(ctx context.Context, serverID string, eventType v1.TriggeredEventType) ([]*ScheduledTask, error) {
-	var tasks []*ScheduledTask
-	err := s.db.WithContext(ctx).
-		Where("server_id = ? AND status = ? AND schedule = ?",
-			serverID, TaskStatusEnabled, ScheduleTypeEvent).
-		Find(&tasks).Error
+// Returns enabled tasks subscribed to an event for a server
+func (s *Store) ListEventTriggeredTasks(ctx context.Context, serverID string, eventType v1.TriggeredEventType) ([]*v1.ScheduledTask, error) {
+	tasks, err := s.ListEventScheduledTasks(ctx, serverID, v1.TaskStatus_TASK_STATUS_ENABLED, v1.ScheduleType_SCHEDULE_TYPE_EVENT)
 	if err != nil {
 		return nil, err
 	}
-	matching := make([]*ScheduledTask, 0, len(tasks))
+	matching := make([]*v1.ScheduledTask, 0, len(tasks))
 	for _, t := range tasks {
 		for _, e := range t.EventTriggers {
 			if e == eventType {
@@ -1434,4 +752,52 @@ func (s *Store) ListEventTriggeredTasks(ctx context.Context, serverID string, ev
 		}
 	}
 	return matching, nil
+}
+
+// Keeps the per-server ledger bounded
+const maxServerActions = 2000
+
+// Appends one action row to the server's ledger
+func (s *Store) AppendServerAction(ctx context.Context, action *v1.ServerAction) error {
+	if action.Timestamp == nil {
+		action.Timestamp = timestamppb.Now()
+	}
+	if err := s.CreateServerAction(ctx, action); err != nil {
+		return err
+	}
+	if action.Id%128 == 0 {
+		s.pruneServerActions(ctx, action.ServerId)
+	}
+	return nil
+}
+
+func (s *Store) pruneServerActions(ctx context.Context, serverID string) {
+	s.db.WithContext(ctx).Exec(
+		"DELETE FROM server_actions WHERE server_id = ? AND id NOT IN (SELECT id FROM server_actions WHERE server_id = ? ORDER BY id DESC LIMIT ?)",
+		serverID, serverID, maxServerActions)
+}
+
+// Returns ledger rows oldest first, after_id pages forward
+func (s *Store) GetServerActions(ctx context.Context, serverID string, afterID uint) ([]*v1.ServerAction, error) {
+	var actions []*v1.ServerAction
+	q := s.db.WithContext(ctx).Where("server_id = ?", serverID)
+	if afterID > 0 {
+		q = q.Where("id > ?", afterID)
+	}
+	err := q.Order("id asc").Limit(maxServerActions).Find(&actions).Error
+	return actions, err
+}
+
+// Upserts the row holding one user mod toggle, false included
+func (s *Store) SaveModChoice(ctx context.Context, mod *v1.Mod) error {
+	now := time.Now()
+	uploaded := now
+	if mod.UploadedAt != nil {
+		uploaded = mod.UploadedAt.AsTime()
+	}
+	return s.db.WithContext(ctx).Exec(
+		"INSERT INTO mods (id, server_id, file_name, name, version, mod_id, file_size, uploaded_at, updated_at, enabled) "+
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "+
+			"ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at",
+		mod.Id, mod.ServerId, mod.FileName, mod.DisplayName, mod.Version, mod.ModId, mod.FileSize, uploaded, now, mod.Enabled).Error
 }

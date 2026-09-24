@@ -10,16 +10,19 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/pkg/config"
+	"github.com/discohaus/discopanel/pkg/logger"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/google/uuid"
-	"github.com/nickheyer/discopanel/internal/config"
-	"github.com/nickheyer/discopanel/internal/db"
-	"github.com/nickheyer/discopanel/pkg/logger"
 	"github.com/tidwall/gjson"
 	"golang.org/x/oauth2"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type OIDCHandler struct {
@@ -204,7 +207,7 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// Enforce required claim if configured
 	if h.config.RequiredClaim != "" && len(h.config.RequiredValues) > 0 {
 		if !h.checkRequiredClaim(claims) {
-			h.log.Warn("OIDC: login rejected — required claim %q not satisfied", h.config.RequiredClaim)
+			h.log.Warn("OIDC: login rejected - required claim %q not satisfied", h.config.RequiredClaim)
 			http.Redirect(w, r, "/login?error=access_denied", http.StatusFound)
 			return
 		}
@@ -224,10 +227,10 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		username = sub
 	}
 
-	// Resolve roles before creating user to avoid orphaned records on rejection
+	// Resolves roles before creating user to avoid orphans
 	resolvedRoles := h.resolveClaimRoles(claims)
 	if len(resolvedRoles) == 0 && h.config.RejectUnmapped {
-		h.log.Warn("OIDC: login rejected — no mapped roles for user %s", username)
+		h.log.Warn("OIDC: login rejected - no mapped roles for user %s", username)
 		http.Redirect(w, r, "/login?error=no_mapped_roles", http.StatusFound)
 		return
 	}
@@ -239,20 +242,30 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Assign resolved roles to user
+	// Drops oidc roles the IdP no longer grants
+	claimRoles := make(map[string]bool, len(resolvedRoles))
 	for _, roleName := range resolvedRoles {
-		_ = h.store.AssignRole(ctx, user.ID, roleName, "oidc")
+		claimRoles[roleName] = true
+		_ = h.store.AssignRole(ctx, user.Id, roleName, v1.RoleSource_ROLE_SOURCE_OIDC)
+	}
+	var oidcAssigned []*v1.UserRole
+	if err := h.store.DB().WithContext(ctx).Where("user_id = ? AND source = ?", user.Id, v1.RoleSource_ROLE_SOURCE_OIDC).Find(&oidcAssigned).Error; err == nil {
+		for _, ur := range oidcAssigned {
+			if !claimRoles[ur.RoleName] {
+				_ = h.store.UnassignRole(ctx, user.Id, ur.RoleName)
+			}
+		}
 	}
 
 	// Get user roles
-	roleNames, err := h.store.GetUserRoleNames(ctx, user.ID)
+	roleNames, err := h.store.GetUserRoleNames(ctx, user.Id)
 	if err != nil {
 		roleNames = []string{}
 	}
 
 	// Generate session token
-	expiresAt := time.Now().Add(time.Duration(h.manager.config.SessionTimeout) * time.Second)
-	token, err := h.manager.generateJWT(user.ID, user.Username, roleNames, expiresAt)
+	expiresAt := time.Now().Add(h.manager.SessionTTL())
+	token, err := h.manager.generateJWT(user.Id, user.Username, roleNames, expiresAt)
 	if err != nil {
 		h.log.Error("OIDC: failed to generate JWT: %v", err)
 		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
@@ -260,11 +273,11 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create session
-	session := &db.Session{
-		ID:        uuid.New().String(),
-		UserID:    user.ID,
+	session := &v1.Session{
+		Id:        uuid.New().String(),
+		UserId:    user.Id,
 		Token:     token,
-		ExpiresAt: expiresAt,
+		ExpiresAt: timestamppb.New(expiresAt),
 	}
 	if err := h.store.CreateSession(ctx, session); err != nil {
 		h.log.Error("OIDC: failed to create session: %v", err)
@@ -274,16 +287,13 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	h.log.Info("OIDC: user %s authenticated successfully", user.Username)
 
-	// Redirect to frontend with token in query param
-	http.Redirect(w, r, fmt.Sprintf("/login?token=%s", token), http.StatusFound)
+	// Fragment delivery keeps the token out of logs and Referer
+	http.Redirect(w, r, fmt.Sprintf("/login#token=%s", url.QueryEscape(token)), http.StatusFound)
 }
 
-// findOrCreateOIDCUser looks up a user by OIDC subject (returning user),
-// or creates a new OIDC user. Local users with the same username are not
-// affected — the composite unique constraint (username, auth_provider)
-// allows both to coexist.
-func (h *OIDCHandler) findOrCreateOIDCUser(ctx context.Context, sub, username, email string) (*db.User, error) {
-	// Step 1: try to find by OIDC subject (returning user)
+// Finds or creates OIDC user, same username can coexist
+func (h *OIDCHandler) findOrCreateOIDCUser(ctx context.Context, sub, username, email string) (*v1.User, error) {
+	// Tries to find by OIDC subject, for returning users
 	if user, err := h.store.GetUserByOIDCSubject(ctx, sub); err == nil {
 		if !user.IsActive {
 			return nil, ErrUserNotActive
@@ -292,34 +302,33 @@ func (h *OIDCHandler) findOrCreateOIDCUser(ctx context.Context, sub, username, e
 		if email != "" {
 			user.Email = &email
 		}
-		now := time.Now()
-		user.LastLogin = &now
+		user.LastLogin = timestamppb.Now()
 		_ = h.store.UpdateUser(ctx, user)
 		return user, nil
 	}
 
-	// Step 2: create a new OIDC user
+	// Creates a new OIDC user
 	var emailPtr *string
 	if email != "" {
 		emailPtr = &email
 	}
-	user := &db.User{
-		ID:           uuid.New().String(),
+	user := &v1.User{
+		Id:           uuid.New().String(),
 		Username:     username,
 		Email:        emailPtr,
-		AuthProvider: "oidc",
-		OIDCSubject:  sub,
-		OIDCIssuer:   h.config.IssuerURI,
+		AuthProvider: v1.AuthProvider_AUTH_PROVIDER_OIDC,
 		IsActive:     true,
+		OidcSubject:  sub,
+		OidcIssuer:   h.config.IssuerURI,
 	}
 	if err := h.store.CreateUser(ctx, user); err != nil {
 		return nil, fmt.Errorf("failed to create OIDC user: %w", err)
 	}
 
-	// Assign default roles to new user
+	// Default roles keep local source so claim sync spares them
 	defaultRoles, _ := h.store.GetDefaultRoles(ctx)
 	for _, role := range defaultRoles {
-		_ = h.store.AssignRole(ctx, user.ID, role.Name, "oidc")
+		_ = h.store.AssignRole(ctx, user.Id, role.Name, v1.RoleSource_ROLE_SOURCE_LOCAL)
 	}
 
 	h.log.Info("OIDC: created new user %s", user.Username)
@@ -367,16 +376,14 @@ func (h *OIDCHandler) resolveClaimRoles(claims map[string]any) []string {
 			}
 		}
 	} else if !h.config.RejectUnmapped {
-		// No mapping configured and not rejecting unmapped — use claim values directly
+		// Uses claim values directly when no mapping and not rejecting
 		resolvedRoles = claimValues
 	}
 
 	return resolvedRoles
 }
 
-// Calls the configured extra claims URL with the access token.
-// Uses ExtraClaimsKey (gjson path) to extract a value from the response,
-// and stores it under ExtraClaimsName in the claims map.
+// Fetches extra claim from configured URL using gjson path
 func (h *OIDCHandler) fetchExtraClaims(ctx context.Context, accessToken string) (map[string]any, error) {
 	client := http.DefaultClient
 	if h.httpClient != nil {
@@ -414,7 +421,7 @@ func (h *OIDCHandler) fetchExtraClaims(ctx context.Context, accessToken string) 
 		name = "extra"
 	}
 
-	// If no key path configured, parse the whole response as the claim value
+	// Parses whole response as claim value if no key path
 	if h.config.ExtraClaimsKey == "" {
 		var parsed any
 		if err := json.Unmarshal(body, &parsed); err != nil {
@@ -431,7 +438,7 @@ func (h *OIDCHandler) fetchExtraClaims(ctx context.Context, accessToken string) 
 	return map[string]any{name: gjsonToAny(result)}, nil
 }
 
-// gjsonToAny converts a gjson.Result to a native Go type for use in claims.
+// Converts gjson.Result to native Go type for claims
 func gjsonToAny(r gjson.Result) any {
 	if r.IsArray() {
 		var out []any
@@ -452,7 +459,7 @@ func gjsonToAny(r gjson.Result) any {
 	return r.Value()
 }
 
-// Returns true if the claims contain the required claim == value match
+// True if claims satisfy required claim value match
 func (h *OIDCHandler) checkRequiredClaim(claims map[string]any) bool {
 	value, ok := claims[h.config.RequiredClaim]
 	if !ok {
