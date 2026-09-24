@@ -124,6 +124,7 @@ type DockerConfig struct {
 	AgentURL     string            `mapstructure:"agent_url" json:"agent_url"`         // Panel URL for runtime containers, auto-detected if empty
 	DNS          string            `mapstructure:"dns" json:"dns"`
 	Labels       map[string]string `mapstructure:"labels" json:"labels"`
+	LogDriver    string            `mapstructure:"log_driver" json:"log_driver"`
 }
 
 type StorageConfig struct {
@@ -285,6 +286,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("docker.agent_url", "")
 	v.SetDefault("docker.dns", "")
 	v.SetDefault("docker.labels", map[string]string{})
+	v.SetDefault("docker.log_driver", "local")
 
 	// Storage defaults
 	dataDir, err := filepath.Abs("./data")

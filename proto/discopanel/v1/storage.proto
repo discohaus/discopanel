@@ -781,6 +781,7 @@ message DockerOverrides {
   repeated string entrypoint = 18; // Override default entrypoint
   repeated string command = 19; // Override default command
   repeated string dns = 20; // Custom DNS servers
+  string log_driver = 21; // Log driver (e.g., "local", "json-file")
 }
 
 // One RBAC permission entry
@@ -1725,6 +1726,8 @@ message Module {
   string cert_pem = 44;
   // Pem key mounted into the container, never listed back
   string key_pem = 45 [(protogorm.v1.db) = {redact: true}];
+  // Log type override for module container (e.g., "local", "json-file")
+  string log_driver = 46 [(protogorm.v1.db) = {tag: "default:''"}];
 }
 
 // Indexed modpack metadata

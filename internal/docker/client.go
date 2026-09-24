@@ -90,6 +90,7 @@ type ClientConfig struct {
 	RuntimeImage string
 	DNS          string
 	Labels       map[string]string
+	LogDriver    string
 }
 
 type Client struct {
@@ -333,6 +334,11 @@ func ApplyOverrides(overrides *v1.DockerOverrides, config *container.Config, hos
 	if len(overrides.GetDns()) > 0 {
 		hostConfig.DNS = overrides.GetDns()
 	}
+
+	// Apply log type override
+	if overrides.GetLogDriver() != "" {
+		hostConfig.LogConfig.Type = overrides.GetLogDriver()
+	}
 }
 
 // Creates server container and reports setup progress via callback
@@ -417,6 +423,12 @@ func (c *Client) CreateContainer(ctx context.Context, server *v1.Server, serverC
 		},
 	}
 
+	// Log driver via config
+	logDriver := c.config.LogDriver
+	if logDriver == "" {
+		logDriver = "local"
+	}
+
 	hostConfig := &container.HostConfig{
 		PortBindings: portBindings,
 		Mounts: []mount.Mount{
@@ -430,8 +442,7 @@ func (c *Client) CreateContainer(ctx context.Context, server *v1.Server, serverC
 			CPUShares: 8192,
 		},
 		LogConfig: container.LogConfig{
-			// Local driver skips the json-file double write per line
-			Type:   "local",
+			Type:   logDriver,
 			Config: map[string]string{"max-size": "10m", "max-file": "3"},
 		},
 	}

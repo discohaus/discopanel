@@ -40,6 +40,7 @@ docker:
   #   your.label.key: "your_label_value"
   #   other.label.key: "other_label_value"
   labels: '{ }'
+  log_driver: "local" # docker log driver (local, json-file)
 
 # Storage configuration
 storage:
