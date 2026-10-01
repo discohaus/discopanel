@@ -3,6 +3,7 @@ import { goto } from '$app/navigation';
 import { resolve } from '$app/paths';
 import { browser } from '$app/environment';
 import { create } from '@bufbuild/protobuf';
+import { ConnectError, Code } from '@connectrpc/connect';
 import { rpcClient } from '$lib/api/rpc-client';
 import { wsClient } from '$lib/stores/websocket.svelte';
 import type { User, Permission } from '$lib/proto/discopanel/v1/storage_pb';
@@ -69,67 +70,66 @@ function createAuthStore() {
 		subscribe,
 
 		async checkAuthStatus() {
-			try {
-				const response = await rpcClient.auth.getAuthStatus({});
+			const response = await rpcClient.auth.getAuthStatus({}).catch((error) => {
+				update((state) => ({ ...state, isLoading: false }));
+				throw error;
+			});
 
-				const authEnabled = response.localAuthEnabled || response.oidcEnabled;
+			const authEnabled = response.localAuthEnabled || response.oidcEnabled;
 
-				update((state) => ({
-					...state,
-					localAuthEnabled: response.localAuthEnabled,
-					oidcEnabled: response.oidcEnabled,
-					firstUserSetup: response.firstUserSetup,
-					allowRegistration: response.allowRegistration,
-					anonymousAccessEnabled: response.anonymousAccessEnabled
-				}));
+			update((state) => ({
+				...state,
+				localAuthEnabled: response.localAuthEnabled,
+				oidcEnabled: response.oidcEnabled,
+				firstUserSetup: response.firstUserSetup,
+				allowRegistration: response.allowRegistration,
+				anonymousAccessEnabled: response.anonymousAccessEnabled
+			}));
 
-				// Validates the stored token when auth is on
-				let currentToken: string | null = null;
-				update((state) => {
-					currentToken = state.token;
-					return state;
-				});
+			const currentToken = get({ subscribe }).token;
+			// True once the server answers a request without any login
+			let open = false;
 
-				if (!authEnabled) {
-					// Disabled auth still fetches the granted admin permissions
-					await rpcClient.auth
-						.getCurrentUser({})
-						.then((r) =>
-							update((state) => ({
-								...state,
-								user: r.user || null,
-								permissions: r.permissions ?? [],
-								isLoading: false
-							}))
-						)
-						.catch(() => update((state) => ({ ...state, isLoading: false })));
-				} else if (currentToken) {
-					await this.validateSession();
-				} else if (response.anonymousAccessEnabled) {
-					try {
-						const r = await rpcClient.auth.getCurrentUser({});
-						update((state) => ({
-							...state,
-							permissions: r.permissions ?? [],
-							isLoading: false
-						}));
-					} catch {
-						update((state) => ({ ...state, isLoading: false }));
+			if (!authEnabled) {
+				try {
+					const r = await rpcClient.auth.getCurrentUser({});
+					update((state) => ({
+						...state,
+						user: r.user || null,
+						permissions: r.permissions ?? [],
+						isLoading: false
+					}));
+					open = true;
+				} catch (error) {
+					update((state) => ({ ...state, isLoading: false }));
+					// Only an auth rejection means the server still demands login
+					if (!(error instanceof ConnectError && error.code === Code.Unauthenticated)) {
+						throw error;
 					}
-				} else {
+				}
+			} else if (currentToken) {
+				await this.validateSession();
+			} else if (response.anonymousAccessEnabled) {
+				try {
+					const r = await rpcClient.auth.getCurrentUser({});
+					update((state) => ({
+						...state,
+						permissions: r.permissions ?? [],
+						isLoading: false
+					}));
+				} catch {
 					update((state) => ({ ...state, isLoading: false }));
 				}
-
-				return {
-					enabled: authEnabled,
-					firstUserSetup: response.firstUserSetup,
-					allowRegistration: response.allowRegistration
-				};
-			} catch (error) {
-				console.error('Failed to check auth status:', error);
+			} else {
 				update((state) => ({ ...state, isLoading: false }));
-				return { enabled: false, firstUserSetup: false, allowRegistration: false };
 			}
+
+			return {
+				enabled: authEnabled,
+				open,
+				firstUserSetup: response.firstUserSetup,
+				allowRegistration: response.allowRegistration
+			};
 		},
 
 		async login(username: string, password: string) {

@@ -17,7 +17,16 @@
 	import InspectorHeader from './inspector-header.svelte';
 	import { notify } from '$lib/stores/activity.svelte';
 	import { groupServices, laneLabel } from '../topology-data';
-	import { AlertTriangle, ArrowUpRight, Loader2, Network, Plus, Save, Trash2, Zap } from '@lucide/svelte';
+	import {
+		AlertTriangle,
+		ArrowUpRight,
+		Loader2,
+		Network,
+		Plus,
+		Save,
+		Trash2,
+		Zap
+	} from '@lucide/svelte';
 
 	let {
 		target,
@@ -243,7 +252,7 @@
 		if (dontWarnAgain && typeof localStorage !== 'undefined') {
 			localStorage.setItem(DISMISS_CIDR_WARNING_KEY, 'true');
 		}
-		console.log("Submit")
+		console.log('Submit');
 		await doSubmit();
 	}
 
@@ -394,7 +403,10 @@
 						onCheckedChange={(v) => (isDefault = v)}
 					/>
 				</label>
-				<label class="flex cursor-pointer items-center justify-between gap-3 border-t pt-3 text-sm" id="use-ingress-proxy">
+				<label
+					class="flex cursor-pointer items-center justify-between gap-3 border-t pt-3 text-sm"
+					id="use-ingress-proxy"
+				>
 					<span>
 						PROXY protocol (v1/v2) ingress
 						<span class="block text-xs font-normal text-muted-foreground">
@@ -422,7 +434,8 @@
 							validCIDR(cidr) ? undefined : `${cidr} is not a valid IP or CIDR network`}
 					/>
 					<p class="text-xs text-muted-foreground">
-						IP ranges allowed to send PROXY headers. PROXY headers sent by untrusted IPs are ignored to prevent IP spoofing.
+						IP ranges allowed to send PROXY headers. PROXY headers sent by untrusted IPs are ignored
+						to prevent IP spoofing.
 					</p>
 				</div>
 			{/if}
@@ -498,8 +511,7 @@
 				<AlertTriangle class="mt-0.5 size-4 shrink-0" />
 				<span>
 					PROXY protocol (v1/v2) ingress is enabled, but no trusted proxy CIDRs are set. Any IP
-					address will be allowed to send PROXY headers and potentially spoof client IP
-					addresses.
+					address will be allowed to send PROXY headers and potentially spoof client IP addresses.
 				</span>
 			</div>
 			<label class="flex cursor-pointer items-center gap-2 pt-2 text-xs text-muted-foreground">

@@ -29,14 +29,17 @@
 	} from '@lucide/svelte';
 	import { notify } from '$lib/stores/activity.svelte';
 	import { SvelteSet } from 'svelte/reactivity';
+	import { ConnectError, Code } from '@connectrpc/connect';
 	import { rpcClient, rpcErrorMessage, silentCallOptions } from '$lib/api/rpc-client';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { serversStore } from '$lib/stores/servers';
 	import DiagnosticsPanel from '$lib/components/diagnostics-panel.svelte';
 	import type { Server as ServerType } from '$lib/proto/discopanel/v1/storage_pb';
-	import type {
-		DiagnosticReport,
-		GetTelemetrySettingsResponse
+	import {
+		SupportBundleState,
+		type DiagnosticReport,
+		type GetSupportBundleResponse,
+		type GetTelemetrySettingsResponse
 	} from '$lib/proto/discopanel/v1/support_pb';
 
 	let generating = $state(false);
@@ -149,6 +152,23 @@
 		selectedServerIds.clear();
 	}
 
+	// Polls a bundle job until it leaves the running state
+	async function waitForBundle(bundleId: string): Promise<GetSupportBundleResponse> {
+		let failures = 0;
+		for (;;) {
+			try {
+				const res = await rpcClient.support.getSupportBundle({ bundleId }, silentCallOptions);
+				failures = 0;
+				if (res.state !== SupportBundleState.RUNNING) return res;
+			} catch (error) {
+				if (error instanceof ConnectError && error.code === Code.NotFound) throw error;
+				// Short polls ride out a dropped connection
+				if (++failures >= 5) throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 2000));
+		}
+	}
+
 	async function generateBundle(upload: boolean = false) {
 		if (upload) {
 			uploading = true;
@@ -162,60 +182,50 @@
 		const serverIds = Array.from(selectedServerIds);
 
 		try {
+			const options = {
+				includeLogs: true,
+				includeConfigs: true,
+				includeSystemInfo: true,
+				serverIds
+			};
+			const { bundleId } = upload
+				? await rpcClient.support.uploadSupportBundle(
+						{
+							...options,
+							discordUsername: discordUsername.trim(),
+							email: email.trim(),
+							githubUsername: githubUsername.trim(),
+							issueDescription: issueDescription.trim(),
+							stepsToReproduce: stepsToReproduce.trim()
+						},
+						silentCallOptions
+					)
+				: await rpcClient.support.generateSupportBundle(options, silentCallOptions);
+
+			const result = await waitForBundle(bundleId);
+			if (result.diagnostics) diagReport = result.diagnostics;
+			if (result.state === SupportBundleState.FAILED) {
+				notify.error(
+					upload ? 'Failed to upload support bundle' : 'Failed to generate support bundle',
+					{ description: result.message || 'Unknown error occurred' }
+				);
+				return;
+			}
 			if (upload) {
-				const response = await rpcClient.support.uploadSupportBundle(
-					{
-						includeLogs: true,
-						includeConfigs: true,
-						includeSystemInfo: true,
-						serverIds,
-						discordUsername: discordUsername.trim(),
-						email: email.trim(),
-						githubUsername: githubUsername.trim(),
-						issueDescription: issueDescription.trim(),
-						stepsToReproduce: stepsToReproduce.trim()
-					},
-					silentCallOptions
-				);
-
-				if (response.diagnostics) diagReport = response.diagnostics;
-				if (response.success && response.referenceId) {
-					referenceId = response.referenceId;
-					discordUsername = '';
-					email = '';
-					githubUsername = '';
-					issueDescription = '';
-					stepsToReproduce = '';
-					notify.success('Support bundle uploaded successfully!', {
-						description: 'Save your reference ID for support requests.'
-					});
-				} else {
-					notify.error('Failed to upload support bundle', {
-						description: response.message || 'Unknown error occurred'
-					});
-				}
+				referenceId = result.referenceId;
+				discordUsername = '';
+				email = '';
+				githubUsername = '';
+				issueDescription = '';
+				stepsToReproduce = '';
+				notify.success('Support bundle uploaded successfully!', {
+					description: 'Save your reference ID for support requests.'
+				});
 			} else {
-				const response = await rpcClient.support.generateSupportBundle(
-					{
-						includeLogs: true,
-						includeConfigs: true,
-						includeSystemInfo: true,
-						serverIds
-					},
-					silentCallOptions
-				);
-
-				if (response.diagnostics) diagReport = response.diagnostics;
-				if (response.bundleId) {
-					bundlePath = response.bundleId;
-					notify.success('Support bundle generated!', {
-						description: 'Click the download button to save the bundle.'
-					});
-				} else {
-					notify.error('Failed to generate support bundle', {
-						description: response.message
-					});
-				}
+				bundlePath = bundleId;
+				notify.success('Support bundle generated!', {
+					description: 'Click the download button to save the bundle.'
+				});
 			}
 		} catch (error) {
 			const message = rpcErrorMessage(error, 'Unknown error occurred');

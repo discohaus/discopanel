@@ -85,11 +85,7 @@ func NewServer(store *storage.Store, docker *docker.Client, sender *command.Send
 	}
 
 	// Initialize OIDC handler
-	oidcHandler, err := auth.NewOIDCHandler(authManager, store, &cfg.Auth.OIDC, log)
-	if err != nil {
-		log.Warn("Failed to initialize OIDC handler: %v", err)
-		oidcHandler, _ = auth.NewOIDCHandler(authManager, store, &config.OIDCConfig{}, log)
-	}
+	oidcHandler := auth.NewOIDCHandler(authManager, store, &cfg.Auth.OIDC, log)
 
 	// Initialize log streamer
 	logStreamer := logger.NewLogStreamer(docker.GetDockerClient(), log, 10000)
@@ -111,6 +107,7 @@ func NewServer(store *storage.Store, docker *docker.Client, sender *command.Send
 
 	// Self checks and release probes, started by main once serving
 	diag := diagnostics.NewRunner(store, docker, cfg, proxyManager, log)
+	diag.SetOIDCSource(oidcHandler)
 
 	// Hub heartbeat, feeds the release check, started by main once serving
 	heartbeat := telemetry.New(store, docker, cfg, diag, log)
@@ -543,6 +540,11 @@ func (s *Server) Diagnostics() *diagnostics.Runner {
 // Exposes the heartbeat sender for startup wiring
 func (s *Server) Telemetry() *telemetry.Sender {
 	return s.telemetry
+}
+
+// Exposes the OIDC handler so main can stop its retries
+func (s *Server) OIDC() *auth.OIDCHandler {
+	return s.oidcHandler
 }
 
 // Attaches a servers container output to its log stream

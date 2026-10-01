@@ -32,6 +32,7 @@
 		CircleMinus
 	} from '@lucide/svelte';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+	import type { Timestamp } from '@bufbuild/protobuf/wkt';
 
 	let { report = $bindable(null) }: { report?: DiagnosticReport | null } = $props();
 
@@ -126,37 +127,36 @@
 		}
 	}
 
+	// Report a manual run should replace, null when idle
+	let manualBaseline: { startedAt?: Timestamp } | null = null;
+
+	// Starts a server run, polling collects the report
 	async function run() {
 		if (running) return;
-		const previousRun = report?.startedAt;
-		running = true;
 		try {
 			const res = await rpcClient.support.runDiagnostics({}, silentCallOptions);
-			running = false;
-			if (res.report) {
-				report = res.report;
-				openProblems(res.report);
-				notifyReport(res.report);
+			manualBaseline = { startedAt: report?.startedAt };
+			running = res.running;
+			if (!running) {
+				await load();
+				announceManualRun();
 			}
 		} catch (error) {
-			running = false;
-			// The runner survives a lost connection. Resume polling if it is still active.
-			await load();
-			if (running) {
-				notify.warning('Diagnostics are still running', {
-					description: 'Results will appear here when the checks finish.'
-				});
-			} else if (
-				report?.startedAt &&
-				(report.startedAt.seconds !== previousRun?.seconds ||
-					report.startedAt.nanos !== previousRun?.nanos)
-			) {
-				notifyReport(report);
-			} else {
-				const message = rpcErrorMessage(error, 'Unknown error occurred');
-				notify.error('Diagnostics request failed', { description: message });
-			}
+			const message = rpcErrorMessage(error, 'Unknown error occurred');
+			notify.error('Diagnostics request failed', { description: message });
 		}
+	}
+
+	// Announces the report a manual run produced
+	function announceManualRun() {
+		if (running || !manualBaseline) return;
+		const previous = manualBaseline.startedAt;
+		manualBaseline = null;
+		if (report && !sameRun(report.startedAt, previous)) notifyReport(report);
+	}
+
+	function sameRun(a?: Timestamp, b?: Timestamp): boolean {
+		return a?.seconds === b?.seconds && a?.nanos === b?.nanos;
 	}
 
 	function notifyReport(result: DiagnosticReport) {
@@ -177,16 +177,16 @@
 		return Object.entries(check.facts).sort(([a], [b]) => a.localeCompare(b));
 	}
 
-	// Startup runs finish shortly after page load, poll until settled
+	// Active runs are polled until settled, manual ones then announce
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
 	$effect(() => {
 		if (!running || pollTimer) return;
 		pollTimer = setInterval(async () => {
 			await load();
-			if (!running && pollTimer) {
-				clearInterval(pollTimer);
-				pollTimer = null;
-			}
+			if (running || !pollTimer) return;
+			clearInterval(pollTimer);
+			pollTimer = null;
+			announceManualRun();
 		}, 3000);
 		return () => {
 			if (pollTimer) clearInterval(pollTimer);

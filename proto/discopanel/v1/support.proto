@@ -10,25 +10,32 @@ option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;dis
 
 // Support and diagnostic tools
 service SupportService {
-  // Create diagnostic archive
+  // Start building a diagnostic archive, GetSupportBundle carries the result
   rpc GenerateSupportBundle(GenerateSupportBundleRequest) returns (GenerateSupportBundleResponse) {
     option (discopanel.options.v1.perm) = {
       resource: RESOURCE_TYPE_SUPPORT
       action: ACTION_TYPE_CREATE
     };
   }
-  // Download diagnostic archive
+  // Download a ready diagnostic archive
   rpc DownloadSupportBundle(DownloadSupportBundleRequest) returns (DownloadSupportBundleResponse) {
     option (discopanel.options.v1.perm) = {
       resource: RESOURCE_TYPE_SUPPORT
       action: ACTION_TYPE_READ
     };
   }
-  // Upload support bundle to support server
+  // Start an upload job, GetSupportBundle carries the reference id
   rpc UploadSupportBundle(UploadSupportBundleRequest) returns (UploadSupportBundleResponse) {
     option (discopanel.options.v1.perm) = {
       resource: RESOURCE_TYPE_SUPPORT
       action: ACTION_TYPE_CREATE
+    };
+  }
+  // Poll a bundle job for its state and result
+  rpc GetSupportBundle(GetSupportBundleRequest) returns (GetSupportBundleResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SUPPORT
+      action: ACTION_TYPE_READ
     };
   }
   // Get application logs
@@ -38,7 +45,7 @@ service SupportService {
       action: ACTION_TYPE_READ
     };
   }
-  // Run every diagnostic check and return the report
+  // Start a diagnostics run, GetDiagnostics carries the finished report
   rpc RunDiagnostics(RunDiagnosticsRequest) returns (RunDiagnosticsResponse) {
     option (discopanel.options.v1.perm) = {
       resource: RESOURCE_TYPE_SUPPORT
@@ -92,15 +99,39 @@ message GenerateSupportBundleRequest {
   repeated string server_ids = 4; // Specific servers to include, empty for all
 }
 
-// Generated bundle info
+// Bundle job accepted, poll GetSupportBundle with the id
 message GenerateSupportBundleResponse {
   string bundle_id = 1;
-  string filename = 2;
-  int64 size = 3;
-  google.protobuf.Timestamp created_at = 4;
-  string message = 5;
+}
+
+// Lifecycle of a bundle job
+enum SupportBundleState {
+  SUPPORT_BUNDLE_STATE_UNSPECIFIED = 0;
+  // Archive is being assembled or uploaded
+  SUPPORT_BUNDLE_STATE_RUNNING = 1;
+  // Archive is ready to download, or the upload landed
+  SUPPORT_BUNDLE_STATE_READY = 2;
+  // Job stopped, message carries the reason
+  SUPPORT_BUNDLE_STATE_FAILED = 3;
+}
+
+// Bundle job lookup
+message GetSupportBundleRequest {
+  string bundle_id = 1;
+}
+
+// Bundle job state with its result once ready
+message GetSupportBundleResponse {
+  SupportBundleState state = 1;
+  // Failure reason when the job failed
+  string message = 2;
+  string filename = 3;
+  int64 size = 4;
+  google.protobuf.Timestamp created_at = 5;
   // Diagnostics run while the bundle was built
   DiagnosticReport diagnostics = 6;
+  // Hub reference id after an upload, empty for download jobs
+  string reference_id = 7;
 }
 
 // Bundle download request
@@ -128,13 +159,9 @@ message UploadSupportBundleRequest {
   string steps_to_reproduce = 9; // Steps to reproduce the issue
 }
 
-// Upload support bundle response
+// Bundle job accepted, poll GetSupportBundle with the id
 message UploadSupportBundleResponse {
-  string reference_id = 1;
-  string message = 2;
-  bool success = 3;
-  // Diagnostics run while the bundle was built
-  DiagnosticReport diagnostics = 4;
+  string bundle_id = 1;
 }
 
 // Docker system information
@@ -301,9 +328,10 @@ message DiagnosticReport {
 // Empty run request, every check runs
 message RunDiagnosticsRequest {}
 
-// Completed run
+// Run accepted, GetDiagnostics carries the report when it finishes
 message RunDiagnosticsResponse {
-  DiagnosticReport report = 1;
+  // A run is in progress right now
+  bool running = 1;
 }
 
 // Empty request for the latest report

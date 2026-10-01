@@ -427,6 +427,9 @@ func main() {
 	rpcServer.Diagnostics().Start()
 	defer rpcServer.Diagnostics().Stop()
 
+	// Provider discovery retries end with the process
+	defer rpcServer.OIDC().Stop()
+
 	// Heartbeat loop parks while turned off, first beat a minute in
 	heartbeat := rpcServer.Telemetry()
 	heartbeat.Start()

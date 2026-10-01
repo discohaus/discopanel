@@ -90,17 +90,11 @@
 		}
 	}
 
-	console.log(items)
+	console.log(items);
 </script>
 
 <div class="space-y-1.5">
-	<CardStack
-		items={items}
-		visible={2}
-		slotHeight="2rem"
-		gap="0.25rem"
-		itemKey={(n: string) => n}
-	>
+	<CardStack {items} visible={2} slotHeight="2rem" gap="0.25rem" itemKey={(n: string) => n}>
 		{#snippet card(item: string)}
 			<div
 				class="flex h-full items-center gap-2 rounded-md pr-0.5 pl-2.5 transition-colors hover:bg-accent/40"
