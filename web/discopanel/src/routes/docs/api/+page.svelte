@@ -128,7 +128,7 @@
 			title="API Documentation"
 			class="h-full w-full border-0 {isLoading ? 'hidden' : ''}"
 			referrerpolicy="same-origin"
-			sandbox="allow-scripts allow-same-origin"
+			sandbox="allow-scripts allow-same-origin allow-downloads"
 		></iframe>
 	</div>
 </div>
