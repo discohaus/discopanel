@@ -7,13 +7,16 @@
 	import type { Server, ServerAction } from '$lib/proto/discopanel/v1/storage_pb';
 	import { ServerStatus, ServerActionKindSchema } from '$lib/proto/discopanel/v1/storage_pb';
 	import { enumLabel } from '$lib/proto-meta';
-	import type { LogEntry } from '$lib/proto/discopanel/v1/server_pb';
+	import type { LogEntry, CommandToken } from '$lib/proto/discopanel/v1/server_pb';
 	import {
 		GetServerLogsRequestSchema,
 		ClearServerLogsRequestSchema,
 		SendCommandRequestSchema,
-		UploadToMCLogsRequestSchema
+		UploadToMCLogsRequestSchema,
+		GetCommandCompletionsRequestSchema,
+		IsCommandCompletionAvailableRequestSchema
 	} from '$lib/proto/discopanel/v1/server_pb';
+	import CommandCompletionOverlay from './command-completion-overlay.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { notify } from '$lib/stores/activity.svelte';
 	import {
@@ -27,7 +30,8 @@
 		Activity,
 		Terminal,
 		ChevronRight,
-		X
+		X,
+		Sparkles
 	} from '@lucide/svelte';
 	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
 	import { mode } from 'mode-watcher';
@@ -264,7 +268,13 @@
 			}
 		});
 
-		cleanupHandlers = [unsubLogs, unsubLogEntry, unsubCommandResult];
+		const unsubCommandCompletionsResult = wsClient.onCommandCompletionsResult((result) => {
+			if (result.serverId === server.id) {
+				handleCompletionResult(result.tokens || []);
+			}
+		});
+
+		cleanupHandlers = [unsubLogs, unsubLogEntry, unsubCommandResult, unsubCommandCompletionsResult];
 		wsClient.subscribe(server.id, tailLines);
 	}
 
@@ -336,8 +346,13 @@
 		commandInFlight = false;
 	}
 
+	let isNavigatingHistory = false;
+
 	function navigateHistory(direction: -1 | 1) {
 		if (history.length === 0) return;
+		isNavigatingHistory = true;
+		showCompletions = false;
+		completionTokens = [];
 		if (historyIndex === -1) {
 			if (direction === 1) return;
 			draftCommand = command;
@@ -347,6 +362,7 @@
 			if (next >= history.length) {
 				historyIndex = -1;
 				command = draftCommand;
+				isNavigatingHistory = false;
 				return;
 			}
 			historyIndex = Math.max(next, 0);
@@ -354,8 +370,161 @@
 		command = history[historyIndex] ?? '';
 	}
 
+	let completionSupported = $state(false);
+
+	$effect(() => {
+		const serverId = server.id;
+		if (!serverId) {
+			completionSupported = false;
+			return;
+		}
+		const req = create(IsCommandCompletionAvailableRequestSchema, { id: serverId });
+		rpcClient.server
+			.isCommandCompletionAvailable(req, silentCallOptions)
+			.then((res) => {
+				completionSupported = res.available;
+			})
+			.catch(() => {
+				completionSupported = false;
+			});
+	});
+
+	// Command completion state
+	let completionTokens = $state<CommandToken[]>([]);
+	let selectedTokenIndex = $state(0);
+	let showCompletions = $state(false);
+	let completionEnabled = $state(
+		typeof window !== 'undefined'
+			? localStorage.getItem('discopanel_completion_enabled') !== 'false'
+			: true
+	);
+
+	function toggleCompletion() {
+		completionEnabled = !completionEnabled;
+		if (typeof window !== 'undefined') {
+			localStorage.setItem('discopanel_completion_enabled', String(completionEnabled));
+		}
+		if (!completionEnabled) {
+			showCompletions = false;
+			completionTokens = [];
+		}
+	}
+
+	$effect(() => {
+		const currentCmd = command;
+		if (!completionSupported || !completionEnabled || isNavigatingHistory) {
+			completionTokens = [];
+			showCompletions = false;
+			return;
+		}
+		if (!canSend || !currentCmd.trim()) {
+			completionTokens = [];
+			showCompletions = false;
+			return;
+		}
+		fetchCompletions(currentCmd);
+	});
+
+	let pendingCompletionCmd = '';
+
+	function handleCompletionResult(tokens: CommandToken[], cmd?: string) {
+		if ((!cmd || cmd === command) && !isNavigatingHistory && completionEnabled) {
+			completionTokens = tokens || [];
+			selectedTokenIndex = 0;
+			showCompletions = completionTokens.length > 0;
+		}
+	}
+
+	async function fetchCompletions(cmdToPredict: string) {
+		pendingCompletionCmd = cmdToPredict;
+
+		// Prefer WebSocket
+		if (wsClient.isReady) {
+			const sent = wsClient.sendCommandCompletions(server.id, cmdToPredict);
+			if (sent) {
+				const wsCmd = cmdToPredict;
+				setTimeout(() => {
+					if (pendingCompletionCmd === wsCmd && completionTokens.length === 0) {
+						fetchCompletionsViaRpc(wsCmd);
+					}
+				}, 500);
+				return;
+			}
+		}
+
+		// Fallback to Connect RPC
+		await fetchCompletionsViaRpc(cmdToPredict);
+	}
+
+	async function fetchCompletionsViaRpc(cmdToPredict: string) {
+		try {
+			const req = create(GetCommandCompletionsRequestSchema, {
+				id: server.id,
+				command: cmdToPredict
+			});
+			const res = await rpcClient.server.getCommandCompletions(req, silentCallOptions);
+			if (pendingCompletionCmd === cmdToPredict) {
+				handleCompletionResult(res.tokens || [], cmdToPredict);
+			}
+		} catch {
+			if (pendingCompletionCmd === cmdToPredict) {
+				completionTokens = [];
+				showCompletions = false;
+			}
+		}
+	}
+
+	function selectCompletion(token: CommandToken) {
+		const parts = command.split(' ');
+		parts[parts.length - 1] = token.text;
+		command = parts.join(' ');
+		showCompletions = false;
+		completionTokens = [];
+		isNavigatingHistory = false;
+		inputRef?.focus();
+	}
+
 	function handleInputKeydown(e: KeyboardEvent) {
+		if (['ArrowUp', 'ArrowDown', 'Tab', 'Enter', 'Escape'].indexOf(e.key) === -1) {
+			isNavigatingHistory = false;
+		}
+
+		if (isNavigatingHistory) {
+			if (e.key === 'ArrowUp') {
+				e.preventDefault();
+				navigateHistory(-1);
+				return;
+			} else if (e.key === 'ArrowDown') {
+				e.preventDefault();
+				navigateHistory(1);
+				return;
+			}
+		}
+
+		if (showCompletions && completionTokens.length > 0) {
+			if (e.key === 'ArrowDown') {
+				e.preventDefault();
+				selectedTokenIndex = (selectedTokenIndex + 1) % completionTokens.length;
+				return;
+			} else if (e.key === 'ArrowUp') {
+				e.preventDefault();
+				selectedTokenIndex =
+					(selectedTokenIndex - 1 + completionTokens.length) % completionTokens.length;
+				return;
+			} else if (e.key === 'Tab') {
+				e.preventDefault();
+				selectCompletion(completionTokens[selectedTokenIndex]);
+				return;
+			} else if (e.key === 'Escape') {
+				e.preventDefault();
+				showCompletions = false;
+				return;
+			}
+		}
+
 		if (e.key === 'Enter') {
+			showCompletions = false;
+			isNavigatingHistory = false;
 			sendCommand();
 		} else if (e.key === 'ArrowUp') {
 			e.preventDefault();
@@ -675,7 +844,7 @@
 						{#each visibleActions as a (a.id)}
 							{@const details = actionDetails(a)}
 							<button
-								class="action-line flex w-full items-baseline gap-2 text-left break-words whitespace-pre-wrap {actionHighlighted(
+								class="action-line flex w-full items-baseline gap-2 text-left wrap-break-word whitespace-pre-wrap {actionHighlighted(
 									a
 								)
 									? 'action-highlight'
@@ -767,10 +936,17 @@
 
 	<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 	<div
-		class="flex shrink-0 cursor-text items-center gap-2 border-t border-terminal-foreground/8 bg-terminal-foreground/4 px-3.5 py-2.5 transition-colors duration-300"
+		class="relative flex shrink-0 cursor-text items-center gap-2 border-t border-terminal-foreground/8 bg-terminal-foreground/4 px-3.5 py-2.5 transition-colors duration-300"
 		class:hidden={channel === 'actions'}
 		onclick={() => inputRef?.focus()}
 	>
+		{#if showCompletions}
+			<CommandCompletionOverlay
+				tokens={completionTokens}
+				selectedIndex={selectedTokenIndex}
+				onSelect={selectCompletion}
+			/>
+		{/if}
 		<span
 			class="shrink-0 font-mono text-sm font-semibold {canSend
 				? 'text-status-ok'
@@ -791,6 +967,23 @@
 			autocomplete="off"
 			class="min-w-0 flex-1 bg-transparent font-mono text-sm text-terminal-foreground outline-none placeholder:text-terminal-foreground/30 disabled:cursor-not-allowed"
 		/>
+		{#if completionSupported}
+			<Tooltip.Root>
+				<Tooltip.Trigger>
+					<Button
+						size="icon"
+						variant="ghost"
+						onclick={toggleCompletion}
+						class="size-7 shrink-0 text-terminal-foreground/45 hover:bg-terminal-foreground/10 hover:text-terminal-foreground {completionEnabled
+							? 'text-primary'
+							: 'text-terminal-foreground/30'}"
+					>
+						<Sparkles class="size-3.5" />
+					</Button>
+				</Tooltip.Trigger>
+				<Tooltip.Content>Command completion: {completionEnabled ? 'On' : 'Off'}</Tooltip.Content>
+			</Tooltip.Root>
+		{/if}
 		<Button
 			onclick={sendCommand}
 			disabled={!canSend || !command.trim()}

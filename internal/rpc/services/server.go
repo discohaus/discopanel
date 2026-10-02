@@ -61,6 +61,7 @@ type ServerService struct {
 	moduleManager    *module.Manager
 	bus              *events.Bus
 	uploadManager    *transfer.UploadManager
+	completion       *command.Completion
 
 	// Encoded server icons cached by file identity
 	favicons minecraft.FaviconCache
@@ -157,7 +158,7 @@ func networkPortsEqual(a, b []*v1.NetworkPort) bool {
 }
 
 // NewServerService creates a new server service
-func NewServerService(store *storage.Store, docker *docker.Client, sender *command.Sender, config *config.Config, proxy *proxy.Manager, lifecycleManager *lifecycle.Manager, authManager *auth.Manager, logStreamer *logger.LogStreamer, metricsCollector *metrics.Collector, moduleManager *module.Manager, bus *events.Bus, uploadManager *transfer.UploadManager, rec *metrics.Recorder, log *logger.Logger) *ServerService {
+func NewServerService(store *storage.Store, docker *docker.Client, sender *command.Sender, config *config.Config, proxy *proxy.Manager, lifecycleManager *lifecycle.Manager, authManager *auth.Manager, logStreamer *logger.LogStreamer, metricsCollector *metrics.Collector, moduleManager *module.Manager, bus *events.Bus, uploadManager *transfer.UploadManager, completion *command.Completion, rec *metrics.Recorder, log *logger.Logger) *ServerService {
 	return &ServerService{
 		store:            store,
 		docker:           docker,
@@ -173,6 +174,7 @@ func NewServerService(store *storage.Store, docker *docker.Client, sender *comma
 		moduleManager:    moduleManager,
 		bus:              bus,
 		uploadManager:    uploadManager,
+		completion:       completion,
 	}
 }
 
@@ -1102,6 +1104,43 @@ func (s *ServerService) SendCommand(ctx context.Context, req *connect.Request[v1
 	return connect.NewResponse(&v1.SendCommandResponse{
 		Success: true,
 		Output:  output,
+	}), nil
+}
+
+// GetCommandCompletions fetches command completion predictions
+func (s *ServerService) GetCommandCompletions(ctx context.Context, req *connect.Request[v1.GetCommandCompletionsRequest]) (*connect.Response[v1.GetCommandCompletionsResponse], error) {
+	tokens, err := s.completion.GetCompletion(ctx, req.Msg.Id, req.Msg.Command)
+	if err != nil {
+		s.log.Warn("Failed to get command completions for server %s: %v", req.Msg.Id, err)
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	pbTokens := make([]*v1.CommandToken, 0, len(tokens))
+	for _, t := range tokens {
+		pbTokens = append(pbTokens, &v1.CommandToken{
+			Text:       t.Text,
+			IsOptional: t.IsOptional,
+			IsArgument: t.IsArgument,
+			IsStatic:   t.IsStatic,
+			IsPlayer:   t.IsPlayer,
+		})
+	}
+
+	return connect.NewResponse(&v1.GetCommandCompletionsResponse{
+		Tokens: pbTokens,
+	}), nil
+}
+
+// IsCommandCompletionAvailable checks if command completion is available for a server
+func (s *ServerService) IsCommandCompletionAvailable(ctx context.Context, req *connect.Request[v1.IsCommandCompletionAvailableRequest]) (*connect.Response[v1.IsCommandCompletionAvailableResponse], error) {
+	available, err := s.completion.IsAvailable(ctx, req.Msg.Id)
+	if err != nil {
+		s.log.Warn("Failed to check command completion availability for server %s: %v", req.Msg.Id, err)
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	return connect.NewResponse(&v1.IsCommandCompletionAvailableResponse{
+		Available: available,
 	}), nil
 }
 
