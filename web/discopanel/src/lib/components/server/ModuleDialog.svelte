@@ -800,7 +800,7 @@
 					{/if}
 
 					{#if systemLocked}
-						<div class="flex items-center gap-2 border-b bg-primary/[0.04] px-6 py-2.5">
+						<div class="flex items-center gap-2 border-b bg-primary/4 px-6 py-2.5">
 							<ShieldCheck class="size-4 shrink-0 text-primary" />
 							<p class="text-xs text-muted-foreground">
 								{#if configFields.length > 0}
@@ -1032,7 +1032,7 @@
 														if (v) configValues[field.env] = v;
 													}}
 												>
-													<SelectTrigger class={cn('w-full', issueBorder)}>
+													<SelectTrigger id={`cfg-${field.env}`} class={cn('w-full', issueBorder)}>
 														<span class="truncate">
 															{selectOptionLabel(field, configValues[field.env])}
 														</span>

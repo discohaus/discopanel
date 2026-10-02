@@ -292,7 +292,7 @@
 							{#if finding.evidence.length > 0}
 								<ul class="mt-2 space-y-1 border-l-2 border-muted pl-3">
 									{#each finding.evidence as line (line)}
-										<li class="text-xs break-words text-muted-foreground/80">{line}</li>
+										<li class="text-xs wrap-break-word text-muted-foreground/80">{line}</li>
 									{/each}
 								</ul>
 							{/if}

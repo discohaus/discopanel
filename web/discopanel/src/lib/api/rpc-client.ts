@@ -9,6 +9,8 @@ import { createConnectTransport } from '@connectrpc/connect-web';
 import { authStore } from '$lib/stores/auth';
 import { notify } from '$lib/stores/activity.svelte';
 import { loadingStore } from '$lib/stores/loading.svelte';
+import { networkStore } from '$lib/stores/network';
+import { isStandalonePwa } from '$lib/pwa';
 
 // Rpc state
 let loggingOut = false;
@@ -40,6 +42,18 @@ const SILENT_HEADER = 'X-Silent-Request';
 
 export const silentCallOptions = { headers: new Headers({ [SILENT_HEADER]: 'true' }) };
 
+// Only transport level trouble says anything about the server being gone.
+// Application errors like permission denied or not found must never trip it.
+const TRANSPORT_CODES = new Set([Code.Unavailable, Code.DeadlineExceeded]);
+
+function isTransportFailure(error: unknown): boolean {
+	// Caller aborted the call, the server was never asked
+	if (error instanceof DOMException && error.name === 'AbortError') return false;
+	if (error instanceof ConnectError) return TRANSPORT_CODES.has(error.code);
+	// fetch() rejects with a bare TypeError when the origin is unreachable
+	return error instanceof TypeError;
+}
+
 // Login auth interception
 const authInterceptor: Interceptor = (next) => async (req) => {
 	// Auth headers
@@ -62,6 +76,7 @@ const authInterceptor: Interceptor = (next) => async (req) => {
 
 	try {
 		const res = await next(req);
+		if (isStandalonePwa()) networkStore.reportSuccess();
 		return res;
 	} catch (error) {
 		const onLoginPage = typeof window !== 'undefined' && window.location.pathname === '/login';
@@ -78,7 +93,13 @@ const authInterceptor: Interceptor = (next) => async (req) => {
 			throw error;
 		}
 
-		if (!isSilent && !onLoginPage) {
+		if (isTransportFailure(error)) {
+			if (isStandalonePwa()) networkStore.reportFailure();
+		}
+
+		// The offline overlay already covers the screen, toasts on top of it
+		// would only stack up
+		if (!isSilent && !onLoginPage && (!isStandalonePwa() || networkStore.isOnline())) {
 			const message = error instanceof Error ? error.message : 'An error occurred';
 			notify.error(message);
 		}

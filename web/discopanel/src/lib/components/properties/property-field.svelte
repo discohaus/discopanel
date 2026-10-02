@@ -36,6 +36,7 @@
 
 <SettingRow
 	id={prop.key}
+	controlId="{prop.key}-input"
 	label={prop.label}
 	description={prop.description}
 	envVar={prop.envVar}
@@ -50,7 +51,7 @@
 	{#if prop.type === 'checkbox'}
 		<div class="flex h-9 items-center gap-3">
 			<Switch
-				id={prop.key}
+				id="{prop.key}-input"
 				checked={form.boolValue(prop)}
 				onCheckedChange={(checked) => form.setValue(prop.key, checked)}
 				disabled={inputDisabled}
@@ -66,7 +67,7 @@
 			onValueChange={(value) => form.setValue(prop.key, value ?? '')}
 			disabled={inputDisabled}
 		>
-			<SelectTrigger class="h-9 w-full {!isEnabled ? 'opacity-60' : ''}">
+			<SelectTrigger id="{prop.key}-input" class="h-9 w-full {!isEnabled ? 'opacity-60' : ''}">
 				<span class="truncate">
 					{form.displayValue(prop) || 'Select...'}
 				</span>
@@ -79,7 +80,7 @@
 		</Select>
 	{:else}
 		<Input
-			id={prop.key}
+			id="{prop.key}-input"
 			type={prop.type === 'number' ? 'number' : prop.type === 'password' ? 'password' : 'text'}
 			value={form.displayValue(prop)}
 			placeholder={prop.defaultValue ?? ''}

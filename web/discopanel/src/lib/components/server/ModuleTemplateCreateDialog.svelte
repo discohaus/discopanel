@@ -345,7 +345,7 @@
 
 <Dialog bind:open>
 	<DialogContent
-		class="flex h-[85vh]! w-[95vw]! max-w-4xl! flex-col gap-0! overflow-hidden p-0!"
+		class="flex h-[92dvh]! w-[calc(100vw-1rem)]! max-w-4xl! flex-col gap-0! overflow-hidden p-0! sm:h-[85vh] sm:w-[95vw]!"
 		showCloseButton={false}
 	>
 		<SectionedDialogLayout
@@ -377,7 +377,7 @@
 			{/snippet}
 
 			{#if activeSection === 'basic'}
-				<div class="space-y-6">
+				<div class="space-y-4 sm:space-y-6">
 					<LabeledInput
 						id="tpl-name"
 						label="Template name *"
@@ -419,7 +419,7 @@
 					</div>
 				</div>
 			{:else if activeSection === 'docker'}
-				<div class="space-y-6">
+				<div class="space-y-4 sm:space-y-6">
 					<LabeledInput
 						id="tpl-image"
 						label="Docker image *"
@@ -445,7 +445,7 @@
 								Configure how to verify the container is healthy
 							</p>
 						</div>
-						<div class="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
+						<div class="grid grid-cols-1 gap-4 p-3 sm:grid-cols-2 sm:p-4">
 							<LabeledInput
 								id="tpl-hc-path"
 								label="Health check path"
@@ -472,7 +472,7 @@
 								Default UID/GID for the container process
 							</p>
 						</div>
-						<div class="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
+						<div class="grid grid-cols-1 gap-4 p-3 sm:grid-cols-2 sm:p-4">
 							<LabeledInput
 								id="tpl-uid"
 								label="Default UID"
@@ -499,7 +499,7 @@
 								Docker security options applied to the container
 							</p>
 						</div>
-						<div class="p-4">
+						<div class="p-3 sm:p-4">
 							<LabeledInput
 								id="tpl-secopt"
 								label="Security options"
@@ -514,7 +514,7 @@
 					<div class="space-y-3">
 						<span class="stat-label">Behavior flags</span>
 						<label
-							class="flex cursor-pointer items-center justify-between gap-4 rounded-lg border bg-card p-4 transition-colors hover:bg-accent/50"
+							class="flex cursor-pointer items-center justify-between gap-3 rounded-lg border bg-card p-3 transition-colors hover:bg-accent/50 sm:gap-4 sm:p-4"
 						>
 							<div class="space-y-0.5">
 								<span class="text-sm font-medium">Requires server</span>
@@ -525,7 +525,7 @@
 							<Switch bind:checked={requiresServer} />
 						</label>
 						<label
-							class="flex cursor-pointer items-center justify-between gap-4 rounded-lg border bg-card p-4 transition-colors hover:bg-accent/50"
+							class="flex cursor-pointer items-center justify-between gap-3 rounded-lg border bg-card p-3 transition-colors hover:bg-accent/50 sm:gap-4 sm:p-4"
 						>
 							<div class="space-y-0.5">
 								<span class="text-sm font-medium">Supports proxy</span>
@@ -551,7 +551,7 @@
 				>
 					<div class="space-y-3">
 						{#each configFields as field, i (i)}
-							<div class="space-y-4 rounded-lg border bg-card p-4">
+							<div class="space-y-4 rounded-lg border bg-card p-3 sm:p-4">
 								<div class="flex items-center justify-between">
 									<span class="stat-label">Field {i + 1}</span>
 									<Button
@@ -610,28 +610,28 @@
 									</div>
 								</div>
 
-								<div class="flex flex-wrap items-end gap-4">
+								<div class="flex flex-wrap items-end gap-x-4 gap-y-3">
 									<label class="flex cursor-pointer items-center gap-2 pb-2">
 										<Checkbox bind:checked={field.required} />
 										<span class="text-sm">Required</span>
 									</label>
 									{#if field.required}
-										<div class="space-y-2">
+										<div class="w-full space-y-2 sm:w-auto">
 											<Label>Required unless</Label>
 											<Input
 												bind:value={field.requiredUnless}
 												placeholder="OTHER_ENV_KEY"
-												class="w-48 font-mono"
+												class="font-mono sm:w-48"
 											/>
 										</div>
 									{/if}
-									<div class="space-y-2">
+									<div class="w-full space-y-2 sm:w-auto">
 										<Label>On violation</Label>
 										<EnumSelect
 											schema={ModuleConfigSeveritySchema}
 											options={FIELD_SEVERITY_OPTIONS}
 											bind:value={field.severity}
-											class="w-40"
+											class="w-full sm:w-40"
 										/>
 									</div>
 								</div>
@@ -683,7 +683,7 @@
 
 								{#if field.type === ModuleConfigFieldType.SELECT}
 									<div class="space-y-2">
-										<div class="flex items-center justify-between">
+										<div class="flex flex-wrap items-center justify-between gap-2">
 											<Label>Options</Label>
 											<Button variant="outline" size="sm" onclick={() => addFieldOption(field)}>
 												<Plus class="size-4" />
@@ -693,22 +693,22 @@
 										{#if field.options.length > 0}
 											<div class="space-y-2">
 												{#each field.options as opt, oi (oi)}
-													<div class="flex items-center gap-2">
+													<div class="flex flex-col gap-2 sm:flex-row sm:items-center">
 														<Input
 															bind:value={opt.value}
 															placeholder="stored value"
-															class="w-48 font-mono"
+															class="font-mono sm:w-48"
 														/>
 														<Input
 															bind:value={opt.label}
 															placeholder="display label"
-															class="flex-1"
+															class="w-full flex-1"
 														/>
 														<Button
 															variant="ghost"
 															size="icon"
 															onclick={() => removeFieldOption(field, oi)}
-															class="size-7 shrink-0 text-muted-foreground hover:text-destructive"
+															class="size-7 shrink-0 self-end text-muted-foreground hover:text-destructive sm:self-auto"
 														>
 															<Trash2 class="size-4" />
 														</Button>
@@ -779,7 +779,7 @@
 					/>
 				</CollectionSection>
 			{:else if activeSection === 'advanced'}
-				<div class="space-y-8">
+				<div class="space-y-5 sm:space-y-8">
 					<!-- Suggested dependencies group -->
 					<div class="space-y-3">
 						<div>
@@ -791,7 +791,7 @@
 						<Input
 							bind:value={suggestedDependencies}
 							placeholder="redis, mysql, prometheus..."
-							class="max-w-xl font-mono"
+							class="w-full font-mono sm:max-w-xl"
 						/>
 					</div>
 
@@ -837,7 +837,7 @@
 						<KeyValueRowsEditor
 							bind:rows={metadata}
 							separator=":"
-							keyClass="w-48"
+							keyClass="w-full sm:w-48"
 							keyPlaceholder="key"
 							entryLabel="entry"
 						/>
@@ -854,7 +854,7 @@
 						<Textarea
 							bind:value={documentation}
 							placeholder="# Getting Started&#10;&#10;Describe how to configure and use this module..."
-							rows={8}
+							rows={6}
 							class="font-mono"
 						/>
 					</div>
@@ -862,11 +862,13 @@
 			{/if}
 
 			{#snippet footer()}
-				<Button variant="outline" onclick={() => (open = false)}>Cancel</Button>
+				<Button variant="outline" onclick={() => (open = false)} class="flex-1 sm:flex-none">
+					Cancel
+				</Button>
 				<Button
 					onclick={handleSubmit}
 					disabled={!name.trim() || !dockerImage.trim() || submitting}
-					class="min-w-[120px]"
+					class="min-w-30 flex-1 sm:flex-none"
 				>
 					{#if submitting}
 						<Loader2 class="size-4 animate-spin" />

@@ -143,6 +143,7 @@
 			<div class="divide-y">
 				<SettingRow
 					id="local-auth"
+					controlId="local-auth-input"
 					label="Local authentication"
 					description="Username and password login against the panel's own user database"
 					modified={config != null && localAuthEnabled !== config.localAuthEnabled}
@@ -150,7 +151,7 @@
 					<div class="flex h-9 items-center sm:justify-end">
 						{#if canEdit}
 							<Switch
-								id="local-auth"
+								id="local-auth-input"
 								checked={localAuthEnabled}
 								onCheckedChange={(v) => {
 									localAuthEnabled = v;
@@ -166,6 +167,7 @@
 
 				<SettingRow
 					id="allow-registration"
+					controlId="allow-registration-input"
 					label="User registration"
 					description="Allow new users to create their own accounts on the login page"
 					modified={config != null && allowRegistration !== config.allowRegistration}
@@ -174,7 +176,7 @@
 					<div class="flex h-9 items-center sm:justify-end">
 						{#if canEdit}
 							<Switch
-								id="allow-registration"
+								id="allow-registration-input"
 								checked={allowRegistration}
 								onCheckedChange={(v) => {
 									allowRegistration = v;
@@ -189,6 +191,7 @@
 
 				<SettingRow
 					id="anonymous-access"
+					controlId="anonymous-access-input"
 					label="Anonymous access"
 					description="Limited read-only browsing without signing in"
 					modified={config != null && anonymousAccess !== config.anonymousAccess}
@@ -196,7 +199,7 @@
 					<div class="flex h-9 items-center sm:justify-end">
 						{#if canEdit}
 							<Switch
-								id="anonymous-access"
+								id="anonymous-access-input"
 								checked={anonymousAccess}
 								onCheckedChange={(v) => {
 									anonymousAccess = v;
@@ -211,6 +214,7 @@
 
 				<SettingRow
 					id="session-timeout"
+					controlId="session-timeout-input"
 					label="Session timeout"
 					description="How long a login session stays valid before users must sign in again"
 					modified={config != null &&
@@ -219,7 +223,7 @@
 					{#if canEdit}
 						<div class="flex items-center gap-2 sm:justify-end">
 							<Input
-								id="session-timeout"
+								id="session-timeout-input"
 								type="number"
 								min="0.084"
 								step="0.5"

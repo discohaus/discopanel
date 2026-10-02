@@ -881,7 +881,7 @@
 							{/if}
 							{#if webhookUrlDisplay}
 								<div class="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
-									<span class="max-w-[400px] truncate font-mono">{webhookUrlDisplay}</span>
+									<span class="max-w-100 truncate font-mono">{webhookUrlDisplay}</span>
 									<CopyButton text={webhookUrlDisplay} label="Copy URL" class="size-6" />
 								</div>
 							{/if}
@@ -974,7 +974,7 @@
 			navItems={dialogSections}
 			title={currentSection.title}
 			description={currentSection.description}
-			sidebarClass="w-40 bg-muted/20 sm:w-52"
+			sidebarClass="bg-muted/20 sm:w-52"
 			onclose={closeDialog}
 		>
 			{#snippet sidebarHeader()}

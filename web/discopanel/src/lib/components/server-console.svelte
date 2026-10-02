@@ -642,54 +642,168 @@
 	class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-terminal shadow-sm transition-colors duration-300"
 >
 	<div
-		class="flex h-9.5 shrink-0 items-stretch gap-3 border-b border-terminal-foreground/8 bg-terminal-foreground/4 pr-2 pl-3 transition-colors duration-300"
+		class="flex shrink-0 flex-col border-b border-terminal-foreground/8 bg-terminal-foreground/4 transition-colors duration-300 sm:h-9.5 sm:flex-row sm:items-stretch sm:gap-3 sm:pr-2 sm:pl-3"
 	>
-		<div class="flex min-w-0 items-center gap-2 py-2">
-			<span class="relative flex size-2 shrink-0">
-				{#if meta.transitional}
+		<!-- Row one on phones, unwrapped back into the single toolbar on desktop -->
+		<div class="flex h-9.5 min-w-0 items-center gap-2 px-3 sm:contents">
+			<div class="flex min-w-0 items-center gap-2 sm:py-2">
+				<span class="relative flex size-2 shrink-0">
+					{#if meta.transitional}
+						<span
+							class="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60 {TONE_BG[
+								meta.tone
+							]}"
+						></span>
+					{/if}
+					<span class="relative inline-flex size-2 rounded-full {TONE_BG[meta.tone]}"></span>
+				</span>
+				<span
+					class="truncate font-mono text-xs font-medium tracking-wide text-terminal-foreground/85"
+				>
+					{server.name}
+				</span>
+				<span class="shrink-0 font-mono text-xs text-terminal-foreground/40"
+					>{meta.label.toLowerCase()}</span
+				>
+			</div>
+
+			<Tooltip.Root>
+				<Tooltip.Trigger class="hidden self-center sm:inline-flex">
 					<span
-						class="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60 {TONE_BG[
-							meta.tone
-						]}"
-					></span>
+						class="inline-flex items-center gap-1.5 rounded-full border border-terminal-foreground/10 px-2 py-0.5 font-mono text-[10px] tracking-wide {streamLive
+							? 'text-status-ok'
+							: 'text-terminal-foreground/40'}"
+					>
+						<span
+							class="size-1.5 rounded-full {streamLive
+								? 'bg-status-ok'
+								: 'bg-terminal-foreground/30'}"
+							class:animate-pulse={streamLive}
+						></span>
+						{streamLive ? 'live' : 'polling'}
+					</span>
+				</Tooltip.Trigger>
+				<Tooltip.Content>{streamLabel}</Tooltip.Content>
+			</Tooltip.Root>
+
+			<div class="ml-auto flex min-w-0 shrink-0 items-center gap-2 sm:order-1 sm:py-1.5">
+				{#if channel === 'actions'}
+					{#if traceFilter}
+						<button
+							class="flex h-6 max-w-32 min-w-0 items-center gap-1 rounded-md border border-amber-600/40 px-2 font-mono text-[11px] text-amber-700/90 sm:max-w-none dark:border-amber-400/30 dark:text-amber-300/80"
+							title="Clear incident filter"
+							onclick={() => (traceFilter = '')}
+						>
+							<span class="truncate">{traceFilter}</span>
+							<X class="size-3 shrink-0" />
+						</button>
+					{/if}
+					<div
+						class="flex h-6 items-center rounded-md border border-terminal-foreground/10 pl-2 font-mono text-[11px]"
+						title="Filter by source"
+					>
+						<span class="hidden text-terminal-foreground/40 sm:inline">Source:</span>
+						<span class="relative flex h-full items-center">
+							<select
+								bind:value={sourceFilter}
+								class="h-full appearance-none bg-transparent pr-5 pl-1.5 font-mono text-[11px] text-terminal-foreground/70 focus:outline-none"
+							>
+								<option value="all" class="bg-terminal">all</option>
+								{#each actionSources as source (source)}
+									<option value={source} class="bg-terminal">{source}</option>
+								{/each}
+							</select>
+							<ChevronDown
+								class="pointer-events-none absolute right-1.5 size-3 text-terminal-foreground/40"
+							/>
+						</span>
+					</div>
+				{:else}
+					<div
+						class="flex h-6 items-center rounded-md border border-terminal-foreground/10 pl-2 font-mono text-[11px]"
+						title="Lines loaded / lines of history to keep"
+					>
+						<span class="hidden text-terminal-foreground/40 sm:inline">Lines:</span>
+						<span class="px-1.5 text-terminal-foreground/70 tabular-nums">{logEntries.length}</span>
+						<span class="text-terminal-foreground/25">/</span>
+						<span class="relative flex h-full items-center">
+							<select
+								bind:value={tailLines}
+								onchange={handleTailChange}
+								class="h-full appearance-none bg-transparent pr-5 pl-1.5 font-mono text-[11px] text-terminal-foreground/70 tabular-nums focus:outline-none"
+							>
+								{#each TAIL_OPTIONS as option (option)}
+									<option value={option} class="bg-terminal">{option}</option>
+								{/each}
+							</select>
+							<ChevronDown
+								class="pointer-events-none absolute right-1.5 size-3 text-terminal-foreground/40"
+							/>
+						</span>
+					</div>
+					<div class="flex items-center gap-0.5 border-l border-terminal-foreground/10 pl-2">
+						<Tooltip.Root>
+							<Tooltip.Trigger>
+								<Button
+									size="icon"
+									variant="ghost"
+									onclick={uploadToMCLogs}
+									disabled={uploading || logEntries.length === 0}
+									class="size-6.5 text-terminal-foreground/45 hover:bg-terminal-foreground/10 hover:text-terminal-foreground"
+								>
+									{#if uploading}
+										<Loader2 class="size-3.5 animate-spin" />
+									{:else}
+										<Share class="size-3.5" />
+									{/if}
+								</Button>
+							</Tooltip.Trigger>
+							<Tooltip.Content>Share via mclo.gs</Tooltip.Content>
+						</Tooltip.Root>
+						<Tooltip.Root>
+							<Tooltip.Trigger>
+								<Button
+									size="icon"
+									variant="ghost"
+									onclick={downloadLogs}
+									disabled={logEntries.length === 0}
+									class="size-6.5 text-terminal-foreground/45 hover:bg-terminal-foreground/10 hover:text-terminal-foreground"
+								>
+									<Download class="size-3.5" />
+								</Button>
+							</Tooltip.Trigger>
+							<Tooltip.Content>Download logs</Tooltip.Content>
+						</Tooltip.Root>
+						<Tooltip.Root>
+							<Tooltip.Trigger>
+								<Button
+									size="icon"
+									variant="ghost"
+									onclick={clearLogs}
+									disabled={logEntries.length === 0}
+									class="size-6.5 text-terminal-foreground/45 hover:bg-terminal-foreground/10 hover:text-terminal-foreground"
+								>
+									<Trash2 class="size-3.5" />
+								</Button>
+							</Tooltip.Trigger>
+							<Tooltip.Content>Clear console</Tooltip.Content>
+						</Tooltip.Root>
+					</div>
 				{/if}
-				<span class="relative inline-flex size-2 rounded-full {TONE_BG[meta.tone]}"></span>
-			</span>
-			<span
-				class="truncate font-mono text-xs font-medium tracking-wide text-terminal-foreground/85"
-			>
-				{server.name}
-			</span>
-			<span class="shrink-0 font-mono text-xs text-terminal-foreground/40"
-				>{meta.label.toLowerCase()}</span
-			>
+			</div>
 		</div>
 
-		<Tooltip.Root>
-			<Tooltip.Trigger class="self-center">
-				<span
-					class="inline-flex items-center gap-1.5 rounded-full border border-terminal-foreground/10 px-2 py-0.5 font-mono text-[10px] tracking-wide {streamLive
-						? 'text-status-ok'
-						: 'text-terminal-foreground/40'}"
-				>
-					<span
-						class="size-1.5 rounded-full {streamLive
-							? 'bg-status-ok'
-							: 'bg-terminal-foreground/30'}"
-						class:animate-pulse={streamLive}
-					></span>
-					{streamLive ? 'live' : 'polling'}
-				</span>
-			</Tooltip.Trigger>
-			<Tooltip.Content>{streamLabel}</Tooltip.Content>
-		</Tooltip.Root>
-
-		<nav class="flex shrink-0 items-end gap-1 pt-1.5" role="tablist" aria-label="Console channels">
+		<!-- Own row on phones, inline tab strip again from sm upwards -->
+		<nav
+			class="flex shrink-0 items-center gap-1 border-t border-terminal-foreground/8 px-3 py-1 sm:order-0 sm:items-end sm:border-t-0 sm:px-0 sm:pt-1.5"
+			role="tablist"
+			aria-label="Console channels"
+		>
 			{#each CHANNELS as tab (tab.id)}
 				<button
-					class="-mb-px flex items-center gap-1.5 rounded-t-md border px-3 pt-1 pb-1.5 font-mono text-[11px] transition-colors {channel ===
+					class="flex items-center gap-1.5 rounded-md border px-3 py-1 font-mono text-[11px] transition-colors sm:-mb-px sm:rounded-t-md sm:pt-1 sm:pb-1.5 {channel ===
 					tab.id
-						? 'border-terminal-foreground/10 border-b-transparent bg-terminal text-terminal-foreground'
+						? 'border-terminal-foreground/10 bg-terminal text-terminal-foreground sm:border-b-transparent'
 						: 'border-transparent text-terminal-foreground/40 hover:text-terminal-foreground/70'}"
 					role="tab"
 					aria-selected={channel === tab.id}
@@ -700,115 +814,9 @@
 				</button>
 			{/each}
 		</nav>
-
-		<div class="ml-auto flex shrink-0 items-center gap-2 py-1.5">
-			{#if channel === 'actions'}
-				{#if traceFilter}
-					<button
-						class="flex h-6 items-center gap-1 rounded-md border border-amber-600/40 px-2 font-mono text-[11px] text-amber-700/90 dark:border-amber-400/30 dark:text-amber-300/80"
-						title="Clear incident filter"
-						onclick={() => (traceFilter = '')}
-					>
-						{traceFilter}
-						<X class="size-3" />
-					</button>
-				{/if}
-				<div
-					class="flex h-6 items-center rounded-md border border-terminal-foreground/10 pl-2 font-mono text-[11px]"
-					title="Filter by source"
-				>
-					<span class="text-terminal-foreground/40">Source:</span>
-					<span class="relative flex h-full items-center">
-						<select
-							bind:value={sourceFilter}
-							class="h-full appearance-none bg-transparent pr-5 pl-1.5 font-mono text-[11px] text-terminal-foreground/70 focus:outline-none"
-						>
-							<option value="all" class="bg-terminal">all</option>
-							{#each actionSources as source (source)}
-								<option value={source} class="bg-terminal">{source}</option>
-							{/each}
-						</select>
-						<ChevronDown
-							class="pointer-events-none absolute right-1.5 size-3 text-terminal-foreground/40"
-						/>
-					</span>
-				</div>
-			{:else}
-				<div
-					class="flex h-6 items-center rounded-md border border-terminal-foreground/10 pl-2 font-mono text-[11px]"
-					title="Lines loaded / lines of history to keep"
-				>
-					<span class="text-terminal-foreground/40">Lines:</span>
-					<span class="px-1.5 text-terminal-foreground/70 tabular-nums">{logEntries.length}</span>
-					<span class="text-terminal-foreground/25">/</span>
-					<span class="relative flex h-full items-center">
-						<select
-							bind:value={tailLines}
-							onchange={handleTailChange}
-							class="h-full appearance-none bg-transparent pr-5 pl-1.5 font-mono text-[11px] text-terminal-foreground/70 tabular-nums focus:outline-none"
-						>
-							{#each TAIL_OPTIONS as option (option)}
-								<option value={option} class="bg-terminal">{option}</option>
-							{/each}
-						</select>
-						<ChevronDown
-							class="pointer-events-none absolute right-1.5 size-3 text-terminal-foreground/40"
-						/>
-					</span>
-				</div>
-				<div class="flex items-center gap-0.5 border-l border-terminal-foreground/10 pl-2">
-					<Tooltip.Root>
-						<Tooltip.Trigger>
-							<Button
-								size="icon"
-								variant="ghost"
-								onclick={uploadToMCLogs}
-								disabled={uploading || logEntries.length === 0}
-								class="size-6.5 text-terminal-foreground/45 hover:bg-terminal-foreground/10 hover:text-terminal-foreground"
-							>
-								{#if uploading}
-									<Loader2 class="size-3.5 animate-spin" />
-								{:else}
-									<Share class="size-3.5" />
-								{/if}
-							</Button>
-						</Tooltip.Trigger>
-						<Tooltip.Content>Share via mclo.gs</Tooltip.Content>
-					</Tooltip.Root>
-					<Tooltip.Root>
-						<Tooltip.Trigger>
-							<Button
-								size="icon"
-								variant="ghost"
-								onclick={downloadLogs}
-								disabled={logEntries.length === 0}
-								class="size-6.5 text-terminal-foreground/45 hover:bg-terminal-foreground/10 hover:text-terminal-foreground"
-							>
-								<Download class="size-3.5" />
-							</Button>
-						</Tooltip.Trigger>
-						<Tooltip.Content>Download logs</Tooltip.Content>
-					</Tooltip.Root>
-					<Tooltip.Root>
-						<Tooltip.Trigger>
-							<Button
-								size="icon"
-								variant="ghost"
-								onclick={clearLogs}
-								disabled={logEntries.length === 0}
-								class="size-6.5 text-terminal-foreground/45 hover:bg-terminal-foreground/10 hover:text-terminal-foreground"
-							>
-								<Trash2 class="size-3.5" />
-							</Button>
-						</Tooltip.Trigger>
-						<Tooltip.Content>Clear console</Tooltip.Content>
-					</Tooltip.Root>
-				</div>
-			{/if}
-		</div>
 	</div>
 
-	<div class="relative min-h-48 flex-1">
+	<div class="relative min-h-32 flex-1 sm:min-h-48">
 		<div
 			class="absolute inset-0 overflow-x-auto overflow-y-auto px-4 py-3"
 			bind:this={scrollAreaRef}

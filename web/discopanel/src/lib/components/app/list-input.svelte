@@ -89,8 +89,6 @@
 			commit();
 		}
 	}
-
-	console.log(items);
 </script>
 
 <div class="space-y-1.5">

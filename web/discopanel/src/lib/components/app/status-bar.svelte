@@ -43,7 +43,9 @@
 	}
 </script>
 
-<div class="fixed inset-x-0 bottom-0 z-[60] h-7 border-t bg-background/85 backdrop-blur-sm">
+<div
+	class="fixed inset-x-0 bottom-0 z-60 h-[calc(1.75rem+env(safe-area-inset-bottom,0px))] border-t bg-background pb-[env(safe-area-inset-bottom,0px)]"
+>
 	<Popover bind:open>
 		<PopoverTrigger
 			class="flex h-full w-full cursor-pointer items-center gap-3 px-3 text-left transition-colors hover:bg-accent/40"
@@ -95,7 +97,7 @@
 			side="top"
 			align="end"
 			sideOffset={6}
-			class="z-[60] w-96 max-w-[calc(100vw-1rem)] p-2"
+			class="z-60 w-96 max-w-[calc(100vw-1rem)] p-2"
 		>
 			<div class="mb-1 flex items-center justify-between pl-1">
 				<span class="text-xs font-medium">Recent activity</span>

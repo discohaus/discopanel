@@ -26,3 +26,4 @@ export { default as EventHookRowsEditor } from './event-hook-rows-editor.svelte'
 export { default as InitCommandFields } from './init-command-fields.svelte';
 export { default as SectionedDialogLayout } from './sectioned-dialog-layout.svelte';
 export { default as ListInput } from './list-input.svelte';
+export { default as PwaInstallPrompt } from './pwa-install-prompt.svelte';
