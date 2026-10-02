@@ -40,8 +40,11 @@
 		StatusDot,
 		ServerAvatar,
 		DiscoLogo,
-		StatusBar
+		StatusBar,
+		PwaInstallPrompt
 	} from '$lib/components/app';
+	import { networkStore } from '$lib/stores/network';
+	import { isStandalonePwa } from '$lib/pwa';
 	import {
 		House,
 		Server,
@@ -57,7 +60,8 @@
 		Search,
 		ChevronRight,
 		RefreshCcw,
-		Info
+		Info,
+		WifiOff
 	} from '@lucide/svelte';
 	import type { User } from '$lib/proto/discopanel/v1/storage_pb';
 	import type { GetVersionStatusResponse } from '$lib/proto/discopanel/v1/support_pb';
@@ -209,8 +213,39 @@
 	});
 
 	onMount(() => {
+		if (isStandalonePwa()) networkStore.init();
 		bootstrap();
 		return () => stopPolling();
+	});
+
+	// An installed PWA has no browser address bar, so on small screens the
+	// product identity needs a home of its own above the toolbar.
+	// iOS Safari home screen apps report standalone through navigator instead
+	let isStandalone = $state(false);
+
+	onMount(() => {
+		const mq = window.matchMedia('(display-mode: standalone)');
+		const sync = () => (isStandalone = isStandalonePwa());
+		sync();
+		mq.addEventListener('change', sync);
+		return () => mq.removeEventListener('change', sync);
+	});
+
+	// Dark mode is driven by a .dark class, so prefers-color-scheme metas would
+	// ignore the in-app toggle. Keep the values in sync with --background in
+	// app.css instead.
+	const THEME_COLORS = { light: '#dbdbd6', dark: '#0b0b12' } as const;
+
+	$effect(() => {
+		const isLight = mode.current === 'light';
+		const color = isLight ? THEME_COLORS.light : THEME_COLORS.dark;
+		document.documentElement.style.colorScheme = isLight ? 'light' : 'dark';
+		document
+			.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+			?.setAttribute('content', color);
+		document
+			.querySelector<HTMLMetaElement>('meta[name="apple-mobile-web-app-status-bar-style"]')
+			?.setAttribute('content', isLight ? 'default' : 'black-translucent');
 	});
 </script>
 
@@ -220,6 +255,7 @@
 
 <ModeWatcher />
 <StatusBar />
+<PwaInstallPrompt />
 
 {#if page.url.pathname === '/login'}
 	{@render children?.()}
@@ -230,7 +266,9 @@
 {:else}
 	<CommandPalette bind:open={paletteOpen} />
 	<SidebarProvider>
-		<Sidebar collapsible="icon" class="inset-y-auto top-0 bottom-7 h-auto">
+		<Sidebar
+			collapsible="icon"
+		>
 			<SidebarHeader>
 				<a
 					href={resolvePath('/')}
@@ -508,46 +546,80 @@
 			</SidebarFooter>
 		</Sidebar>
 
-		<SidebarInset class="flex h-[calc(100svh-1.75rem)] flex-col overflow-hidden">
+		<SidebarInset
+			class="flex h-[calc(100svh-1.75rem-env(safe-area-inset-bottom,0px))] flex-col overflow-hidden"
+		>
 			<div class="page-ambient pointer-events-none absolute inset-0" aria-hidden="true"></div>
 			<header
-				class="relative flex h-13 shrink-0 items-center gap-2 border-b bg-background/80 px-4 backdrop-blur-sm"
+				class="relative flex shrink-0 flex-col border-b bg-background/80 pt-[env(safe-area-inset-top,0px)] backdrop-blur-sm"
 			>
-				<SidebarTrigger class="-ml-1" />
-				<div class="flex min-w-0 items-center gap-1.5 text-sm">
-					<span class={crumb.detail ? 'text-muted-foreground' : 'font-medium'}>
-						{crumb.section}
-					</span>
-					{#if crumb.detail}
-						<ChevronRight class="size-3.5 shrink-0 text-muted-foreground/60" />
-						<span class="truncate font-medium">{crumb.detail}</span>
-					{/if}
-				</div>
-				<div class="ml-auto flex flex-1 items-center justify-end gap-2">
-					<Button
-						variant="outline"
-						size="sm"
-						class="h-8 w-full max-w-xl justify-start gap-2 text-muted-foreground"
-						onclick={() => (paletteOpen = true)}
-					>
-						<Search class="size-3.5" />
-						<span class="hidden sm:inline">Search</span>
-						<kbd
-							class="pointer-events-none ml-auto hidden rounded border bg-muted px-1.5 font-mono text-[10px] font-medium sm:inline-block"
+				{#if isStandalone}
+					<div class="flex h-11 items-center gap-2 border-b px-3">
+						<a
+							href={resolvePath('/')}
+							class="flex items-center gap-2 transition-opacity hover:opacity-80"
 						>
-							⌘K
-						</kbd>
-					</Button>
-					<Button
-						variant="ghost"
-						size="icon"
-						class="size-8 shrink-0 text-muted-foreground"
-						onclick={refresh}
-						disabled={refreshing}
-						title="Refresh"
+							<DiscoLogo class="size-5" />
+							<span class="font-mono text-base font-bold tracking-tight"
+								>disco<span class="text-[#55aa55]">panel</span></span
+							>
+						</a>
+					</div>
+				{/if}
+				<div class="flex h-13 shrink-0 items-center gap-2 px-3 sm:px-4">
+					<SidebarTrigger
+						class="-ml-1 flex size-8 shrink-0 items-center justify-center sm:size-7"
+					/>
+					<div
+						class="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-sm sm:flex-initial"
 					>
-						<RefreshCcw class="size-4 {refreshing ? 'animate-spin' : ''}" />
-					</Button>
+						<span class={crumb.detail ? 'truncate text-muted-foreground' : 'truncate font-medium'}>
+							{crumb.section}
+						</span>
+						{#if crumb.detail}
+							<ChevronRight class="size-3.5 shrink-0 text-muted-foreground/60" />
+							<span class="truncate font-medium">{crumb.detail}</span>
+						{/if}
+					</div>
+					<div class="ml-auto flex items-center gap-1.5 sm:gap-2">
+						<!-- Mobile search button (icon only) -->
+						<Button
+							variant="outline"
+							size="icon"
+							class="size-8 shrink-0 text-muted-foreground sm:hidden"
+							onclick={() => (paletteOpen = true)}
+							title="Search"
+						>
+							<Search class="size-3.5" />
+						</Button>
+
+						<!-- Desktop search button (bar with shortcut) -->
+						<Button
+							variant="outline"
+							size="sm"
+							class="hidden h-8 w-44 items-center justify-start gap-2 px-2.5 text-muted-foreground sm:inline-flex md:w-60 lg:w-72"
+							onclick={() => (paletteOpen = true)}
+						>
+							<Search class="size-3.5 shrink-0" />
+							<span class="truncate">Search</span>
+							<kbd
+								class="pointer-events-none ml-auto hidden rounded border bg-muted px-1.5 font-mono text-[10px] font-medium lg:inline-block"
+							>
+								⌘K
+							</kbd>
+						</Button>
+
+						<Button
+							variant="ghost"
+							size="icon"
+							class="size-8 shrink-0 text-muted-foreground"
+							onclick={refresh}
+							disabled={refreshing}
+							title="Refresh"
+						>
+							<RefreshCcw class="size-4 {refreshing ? 'animate-spin' : ''}" />
+						</Button>
+					</div>
 				</div>
 			</header>
 			<main class="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
@@ -555,4 +627,36 @@
 			</main>
 		</SidebarInset>
 	</SidebarProvider>
+{/if}
+
+{#if isStandalone && !$networkStore.online}
+	<div
+		class="fixed inset-0 z-50 flex flex-col items-center justify-center bg-background/85 p-6 text-center backdrop-blur-md select-none"
+		role="alert"
+		aria-live="assertive"
+	>
+		<div
+			class="relative mb-4 flex size-16 items-center justify-center rounded-2xl border border-destructive/30 bg-destructive/10 text-destructive shadow-lg"
+		>
+			<WifiOff class="size-8 animate-pulse" />
+		</div>
+		<h2 class="text-xl font-bold tracking-tight text-foreground sm:text-2xl">
+			No Server Connection
+		</h2>
+		<p class="mt-2 max-w-sm text-sm text-muted-foreground">
+			Connection to the DiscoPanel server was lost. Please check your network or server status.
+		</p>
+		<div class="mt-6 flex flex-col gap-2 sm:flex-row">
+			<Button
+				variant="default"
+				size="default"
+				class="gap-2 shadow-sm"
+				disabled={$networkStore.checking}
+				onclick={() => networkStore.checkConnection()}
+			>
+				<RefreshCcw class="size-4 {$networkStore.checking ? 'animate-spin' : ''}" />
+				<span>{$networkStore.checking ? 'Checking connection...' : 'Try again'}</span>
+			</Button>
+		</div>
+	</div>
 {/if}

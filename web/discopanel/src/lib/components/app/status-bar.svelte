@@ -43,7 +43,7 @@
 	}
 </script>
 
-<div class="fixed inset-x-0 bottom-0 z-[60] h-7 border-t bg-background/85 backdrop-blur-sm">
+<div class="fixed inset-x-0 bottom-0 z-60 h-[calc(1.75rem+env(safe-area-inset-bottom,0px))] pb-[env(safe-area-inset-bottom,0px)] border-t bg-background">
 	<Popover bind:open>
 		<PopoverTrigger
 			class="flex h-full w-full cursor-pointer items-center gap-3 px-3 text-left transition-colors hover:bg-accent/40"

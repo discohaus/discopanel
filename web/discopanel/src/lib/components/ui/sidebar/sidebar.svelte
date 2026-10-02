@@ -39,7 +39,7 @@
 			data-sidebar="sidebar"
 			data-slot="sidebar"
 			data-mobile="true"
-			class="w-(--sidebar-width) bg-sidebar p-0 text-sidebar-foreground [&>button]:hidden"
+			class="w-(--sidebar-width) bg-sidebar p-0 pt-[env(safe-area-inset-top,0px)] pb-[calc(1.75rem+env(safe-area-inset-bottom,0px))] pl-[env(safe-area-inset-left,0px)] text-sidebar-foreground [&>button]:hidden"
 			style="--sidebar-width: {SIDEBAR_WIDTH_MOBILE};"
 			{side}
 		>
@@ -47,7 +47,16 @@
 				<Sheet.Title>Sidebar</Sheet.Title>
 				<Sheet.Description>Displays the mobile sidebar.</Sheet.Description>
 			</Sheet.Header>
-			<div class="flex h-full w-full flex-col">
+			<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+			<div
+				class="flex h-full w-full flex-col"
+				onclick={(e) => {
+					const target = (e.target as HTMLElement)?.closest('a, [data-sidebar-close]');
+					if (target) {
+						sidebar.closeMobile();
+					}
+				}}
+			>
 				{@render children?.()}
 			</div>
 		</Sheet.Content>
