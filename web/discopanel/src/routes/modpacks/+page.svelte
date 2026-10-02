@@ -4,20 +4,17 @@
 	import { resolve } from '$app/paths';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
-	import {
-		Card,
-		CardContent,
-		CardDescription,
-		CardHeader,
-		CardTitle
-	} from '$lib/components/ui/card';
 	import { Select, SelectContent, SelectItem, SelectTrigger } from '$lib/components/ui/select';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Alert, AlertDescription, AlertTitle } from '$lib/components/ui/alert';
 	import { Progress } from '$lib/components/ui/progress';
-	import { toast } from 'svelte-sonner';
+	import { Skeleton } from '$lib/components/ui/skeleton';
+	import { PageHeader, EmptyState, ConfirmDialog, TabRail } from '$lib/components/app';
+	import { registerRefresh } from '$lib/stores/refresh';
+	import ScrollToTop from '$lib/components/scroll-to-top.svelte';
+	import { notify } from '$lib/stores/activity.svelte';
 	import {
-		Heart,
+		Star,
 		Download,
 		Search,
 		RefreshCw,
@@ -26,19 +23,19 @@
 		Settings,
 		Upload,
 		Package,
-		ArrowLeft,
 		Trash2,
 		X
 	} from '@lucide/svelte';
 	import { create } from '@bufbuild/protobuf';
+	import type { IndexedModpack } from '$lib/proto/discopanel/v1/storage_pb';
 	import type {
-		IndexedModpack,
 		SearchModpacksRequest,
 		SearchModpacksResponse,
 		GetIndexerStatusResponse
 	} from '$lib/proto/discopanel/v1/modpack_pb';
 	import { SearchModpacksRequestSchema } from '$lib/proto/discopanel/v1/modpack_pb';
 	import { rpcClient } from '$lib/api/rpc-client';
+	import { loadModLoaders } from '$lib/stores/loaders';
 	import { debounce } from 'lodash-es';
 	import { uploadFile, cancelUpload, type UploadProgress } from '$lib/utils/chunked-upload';
 	import { formatBytes } from '$lib/utils';
@@ -59,36 +56,64 @@
 	let uploadedPacks = $state<IndexedModpack[]>([]);
 	let loading = $state(false);
 	let syncing = $state(false);
-	let showFavorites = $state(false);
-	let showUploaded = $state(false);
+	let view = $state<'browse' | 'favorites' | 'uploaded'>('browse');
 	let indexerStatus = $state<GetIndexerStatusResponse | null>(null);
 	let fileInput = $state<HTMLInputElement | null>(null);
 	let uploading = $state(false);
 	let uploadProgress = $state<UploadProgress | null>(null);
 	let uploadAbortController = $state<AbortController | null>(null);
-	let selectedIndexer = $state('modrinth'); // Default Modrinth since no API key initially
+	// Default Modrinth because CurseForge needs an API key
+	let selectedIndexer = $state('modrinth');
 	let indexerName = $derived(selectedIndexer === 'fuego' ? 'CurseForge' : 'Modrinth');
+	let deleteTarget = $state<IndexedModpack | null>(null);
+	let deleteOpen = $state(false);
 
-	// Dynamic game versions and mod loaders from API
+	// Dynamic filter options fetched from API
 	let gameVersions = $state<string[]>([]);
 	let modLoaders = $state<Array<{ value: string; label: string }>>([
-		{ value: '', label: 'All Loaders' }
+		{ value: '', label: 'All loaders' }
 	]);
 
-	onMount(async () => {
+	const VIEWS = [
+		{ key: 'browse', label: 'Browse', desc: 'Browse and install modpacks for your servers' },
+		{ key: 'favorites', label: 'Favorites', desc: 'Modpacks you starred' },
+		{ key: 'uploaded', label: 'Uploaded', desc: 'Modpack archives hosted on this panel' }
+	] as const;
+
+	let fuegoBlocked = $derived(
+		selectedIndexer === 'fuego' && !!indexerStatus && !indexerStatus.indexersAvailable['fuego']
+	);
+
+	onMount(() => {
+		initialLoad();
+		return registerRefresh(refreshView);
+	});
+
+	async function initialLoad() {
 		await Promise.all([
 			checkIndexerStatus(),
 			loadFavorites(),
 			loadUploadedPacks(),
 			loadMinecraftVersions(),
-			loadModLoaders(),
+			loadLoaderFilters(),
 			searchModpacks()
 		]);
 
 		if (searchResults && searchResults.total === 0 && !searchParams.query) {
 			syncModpacks();
 		}
-	});
+	}
+
+	function refreshView() {
+		if (view === 'favorites') return loadFavorites();
+		if (view === 'uploaded') return loadUploadedPacks();
+		return Promise.all([searchModpacks(false), checkIndexerStatus()]);
+	}
+
+	// Switches between browse, favorites and uploaded views
+	function setView(next: 'browse' | 'favorites' | 'uploaded') {
+		view = next;
+	}
 
 	async function loadMinecraftVersions() {
 		try {
@@ -99,16 +124,12 @@
 		}
 	}
 
-	async function loadModLoaders() {
+	async function loadLoaderFilters() {
 		try {
-			const response = await rpcClient.minecraft.getModLoaders({});
-			const loaders = response.modloaders || [];
+			const loaders = await loadModLoaders();
 			modLoaders = [
-				{ value: '', label: 'All Loaders' },
-				...loaders.map((loader) => ({
-					value: loader.name,
-					label: loader.displayName || loader.name
-				}))
+				{ value: '', label: 'All loaders' },
+				...loaders.map((loader) => ({ value: loader.name, label: loader.displayName }))
 			];
 		} catch (error) {
 			console.error('Failed to load mod loaders:', error);
@@ -124,10 +145,31 @@
 		}
 	}
 
+	function isPackURL(q: string): boolean {
+		return /^https?:\/\/(www\.)?(curseforge\.com|modrinth\.com)\//.test(q.trim());
+	}
+
+	async function openModpackURL(url: string) {
+		try {
+			const resp = await rpcClient.modpack.getModpackByURL({ url: url.trim() });
+			if (resp.modpack) {
+				goto(resolve(`/servers/new?modpack=${resp.modpack.id}`));
+				return;
+			}
+			notify.error('No indexed modpack matches that link');
+		} catch {
+			notify.error('Modpack lookup failed');
+		}
+	}
+
 	async function searchModpacks(resetPage = true) {
+		if (isPackURL(searchParams.query)) {
+			await openModpackURL(searchParams.query);
+			return;
+		}
 		loading = true;
 		try {
-			// Reset to page 1 when searching
+			// Fresh searches always restart at page one
 			if (resetPage) {
 				searchParams.page = 1;
 			}
@@ -137,7 +179,7 @@
 			});
 			searchResults = response;
 		} catch (error) {
-			toast.error('Failed to search modpacks');
+			notify.error('Failed to search modpacks');
 			console.error(error);
 		} finally {
 			loading = false;
@@ -153,56 +195,54 @@
 				modLoader: searchParams.modLoader || '',
 				indexer: selectedIndexer
 			});
-			toast.success(`Synced ${result.syncedCount} modpacks from ${indexerName}`);
-			// Refresh search results
+			notify.success(`Synced ${result.syncedCount} modpacks from ${indexerName}`);
 			await searchModpacks();
 		} catch (error) {
-			toast.error(error instanceof Error ? error.message : 'Failed to sync modpacks');
+			notify.error(error instanceof Error ? error.message : 'Failed to sync modpacks');
 			console.error(error);
 		} finally {
 			syncing = false;
 		}
 	}
 
-	// Debounce sync to prevent indexer rate limiting the backend
+	// Debounce sync so indexers do not rate limit us
 	const syncModpacks = debounce(_syncModpacks, 1000, { leading: true, trailing: false });
+
+	// Searches while typing, links wait for enter
+	const autoSearch = debounce(() => {
+		if (!isPackURL(searchParams.query)) searchModpacks(true);
+	}, 350);
+
+	function submitSearch() {
+		autoSearch.cancel();
+		searchModpacks(true);
+	}
 
 	async function toggleFavorite(modpack: IndexedModpack) {
 		try {
 			const result = await rpcClient.modpack.toggleFavorite({ id: modpack.id });
 
-			// Update the modpack in search results
 			if (searchResults) {
 				searchResults.modpacks = searchResults.modpacks.map((m) =>
 					m.id === modpack.id ? { ...m, isFavorited: result.isFavorited } : m
 				);
 			}
 
-			// Update the modpack in uploaded packs
 			uploadedPacks = uploadedPacks.map((m) =>
 				m.id === modpack.id ? { ...m, isFavorited: result.isFavorited } : m
 			);
 
-			// Update favorites list immediately
 			if (result.isFavorited) {
-				// Add to favorites if not already there
 				if (!favorites.find((f) => f.id === modpack.id)) {
 					favorites = [...favorites, { ...modpack, isFavorited: true }];
 				}
-				toast.success('Added to favorites');
+				notify.success('Added to favorites');
 			} else {
-				// Remove from favorites
 				favorites = favorites.filter((f) => f.id !== modpack.id);
-				toast.success('Removed from favorites');
-			}
-
-			// If viewing favorites, we may need to update the display
-			if (showFavorites && !result.isFavorited) {
-				// Item was removed from favorites while viewing favorites
-				// The reactive displayModpacks will automatically update
+				notify.success('Removed from favorites');
 			}
 		} catch (error) {
-			toast.error('Failed to toggle favorite');
+			notify.error('Failed to toggle favorite');
 			console.error(error);
 		}
 	}
@@ -212,14 +252,14 @@
 			const result = await rpcClient.modpack.listFavorites({});
 			favorites = result.modpacks;
 		} catch (error) {
-			toast.error('Failed to load favorites');
+			notify.error('Failed to load favorites');
 			console.error(error);
 		}
 	}
 
 	async function loadUploadedPacks() {
 		try {
-			// Use the indexer parameter to get only manual uploads
+			// Manual indexer filter returns only uploads
 			const result = await rpcClient.modpack.searchModpacks({
 				query: '',
 				gameVersion: '',
@@ -243,22 +283,14 @@
 		return num.toString();
 	}
 
-	function parseJsonArray(jsonStr: string): string[] {
-		try {
-			return JSON.parse(jsonStr);
-		} catch {
-			return [];
-		}
-	}
-
 	async function handleModpackUpload(event: Event) {
 		const input = event.target as HTMLInputElement;
 		const files = input.files;
 		if (!files || files.length === 0) return;
 
 		const file = files[0];
-		if (!file.name.endsWith('.zip')) {
-			toast.error('Please select a valid modpack ZIP file');
+		if (!file.name.endsWith('.zip') && !file.name.endsWith('.mrpack')) {
+			notify.error('Please select a valid modpack archive (.zip or .mrpack)');
 			return;
 		}
 
@@ -267,7 +299,6 @@
 		uploadProgress = null;
 
 		try {
-			// Use chunked upload
 			const uploadResult = await uploadFile(file, {
 				onProgress: (progress) => {
 					uploadProgress = progress;
@@ -278,20 +309,21 @@
 				throw new Error('Upload completed but no session ID returned');
 			}
 
-			// Import the uploaded modpack
 			const result = await rpcClient.modpack.importUploadedModpack({
 				uploadSessionId: uploadResult.sessionId,
-				name: file.name.replace('.zip', ''),
+				name: file.name.replace(/\.(zip|mrpack)$/i, ''),
 				description: ''
 			});
 
-			toast.success(`Modpack "${result.modpack?.name}" uploaded successfully`);
+			notify.success(`Modpack "${result.modpack?.name}" uploaded successfully`);
 
-			// Refresh the modpack list and uploaded packs
 			await Promise.all([searchModpacks(), loadUploadedPacks()]);
 		} catch (error: unknown) {
 			if (error instanceof Error && error.message === 'Upload cancelled') {
-				toast.info('Upload cancelled');
+				notify.info('Upload cancelled');
+			} else {
+				notify.error(error instanceof Error ? error.message : 'Failed to upload modpack');
+				console.error(error);
 			}
 		} finally {
 			uploading = false;
@@ -310,36 +342,41 @@
 		}
 	}
 
-	async function deleteModpack(modpack: IndexedModpack) {
-		if (
-			!confirm(`Are you sure you want to delete "${modpack.name}"? This action cannot be undone.`)
-		) {
-			return;
-		}
+	function requestDelete(modpack: IndexedModpack) {
+		deleteTarget = modpack;
+		deleteOpen = true;
+	}
 
+	async function confirmDelete() {
+		if (!deleteTarget) return;
+		const modpack = deleteTarget;
 		try {
 			await rpcClient.modpack.deleteModpack({ id: modpack.id });
 
-			toast.success(`Modpack "${modpack.name}" deleted successfully`);
+			notify.success(`Modpack "${modpack.name}" deleted successfully`);
 
-			// Remove from local state
 			uploadedPacks = uploadedPacks.filter((m) => m.id !== modpack.id);
 			favorites = favorites.filter((m) => m.id !== modpack.id);
 
-			// Refresh search results if showing
-			if (!showFavorites && !showUploaded) {
+			if (view === 'browse') {
 				await searchModpacks();
 			}
 		} catch (error) {
-			toast.error(error instanceof Error ? error.message : 'Failed to delete modpack');
+			notify.error(error instanceof Error ? error.message : 'Failed to delete modpack');
 		}
 	}
 
-	// Computed display list with uploaded packs first
+	function indexerLabel(modpack: IndexedModpack): string {
+		if (modpack.indexer === 'manual') return 'Manual upload';
+		if (modpack.indexer === 'fuego') return 'CurseForge';
+		return modpack.indexer;
+	}
+
+	// Uploaded packs list first in browse results
 	let displayModpacks = $derived(
-		showFavorites
+		view === 'favorites'
 			? favorites
-			: showUploaded
+			: view === 'uploaded'
 				? uploadedPacks
 				: (() => {
 						const results = searchResults?.modpacks || [];
@@ -351,202 +388,185 @@
 	);
 </script>
 
-<div class="h-full flex-1 space-y-8 bg-linear-to-br from-background to-muted/10 p-8 pt-6">
-	<div class="flex items-center justify-between border-b-2 border-border/50 pb-6">
-		<div class="flex items-center gap-4">
-			<div
-				class="flex h-16 w-16 items-center justify-center rounded-2xl bg-linear-to-br from-primary/20 to-primary/10 shadow-lg"
-			>
-				<Package class="h-8 w-8 text-primary" />
-			</div>
-			<div class="space-y-1">
-				<h2
-					class="bg-linear-to-r from-foreground to-foreground/70 bg-clip-text text-4xl font-bold tracking-tight text-transparent"
-				>
-					Modpacks
-				</h2>
-				<p class="text-base text-muted-foreground">Browse and install modpacks for your servers</p>
-			</div>
-		</div>
-		<div class="flex items-center gap-2">
-			<Button
-				variant={showUploaded ? 'outline' : 'default'}
-				onclick={() => {
-					showUploaded = !showUploaded;
-					if (showUploaded) showFavorites = false;
-				}}
-				class="shadow-md transition-all hover:scale-[1.02] hover:shadow-lg"
-			>
-				{#if showUploaded}
-					<ArrowLeft class="mr-2 h-5 w-5" />
-					Back to all
-				{:else}
-					<Upload class="mr-2 h-5 w-5" />
-					Uploaded ({uploadedPacks.length})
-				{/if}
-			</Button>
-			<Button
-				variant={showFavorites ? 'outline' : 'default'}
-				onclick={() => {
-					showFavorites = !showFavorites;
-					if (showFavorites) showUploaded = false;
-				}}
-				class="shadow-md transition-all hover:scale-[1.02] hover:shadow-lg"
-			>
-				{#if showFavorites}
-					<ArrowLeft class="mr-2 h-5 w-5" />
-					Back to all
-				{:else}
-					<Heart class="mr-2 h-5 w-5" />
-					Favorites ({favorites.length})
-				{/if}
-			</Button>
-		</div>
+<svelte:head>
+	<title>Modpacks · DiscoPanel</title>
+</svelte:head>
+
+{#snippet browseFilters()}
+	<div class="relative">
+		<Search class="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+		<Input
+			type="search"
+			placeholder="Search modpacks or paste a link..."
+			class="h-8 w-52 pl-8 sm:w-72"
+			bind:value={searchParams.query}
+			oninput={autoSearch}
+			onkeydown={(e) => e.key === 'Enter' && submitSearch()}
+		/>
 	</div>
+	<Select
+		type="single"
+		value={searchParams.gameVersion}
+		onValueChange={(v: string | undefined) => {
+			searchParams.gameVersion = v || '';
+			searchModpacks(true);
+		}}
+		disabled={loading}
+	>
+		<SelectTrigger class="h-8 w-32 text-xs">
+			<span class="truncate">{searchParams.gameVersion || 'All versions'}</span>
+		</SelectTrigger>
+		<SelectContent>
+			<SelectItem value="">All versions</SelectItem>
+			{#each gameVersions as version (version)}
+				<SelectItem value={version}>{version}</SelectItem>
+			{/each}
+		</SelectContent>
+	</Select>
+	<Select
+		type="single"
+		value={searchParams.modLoader}
+		onValueChange={(v: string | undefined) => {
+			searchParams.modLoader = v || '';
+			searchModpacks(true);
+		}}
+		disabled={loading}
+	>
+		<SelectTrigger class="h-8 w-32 text-xs">
+			<span class="truncate">
+				{searchParams.modLoader
+					? modLoaders.find((l) => l.value === searchParams.modLoader)?.label
+					: 'All loaders'}
+			</span>
+		</SelectTrigger>
+		<SelectContent>
+			{#each modLoaders as loader (loader.value)}
+				<SelectItem value={loader.value}>{loader.label}</SelectItem>
+			{/each}
+		</SelectContent>
+	</Select>
+	<Select
+		type="single"
+		value={selectedIndexer}
+		onValueChange={(v: string | undefined) => {
+			selectedIndexer = v || 'modrinth';
+			// Undebounced so a fresh indexer always syncs
+			_syncModpacks();
+		}}
+		disabled={syncing}
+	>
+		<SelectTrigger class="h-8 w-32 text-xs">
+			<span class="truncate">{indexerName}</span>
+		</SelectTrigger>
+		<SelectContent>
+			<SelectItem value="modrinth">Modrinth</SelectItem>
+			<SelectItem value="fuego">CurseForge</SelectItem>
+		</SelectContent>
+	</Select>
+	<Button
+		variant="ghost"
+		size="sm"
+		class="h-8 text-muted-foreground hover:text-foreground"
+		onclick={syncModpacks}
+		disabled={syncing || fuegoBlocked}
+	>
+		<RefreshCw class="size-3.5 {syncing ? 'animate-spin' : ''}" />
+		Sync {indexerName}
+	</Button>
+{/snippet}
 
-	{#if selectedIndexer === 'fuego' && indexerStatus && !indexerStatus.indexersAvailable['fuego']}
-		<Alert>
-			<AlertCircle class="h-4 w-4" />
-			<AlertTitle>CurseForge API Key Required</AlertTitle>
-			<AlertDescription>
-				<div class="space-y-2">
-					<p>
-						To sync modpacks from CurseForge, you need to <a
-							href="https://console.curseforge.com/#/api-keys"
-							target="_blank"
-							rel="noopener noreferrer">generate a CurseForge API key</a
-						> and add it to your server defaults.
-					</p>
-					<div class="mt-2 flex items-center gap-2">
-						<Button size="sm" href="/settings#cfApiKey">
-							<Settings class="mr-2 h-4 w-4" />
-							Configure in Settings
-						</Button>
-					</div>
-				</div>
-			</AlertDescription>
-		</Alert>
-	{/if}
+{#snippet uploadActions()}
+	<Button
+		variant="ghost"
+		size="sm"
+		class="h-8 text-muted-foreground hover:text-foreground"
+		onclick={() => fileInput?.click()}
+		disabled={uploading}
+	>
+		<Upload class="size-3.5" />
+		Upload modpack
+	</Button>
+{/snippet}
 
-	{#if !showFavorites && !showUploaded}
-		<div class="flex flex-col gap-4">
-			<div class="flex gap-2">
-				<Input
-					placeholder="Search modpacks..."
-					bind:value={searchParams.query}
-					onkeydown={(e) => e.key === 'Enter' && searchModpacks()}
-					class="flex-1"
-				/>
-				<Select
-					type="single"
-					value={searchParams.gameVersion}
-					onValueChange={(v: string | undefined) => (searchParams.gameVersion = v || '')}
-					disabled={loading}
-				>
-					<SelectTrigger class="w-45">
-						<span>{searchParams.gameVersion || 'All Versions'}</span>
-					</SelectTrigger>
-					<SelectContent>
-						<SelectItem value="">All Versions</SelectItem>
-						{#each gameVersions as version (version)}
-							<SelectItem value={version}>{version}</SelectItem>
-						{/each}
-					</SelectContent>
-				</Select>
-				<Select
-					type="single"
-					value={searchParams.modLoader}
-					onValueChange={(v: string | undefined) => (searchParams.modLoader = v || '')}
-					disabled={loading}
-				>
-					<SelectTrigger class="w-45">
-						<span
-							>{searchParams.modLoader
-								? modLoaders.find((l) => l.value === searchParams.modLoader)?.label
-								: 'All Loaders'}</span
-						>
-					</SelectTrigger>
-					<SelectContent>
-						{#each modLoaders as loader (loader.value)}
-							<SelectItem value={loader.value}>{loader.label}</SelectItem>
-						{/each}
-					</SelectContent>
-				</Select>
-				<Select
-					type="single"
-					value={selectedIndexer}
-					onValueChange={(v: string | undefined) => {
-						selectedIndexer = v || 'modrinth';
-						syncModpacks();
-					}}
-					disabled={syncing}
-				>
-					<SelectTrigger class="w-45">
-						<span>{indexerName}</span>
-					</SelectTrigger>
-					<SelectContent>
-						<SelectItem value="modrinth">Modrinth</SelectItem>
-						<SelectItem value="fuego">CurseForge</SelectItem>
-					</SelectContent>
-				</Select>
-				<Button
-					onclick={() => searchModpacks(true)}
-					disabled={loading}
-					class="bg-linear-to-r from-primary to-primary/80 shadow-md transition-all hover:scale-[1.02] hover:from-primary/90 hover:to-primary/70 hover:shadow-lg"
-				>
-					<Search class="mr-2 h-5 w-5" />
-					Search
-				</Button>
-				<Button
-					onclick={syncModpacks}
-					disabled={syncing ||
-						(selectedIndexer === 'fuego' &&
-							indexerStatus &&
-							!indexerStatus.indexersAvailable['fuego'])}
-					variant="outline"
-					class="border-2 shadow-sm transition-all hover:scale-[1.02] hover:shadow-md"
-				>
-					<RefreshCw class={`mr-2 h-5 w-5 ${syncing ? 'animate-spin' : ''}`} />
-					Sync {indexerName}
-				</Button>
-				<Button
-					onclick={() => fileInput?.click()}
-					disabled={uploading}
-					variant="outline"
-					class="border-2 shadow-sm transition-all hover:scale-[1.02] hover:shadow-md"
-				>
-					<Upload class="mr-2 h-5 w-5" />
-					Upload Modpack
-				</Button>
-				<input
-					bind:this={fileInput}
-					type="file"
-					accept=".zip"
-					onchange={handleModpackUpload}
-					class="hidden"
-				/>
-			</div>
-			{#if searchResults?.total === 0 && !loading}
-				<p class="text-sm text-muted-foreground">
-					No modpacks found locally. Click "Sync" to fetch modpacks from Indexers.
-				</p>
+<div class="flex min-h-0 flex-1 flex-col">
+	<TabRail
+		tabs={VIEWS}
+		value={view}
+		onValueChange={(v) => setView((v as typeof view) || 'browse')}
+		submenu={view === 'browse'
+			? browseFilters
+			: view === 'uploaded' && uploadedPacks.length > 0
+				? uploadActions
+				: undefined}
+	>
+		{#snippet header()}
+			<PageHeader
+				title="Modpacks"
+				description={VIEWS.find((v) => v.key === view)?.desc ?? ''}
+				class="pt-5 pb-4"
+			/>
+		{/snippet}
+		{#snippet tab(t)}
+			{t.label}
+			{#if t.key === 'favorites'}
+				<span class="tabular ml-1.5 text-xs text-muted-foreground">{favorites.length}</span>
+			{:else if t.key === 'uploaded'}
+				<span class="tabular ml-1.5 text-xs text-muted-foreground">{uploadedPacks.length}</span>
 			{/if}
+		{/snippet}
+	</TabRail>
+
+	<div data-scroll-root class="min-h-0 flex-1 overflow-y-auto">
+		<div class="mx-auto w-full max-w-6xl space-y-5 p-4 sm:p-6 2xl:max-w-7xl">
+			<input
+				bind:this={fileInput}
+				type="file"
+				accept=".zip,.mrpack"
+				onchange={handleModpackUpload}
+				class="hidden"
+			/>
+
+			{#if fuegoBlocked}
+				<Alert>
+					<AlertCircle class="size-4" />
+					<AlertTitle>CurseForge API key required</AlertTitle>
+					<AlertDescription>
+						<div class="space-y-2">
+							<p>
+								To sync modpacks from CurseForge, you need to <a
+									href="https://console.curseforge.com/#/api-keys"
+									target="_blank"
+									rel="noopener noreferrer"
+									class="font-medium underline underline-offset-4">generate a CurseForge API key</a
+								> and add it to your server defaults.
+							</p>
+							<div class="flex items-center gap-2">
+								<Button size="sm" variant="outline" href="{resolve('/settings')}#cfApiKey">
+									<Settings class="size-4" />
+									Configure in Settings
+								</Button>
+							</div>
+						</div>
+					</AlertDescription>
+				</Alert>
+			{/if}
+
 			{#if uploading && uploadProgress}
-				<div class="mt-4 rounded-lg border bg-card p-4">
+				<div class="rounded-lg border bg-card p-4">
 					<div class="mb-2 flex items-center justify-between">
-						<span class="text-sm font-medium"> Uploading modpack... </span>
+						<span class="text-sm font-medium">Uploading modpack...</span>
 						<div class="flex items-center gap-2">
-							<span class="text-sm text-muted-foreground">
+							<span class="tabular text-sm text-muted-foreground">
 								{uploadProgress.percentComplete.toFixed(0)}%
 							</span>
 							<Button
 								size="icon"
 								variant="ghost"
-								class="h-6 w-6"
+								class="size-6"
 								onclick={cancelCurrentUpload}
 								title="Cancel upload"
 							>
-								<X class="h-4 w-4" />
+								<X class="size-4" />
 							</Button>
 						</div>
 					</div>
@@ -556,158 +576,226 @@
 					</p>
 				</div>
 			{/if}
-		</div>
-	{/if}
 
-	<div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-		{#each displayModpacks as modpack (modpack.id)}
-			<Card
-				class="group relative overflow-hidden border-2 bg-linear-to-br from-card to-card/80 transition-all duration-300 hover:border-primary/50 hover:shadow-2xl"
-			>
-				<div
-					class="absolute inset-0 bg-linear-to-br from-primary/10 via-transparent to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100"
-				></div>
-				<CardHeader class="relative">
-					<div class="flex items-start gap-4">
-						{#if modpack.logoUrl}
-							<img
-								src={modpack.logoUrl}
-								alt={modpack.name}
-								class="h-16 w-16 rounded-md object-cover"
-							/>
-						{/if}
-						<div class="min-w-0 flex-1">
-							<CardTitle class="line-clamp-1 text-xl font-semibold">{modpack.name}</CardTitle>
-							<div class="mt-1 flex items-center gap-2">
-								<Badge variant="secondary" class="text-xs font-semibold">
-									{modpack.indexer === 'manual' ? 'Manual Upload' : modpack.indexer}
-								</Badge>
-								{#if modpack.indexer === 'manual'}
-									<Badge variant="outline" class="text-xs">
-										<Upload class="mr-1 h-3 w-3" />
-										Uploaded
-									</Badge>
-								{/if}
-								<span class="text-xs text-muted-foreground">
-									<Download class="mr-1 inline h-3 w-3" />
-									{formatNumber(modpack.downloadCount)}
-								</span>
-							</div>
-						</div>
-						<Button
-							size="icon"
-							variant={modpack.isFavorited ? 'default' : 'outline'}
-							onclick={() => toggleFavorite(modpack)}
-							class="transition-transform hover:scale-110"
+			{#if view === 'browse' && (loading || syncing) && displayModpacks.length === 0}
+				<div class="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+					{#each Array(6) as _, i (i)}
+						<Skeleton class="h-48 rounded-lg" />
+					{/each}
+				</div>
+			{:else if displayModpacks.length > 0}
+				<div class="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+					{#each displayModpacks as modpack (modpack.id)}
+						{@const loaders = modpack.modLoaders}
+						{@const versions = modpack.gameVersions}
+						<div
+							class="flex flex-col rounded-xl border bg-card p-4 transition-all hover:border-primary/30 hover:shadow-sm"
 						>
-							<Heart class={`h-4 w-4 ${modpack.isFavorited ? 'fill-current' : ''}`} />
-						</Button>
-					</div>
-				</CardHeader>
-				<CardContent class="relative">
-					<CardDescription class="mb-4 line-clamp-2">
-						{modpack.summary}
-					</CardDescription>
-
-					<div class="space-y-2">
-						{#if parseJsonArray(modpack.modLoaders).length > 0}
-							<div class="flex flex-wrap gap-1">
-								{#each parseJsonArray(modpack.modLoaders) as loader (loader)}
-									<Badge variant="outline" class="text-xs">{loader}</Badge>
-								{/each}
-							</div>
-						{/if}
-
-						{#if parseJsonArray(modpack.gameVersions).length > 0}
-							<div class="text-xs text-muted-foreground">
-								MC: {parseJsonArray(modpack.gameVersions).slice(0, 3).join(', ')}
-								{#if parseJsonArray(modpack.gameVersions).length > 3}
-									+{parseJsonArray(modpack.gameVersions).length - 3} more
+							<div class="flex items-start gap-3">
+								{#if modpack.logoUrl}
+									<img
+										src={modpack.logoUrl}
+										alt={modpack.name}
+										loading="lazy"
+										class="size-12 shrink-0 rounded-md border object-cover"
+									/>
+								{:else}
+									<div
+										class="flex size-12 shrink-0 items-center justify-center rounded-md border bg-muted/40 text-muted-foreground"
+									>
+										<Package class="size-5" />
+									</div>
 								{/if}
+								<div class="min-w-0 flex-1">
+									<h3 class="line-clamp-1 text-sm font-semibold">{modpack.name}</h3>
+									<div class="mt-1 flex flex-wrap items-center gap-1.5">
+										<Badge variant="secondary" class="capitalize">{indexerLabel(modpack)}</Badge>
+										{#if modpack.downloadCount > 0}
+											<span class="inline-flex items-center gap-1 text-xs text-muted-foreground">
+												<Download class="size-3" />
+												<span class="tabular">{formatNumber(modpack.downloadCount)}</span>
+											</span>
+										{/if}
+									</div>
+								</div>
+								<Button
+									size="icon"
+									variant="ghost"
+									class="size-8 shrink-0"
+									onclick={() => toggleFavorite(modpack)}
+									title={modpack.isFavorited ? 'Remove from favorites' : 'Add to favorites'}
+								>
+									<Star
+										class="size-4 {modpack.isFavorited
+											? 'fill-primary text-primary'
+											: 'text-muted-foreground'}"
+									/>
+								</Button>
 							</div>
-						{/if}
-					</div>
 
-					<div class="mt-4 flex items-center justify-between gap-2">
-						<div class="flex items-center gap-2">
-							{#if modpack.websiteUrl}
-								<a href={modpack.websiteUrl} target="_blank" rel="noopener noreferrer">
-									<Button variant="outline" size="sm">
-										<ExternalLink class="mr-1 h-3 w-3" />
+							{#if modpack.summary}
+								<p class="mt-3 line-clamp-2 text-sm text-muted-foreground">{modpack.summary}</p>
+							{/if}
+
+							{#if loaders.length > 0 || versions.length > 0}
+								<div class="mt-3 space-y-2">
+									{#if loaders.length > 0}
+										<div class="flex flex-wrap gap-1">
+											{#each loaders as loader (loader)}
+												<Badge variant="outline" class="capitalize">{loader}</Badge>
+											{/each}
+										</div>
+									{/if}
+									{#if versions.length > 0}
+										<p class="text-xs text-muted-foreground">
+											MC {versions.slice(0, 3).join(', ')}{versions.length > 3
+												? ` +${versions.length - 3} more`
+												: ''}
+										</p>
+									{/if}
+								</div>
+							{/if}
+
+							<div class="mt-auto flex items-center gap-2 pt-4">
+								{#if modpack.websiteUrl}
+									<Button
+										variant="outline"
+										size="sm"
+										href={modpack.websiteUrl}
+										target="_blank"
+										rel="noopener noreferrer"
+									>
+										<ExternalLink class="size-3.5" />
 										View
 									</Button>
-								</a>
-							{/if}
-							{#if modpack.indexer === 'manual'}
+								{/if}
+								{#if modpack.indexer === 'manual'}
+									<Button
+										variant="outline"
+										size="sm"
+										class="text-status-danger hover:bg-status-danger/10 hover:text-status-danger"
+										onclick={() => requestDelete(modpack)}
+									>
+										<Trash2 class="size-3.5" />
+										Delete
+									</Button>
+								{/if}
 								<Button
-									variant="outline"
 									size="sm"
-									onclick={() => deleteModpack(modpack)}
-									class="hover:text-destructive-foreground text-destructive hover:bg-destructive"
+									class="ml-auto"
+									onclick={() => goto(resolve(`/servers/new?modpack=${modpack.id}`))}
 								>
-									<Trash2 class="mr-1 h-3 w-3" />
-									Delete
+									Install
 								</Button>
-							{/if}
+							</div>
 						</div>
-						<Button
-							size="sm"
-							onclick={() => goto(resolve(`/servers/new?modpack=${modpack.id}`))}
-							class="font-semibold shadow-sm transition-all hover:scale-[1.02] hover:shadow-md"
+					{/each}
+				</div>
+			{:else}
+				<div class="rounded-lg border bg-card">
+					{#if view === 'favorites'}
+						<EmptyState
+							icon={Star}
+							title="No favorite modpacks yet"
+							description="Browse the modpacks list and click the star icon to add favorites."
 						>
-							Use in Server
-						</Button>
-					</div>
-				</CardContent>
-			</Card>
-		{/each}
+							<Button variant="outline" size="sm" onclick={() => setView('browse')}>
+								Browse modpacks
+							</Button>
+						</EmptyState>
+					{:else if view === 'uploaded'}
+						<EmptyState
+							icon={Upload}
+							title="No uploaded modpacks"
+							description="Upload a modpack archive (.zip or .mrpack) to host it here."
+						>
+							<Button
+								variant="outline"
+								size="sm"
+								onclick={() => fileInput?.click()}
+								disabled={uploading}
+							>
+								<Upload class="size-4" />
+								Upload modpack
+							</Button>
+						</EmptyState>
+					{:else if searchParams.query}
+						<EmptyState
+							icon={Search}
+							title="No matching modpacks"
+							description="Try a different search, or sync {indexerName} for fresh results."
+						>
+							<Button
+								variant="outline"
+								size="sm"
+								onclick={syncModpacks}
+								disabled={syncing || fuegoBlocked}
+							>
+								<RefreshCw class="size-4 {syncing ? 'animate-spin' : ''}" />
+								Sync {indexerName}
+							</Button>
+						</EmptyState>
+					{:else}
+						<EmptyState
+							icon={Package}
+							title="No modpacks found"
+							description="No modpacks found locally. Sync to fetch modpacks from {indexerName}."
+						>
+							<Button
+								variant="outline"
+								size="sm"
+								onclick={syncModpacks}
+								disabled={syncing || fuegoBlocked}
+							>
+								<RefreshCw class="size-4 {syncing ? 'animate-spin' : ''}" />
+								Sync {indexerName}
+							</Button>
+						</EmptyState>
+					{/if}
+				</div>
+			{/if}
+
+			{#if view === 'browse' && searchResults && searchResults.total > searchResults.pageSize}
+				<div class="flex items-center justify-center gap-3">
+					<Button
+						variant="outline"
+						size="sm"
+						disabled={(searchParams.page || 1) === 1 || loading}
+						onclick={() => {
+							searchParams.page = Math.max(1, (searchParams.page || 1) - 1);
+							searchModpacks(false);
+						}}
+					>
+						Previous
+					</Button>
+					<span class="tabular text-sm text-muted-foreground">
+						Page {searchParams.page} of {Math.ceil(searchResults.total / searchResults.pageSize)}
+					</span>
+					<Button
+						variant="outline"
+						size="sm"
+						disabled={(searchParams.page || 1) >=
+							Math.ceil(searchResults.total / searchResults.pageSize) || loading}
+						onclick={() => {
+							searchParams.page = (searchParams.page || 1) + 1;
+							searchModpacks(false);
+						}}
+					>
+						Next
+					</Button>
+				</div>
+			{/if}
+		</div>
 	</div>
-
-	{#if !showFavorites && !showUploaded && searchResults && searchResults.total > searchResults.pageSize}
-		<div class="mt-6 flex items-center justify-center gap-2">
-			<Button
-				variant="outline"
-				disabled={(searchParams.page || 1) === 1}
-				onclick={() => {
-					searchParams.page = Math.max(1, (searchParams.page || 1) - 1);
-					searchModpacks(false);
-				}}
-			>
-				Previous
-			</Button>
-			<span class="text-sm text-muted-foreground">
-				Page {searchParams.page} of {Math.ceil(searchResults.total / searchResults.pageSize)}
-			</span>
-			<Button
-				variant="outline"
-				disabled={(searchParams.page || 1) >=
-					Math.ceil(searchResults.total / searchResults.pageSize)}
-				onclick={() => {
-					searchParams.page = (searchParams.page || 1) + 1;
-					searchModpacks(false);
-				}}
-			>
-				Next
-			</Button>
-		</div>
-	{/if}
-
-	{#if displayModpacks.length === 0}
-		<div class="py-12 text-center">
-			<p class="text-muted-foreground">
-				{#if showFavorites}
-					No favorite modpacks yet. Browse the modpacks list and click the heart icon to add
-					favorites.
-				{:else if loading}
-					Loading modpacks...
-				{:else if syncing}
-					Syncing modpacks...
-				{:else if searchParams.query}
-					No modpacks found matching your search.
-				{:else}
-					No modpacks found.
-				{/if}
-			</p>
-		</div>
-	{/if}
 </div>
+
+<ConfirmDialog
+	bind:open={deleteOpen}
+	title={`Delete "${deleteTarget?.name ?? 'modpack'}"?`}
+	description="This removes the uploaded modpack from DiscoPanel. This cannot be undone."
+	confirmLabel="Delete modpack"
+	destructive
+	onConfirm={confirmDelete}
+/>
+
+<ScrollToTop />

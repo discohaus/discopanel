@@ -1,0 +1,297 @@
+syntax = "proto3";
+
+package discopanel.agent.v1;
+
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/agent/v1;agentv1";
+option java_outer_classname = "AgentProto";
+option java_package = "app.discopanel.agent.proto";
+
+// Machine channel between runtime supervisor and panel
+service AgentService {
+  // Bidirectional stream per server, first message must be Hello
+  rpc Session(stream AgentMessage) returns (stream PanelMessage);
+}
+
+// Envelope for everything flowing from container to panel
+message AgentMessage {
+  // buf:lint:ignore COMMENT_ONEOF
+  oneof payload {
+    Hello hello = 1;
+    Ready ready = 2;
+    Stopping stopping = 3;
+    Exited exited = 4;
+    ProcSample proc_sample = 5;
+    TickSample tick_sample = 6;
+    JvmSample jvm_sample = 7;
+    PlayerEvent player_event = 8;
+    Roster roster = 9;
+    TickThreadSample tick_thread_sample = 10;
+    FatalError fatal_error = 11;
+    CaptureArmed capture_armed = 12;
+  }
+}
+
+// Envelope for everything flowing toward the server process
+message PanelMessage {
+  // buf:lint:ignore COMMENT_ONEOF
+  oneof payload {
+    ConsoleCommand console_command = 1;
+    ChatMessage chat_message = 2;
+    ExitAck exit_ack = 3;
+    ThreadDumpRequest thread_dump_request = 4;
+  }
+}
+
+// Asks the JVM agent to report stuck threads, loopback only
+message ThreadDumpRequest {}
+
+// Mandatory first message identifying the connecting party
+message Hello {
+  // Server ID this agent belongs to
+  string server_id = 1;
+  // Source of this hello, runtime supervisor or in-JVM agent
+  HelloSource source = 2;
+  // Version string for discoruntime or javaagent
+  string version = 3;
+  // Mod loader from the launch spec (e.g. "fabric", "paper")
+  string loader = 4;
+  // Minecraft version from the launch spec
+  string mc_version = 5;
+  // Java major version the server runs on
+  int32 java_major = 6;
+  // Host transparent hugepage mode, runtime supervisor only
+  string host_thp_mode = 7;
+}
+
+// Distinguishes supervisor from in-JVM agent
+enum HelloSource {
+  HELLO_SOURCE_UNSPECIFIED = 0;
+  // The Go runtime supervisor (PID 1 in the container)
+  HELLO_SOURCE_RUNTIME = 1;
+  // The telemetry javaagent attached to the server JVM
+  HELLO_SOURCE_JVM = 2;
+}
+
+// Signals server finished starting, detected from Done console line
+message Ready {
+  // Seconds from process start to ready, 0 if unknown
+  double startup_seconds = 1;
+}
+
+// Signals the server began an orderly shutdown
+message Stopping {}
+
+// Reports java process ending, replayed if panel was unreachable
+message Exited {
+  // Process exit code
+  int32 exit_code = 1;
+  // True when exit looks like a crash
+  bool crashed = 2;
+  // Path to newest crash report for this run
+  string crash_report_path = 3;
+  // First lines of the crash report, capped, for panel-side display
+  string crash_report_excerpt = 4;
+  // Wall-clock exit time in ms, dedupe key for replays
+  int64 exited_at_unix_ms = 5;
+  // True when kernel OOM killer fired during this run
+  bool oom_killed = 6;
+  // Structured fatal error captured inside the JVM, when available
+  FatalError fatal_error = 7;
+  // True when the crash ended boot before ready
+  bool boot_failed = 8;
+  // True when the server reached ready before this exit
+  bool was_ready = 9;
+  // True when a supervisor stop signal preceded this exit
+  bool stop_requested = 10;
+}
+
+// Signals the javaagent hooked error logging, loopback only
+message CaptureArmed {
+  // Log4j contexts hooked so far
+  int32 contexts_hooked = 1;
+}
+
+// Fatal error captured inside the JVM, uncaught or logged
+message FatalError {
+  // Name of the thread that died
+  string thread = 1;
+  // Cause chain, outermost first and root cause last
+  repeated CrashCause causes = 2;
+  // Mods the loader reported as failed
+  repeated FailedMod failed_mods = 3;
+  // True from the uncaught handler, false from the log4j hook
+  bool uncaught = 4;
+}
+
+// One mod the loader blamed for a failed load
+message FailedMod {
+  // Mod id from the loader's mod info
+  string mod_id = 1;
+  // Jar file name that ships the mod
+  string file_name = 2;
+  // Throwable class of the per-mod failure, may be empty
+  string error_type = 3;
+  // Loader's failure message for this mod, may be empty
+  string error_message = 4;
+  // Loader's machine-readable failure key, e.g. fml.modloading.missingdependency
+  string reason = 5;
+  // Failure key args as strings, dep ids and ranges
+  repeated string reason_args = 6;
+  // Root failure frames, mapped to the jars that own them
+  repeated CrashFrame frames = 7;
+}
+
+// One throwable in a fatal error's cause chain
+message CrashCause {
+  // Throwable class name
+  string type = 1;
+  // Throwable message, may be empty
+  string message = 2;
+  // Stack frames, capped, deepest call first
+  repeated CrashFrame frames = 3;
+}
+
+// One stack frame mapped to the code that owns it
+message CrashFrame {
+  // Declaring class name
+  string class_name = 1;
+  // Method name, mixin handlers keep their id decoration
+  string method_name = 2;
+  // Source file name, may be empty
+  string file_name = 3;
+  // Source line number, 0 when unknown
+  int32 line = 4;
+  // CodeSource location URL of the declaring class
+  string source_location = 5;
+}
+
+// Supervisor-sourced process and cgroup telemetry
+message ProcSample {
+  // CPU usage of java process as a percentage
+  double cpu_percent = 1;
+  // Resident set size of the java process in MiB
+  double rss_mb = 2;
+  // Cgroup CPU quota in cores (0 when unlimited)
+  double cpu_quota_cores = 3;
+  // CFS periods elapsed since the previous sample
+  int64 cfs_periods = 4;
+  // CFS periods where cgroup was throttled since last sample
+  int64 cfs_throttled_periods = 5;
+  // Total throttled time since the previous sample, in microseconds
+  int64 cfs_throttled_usec = 6;
+  // GC pauses since last sample, from JVM GC log
+  GcWindow gc = 7;
+  // Cgroup pressure stall info, absent without kernel PSI
+  Psi psi = 8;
+}
+
+// Pressure stall shares over a 10 second window
+message Psi {
+  // Share of window some tasks stalled on CPU
+  double cpu_some_avg10 = 1;
+  // Share of window some tasks stalled on memory
+  double mem_some_avg10 = 2;
+  // Share of window all tasks stalled on memory
+  double mem_full_avg10 = 3;
+  // Share of window some tasks stalled on IO
+  double io_some_avg10 = 4;
+}
+
+// Aggregates GC pauses observed during one sample window
+message GcWindow {
+  // Number of GC pauses in the window
+  int64 count = 1;
+  // Sum of pause durations in milliseconds
+  double total_ms = 2;
+  // Longest single pause in milliseconds
+  double max_ms = 3;
+}
+
+// Tick timing derived from javaagent cadence
+message TickSample {
+  // Ticks per second over the window (20 is nominal)
+  double tps = 1;
+  // Mean milliseconds per tick over the window
+  double mspt_avg = 2;
+  // Worst tick in the window, milliseconds
+  double mspt_max = 3;
+}
+
+// Javaagent's raw tick thread measurement, sent on loopback only
+message TickThreadSample {
+  // Share of window tick thread spent running
+  double busy_fraction = 1;
+  // Longest uninterrupted busy run in the window, milliseconds
+  double longest_busy_ms = 2;
+  // Measured window duration in seconds
+  double window_sec = 3;
+}
+
+// Javaagent-sourced in-process JVM telemetry
+message JvmSample {
+  // Used heap in MiB
+  double heap_used_mb = 1;
+  // Max heap (Xmx) in MiB
+  double heap_max_mb = 2;
+  // Live thread count
+  int32 thread_count = 3;
+  // Loaded class count
+  int32 class_count = 4;
+  // GC pauses since last sample, MX bean deltas, max unknown
+  GcWindow gc = 5;
+}
+
+// Player lifecycle or activity event from console lines
+message PlayerEvent {
+  // What happened
+  PlayerEventType type = 1;
+  // Player username
+  string player = 2;
+  // Player UUID, when known
+  string uuid = 3;
+  // Event detail, e.g. death message or advancement title
+  string detail = 4;
+  // Online player count after this event
+  int32 players_online = 5;
+}
+
+// Enumerates supervisor-sourced player events
+enum PlayerEventType {
+  PLAYER_EVENT_TYPE_UNSPECIFIED = 0;
+  // Player joined the server
+  PLAYER_EVENT_TYPE_JOIN = 1;
+  // Player left the server
+  PLAYER_EVENT_TYPE_LEAVE = 2;
+  // Player died, detail carries the death message
+  PLAYER_EVENT_TYPE_DEATH = 3;
+  // Player completed an advancement, detail carries its title
+  PLAYER_EVENT_TYPE_ADVANCEMENT = 4;
+  // Player chatted, detail carries the message
+  PLAYER_EVENT_TYPE_CHAT = 5;
+}
+
+// Authoritative online player list, sent on every change
+message Roster {
+  // Names of all online players
+  repeated string online_players = 1;
+}
+
+// Writes one line to java process stdin
+message ConsoleCommand {
+  // The command line, without trailing newline
+  string command = 1;
+}
+
+// Broadcasts a chat line via tellraw
+message ChatMessage {
+  // Displayed sender name (e.g. "Panel" or a Discord username)
+  string sender = 1;
+  // The chat text
+  string message = 2;
+}
+
+// Confirms the panel recorded an exit report
+message ExitAck {
+  // Echoes exited_at_unix_ms of the recorded report
+  int64 exited_at_unix_ms = 1;
+}

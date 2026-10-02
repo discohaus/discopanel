@@ -5,13 +5,14 @@ import (
 	"errors"
 
 	"connectrpc.com/connect"
+	storage "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/internal/rbac"
+	"github.com/discohaus/discopanel/pkg/logger"
+	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
+	"github.com/discohaus/discopanel/pkg/protometa"
 	"github.com/google/uuid"
-	storage "github.com/nickheyer/discopanel/internal/db"
-	"github.com/nickheyer/discopanel/internal/rbac"
-	"github.com/nickheyer/discopanel/pkg/logger"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
-	"github.com/nickheyer/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var _ discopanelv1connect.RoleServiceHandler = (*RoleService)(nil)
@@ -39,8 +40,8 @@ func (s *RoleService) ListRoles(ctx context.Context, req *connect.Request[v1.Lis
 
 	protoRoles := make([]*v1.Role, 0, len(roles))
 	for _, role := range roles {
-		perms := s.enforcer.GetPermissionsForRole(role.Name)
-		protoRoles = append(protoRoles, dbRoleToProto(role, perms))
+		role.Permissions = s.enforcer.GetPermissionsForRole(role.Name)
+		protoRoles = append(protoRoles, role)
 	}
 
 	return connect.NewResponse(&v1.ListRolesResponse{
@@ -59,10 +60,10 @@ func (s *RoleService) GetRole(ctx context.Context, req *connect.Request[v1.GetRo
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("role not found"))
 	}
 
-	perms := s.enforcer.GetPermissionsForRole(role.Name)
+	role.Permissions = s.enforcer.GetPermissionsForRole(role.Name)
 
 	return connect.NewResponse(&v1.GetRoleResponse{
-		Role: dbRoleToProto(role, perms),
+		Role: role,
 	}), nil
 }
 
@@ -73,8 +74,8 @@ func (s *RoleService) CreateRole(ctx context.Context, req *connect.Request[v1.Cr
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("role name is required"))
 	}
 
-	role := &storage.Role{
-		ID:          uuid.New().String(),
+	role := &v1.Role{
+		Id:          uuid.New().String(),
 		Name:        msg.Name,
 		Description: msg.Description,
 		IsSystem:    false,
@@ -88,16 +89,20 @@ func (s *RoleService) CreateRole(ctx context.Context, req *connect.Request[v1.Cr
 
 	// Set initial permissions if provided
 	if len(msg.Permissions) > 0 {
-		perms := protoPermsToRbac(msg.Permissions)
-		if err := s.enforcer.SetPermissionsForRole(role.Name, perms); err != nil {
+		for _, p := range msg.Permissions {
+			if p.ObjectId == "" {
+				p.ObjectId = "*"
+			}
+		}
+		if err := s.enforcer.SetPermissionsForRole(role.Name, msg.Permissions); err != nil {
 			s.log.Error("Failed to set permissions for role %s: %v", role.Name, err)
 		}
 	}
 
-	perms := s.enforcer.GetPermissionsForRole(role.Name)
+	role.Permissions = s.enforcer.GetPermissionsForRole(role.Name)
 
 	return connect.NewResponse(&v1.CreateRoleResponse{
-		Role: dbRoleToProto(role, perms),
+		Role: role,
 	}), nil
 }
 
@@ -117,7 +122,8 @@ func (s *RoleService) UpdateRole(ctx context.Context, req *connect.Request[v1.Up
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("cannot modify system role"))
 	}
 
-	if msg.Name != nil {
+	oldName := role.Name
+	if msg.Name != nil && *msg.Name != "" {
 		role.Name = *msg.Name
 	}
 	if msg.Description != nil {
@@ -127,15 +133,25 @@ func (s *RoleService) UpdateRole(ctx context.Context, req *connect.Request[v1.Up
 		role.IsDefault = *msg.IsDefault
 	}
 
-	if err := s.store.UpdateRole(ctx, role); err != nil {
+	if role.Name != oldName {
+		// Rename must follow through to assignments and policies
+		if err := s.store.RenameRole(ctx, role, oldName); err != nil {
+			s.log.Error("Failed to rename role: %v", err)
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to rename role"))
+		}
+		if err := s.enforcer.RenameRole(oldName, role.Name); err != nil {
+			s.log.Error("Failed to move permissions for renamed role %s: %v", role.Name, err)
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to move role permissions"))
+		}
+	} else if err := s.store.UpdateRole(ctx, role); err != nil {
 		s.log.Error("Failed to update role: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update role"))
 	}
 
-	perms := s.enforcer.GetPermissionsForRole(role.Name)
+	role.Permissions = s.enforcer.GetPermissionsForRole(role.Name)
 
 	return connect.NewResponse(&v1.UpdateRoleResponse{
-		Role: dbRoleToProto(role, perms),
+		Role: role,
 	}), nil
 }
 
@@ -173,27 +189,36 @@ func (s *RoleService) GetPermissionMatrix(ctx context.Context, req *connect.Requ
 
 	rolePermsMap := make(map[string]*v1.RolePermissions)
 	for roleName, perms := range matrix {
-		protoPerms := make([]*v1.Permission, 0, len(perms))
-		for _, p := range perms {
-			protoPerms = append(protoPerms, &v1.Permission{
-				Resource: p.Resource,
-				Action:   p.Action,
-				ObjectId: p.ObjectID,
-			})
-		}
 		rolePermsMap[roleName] = &v1.RolePermissions{
-			Permissions: protoPerms,
+			Permissions: perms,
 		}
 	}
 
-	// Build resource_actions from procedure mappings
-	raEntries := rbac.ResourceActionsFromProcedures()
-	protoRA := make([]*v1.ResourceActions, 0, len(raEntries))
-	for _, ra := range raEntries {
-		protoRA = append(protoRA, &v1.ResourceActions{
-			Resource: ra.Resource,
-			Actions:  ra.Actions,
-		})
+	// Build resource_actions from rpc perm annotations
+	actionSet := make(map[optionsv1.ResourceType]map[optionsv1.ActionType]bool)
+	protometa.RangePerms(func(perm *optionsv1.RpcPerm) {
+		if perm.Resource == optionsv1.ResourceType_RESOURCE_TYPE_UNSPECIFIED {
+			return
+		}
+		if actionSet[perm.Resource] == nil {
+			actionSet[perm.Resource] = make(map[optionsv1.ActionType]bool)
+		}
+		actionSet[perm.Resource][perm.Action] = true
+	})
+	allActions := protometa.Values[optionsv1.ActionType]()
+	protoRA := make([]*v1.ResourceActions, 0, len(actionSet))
+	for _, res := range protometa.Values[optionsv1.ResourceType]() {
+		acts, ok := actionSet[res]
+		if !ok {
+			continue
+		}
+		ra := &v1.ResourceActions{Resource: res}
+		for _, a := range allActions {
+			if acts[a] {
+				ra.Actions = append(ra.Actions, a)
+			}
+		}
+		protoRA = append(protoRA, ra)
 	}
 
 	resp := &v1.GetPermissionMatrixResponse{
@@ -201,102 +226,98 @@ func (s *RoleService) GetPermissionMatrix(ctx context.Context, req *connect.Requ
 		RolePermissions: rolePermsMap,
 	}
 
-	// Populate available objects for scoped permissions when requested.
-	// Driven entirely by ProcedurePermissions: any resource with a non-empty
-	// ObjectIDField is scopeable, and the field name determines which entity
-	// type provides the objects (e.g. "server_id" → servers).
+	// Populates scopeable objects driven by ProcedurePermissions ObjectIDField
 	if req.Msg.IncludeObjects {
 		type idName struct{ id, name string }
 
-		// Store fetchers keyed by resource constant.
-		fetchers := map[string]func() []idName{
-			rbac.ResourceServers: func() []idName {
+		// Fetchers keyed by scope source resource
+		fetchers := map[optionsv1.ResourceType]func() []idName{
+			optionsv1.ResourceType_RESOURCE_TYPE_SERVERS: func() []idName {
 				items, err := s.store.ListServers(ctx)
 				if err != nil {
 					return nil
 				}
 				out := make([]idName, len(items))
 				for i, x := range items {
-					out[i] = idName{x.ID, x.Name}
+					out[i] = idName{x.Id, x.Name}
 				}
 				return out
 			},
-			rbac.ResourceModules: func() []idName {
+			optionsv1.ResourceType_RESOURCE_TYPE_MODULES: func() []idName {
 				items, err := s.store.ListModules(ctx)
 				if err != nil {
 					return nil
 				}
 				out := make([]idName, len(items))
 				for i, x := range items {
-					out[i] = idName{x.ID, x.Name}
+					out[i] = idName{x.Id, x.Name}
 				}
 				return out
 			},
-			rbac.ResourceModuleTemplates: func() []idName {
+			optionsv1.ResourceType_RESOURCE_TYPE_MODULE_TEMPLATES: func() []idName {
 				items, err := s.store.ListModuleTemplates(ctx)
 				if err != nil {
 					return nil
 				}
 				out := make([]idName, len(items))
 				for i, x := range items {
-					out[i] = idName{x.ID, x.Name}
+					out[i] = idName{x.Id, x.Name}
 				}
 				return out
 			},
-			rbac.ResourceProxy: func() []idName {
-				items, err := s.store.GetProxyListeners(ctx)
+			optionsv1.ResourceType_RESOURCE_TYPE_PROXY: func() []idName {
+				items, err := s.store.ListProxyListeners(ctx)
 				if err != nil {
 					return nil
 				}
 				out := make([]idName, len(items))
 				for i, x := range items {
-					out[i] = idName{x.ID, x.Name}
+					out[i] = idName{x.Id, x.Name}
 				}
 				return out
 			},
-			rbac.ResourceTasks: func() []idName {
-				items, err := s.store.ListAllScheduledTasks(ctx)
+			optionsv1.ResourceType_RESOURCE_TYPE_TASKS: func() []idName {
+				items, err := s.store.ListScheduledTasks(ctx)
 				if err != nil {
 					return nil
 				}
 				out := make([]idName, len(items))
 				for i, x := range items {
-					out[i] = idName{x.ID, x.Name}
+					out[i] = idName{x.Id, x.Name}
 				}
 				return out
 			},
-			rbac.ResourceModpacks: func() []idName {
+			optionsv1.ResourceType_RESOURCE_TYPE_MODPACKS: func() []idName {
 				items, _, err := s.store.ListIndexedModpacks(ctx, 0, -1)
 				if err != nil {
 					return nil
 				}
 				out := make([]idName, len(items))
 				for i, x := range items {
-					out[i] = idName{x.ID, x.Name}
+					out[i] = idName{x.Id, x.Name}
 				}
 				return out
 			},
 		}
 
-		// Collect needed source resources and fetch each once.
-		fetched := make(map[string][]idName)
-		needed := make(map[string]bool)
-		for _, res := range rbac.AllResources {
-			if source, ok := rbac.ResourceScopeSource[res]; ok {
-				needed[source] = true
-			}
-		}
-		for src := range needed {
-			if fn, ok := fetchers[src]; ok {
-				fetched[src] = fn()
+		// Collects needed source resources, fetches each once
+		fetched := make(map[optionsv1.ResourceType][]idName)
+		allResources := protometa.Values[optionsv1.ResourceType]()
+		for _, res := range allResources {
+			if source := protometa.ScopeSource(res); source != optionsv1.ResourceType_RESOURCE_TYPE_UNSPECIFIED {
+				if _, done := fetched[source]; !done {
+					if fn, ok := fetchers[source]; ok {
+						fetched[source] = fn()
+					}
+				}
 			}
 		}
 
-		// Emit ScopeableObjects in stable resource order.
+		// Emits ScopeableObjects in stable resource order
 		var objects []*v1.ScopeableObject
-		for _, resource := range rbac.AllResources {
-			source, ok := rbac.ResourceScopeSource[resource]
-			if !ok {
+		for _, resource := range allResources {
+			source := protometa.ScopeSource(resource)
+			if source == optionsv1.ResourceType_RESOURCE_TYPE_UNSPECIFIED {
 				continue
 			}
 			for _, obj := range fetched[source] {
@@ -321,9 +342,13 @@ func (s *RoleService) UpdatePermissions(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("role name is required"))
 	}
 
-	perms := protoPermsToRbac(msg.Permissions)
+	for _, p := range msg.Permissions {
+		if p.ObjectId == "" {
+			p.ObjectId = "*"
+		}
+	}
 
-	if err := s.enforcer.SetPermissionsForRole(msg.RoleName, perms); err != nil {
+	if err := s.enforcer.SetPermissionsForRole(msg.RoleName, msg.Permissions); err != nil {
 		s.log.Error("Failed to update permissions for role %s: %v", msg.RoleName, err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update permissions"))
 	}
@@ -331,94 +356,4 @@ func (s *RoleService) UpdatePermissions(ctx context.Context, req *connect.Reques
 	return connect.NewResponse(&v1.UpdatePermissionsResponse{
 		Message: "permissions updated",
 	}), nil
-}
-
-func (s *RoleService) AssignRole(ctx context.Context, req *connect.Request[v1.AssignRoleRequest]) (*connect.Response[v1.AssignRoleResponse], error) {
-	msg := req.Msg
-
-	if msg.UserId == "" || msg.RoleName == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user ID and role name are required"))
-	}
-
-	if err := s.store.AssignRole(ctx, msg.UserId, msg.RoleName, "local"); err != nil {
-		s.log.Error("Failed to assign role: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to assign role"))
-	}
-
-	return connect.NewResponse(&v1.AssignRoleResponse{
-		Message: "role assigned",
-	}), nil
-}
-
-func (s *RoleService) UnassignRole(ctx context.Context, req *connect.Request[v1.UnassignRoleRequest]) (*connect.Response[v1.UnassignRoleResponse], error) {
-	msg := req.Msg
-
-	if msg.UserId == "" || msg.RoleName == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user ID and role name are required"))
-	}
-
-	if err := s.store.UnassignRole(ctx, msg.UserId, msg.RoleName); err != nil {
-		s.log.Error("Failed to unassign role: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to unassign role"))
-	}
-
-	return connect.NewResponse(&v1.UnassignRoleResponse{
-		Message: "role unassigned",
-	}), nil
-}
-
-func (s *RoleService) GetUserRoles(ctx context.Context, req *connect.Request[v1.GetUserRolesRequest]) (*connect.Response[v1.GetUserRolesResponse], error) {
-	msg := req.Msg
-
-	if msg.UserId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user ID is required"))
-	}
-
-	roles, err := s.store.GetUserRoleNames(ctx, msg.UserId)
-	if err != nil {
-		s.log.Error("Failed to get user roles: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user roles"))
-	}
-
-	return connect.NewResponse(&v1.GetUserRolesResponse{
-		Roles: roles,
-	}), nil
-}
-
-func dbRoleToProto(role *storage.Role, perms []rbac.Permission) *v1.Role {
-	protoPerms := make([]*v1.Permission, 0, len(perms))
-	for _, p := range perms {
-		protoPerms = append(protoPerms, &v1.Permission{
-			Resource: p.Resource,
-			Action:   p.Action,
-			ObjectId: p.ObjectID,
-		})
-	}
-
-	return &v1.Role{
-		Id:          role.ID,
-		Name:        role.Name,
-		Description: role.Description,
-		IsSystem:    role.IsSystem,
-		IsDefault:   role.IsDefault,
-		Permissions: protoPerms,
-		CreatedAt:   timestamppb.New(role.CreatedAt),
-		UpdatedAt:   timestamppb.New(role.UpdatedAt),
-	}
-}
-
-func protoPermsToRbac(protoPerms []*v1.Permission) []rbac.Permission {
-	perms := make([]rbac.Permission, 0, len(protoPerms))
-	for _, p := range protoPerms {
-		objectID := p.ObjectId
-		if objectID == "" {
-			objectID = "*"
-		}
-		perms = append(perms, rbac.Permission{
-			Resource: p.Resource,
-			Action:   p.Action,
-			ObjectID: objectID,
-		})
-	}
-	return perms
 }

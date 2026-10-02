@@ -1,22 +1,45 @@
 import { writable, derived } from 'svelte/store';
-import type { Server } from '$lib/proto/discopanel/v1/common_pb';
-import { ServerStatus } from '$lib/proto/discopanel/v1/common_pb';
+import type { Server } from '$lib/proto/discopanel/v1/storage_pb';
+import { ServerStatus } from '$lib/proto/discopanel/v1/storage_pb';
 import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
 import { create } from '@bufbuild/protobuf';
 import { ListServersRequestSchema } from '$lib/proto/discopanel/v1/server_pb';
 
+// Pages that need docker-level stats hold a claim while mounted
+let fullStatsClaims = 0;
+
+export function claimFullStats(): () => void {
+	fullStatsClaims++;
+	let released = false;
+	return () => {
+		if (!released) {
+			released = true;
+			fullStatsClaims--;
+		}
+	};
+}
+
 function createServersStore() {
 	const { subscribe, set, update } = writable<Server[]>([]);
+
+	// Guards against stale responses landing after newer ones
+	let fetchSeq = 0;
+	let appliedSeq = 0;
 
 	return {
 		subscribe,
 		set,
-		fetchServers: async (skipLoading = false) => {
+		fetchServers: async (skipLoading = false, fullStats?: boolean) => {
+			const seq = ++fetchSeq;
 			try {
-				const request = create(ListServersRequestSchema, { fullStats: false });
+				const wantFull = fullStats ?? fullStatsClaims > 0;
+				const request = create(ListServersRequestSchema, { fullStats: wantFull });
 				const callOptions = skipLoading ? silentCallOptions : undefined;
 				const response = await rpcClient.server.listServers(request, callOptions);
-				set(response.servers);
+				if (seq > appliedSeq) {
+					appliedSeq = seq;
+					set(response.servers);
+				}
 				return response.servers;
 			} catch (error) {
 				console.error('Failed to fetch servers:', error);
@@ -43,26 +66,12 @@ function createServersStore() {
 
 export const serversStore = createServersStore();
 
-export const runningServers = derived(serversStore, ($servers) =>
-	$servers.filter((server) => server.status === ServerStatus.RUNNING)
-);
-
-export const stoppedServers = derived(serversStore, ($servers) =>
-	$servers.filter((server) => server.status === ServerStatus.STOPPED)
-);
-
 function getTimestampMs(ts: { seconds: bigint } | undefined): number {
 	if (!ts) return 0;
 	return Number(ts.seconds) * 1000;
 }
 
-/**
- * AUTO SORT PRIORITY:
- * 1. Pin most recently created/updated server as #1
- * 2. Running servers w/ players first (by player count desc)
- * 3. Running servers wo/ players (by lastStarted desc)
- * 4. Non-running servers (by updatedAt desc)
- */
+// Pins newest first, then players, then running, then idle
 export function sortServersByActivity(servers: Server[]): Server[] {
 	if (servers.length <= 1) return servers;
 

@@ -6,7 +6,7 @@ description: Set up DiscoPanel with Google as an OpenID Connect identity provide
 import { Code, Aside, Steps } from '@astrojs/starlight/components';
 import composeFile from '../../../../../../../oidc/google/docker-compose.yaml?raw';
 
-This guide walks through running DiscoPanel with [Google](https://developers.google.com/identity/openid-connect/openid-connect) as an OIDC identity provider. Unlike Keycloak or Authelia, Google is an external cloud provider — no IdP container is needed.
+This guide walks through running DiscoPanel with [Google](https://developers.google.com/identity/openid-connect/openid-connect) as an OIDC identity provider. Unlike Keycloak or Authelia, Google is an external cloud provider - no IdP container is needed.
 
 <Aside>
 Google does not include a `groups` claim in its OIDC tokens. Users are assigned DiscoPanel's default roles on first login and can be promoted to admin via the DiscoPanel UI. See [Role mapping](#role-mapping) below for Google Workspace options.
@@ -20,7 +20,7 @@ Google does not include a `groups` claim in its OIDC tokens. Users are assigned 
 ## Create Google OAuth credentials
 
 <Steps>
-1. Go to the [Google Cloud Console — Credentials](https://console.cloud.google.com/apis/credentials)
+1. Go to the [Google Cloud Console - Credentials](https://console.cloud.google.com/apis/credentials)
 
 2. Create or select a project
 
@@ -30,7 +30,7 @@ Google does not include a `groups` claim in its OIDC tokens. Users are assigned 
    - Scopes: add `openid`, `profile`, and `email`
    - For external apps: add test users while in "Testing" status, or publish the app for general access
 
-4. Click **Create Credentials** → **OAuth client ID**
+4. Click **Create Credentials**, then **OAuth client ID**
    - Application type: **Web application**
    - Authorized redirect URIs: add `http://localhost:8080/api/v1/auth/oidc/callback`
    - For production: add your public URL (must be HTTPS), e.g. `https://panel.example.com/api/v1/auth/oidc/callback`
@@ -54,11 +54,11 @@ docker compose up -d
 | Variable | Purpose |
 |---|---|
 | `DISCOPANEL_AUTH_OIDC_ENABLED` | Enables OIDC authentication |
-| `DISCOPANEL_AUTH_OIDC_ISSUER_URI` | Always `https://accounts.google.com` — do not change |
+| `DISCOPANEL_AUTH_OIDC_ISSUER_URI` | Always `https://accounts.google.com` - do not change |
 | `DISCOPANEL_AUTH_OIDC_CLIENT_ID` | Your OAuth Client ID from Google Cloud Console |
 | `DISCOPANEL_AUTH_OIDC_CLIENT_SECRET` | Your OAuth Client Secret from Google Cloud Console |
-| `DISCOPANEL_AUTH_OIDC_REDIRECT_URL` | The callback URL — must match exactly what you entered in Google Cloud Console |
-| `DISCOPANEL_AUTH_OIDC_ROLE_CLAIM` | Leave empty for Google — see [Role mapping](#role-mapping) below |
+| `DISCOPANEL_AUTH_OIDC_REDIRECT_URL` | The callback URL - must match exactly what you entered in Google Cloud Console |
+| `DISCOPANEL_AUTH_OIDC_ROLE_CLAIM` | Leave empty for Google - see [Role mapping](#role-mapping) below |
 
 ## Role mapping
 

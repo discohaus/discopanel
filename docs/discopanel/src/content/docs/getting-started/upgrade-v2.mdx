@@ -1,0 +1,32 @@
+---
+title: Upgrading from v2
+description: What happens to your database, your servers, and your config when you move to v3.
+---
+
+The upgrade is automatic. Stop the panel, swap the binary or image for the v3 one, start it. On first boot the database is migrated in one transaction, and the panel logs what it did.
+
+Three things to know before you do it:
+
+1. **Be on v2.0.15 first.** The migration starts from there. Coming from anything older, boot v2.0.15 once so its own migrations run, then move to v3. Older databases are refused with a message saying exactly this.
+2. **A backup is taken automatically.** Before anything changes, your database is copied to `discopanel.db.pre-migrate.bak` next to the original and left there. To roll back: stop the panel, copy the backup over `discopanel.db`, and run your v2 binary again.
+3. **The first start of each server takes longer.** v3 runs servers on its own runtime image, so each server reinstalls its server software on first start. Your world is zipped into the backup directory first (`pre-provision_<timestamp>.zip`), and worlds, configs, and mods you added are left in place.
+
+## What carries over
+
+Servers, worlds, users, roles and their permissions, tasks, modules, backups, proxy hostnames. A server's single v2 hostname becomes the first entry in its v3 hostname list.
+
+## Config file changes
+
+The migration handles the database, not `config.yaml`. A few keys moved or went away, and stale keys are silently ignored - so a v2 config still boots, just with defaults where a key was renamed. Worth checking:
+
+| v2 | v3 |
+|---|---|
+| `proxy.base_url` | Sets the base domain when none has been set in the database. |
+| `proxy.listen_ports`, `proxy.port_range_max` | Gone. Listeners are managed on the Network page. |
+| `server.read_timeout`, `server.write_timeout` | `server.read_header_timeout` |
+| `storage.max_upload_size` | `upload.max_upload_size` |
+| `docker.registry_url` | `docker.runtime_image` |
+
+The full current set is in [Configuration](/configuration/).
+
+If the panel refuses to start with a message about `database.auto_migrate`, that flag is `false` in your config. Set it back to `true` (the default) to let the migration run.

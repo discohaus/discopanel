@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,30 +9,14 @@ import (
 	"strings"
 	"time"
 
-	storage "github.com/nickheyer/discopanel/internal/db"
-	"github.com/nickheyer/discopanel/pkg/files"
+	"github.com/discohaus/discopanel/internal/metrics"
+	"github.com/discohaus/discopanel/pkg/files"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
-// BackupTaskConfig represents configuration for backup tasks
-type BackupTaskConfig struct {
-	BackupName    string   `json:"backup_name"`
-	Paths         []string `json:"paths"`
-	Compress      bool     `json:"compress"`
-	RetentionDays int      `json:"retention_days"`
-	MaxBackups    int      `json:"max_backups"`
-	MinBackups    int      `json:"min_backups"`
-}
-
-// Archives server data into the configured backup directory.
-// When the server is running, world saves are paused and flushed over RCON
-// first so the files on disk are consistent, then re-enabled afterwards.
-func (s *Scheduler) executeBackupTask(ctx context.Context, server *storage.Server, task *storage.ScheduledTask) (string, error) {
-	var config BackupTaskConfig
-	if task.Config != "" {
-		if err := json.Unmarshal([]byte(task.Config), &config); err != nil {
-			return "", fmt.Errorf("invalid backup config: %w", err)
-		}
-	}
+// Archives server data, pausing world saves for consistency
+func (s *Scheduler) executeBackupTask(ctx context.Context, server *v1.Server, task *v1.ScheduledTask) (string, error) {
+	config := task.GetBackupConfig()
 
 	if s.appConfig == nil || s.appConfig.Storage.BackupDir == "" {
 		return "", fmt.Errorf("backup directory is not configured")
@@ -47,7 +30,7 @@ func (s *Scheduler) executeBackupTask(ctx context.Context, server *storage.Serve
 		return "", err
 	}
 
-	// Backups are grouped per server using the unique server data directory name
+	// Groups backups per server by data directory name
 	destDir := filepath.Join(s.appConfig.Storage.BackupDir, filepath.Base(server.DataPath))
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create backup directory: %w", err)
@@ -74,10 +57,14 @@ func (s *Scheduler) executeBackupTask(ctx context.Context, server *storage.Serve
 		size = info.Size()
 	}
 
-	pruned, pruneErr := pruneBackups(destDir, prefix+"_", config.RetentionDays, config.MinBackups, config.MaxBackups)
+	pruned, pruneErr := pruneBackups(destDir, prefix+"_", int(config.RetentionDays), int(config.MinBackups), int(config.MaxBackups))
 
 	output := fmt.Sprintf("backup created: %s (%d files, %s, took %s)",
 		filepath.Base(destPath), count, formatBytes(size), time.Since(start).Round(time.Millisecond))
+	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_BACKUP_CREATE,
+		metrics.Attrs{"file": filepath.Base(destPath), "size": formatBytes(size), "task": task.Name},
+		"backed up %s (%d files, %s, task %q)",
+		filepath.Base(destPath), count, formatBytes(size), task.Name)
 	if len(missing) > 0 {
 		output += fmt.Sprintf("; skipped missing paths: %s", strings.Join(missing, ", "))
 	}
@@ -90,9 +77,7 @@ func (s *Scheduler) executeBackupTask(ctx context.Context, server *storage.Serve
 	return output, nil
 }
 
-// Validates the requested paths against the server data
-// directory and returns the relative paths to archive plus any that were
-// configured but do not exist. An empty request means the server's world directory.
+// Validates requested paths, empty means the world directory
 func resolveBackupPaths(dataPath string, requested []string) (paths []string, missing []string, err error) {
 	cleaned := make([]string, 0, len(requested))
 	for _, p := range requested {
@@ -107,7 +92,7 @@ func resolveBackupPaths(dataPath string, requested []string) (paths []string, mi
 	}
 
 	if len(cleaned) == 0 {
-		// Default backup: archive the server's world directory and any dimension siblings
+		// Default archives the world directory and dimension siblings
 		worldDirs, err := files.FindWorldDirs(dataPath)
 		if err != nil {
 			return nil, nil, fmt.Errorf("no world directory found to back up (configure explicit paths for a custom layout): %w", err)
@@ -135,22 +120,21 @@ func resolveBackupPaths(dataPath string, requested []string) (paths []string, mi
 	return paths, missing, nil
 }
 
-// Disables auto-saving and flushes pending world writes so the files on disk are consistent while they are archived.
-// The returned function re-enables saving and is safe to call even when the server was offline or the save commands failed.
-func (s *Scheduler) pauseWorldSaves(ctx context.Context, server *storage.Server) func() {
-	if server.Status != storage.StatusRunning || server.ContainerID == "" {
+// Pauses and flushes world saves, returns the resume function
+func (s *Scheduler) pauseWorldSaves(ctx context.Context, server *v1.Server) func() {
+	if server.Status != v1.ServerStatus_SERVER_STATUS_RUNNING || server.ContainerId == "" {
 		return func() {}
 	}
 
-	if _, err := s.sender.SendCommand(ctx, server.ID, "save-off"); err != nil {
+	if _, err := s.sender.SendCommand(ctx, server.Id, "save-off"); err != nil {
 		s.log.Warn("Backup: failed to disable world saves on server %s (continuing anyway): %v", server.Name, err)
 		return func() {}
 	}
 
-	if _, err := s.sender.SendCommand(ctx, server.ID, "save-all flush"); err != nil {
+	if _, err := s.sender.SendCommand(ctx, server.Id, "save-all flush"); err != nil {
 		s.log.Warn("Backup: failed to flush world saves on server %s: %v", server.Name, err)
 	} else {
-		// Give the server a moment to finish writing chunks to disk
+		// Gives the server a moment to flush chunks
 		select {
 		case <-ctx.Done():
 		case <-time.After(3 * time.Second):
@@ -158,19 +142,16 @@ func (s *Scheduler) pauseWorldSaves(ctx context.Context, server *storage.Server)
 	}
 
 	return func() {
-		// Use a fresh context so saves are re-enabled even if the task was cancelled or timed out
+		// Fresh context re-enables saves even after cancellation
 		resumeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if _, err := s.sender.SendCommand(resumeCtx, server.ID, "save-on"); err != nil {
+		if _, err := s.sender.SendCommand(resumeCtx, server.Id, "save-on"); err != nil {
 			s.log.Error("Backup: failed to re-enable world saves on server %s: %v", server.Name, err)
 		}
 	}
 }
 
-// Removes old backups matching prefix in dir, keeping at most maxBackups (0 = unlimited) and dropping any older than retentionDays.
-// Age-based expiry never reduces the backup count below minBackups (at minimum the most recent backup is always kept),
-// while maxBackups is a hard cap that takes precedence over minBackups.
-// Returns the number of backups removed.
+// Prunes old backups honoring retention, min, and max caps
 func pruneBackups(dir, prefix string, retentionDays, minBackups, maxBackups int) (int, error) {
 	if retentionDays <= 0 && maxBackups <= 0 {
 		return 0, nil
@@ -210,7 +191,7 @@ func pruneBackups(dir, prefix string, retentionDays, minBackups, maxBackups int)
 	}
 	if retentionDays > 0 {
 		cutoff := time.Now().AddDate(0, 0, -retentionDays)
-		// Keep the newest minBackups regardless of age (always at least the most recent backup)
+		// Keeps the newest backups regardless of age
 		protected := max(minBackups, 1)
 		for _, b := range backups[min(protected, len(backups)):] {
 			if b.modTime.Before(cutoff) {

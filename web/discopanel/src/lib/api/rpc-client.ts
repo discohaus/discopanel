@@ -7,7 +7,7 @@ import {
 } from '@connectrpc/connect';
 import { createConnectTransport } from '@connectrpc/connect-web';
 import { authStore } from '$lib/stores/auth';
-import { toast } from 'svelte-sonner';
+import { notify } from '$lib/stores/activity.svelte';
 import { loadingStore } from '$lib/stores/loading.svelte';
 
 // Rpc state
@@ -15,7 +15,7 @@ let loggingOut = false;
 
 // SERVICES
 import { AuthService } from '$lib/proto/discopanel/v1/auth_pb';
-import { ConfigService } from '$lib/proto/discopanel/v1/config_pb';
+import { PropertiesService } from '$lib/proto/discopanel/v1/properties_pb';
 import { FileService } from '$lib/proto/discopanel/v1/file_pb';
 import { MinecraftService } from '$lib/proto/discopanel/v1/minecraft_pb';
 import { ModService } from '$lib/proto/discopanel/v1/mod_pb';
@@ -28,6 +28,12 @@ import { UploadService } from '$lib/proto/discopanel/v1/upload_pb';
 import { UserService } from '$lib/proto/discopanel/v1/user_pb';
 import { RoleService } from '$lib/proto/discopanel/v1/role_pb';
 import { ModuleService } from '$lib/proto/discopanel/v1/module_pb';
+
+// Bare backend reason for inline error surfaces
+export function rpcErrorMessage(error: unknown, fallback: string): string {
+	if (error instanceof ConnectError) return error.rawMessage || fallback;
+	return error instanceof Error ? error.message : fallback;
+}
 
 // Header to mark requests as silent / no loader
 const SILENT_HEADER = 'X-Silent-Request';
@@ -68,13 +74,13 @@ const authInterceptor: Interceptor = (next) => async (req) => {
 					loggingOut = false;
 				});
 			}
-			// Never toast auth errors — the auto-logout redirect handles them
+			// Never report auth errors, auto-logout redirect handles them
 			throw error;
 		}
 
 		if (!isSilent && !onLoginPage) {
 			const message = error instanceof Error ? error.message : 'An error occurred';
-			toast.error(message);
+			notify.error(message);
 		}
 		throw error;
 	} finally {
@@ -93,7 +99,7 @@ const transport = createConnectTransport({
 // Clients for each service
 export class RpcClient {
 	public readonly auth: Client<typeof AuthService>;
-	public readonly config: Client<typeof ConfigService>;
+	public readonly properties: Client<typeof PropertiesService>;
 	public readonly file: Client<typeof FileService>;
 	public readonly minecraft: Client<typeof MinecraftService>;
 	public readonly mod: Client<typeof ModService>;
@@ -109,7 +115,7 @@ export class RpcClient {
 
 	constructor() {
 		this.auth = createClient(AuthService, transport);
-		this.config = createClient(ConfigService, transport);
+		this.properties = createClient(PropertiesService, transport);
 		this.file = createClient(FileService, transport);
 		this.minecraft = createClient(MinecraftService, transport);
 		this.mod = createClient(ModService, transport);
@@ -125,5 +131,5 @@ export class RpcClient {
 	}
 }
 
-// singleton
+// Singleton
 export const rpcClient = new RpcClient();

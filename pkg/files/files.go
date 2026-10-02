@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -13,52 +14,88 @@ import (
 	"regexp"
 	"strings"
 	"sync/atomic"
+	"syscall"
 
+	"github.com/discohaus/discopanel/pkg/minecraft"
 	"github.com/mholt/archives"
 )
 
-func FindWorldDir(dataDir string) (string, error) {
-	var worldDir string
-
-	err := filepath.WalkDir(dataDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			// Skip problematic paths
-			return nil // Continue walking
-		}
-
-		// Skip if not a directory
-		if !d.IsDir() {
-			return nil
-		}
-
-		folderName := d.Name()
-
-		// Check if this directory name matches "world" (case-insensitive)
-		if strings.ToLower(folderName) == "world" {
-			// Validate it's actually a Minecraft world by checking for level.dat
-			levelDatPath := filepath.Join(path, "level.dat")
-			if _, err := os.Stat(levelDatPath); err == nil {
-				worldDir = path
-				// Stop walking once we find a valid world
-				return fs.SkipAll
-			}
-		}
-
-		return nil
-	})
-
-	if err != nil && err != fs.SkipAll {
-		return "", fmt.Errorf("failed to find world dir in data %s: %w", dataDir, err)
+// Joins rel under base and rejects escapes
+func ResolveUnder(base, rel string) (string, error) {
+	full := filepath.Join(base, rel)
+	r, err := filepath.Rel(base, full)
+	if err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes base directory: %s", rel)
 	}
+	// Symlinks inside the jail must not escape it either
+	baseReal, err := resolveExisting(base)
+	if err != nil {
+		return "", fmt.Errorf("path escapes base directory: %s", rel)
+	}
+	fullReal, err := resolveExisting(full)
+	if err != nil {
+		return "", fmt.Errorf("path escapes base directory: %s", rel)
+	}
+	if !Within(baseReal, fullReal) {
+		return "", fmt.Errorf("path escapes base directory: %s", rel)
+	}
+	return full, nil
+}
 
-	if worldDir == "" {
+// Resolves symlinks through the deepest existing ancestor
+func resolveExisting(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return resolved, nil
+	}
+	// Files mid path read like missing for creation flows
+	if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
+		return "", err
+	}
+	parent := filepath.Dir(path)
+	if parent == path {
+		return "", err
+	}
+	parentReal, perr := resolveExisting(parent)
+	if perr != nil {
+		return "", perr
+	}
+	return filepath.Join(parentReal, filepath.Base(path)), nil
+}
+
+// Reports whether child sits at or under parent
+func Within(parent, child string) bool {
+	r, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return r == "." || (r != ".." && !strings.HasPrefix(r, ".."+string(filepath.Separator)))
+}
+
+// Reads level-name from server.properties, vanilla default otherwise
+func worldName(dataDir string) string {
+	props, err := minecraft.LoadPropertiesFile(dataDir)
+	if err != nil {
+		return "world"
+	}
+	if name := props["level-name"]; name != "" {
+		return name
+	}
+	return "world"
+}
+
+func FindWorldDir(dataDir string) (string, error) {
+	worldDir, err := ResolveUnder(dataDir, worldName(dataDir))
+	if err != nil {
+		return "", fmt.Errorf("invalid level-name in %s: %w", dataDir, err)
+	}
+	if _, err := os.Stat(filepath.Join(worldDir, "level.dat")); err != nil {
 		return "", fmt.Errorf("no valid world directory found in %s", dataDir)
 	}
-
 	return worldDir, nil
 }
 
-// Returns the server's world directory along with any sibling world dirs
+// Returns the world directory plus any sibling world dirs
 func FindWorldDirs(dataDir string) ([]string, error) {
 	worldDir, err := FindWorldDir(dataDir)
 	if err != nil {
@@ -75,7 +112,7 @@ func FindWorldDirs(dataDir string) ([]string, error) {
 	return dirs, nil
 }
 
-// calculateDirSize calculates the total size of a directory in bytes, including all nested files.
+// Calculates total directory size in bytes, including nested files
 func CalculateDirSize(dirPath string) (int64, error) {
 	var totalSize int64
 
@@ -108,7 +145,7 @@ func CalculateDirSize(dirPath string) (int64, error) {
 }
 
 func SanitizePathName(name string) string {
-	// alphanum + _ + -
+	// Alphanum plus underscore and dash
 	re := regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
 	safe := re.ReplaceAllString(strings.ToLower(strings.TrimSpace(name)), "_")
 
@@ -133,7 +170,7 @@ func ExtractArchive(ctx context.Context, archivePath string, destPath string, co
 		return 0, fmt.Errorf("failed to identify archive format: %w", err)
 	}
 
-	// Is format extractable?
+	// Checks if format supports extraction
 	extractor, ok := format.(archives.Extractor)
 	if !ok {
 		return 0, fmt.Errorf("format does not support extraction")
@@ -147,11 +184,9 @@ func ExtractArchive(ctx context.Context, archivePath string, destPath string, co
 	// Extract and walk while recursively extracting
 	filesExtracted := 0
 	err = extractor.Extract(ctx, stream, func(ctx context.Context, f archives.FileInfo) error {
-		// Build path
-		targetPath := filepath.Join(destPath, f.NameInArchive)
-
 		// No sneaky traversals
-		if !strings.HasPrefix(filepath.Clean(targetPath), filepath.Clean(destPath)) {
+		targetPath, err := ResolveUnder(destPath, f.NameInArchive)
+		if err != nil {
 			return fmt.Errorf("illegal file path in archive: %s", f.NameInArchive)
 		}
 
@@ -243,7 +278,7 @@ func IsTextFile(path string) bool {
 	return true
 }
 
-// These get zip.Store (no compression) to avoid wasting CPU.
+// These get zip.Store (no compression) to avoid wasting CPU
 var compressedExts = map[string]bool{
 	// Archives
 	".zip": true, ".gz": true, ".bz2": true, ".xz": true, ".7z": true,
@@ -272,10 +307,7 @@ func zipMethod(name string) uint16 {
 	return zip.Deflate
 }
 
-// CreateZipToWriter writes a zip archive of the given paths to the writer.
-// basePath is the root directory used to calculate relative paths in the archive.
-// When compress is false all entries are stored uncompressed.
-// Returns the number of files archived.
+// Writes a zip archive of paths, returns file count
 func CreateZipToWriter(paths []string, basePath string, w io.Writer, compress bool) (int, error) {
 	zw := zip.NewWriter(w)
 	defer zw.Close()
@@ -358,7 +390,7 @@ func CreateZipToWriter(paths []string, basePath string, w io.Writer, compress bo
 	return count, nil
 }
 
-// CreateZipArchive creates a zip archive file on disk from the given paths.
+// Creates a zip archive file on disk from paths
 func CreateZipArchive(paths []string, basePath string, destPath string, compress bool) (int, error) {
 	f, err := os.Create(destPath)
 	if err != nil {
@@ -374,7 +406,7 @@ func CreateZipArchive(paths []string, basePath string, destPath string, compress
 	return count, nil
 }
 
-// CopyDir recursively copies a directory tree from src to dst.
+// Recursively copies a directory tree from src to dst
 func CopyDir(src, dst string) error {
 	srcInfo, err := os.Stat(src)
 	if err != nil {
@@ -392,14 +424,26 @@ func CopyDir(src, dst string) error {
 		target := filepath.Join(dst, rel)
 
 		if d.IsDir() {
-			return os.MkdirAll(target, 0755)
+			mode := fs.FileMode(0755)
+			if info, ierr := d.Info(); ierr == nil {
+				mode = info.Mode().Perm()
+			}
+			return os.MkdirAll(target, mode)
+		}
+		// Symlinks recreate instead of following
+		if d.Type()&fs.ModeSymlink != 0 {
+			link, lerr := os.Readlink(path)
+			if lerr != nil {
+				return lerr
+			}
+			return os.Symlink(link, target)
 		}
 		return CopyFile(path, target)
 	})
 }
 
 func CopyFile(src, dst string) error {
-	// Prevent copying a file onto itself — os.Create truncates before io.Copy reads.
+	// Prevents copying a file onto itself before truncation
 	if filepath.Clean(src) == filepath.Clean(dst) {
 		return fmt.Errorf("source and destination are the same file: %s", src)
 	}
@@ -410,16 +454,23 @@ func CopyFile(src, dst string) error {
 	}
 	defer srcFile.Close()
 
+	info, err := srcFile.Stat()
+	if err != nil {
+		return err
+	}
+
 	dstFile, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
 	defer dstFile.Close()
 
-	_, err = io.Copy(dstFile, srcFile)
-	if err != nil {
+	if _, err = io.Copy(dstFile, srcFile); err != nil {
 		return err
 	}
-
-	return dstFile.Sync()
+	if err := dstFile.Sync(); err != nil {
+		return err
+	}
+	// Exec bits and friends survive the copy
+	return os.Chmod(dst, info.Mode().Perm())
 }

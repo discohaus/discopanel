@@ -2,39 +2,53 @@ syntax = "proto3";
 
 package discopanel.v1;
 
-import "google/protobuf/timestamp.proto";
+import "discopanel/options/v1/options.proto";
+import "discopanel/v1/storage.proto";
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
 // Server mod management
 service ModService {
   // List server mods
-  rpc ListMods(ListModsRequest) returns (ListModsResponse);
+  rpc ListMods(ListModsRequest) returns (ListModsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODS
+      action: ACTION_TYPE_READ
+      object_id_field: "server_id"
+    };
+  }
   // Get mod details
-  rpc GetMod(GetModRequest) returns (GetModResponse);
+  rpc GetMod(GetModRequest) returns (GetModResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODS
+      action: ACTION_TYPE_READ
+      object_id_field: "server_id"
+    };
+  }
   // Import mod from chunked upload session
-  rpc ImportUploadedMod(ImportUploadedModRequest) returns (ImportUploadedModResponse);
+  rpc ImportUploadedMod(ImportUploadedModRequest) returns (ImportUploadedModResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODS
+      action: ACTION_TYPE_CREATE
+      object_id_field: "server_id"
+    };
+  }
   // Update mod metadata
-  rpc UpdateMod(UpdateModRequest) returns (UpdateModResponse);
+  rpc UpdateMod(UpdateModRequest) returns (UpdateModResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODS
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "server_id"
+    };
+  }
   // Delete mod file
-  rpc DeleteMod(DeleteModRequest) returns (DeleteModResponse);
-}
-
-// Server mod metadata
-message Mod {
-  string id = 1;
-  string server_id = 2;
-  string file_name = 3;
-  string display_name = 4;
-  string description = 5;
-  string version = 6;
-  string mod_id = 7; // External mod ID (e.g., CurseForge ID)
-  string author = 8;
-  string website = 9;
-  int64 file_size = 10;
-  google.protobuf.Timestamp uploaded_at = 11;
-  google.protobuf.Timestamp updated_at = 12;
-  bool enabled = 13;
+  rpc DeleteMod(DeleteModRequest) returns (DeleteModResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODS
+      action: ACTION_TYPE_DELETE
+      object_id_field: "server_id"
+    };
+  }
 }
 
 // Server mods request
@@ -60,10 +74,10 @@ message GetModResponse {
 
 // Import mod from chunked upload session
 message ImportUploadedModRequest {
+  reserved 3, 4;
+  reserved "display_name", "description";
   string server_id = 1;
   string upload_session_id = 2;
-  string display_name = 3;
-  string description = 4;
 }
 
 // Import result
@@ -74,10 +88,10 @@ message ImportUploadedModResponse {
 
 // Mod fields to update
 message UpdateModRequest {
+  reserved 3, 4;
+  reserved "display_name", "description";
   string server_id = 1;
   string mod_id = 2;
-  optional string display_name = 3;
-  optional string description = 4;
   optional bool enabled = 5;
 }
 

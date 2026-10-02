@@ -2,17 +2,18 @@ syntax = "proto3";
 
 package discopanel.v1;
 
-import "discopanel/v1/common.proto";
+import "discopanel/options/v1/options.proto";
+import "discopanel/v1/storage.proto";
 import "gnostic/openapi/v3/annotations.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1;discopanelv1";
-// Global OpenAPI security: Bearer token auth via session JWT or API token (dp_...)
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+// Bearer token auth via session JWT or API token
 option (gnostic.openapi.v3.document) = {
   info: {
     title: "DiscoPanel API"
     version: "2.x"
-    description: "DiscoPanel server management API. Authenticate using a session token (from Login/OIDC) or an API token (dp_... prefix) in the Authorization header.\n\n## Connect Protocol\n\nThis API uses the [Connect protocol](https://connectrpc.com/docs/protocol) over HTTP. All endpoints accept `POST` with `application/json` bodies. Connect clients may send the following optional headers:\n\n- `Connect-Protocol-Version: 1` — declares the Connect protocol version.\n- `Connect-Timeout-Ms: <ms>` — request deadline in milliseconds.\n\nThese headers are handled automatically by Connect client libraries and are not required when calling the API directly with curl or other HTTP clients."
+    description: "DiscoPanel server management API. Authenticate using a session token (from Login/OIDC) or an API token (dp_... prefix) in the Authorization header.\n\n## Connect Protocol\n\nThis API uses the [Connect protocol](https://connectrpc.com/docs/protocol) over HTTP. All endpoints accept `POST` with `application/json` bodies. Connect clients may send the following optional headers:\n\n- `Connect-Protocol-Version: 1` - declares the Connect protocol version.\n- `Connect-Timeout-Ms: <ms>` - request deadline in milliseconds.\n\nThese headers are handled automatically by Connect client libraries and are not required when calling the API directly with curl or other HTTP clients."
   }
   components: {
     security_schemes: {
@@ -35,9 +36,7 @@ option (gnostic.openapi.v3.document) = {
       additional_properties: [
         {
           name: "BearerAuth"
-          value: {
-            value: []
-          }
+          value: {value: []}
         }
       ]
     }
@@ -47,41 +46,95 @@ option (gnostic.openapi.v3.document) = {
 // Authentication service
 service AuthService {
   // Check auth system status (public)
-  rpc GetAuthStatus(GetAuthStatusRequest) returns (GetAuthStatusResponse);
+  rpc GetAuthStatus(GetAuthStatusRequest) returns (GetAuthStatusResponse) {
+    option (discopanel.options.v1.perm) = {public: true};
+  }
   // Authenticate with local credentials (public)
-  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc Login(LoginRequest) returns (LoginResponse) {
+    option (discopanel.options.v1.perm) = {public: true};
+  }
   // Invalidate session
-  rpc Logout(LogoutRequest) returns (LogoutResponse);
-  // Register new local account (public)
-  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse) {
+    option (discopanel.options.v1.perm) = {session: true};
+  }
+  // Creates a new local account (public)
+  rpc Register(RegisterRequest) returns (RegisterResponse) {
+    option (discopanel.options.v1.perm) = {public: true};
+  }
   // Get authenticated user info
-  rpc GetCurrentUser(GetCurrentUserRequest) returns (GetCurrentUserResponse);
+  rpc GetCurrentUser(GetCurrentUserRequest) returns (GetCurrentUserResponse) {
+    option (discopanel.options.v1.perm) = {session: true};
+  }
   // Change own password (local auth only)
-  rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
+  rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse) {
+    option (discopanel.options.v1.perm) = {session: true};
+  }
   // Get OIDC login redirect URL (public)
-  rpc GetOIDCLoginURL(GetOIDCLoginURLRequest) returns (GetOIDCLoginURLResponse);
+  rpc GetOIDCLoginURL(GetOIDCLoginURLRequest) returns (GetOIDCLoginURLResponse) {
+    option (discopanel.options.v1.perm) = {public: true};
+  }
   // Get full auth configuration
-  rpc GetAuthConfig(GetAuthConfigRequest) returns (GetAuthConfigResponse);
+  rpc GetAuthConfig(GetAuthConfigRequest) returns (GetAuthConfigResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SETTINGS
+      action: ACTION_TYPE_READ
+    };
+  }
   // Update mutable auth settings
-  rpc UpdateAuthSettings(UpdateAuthSettingsRequest) returns (UpdateAuthSettingsResponse);
+  rpc UpdateAuthSettings(UpdateAuthSettingsRequest) returns (UpdateAuthSettingsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SETTINGS
+      action: ACTION_TYPE_UPDATE
+    };
+  }
   // Create a registration invite link
-  rpc CreateInvite(CreateInviteRequest) returns (CreateInviteResponse);
+  rpc CreateInvite(CreateInviteRequest) returns (CreateInviteResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_USERS
+      action: ACTION_TYPE_CREATE
+    };
+  }
   // List all registration invites
-  rpc ListInvites(ListInvitesRequest) returns (ListInvitesResponse);
+  rpc ListInvites(ListInvitesRequest) returns (ListInvitesResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_USERS
+      action: ACTION_TYPE_READ
+    };
+  }
   // Get a specific invite by ID
-  rpc GetInvite(GetInviteRequest) returns (GetInviteResponse);
+  rpc GetInvite(GetInviteRequest) returns (GetInviteResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_USERS
+      action: ACTION_TYPE_READ
+    };
+  }
   // Delete/revoke an invite
-  rpc DeleteInvite(DeleteInviteRequest) returns (DeleteInviteResponse);
+  rpc DeleteInvite(DeleteInviteRequest) returns (DeleteInviteResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_USERS
+      action: ACTION_TYPE_DELETE
+    };
+  }
   // Validate an invite code (public)
-  rpc ValidateInvite(ValidateInviteRequest) returns (ValidateInviteResponse);
+  rpc ValidateInvite(ValidateInviteRequest) returns (ValidateInviteResponse) {
+    option (discopanel.options.v1.perm) = {public: true};
+  }
   // Create a new API token for the authenticated user
-  rpc CreateAPIToken(CreateAPITokenRequest) returns (CreateAPITokenResponse);
+  rpc CreateAPIToken(CreateAPITokenRequest) returns (CreateAPITokenResponse) {
+    option (discopanel.options.v1.perm) = {session: true};
+  }
   // List all API tokens for the authenticated user
-  rpc ListAPITokens(ListAPITokensRequest) returns (ListAPITokensResponse);
+  rpc ListAPITokens(ListAPITokensRequest) returns (ListAPITokensResponse) {
+    option (discopanel.options.v1.perm) = {session: true};
+  }
   // Delete/revoke an API token
-  rpc DeleteAPIToken(DeleteAPITokenRequest) returns (DeleteAPITokenResponse);
-  // Use recovery key to reset all users and return to first-user-setup (public)
-  rpc UseRecoveryKey(UseRecoveryKeyRequest) returns (UseRecoveryKeyResponse);
+  rpc DeleteAPIToken(DeleteAPITokenRequest) returns (DeleteAPITokenResponse) {
+    option (discopanel.options.v1.perm) = {session: true};
+  }
+  // Resets all users to first-user-setup via recovery key (public)
+  rpc UseRecoveryKey(UseRecoveryKeyRequest) returns (UseRecoveryKeyResponse) {
+    option (discopanel.options.v1.perm) = {public: true};
+  }
 }
 
 // Empty auth status request
@@ -178,7 +231,7 @@ message GetAuthConfigResponse {
   bool first_user_setup = 11;
 }
 
-// Update mutable auth settings (all fields optional, only provided fields are updated)
+// Updates mutable auth settings, only provided fields change
 message UpdateAuthSettingsRequest {
   optional bool local_auth_enabled = 1;
   optional bool allow_registration = 2;
@@ -189,20 +242,6 @@ message UpdateAuthSettingsRequest {
 // Returns the updated auth configuration
 message UpdateAuthSettingsResponse {
   GetAuthConfigResponse config = 1;
-}
-
-// Registration invite link
-message RegistrationInvite {
-  string id = 1;
-  string code = 2;
-  string description = 3;
-  repeated string roles = 4;
-  bool has_pin = 5;
-  int32 max_uses = 6;
-  int32 use_count = 7;
-  google.protobuf.Timestamp expires_at = 8;
-  string created_by = 9;
-  google.protobuf.Timestamp created_at = 10;
 }
 
 // New invite with roles, optional PIN, and expiry
@@ -255,15 +294,6 @@ message ValidateInviteResponse {
   bool valid = 1;
   bool requires_pin = 2;
   string description = 3;
-}
-
-// API Token metadata (never includes the token value)
-message ApiToken {
-  string id = 1;
-  string name = 2;
-  google.protobuf.Timestamp expires_at = 3;
-  google.protobuf.Timestamp last_used_at = 4;
-  google.protobuf.Timestamp created_at = 5;
 }
 
 // New API token with name and optional expiry
