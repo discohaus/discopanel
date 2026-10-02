@@ -18,6 +18,7 @@ import (
 	storage "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/docker"
 	"github.com/discohaus/discopanel/internal/lifecycle"
+	"github.com/discohaus/discopanel/internal/memlimit"
 	"github.com/discohaus/discopanel/internal/metrics"
 	"github.com/discohaus/discopanel/internal/module"
 	"github.com/discohaus/discopanel/internal/provisioner"
@@ -45,6 +46,21 @@ func main() {
 	// Init logger
 	log := logger.NewWithConfig(&cfg.Logging)
 	defer log.Close()
+
+	// Heap ceiling
+	limit, err := memlimit.Resolve(cfg.Server.MemoryLimit, memlimit.DefaultPaths())
+	if err != nil {
+		log.Fatal("Invalid server.memory_limit: %v", err)
+	}
+	memlimit.Apply(limit)
+	switch {
+	case limit.Source == memlimit.SourceNone:
+		log.Info("Go memory limit not set, no cgroup memory limit found")
+	case limit.Bytes == 0:
+		log.Info("Go memory limit disabled by %s", limit.Source)
+	default:
+		log.Info("Go memory limit %d MiB from %s", limit.Bytes>>20, limit.Source)
+	}
 
 	// Create required directories
 	dirs := []string{

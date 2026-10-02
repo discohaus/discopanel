@@ -27,6 +27,7 @@ import (
 	"github.com/discohaus/discopanel/pkg/logger"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
+	"github.com/discohaus/discopanel/pkg/transfer"
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -85,27 +86,29 @@ type builtBundle struct {
 
 // Implements the Support service
 type SupportService struct {
-	store  *storage.Store
-	docker *docker.Client
-	config *config.Config
-	diag   *diagnostics.Runner
-	beat   *telemetry.Sender
-	log    *logger.Logger
+	store     *storage.Store
+	docker    *docker.Client
+	config    *config.Config
+	diag      *diagnostics.Runner
+	beat      *telemetry.Sender
+	downloads *transfer.DownloadManager
+	log       *logger.Logger
 	// Guards the bundle job registry
 	bundlesMu sync.Mutex
 	bundles   map[string]*bundleJob
 }
 
 // Creates a new support service
-func NewSupportService(store *storage.Store, docker *docker.Client, config *config.Config, diag *diagnostics.Runner, beat *telemetry.Sender, log *logger.Logger) *SupportService {
+func NewSupportService(store *storage.Store, docker *docker.Client, config *config.Config, diag *diagnostics.Runner, beat *telemetry.Sender, downloads *transfer.DownloadManager, log *logger.Logger) *SupportService {
 	return &SupportService{
-		store:   store,
-		docker:  docker,
-		config:  config,
-		diag:    diag,
-		beat:    beat,
-		log:     log,
-		bundles: make(map[string]*bundleJob),
+		store:     store,
+		docker:    docker,
+		config:    config,
+		diag:      diag,
+		beat:      beat,
+		downloads: downloads,
+		log:       log,
+		bundles:   make(map[string]*bundleJob),
 	}
 }
 
@@ -344,7 +347,7 @@ func (s *SupportService) GetSupportBundle(ctx context.Context, req *connect.Requ
 	return connect.NewResponse(res), nil
 }
 
-// Downloads a ready support bundle
+// Hands a ready support bundle to a download session
 func (s *SupportService) DownloadSupportBundle(ctx context.Context, req *connect.Request[v1.DownloadSupportBundleRequest]) (*connect.Response[v1.DownloadSupportBundleResponse], error) {
 	s.bundlesMu.Lock()
 	job, exists := s.bundles[req.Msg.BundleId]
@@ -364,20 +367,29 @@ func (s *SupportService) DownloadSupportBundle(ctx context.Context, req *connect
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("bundle was uploaded, nothing to download"))
 	}
 
-	// Read the bundle file
-	bundleData, err := os.ReadFile(s.bundlePath(filename))
+	path := s.bundlePath(filename)
+	info, err := os.Stat(path)
 	if err != nil {
-		s.log.Error("Failed to read bundle file: %v", err)
+		s.log.Error("Failed to stat bundle file: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to read bundle"))
 	}
 
-	// Clean up the bundle after download
-	go s.cleanupBundle(req.Msg.BundleId)
+	// Claims the archive so the session alone deletes it
+	s.bundlesMu.Lock()
+	claimed := s.bundles[req.Msg.BundleId] == job
+	if claimed {
+		delete(s.bundles, req.Msg.BundleId)
+	}
+	s.bundlesMu.Unlock()
+	if !claimed {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("bundle not found or expired"))
+	}
 
+	session := s.downloads.InitSession(path, filename, info.Size(), true)
 	return connect.NewResponse(&v1.DownloadSupportBundleResponse{
-		Content:  bundleData,
-		Filename: filename,
-		MimeType: "application/gzip",
+		SessionId: session.ID,
+		Filename:  filename,
+		TotalSize: info.Size(),
 	}), nil
 }
 
@@ -408,7 +420,16 @@ func (s *SupportService) UploadSupportBundle(ctx context.Context, req *connect.R
 	return connect.NewResponse(&v1.UploadSupportBundleResponse{BundleId: id}), nil
 }
 
-// Uploads a bundle file to the support server
+// Writer whose destination swaps between form parts
+type switchWriter struct {
+	w io.Writer
+}
+
+func (s *switchWriter) Write(p []byte) (int, error) {
+	return s.w.Write(p)
+}
+
+// Streams a bundle file to the support server
 func (s *SupportService) uploadBundleToServer(ctx context.Context, bundlePath, fileName string, userInfo *v1.UploadSupportBundleRequest) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -428,20 +449,16 @@ func (s *SupportService) uploadBundleToServer(ctx context.Context, bundlePath, f
 		return "", fmt.Errorf("failed to stat bundle file: %w", err)
 	}
 
-	// Create multipart form
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
+	// Form bytes before and after the archive stay small
+	var head, tail bytes.Buffer
+	sink := &switchWriter{w: &head}
+	writer := multipart.NewWriter(sink)
 
-	// Add file field
-	part, err := writer.CreateFormFile("bundle", fileName)
-	if err != nil {
+	// Add file field, the archive itself streams from disk
+	if _, err := writer.CreateFormFile("bundle", fileName); err != nil {
 		return "", fmt.Errorf("failed to create form file: %w", err)
 	}
-
-	// Copy file content
-	if _, err := io.Copy(part, file); err != nil {
-		return "", fmt.Errorf("failed to copy file content: %w", err)
-	}
+	sink.w = &tail
 
 	// Add metadata fields
 	writer.WriteField("timestamp", time.Now().Format(time.RFC3339))
@@ -471,16 +488,17 @@ func (s *SupportService) uploadBundleToServer(ctx context.Context, bundlePath, f
 		return "", fmt.Errorf("failed to close multipart writer: %w", err)
 	}
 
-	// Create request
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, supportURL, body)
+	// Create request with an exact length so nothing is chunked
+	contentLength := int64(head.Len()) + fileInfo.Size() + int64(tail.Len())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, supportURL, io.MultiReader(&head, file, &tail))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
-
+	req.ContentLength = contentLength
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	// Send request, the hub transport adds the install id
-	client := hub.NewHTTPClient(30 * time.Second)
+	// Send request, the job context bounds the whole upload
+	client := hub.NewHTTPClient(0)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to upload bundle: %w", err)
@@ -1045,54 +1063,18 @@ func (s *SupportService) GetApplicationLogs(ctx context.Context, req *connect.Re
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("log file not found"))
 	}
 
-	logFile, err := os.Open(logFilePath)
+	content, size, err := readFileTail(logFilePath, maxAppLogTailBytes)
 	if err != nil {
-		s.log.Error("Failed to open log file: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to read log file"))
-	}
-	defer logFile.Close()
-
-	fileInfo, err := logFile.Stat()
-	if err != nil {
-		s.log.Error("Failed to stat log file: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get log file info"))
-	}
-
-	// Reads at most the last megabyte of the file
-	readSize := fileInfo.Size()
-	var offset int64
-	if readSize > maxAppLogTailBytes {
-		offset = readSize - maxAppLogTailBytes
-		readSize = maxAppLogTailBytes
-	}
-	buf := make([]byte, readSize)
-	n, err := logFile.ReadAt(buf, offset)
-	if err != nil && err != io.EOF {
 		s.log.Error("Failed to read log file: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to read log file"))
 	}
-	content := buf[:n]
 
-	// Drops the partial first line after a mid file start
-	if offset > 0 {
-		if i := bytes.IndexByte(content, '\n'); i >= 0 {
-			content = content[i+1:]
-		}
-	}
-
-	// If tail is specified, only return the last N lines
-	tail := int(req.Msg.Tail)
-	if tail > 0 {
-		lines := strings.Split(string(content), "\n")
-		if len(lines) > tail {
-			lines = lines[len(lines)-tail:]
-		}
-		content = []byte(strings.Join(lines, "\n"))
-	}
+	// Keeps only the last N lines when tail is set
+	content = lastLines(content, int(req.Msg.Tail))
 
 	return connect.NewResponse(&v1.GetApplicationLogsResponse{
 		Content:  string(content),
 		Filename: filepath.Base(logFilePath),
-		Size:     fileInfo.Size(),
+		Size:     size,
 	}), nil
 }

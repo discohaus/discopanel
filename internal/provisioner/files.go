@@ -6,13 +6,13 @@ import (
 	"crypto/md5"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
 	"image/png"
 
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -198,22 +198,41 @@ func (p *Provisioner) writeServerIcon(ctx context.Context, server *v1.Server, cf
 	return os.WriteFile(iconPath, iconPNG, 0644)
 }
 
+// Largest icon source accepted, uploaded or downloaded
+const MaxIconBytes = 4 << 20
+
+// Most source pixels decoded for an icon, 16 megapixels
+const MaxIconPixels = 16 << 20
+
 // Downloads any common image into 64x64 PNG bytes
 func FetchServerIcon(ctx context.Context, userAgent, iconURL string) ([]byte, error) {
 	host := "icon"
 	if u, err := url.Parse(iconURL); err == nil && u.Host != "" {
 		host = u.Host
 	}
-	body, err := indexers.NewHTTPClient(host, userAgent, nil).DoBytes(ctx, iconURL)
+	// Oversized icons fail inside the fetch before any buffering
+	body, err := indexers.NewHTTPClient(host, userAgent, nil).DoBytesLimit(ctx, iconURL, MaxIconBytes)
+	var tooLarge *indexers.IndexerError
+	if errors.As(err, &tooLarge) && tooLarge.Kind == indexers.ErrTooLarge {
+		return nil, fmt.Errorf("icon is larger than %d MB", MaxIconBytes>>20)
+	}
 	if err != nil {
 		return nil, err
 	}
-	return ConvertServerIcon(bytes.NewReader(body))
+	return ConvertServerIcon(body)
 }
 
 // Decodes any common image into 64x64 PNG bytes
-func ConvertServerIcon(r io.Reader) ([]byte, error) {
-	img, _, err := image.Decode(r)
+func ConvertServerIcon(data []byte) ([]byte, error) {
+	// Header dimensions gate the decode so tiny files cannot balloon
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("unsupported icon image: %w", err)
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > MaxIconPixels {
+		return nil, fmt.Errorf("icon image is %dx%d, larger than %d megapixels", cfg.Width, cfg.Height, MaxIconPixels>>20)
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("unsupported icon image: %w", err)
 	}

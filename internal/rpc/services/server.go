@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -44,6 +45,15 @@ import (
 
 // Compile-time check that ServerService implements the interface
 var _ discopanelv1connect.ServerServiceHandler = (*ServerService)(nil)
+
+// Largest slice read from the tail of latest.log for mclo.gs
+const maxMCLogsBytes = 10 << 20
+
+// Most lines mclo.gs accepts in one upload
+const maxMCLogsLines = 25000
+
+// Endpoint receiving log uploads, swapped in tests
+var mcLogsUploadURL = "https://api.mclo.gs/1/log"
 
 // ServerService implements the Server service
 type ServerService struct {
@@ -898,8 +908,6 @@ func (s *ServerService) adoptModpackIcon(ctx context.Context, server *v1.Server,
 
 // UploadServerIcon converts an uploaded image into server-icon.png
 func (s *ServerService) UploadServerIcon(ctx context.Context, req *connect.Request[v1.UploadServerIconRequest]) (*connect.Response[v1.UploadServerIconResponse], error) {
-	const maxIconBytes = 4 << 20
-
 	server, err := getServer(ctx, s.store, req.Msg.Id)
 	if err != nil {
 		return nil, err
@@ -907,13 +915,13 @@ func (s *ServerService) UploadServerIcon(ctx context.Context, req *connect.Reque
 	if len(req.Msg.Image) == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("image data is required"))
 	}
-	if len(req.Msg.Image) > maxIconBytes {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("image must be under 4 MB"))
+	if len(req.Msg.Image) > provisioner.MaxIconBytes {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("image must be under %d MB", provisioner.MaxIconBytes>>20))
 	}
 
-	iconPNG, err := provisioner.ConvertServerIcon(bytes.NewReader(req.Msg.Image))
+	iconPNG, err := provisioner.ConvertServerIcon(req.Msg.Image)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unsupported image format"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	if err := os.MkdirAll(server.DataPath, 0755); err != nil {
@@ -1129,22 +1137,21 @@ func (s *ServerService) UploadToMCLogs(ctx context.Context, req *connect.Request
 	}
 
 	logPath := filepath.Join(server.DataPath, "logs", "latest.log")
-	content, err := os.ReadFile(logPath)
-	if err != nil {
-		s.log.Error("Failed to read server log file: %v", err)
+	content, size, err := readFileTail(logPath, maxMCLogsBytes)
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("log file not found"))
 	}
+	if err != nil {
+		s.log.Error("Failed to read server log file: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to read log file"))
+	}
 
-	if len(content) == 0 {
+	if size == 0 {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("log file is empty"))
 	}
 
-	// Truncate to 25000 lines if needed
-	lines := bytes.Split(content, []byte("\n"))
-	if len(lines) > 25000 {
-		lines = lines[len(lines)-25000:]
-		content = bytes.Join(lines, []byte("\n"))
-	}
+	// Keeps the upload inside the mclo.gs line limit
+	content = lastLines(content, maxMCLogsLines)
 
 	// Build mclo.gs request
 	payload, _ := json.Marshal(map[string]string{
@@ -1152,7 +1159,7 @@ func (s *ServerService) UploadToMCLogs(ctx context.Context, req *connect.Request
 		"source":  fmt.Sprintf("DiscoPanel-%s", server.Name),
 	})
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.mclo.gs/1/log", bytes.NewReader(payload))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, mcLogsUploadURL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create request"))
 	}

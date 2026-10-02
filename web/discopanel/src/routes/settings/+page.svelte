@@ -40,7 +40,7 @@
 		{
 			key: 'support',
 			label: 'Support',
-			desc: 'Diagnostics and support bundles for troubleshooting'
+			desc: 'Support bundles and diagnostics for troubleshooting'
 		},
 		{ key: 'users', label: 'Users', desc: 'Accounts, roles, and registration invites' },
 		{ key: 'roles', label: 'Roles', desc: 'Permission sets assignable to users' }

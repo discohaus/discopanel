@@ -1,7 +1,6 @@
 package docker
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +21,7 @@ import (
 	"github.com/discohaus/discopanel/pkg/logger"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/protometa"
+	"github.com/discohaus/discopanel/pkg/utils"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
@@ -760,6 +760,30 @@ func memUsageNoCache(mem container.MemoryStats) float64 {
 	return float64(mem.Usage)
 }
 
+// Newest bytes kept per exec stream, older output is dropped
+const MaxExecOutputBytes = 1 << 20
+
+// Starts exec output whose oldest bytes fell past the cap
+const ExecTruncatedPrefix = "[output truncated, oldest bytes dropped]\n"
+
+// Demultiplexes an exec stream into capped stdout and stderr
+func readExecOutput(r io.Reader) (string, string, error) {
+	stdout := utils.NewTailWriter(MaxExecOutputBytes)
+	stderr := utils.NewTailWriter(MaxExecOutputBytes)
+	if _, err := stdcopy.StdCopy(stdout, stderr, r); err != nil {
+		return "", "", fmt.Errorf("failed to read exec output: %w", err)
+	}
+	return execOutput(stdout), execOutput(stderr), nil
+}
+
+// Flags a capped stream so callers never assume it complete
+func execOutput(t *utils.TailWriter) string {
+	if t.Dropped() > 0 {
+		return ExecTruncatedPrefix + t.String()
+	}
+	return t.String()
+}
+
 // Runs command inside container, returns stdout and stderr
 func (c *Client) Exec(ctx context.Context, containerID string, execCmd []string) (string, string, error) {
 	execConfig := container.ExecOptions{
@@ -781,10 +805,10 @@ func (c *Client) Exec(ctx context.Context, containerID string, execCmd []string)
 	}
 	defer attachResp.Close()
 
-	// Demultiplexes the docker stream into split buffers
-	var stdout, stderr bytes.Buffer
-	if _, err = stdcopy.StdCopy(&stdout, &stderr, attachResp.Reader); err != nil {
-		return "", "", fmt.Errorf("failed to read exec output: %w", err)
+	// Output past the cap drops oldest first, memory stays bounded
+	stdout, stderr, err := readExecOutput(attachResp.Reader)
+	if err != nil {
+		return "", "", err
 	}
 
 	inspectResp, err := c.docker.ContainerExecInspect(ctx, execResp.ID)
@@ -793,14 +817,14 @@ func (c *Client) Exec(ctx context.Context, containerID string, execCmd []string)
 	}
 
 	if inspectResp.ExitCode != 0 {
-		detail := strings.TrimSpace(stderr.String())
+		detail := strings.TrimSpace(stderr)
 		if detail == "" {
-			detail = strings.TrimSpace(stdout.String())
+			detail = strings.TrimSpace(stdout)
 		}
 		return "", "", fmt.Errorf("command failed with exit code %d: %s", inspectResp.ExitCode, detail)
 	}
 
-	return stdout.String(), stderr.String(), nil
+	return stdout, stderr, nil
 }
 
 // Pulls image only when absent so starts never block

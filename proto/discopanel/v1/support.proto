@@ -139,11 +139,11 @@ message DownloadSupportBundleRequest {
   string bundle_id = 1;
 }
 
-// Bundle file content
+// Download session, bytes ride GET download/{session_id}
 message DownloadSupportBundleResponse {
-  bytes content = 1;
+  string session_id = 1;
   string filename = 2;
-  string mime_type = 3;
+  int64 total_size = 3;
 }
 
 // Upload support bundle request

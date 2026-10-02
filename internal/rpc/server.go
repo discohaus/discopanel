@@ -146,23 +146,8 @@ func NewServer(store *storage.Store, docker *docker.Client, sender *command.Send
 func (s *Server) setupHandler() {
 	mux := http.NewServeMux()
 
-	// Configure Connect options
-	interceptors := []connect.Interceptor{
-		s.loggingInterceptor(),
-		s.authInterceptor(),
-		s.redactInterceptor(),
-	}
-
-	opts := []connect.HandlerOption{
-		connect.WithInterceptors(interceptors...),
-		// Enable gRPC, gRPC-Web, and Connect protocols
-		connect.WithHandlerOptions(
-			connect.WithCompression("gzip", nil, nil),
-		),
-	}
-
 	// Register all service handlers
-	s.registerServices(mux, opts)
+	s.registerServices(mux, s.handlerOptions())
 
 	// Add reflection for gRPC clients
 	reflector := grpcreflect.NewStaticReflector(
@@ -200,6 +185,9 @@ func (s *Server) setupHandler() {
 	// Streaming file download endpoint
 	mux.Handle("/api/v1/download/", handlers.NewDownloadStreamHandler(s.downloadManager, s.log))
 
+	// Admin heap profile for memory spikes, bearer auth only
+	mux.Handle("/api/v1/debug/heap", handlers.NewHeapProfileHandler(s.authManager, s.log))
+
 	// Serve dynamic OpenAPI spec
 	mux.HandleFunc("/api/v1/openapi.yaml", handlers.NewOpenAPIHandler(s.log, s.authManager.IsAnyAuthEnabled))
 
@@ -208,6 +196,33 @@ func (s *Server) setupHandler() {
 
 	// Serves h2c HTTP/2 cleartext
 	s.handler = h2c.NewHandler(mux, &http2.Server{})
+}
+
+// Builds the interceptor chain and body limits every service shares
+func (s *Server) handlerOptions() []connect.HandlerOption {
+	interceptors := []connect.Interceptor{
+		s.loggingInterceptor(),
+		s.authInterceptor(),
+		s.redactInterceptor(),
+	}
+	return []connect.HandlerOption{
+		connect.WithInterceptors(interceptors...),
+		// Bodies are read before auth so the cap guards everyone
+		connect.WithReadMaxBytes(s.readMaxBytes()),
+		// Enable gRPC, gRPC-Web, and Connect protocols
+		connect.WithHandlerOptions(
+			connect.WithCompression("gzip", nil, nil),
+		),
+	}
+}
+
+// Largest rpc message, inline file or chunk plus base64 growth
+func (s *Server) readMaxBytes() int {
+	largest := int64(services.MaxInlineFileBytes)
+	if int64(s.config.Upload.MaxChunkSize) > largest {
+		largest = int64(s.config.Upload.MaxChunkSize)
+	}
+	return int(largest + largest/3 + 1<<20)
 }
 
 // Registers all Connect RPC service handlers
@@ -221,7 +236,7 @@ func (s *Server) registerServices(mux *http.ServeMux, opts []connect.HandlerOpti
 	modpackService := services.NewModpackService(s.store, s.config, s.uploadManager, s.log)
 	proxyService := services.NewProxyService(s.store, s.docker, s.proxyManager, s.moduleManager, s.config, s.rec, s.log)
 	serverService := services.NewServerService(s.store, s.docker, s.sender, s.config, s.proxyManager, s.lifecycle, s.authManager, s.logStreamer, s.metricsCollector, s.moduleManager, s.bus, s.uploadManager, s.rec, s.log)
-	supportService := services.NewSupportService(s.store, s.docker, s.config, s.diagnostics, s.telemetry, s.log)
+	supportService := services.NewSupportService(s.store, s.docker, s.config, s.diagnostics, s.telemetry, s.downloadManager, s.log)
 	taskService := services.NewTaskService(s.store, s.scheduler, s.rec, s.log)
 	userService := services.NewUserService(s.store, s.authManager, s.log)
 	roleService := services.NewRoleService(s.store, s.enforcer, s.log)
