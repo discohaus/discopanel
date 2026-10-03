@@ -28,6 +28,7 @@
 	let searchQuery = $state('');
 	let activeCategory = $state('');
 	let highlighted = $state<string | null>(null);
+	let categoryNav = $state<HTMLElement | null>(null);
 
 	let running = $derived(server.status === ServerStatus.RUNNING);
 	let stopped = $derived(server.status === ServerStatus.STOPPED);
@@ -118,12 +119,26 @@
 
 	let visibleFieldCount = $derived(visibleGroups.reduce((acc, g) => acc + g.properties.length, 0));
 
-	function selectCategory(slug: string) {
+	function selectCategory(slug: string, event?: MouseEvent) {
 		activeCategory = slug;
 		searchQuery = '';
 		const url = new SvelteURL(window.location.href);
 		url.hash = slug;
 		window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+		centerCategory(event?.currentTarget);
+	}
+
+	// Keeps the clicked category centered while the rail scrolls sideways
+	function centerCategory(tab: EventTarget | null | undefined) {
+		const rail = categoryNav;
+		if (!rail || !(tab instanceof HTMLElement) || rail.scrollWidth <= rail.clientWidth) return;
+		const railRect = rail.getBoundingClientRect();
+		const tabRect = tab.getBoundingClientRect();
+		const offset = tabRect.left - railRect.left - (railRect.width - tabRect.width) / 2;
+		rail.scrollBy({
+			left: offset,
+			behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
+		});
 	}
 
 	function flashField(id: string) {
@@ -194,6 +209,7 @@
 			</div>
 
 			<nav
+				bind:this={categoryNav}
 				class="flex gap-1 overflow-x-auto pb-1 md:min-h-0 md:flex-1 md:flex-col md:overflow-x-visible md:overflow-y-auto md:pb-0"
 				class:opacity-50={searching}
 			>
@@ -207,7 +223,7 @@
 							{isActive
 							? 'bg-accent font-medium text-foreground'
 							: 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}"
-						onclick={() => selectCategory(slug)}
+						onclick={(event) => selectCategory(slug, event)}
 					>
 						<span class="truncate">{category.name}</span>
 						{#if modCount > 0}
@@ -247,7 +263,7 @@
 					<div class="min-h-0 flex-1 overflow-y-auto">
 						{#each visibleGroups as group (group.name)}
 							<header
-								class="sticky top-0 z-10 flex flex-wrap items-baseline justify-between gap-2 border-b bg-card px-4 py-2.5 [&:not(:first-child)]:border-t"
+								class="sticky top-0 z-10 flex flex-wrap items-baseline justify-between gap-2 border-b bg-card px-4 py-2.5 not-first:border-t"
 							>
 								<h3 class="text-sm font-semibold">{group.name}</h3>
 								<span class="text-xs text-muted-foreground">

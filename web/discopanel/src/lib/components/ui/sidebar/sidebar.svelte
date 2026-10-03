@@ -39,7 +39,7 @@
 			data-sidebar="sidebar"
 			data-slot="sidebar"
 			data-mobile="true"
-			class="w-(--sidebar-width) bg-sidebar p-0 text-sidebar-foreground [&>button]:hidden"
+			class="w-(--sidebar-width) bg-sidebar p-0 pt-[env(safe-area-inset-top,0px)] pb-[calc(1.75rem+env(safe-area-inset-bottom,0px))] pl-[env(safe-area-inset-left,0px)] text-sidebar-foreground [&>button]:hidden"
 			style="--sidebar-width: {SIDEBAR_WIDTH_MOBILE};"
 			{side}
 		>
@@ -47,7 +47,16 @@
 				<Sheet.Title>Sidebar</Sheet.Title>
 				<Sheet.Description>Displays the mobile sidebar.</Sheet.Description>
 			</Sheet.Header>
-			<div class="flex h-full w-full flex-col">
+			<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+			<div
+				class="flex h-full w-full flex-col"
+				onclick={(e) => {
+					const target = (e.target as HTMLElement)?.closest('a, [data-sidebar-close]');
+					if (target) {
+						sidebar.closeMobile();
+					}
+				}}
+			>
 				{@render children?.()}
 			</div>
 		</Sheet.Content>
@@ -77,10 +86,10 @@
 		<div
 			data-slot="sidebar-container"
 			class={cn(
-				'fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear md:flex',
+				'fixed inset-y-0 z-10 hidden h-[calc(100svh-1.75rem-env(safe-area-inset-bottom,0px))] w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear md:flex',
 				side === 'left'
-					? 'left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]'
-					: 'right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]',
+					? 'left-0 group-data-[collapsible=offcanvas]:-left-(--sidebar-width)'
+					: 'right-0 group-data-[collapsible=offcanvas]:-right-(--sidebar-width)',
 				// Adjust the padding for floating and inset variants.
 				variant === 'floating' || variant === 'inset'
 					? 'p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]'

@@ -15,7 +15,7 @@
 		navItems,
 		title,
 		description,
-		sidebarClass = 'w-64 bg-card/40',
+		sidebarClass = 'md:w-64 bg-card/40',
 		onclose,
 		sidebarHeader,
 		sidebarFooter,
@@ -38,20 +38,52 @@
 		children: Snippet;
 		footer: Snippet;
 	} = $props();
+
+	let nav = $state<HTMLElement | null>(null);
+
+	// Keeps the clicked tab centered while the rail scrolls sideways
+	function selectSection(id: T, event: MouseEvent) {
+		activeSection = id;
+		const rail = nav;
+		const tab = event.currentTarget;
+		if (!rail || !(tab instanceof HTMLElement) || rail.scrollWidth <= rail.clientWidth) return;
+		const railRect = rail.getBoundingClientRect();
+		const tabRect = tab.getBoundingClientRect();
+		const offset = tabRect.left - railRect.left - (railRect.width - tabRect.width) / 2;
+		rail.scrollBy({
+			left: offset,
+			behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
+		});
+	}
 </script>
 
-<div class="flex h-full min-h-0">
-	<aside class={cn('flex shrink-0 flex-col border-r', sidebarClass)}>
-		{@render sidebarHeader?.()}
+<div class="flex h-full min-h-0 flex-col md:flex-row">
+	<aside class={cn('flex shrink-0 flex-col border-b md:border-r md:border-b-0', sidebarClass)}>
+		<!-- Rail tabs carry the section name on mobile, so the title row collapses to a close button -->
+		<div class="flex items-center justify-between gap-3 border-b md:hidden">
+			<div class="min-w-0 flex-1">
+				{@render sidebarHeader?.()}
+			</div>
+			<Button variant="ghost" size="icon" class="mr-2 size-8 shrink-0" onclick={onclose}>
+				<X class="size-4" />
+				<span class="sr-only">Close</span>
+			</Button>
+		</div>
+		<div class="hidden md:block">
+			{@render sidebarHeader?.()}
+		</div>
 
-		<nav class="flex-1 space-y-1 overflow-y-auto p-3">
+		<nav
+			bind:this={nav}
+			class="flex shrink-0 gap-1 overflow-x-auto p-2 md:min-h-0 md:flex-1 md:flex-col md:space-y-1 md:overflow-x-visible md:overflow-y-auto md:p-3"
+		>
 			{#each navItems as item (item.id)}
 				{@const Icon = item.icon}
 				<button
 					type="button"
-					onclick={() => (activeSection = item.id)}
+					onclick={(event) => selectSection(item.id, event)}
 					class={cn(
-						'flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm transition-colors',
+						'flex w-auto shrink-0 items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm whitespace-nowrap transition-colors md:w-full',
 						activeSection === item.id
 							? 'bg-accent font-medium text-foreground'
 							: 'text-muted-foreground hover:bg-accent/40 hover:text-foreground'
@@ -64,11 +96,15 @@
 			{/each}
 		</nav>
 
-		{@render sidebarFooter?.()}
+		<div class="hidden md:block">
+			{@render sidebarFooter?.()}
+		</div>
 	</aside>
 
-	<div class="flex min-w-0 flex-1 flex-col">
-		<div class="flex items-start justify-between gap-4 border-b px-6 py-4">
+	<div class="flex min-h-0 min-w-0 flex-1 flex-col">
+		<div
+			class="hidden items-start justify-between gap-4 border-b px-4 py-3 sm:px-6 sm:py-4 md:flex"
+		>
 			<div class="min-w-0">
 				<h2 class="text-lg font-semibold tracking-tight">{title}</h2>
 				<p class="mt-0.5 text-sm text-muted-foreground">{description}</p>
@@ -81,11 +117,18 @@
 
 		{@render banner?.()}
 
-		<div class="min-h-0 flex-1 overflow-y-auto p-6">
+		<div class="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
 			{@render children()}
+
+			<!-- Sidebar footer moves below the content when the rail goes horizontal -->
+			{#if sidebarFooter}
+				<div class="mt-6 md:hidden">
+					{@render sidebarFooter()}
+				</div>
+			{/if}
 		</div>
 
-		<div class="flex items-center justify-end gap-2 border-t px-6 py-4">
+		<div class="flex flex-wrap items-center justify-end gap-2 border-t px-4 py-3 sm:px-6 sm:py-4">
 			{@render footer()}
 		</div>
 	</div>

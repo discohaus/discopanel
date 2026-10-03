@@ -232,14 +232,18 @@
 				description="Spin up your first Minecraft server, or browse modpacks to find something fun."
 				class="py-20"
 			>
-				<Button href={resolve('/servers/new')} class="glow-primary">
-					<Plus class="size-4" />
-					Create your first server
-				</Button>
-				<Button href={resolve('/modpacks')} variant="outline">
-					<Package class="size-4" />
-					Browse modpacks
-				</Button>
+				<div
+					class="flex w-full max-w-xs flex-col items-center justify-center gap-3 sm:max-w-none sm:flex-row"
+				>
+					<Button href={resolve('/servers/new')} class="glow-primary w-full sm:w-auto">
+						<Plus class="size-4" />
+						Create your first server
+					</Button>
+					<Button href={resolve('/modpacks')} variant="outline" class="w-full sm:w-auto">
+						<Package class="size-4" />
+						Browse modpacks
+					</Button>
+				</div>
 			</EmptyState>
 		</div>
 	{:else}

@@ -5,6 +5,7 @@
 
 	let {
 		id,
+		controlId,
 		label,
 		description = '',
 		envVar = '',
@@ -19,6 +20,8 @@
 		actions
 	}: {
 		id: string;
+		// Id of the control the label points at, omitted when the row has no control
+		controlId?: string;
 		label: string;
 		description?: string;
 		envVar?: string;
@@ -49,7 +52,7 @@
 
 	<div class="min-w-0">
 		<div class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-			<Label for={id} class="text-sm font-medium {dimmed ? 'text-muted-foreground' : ''}">
+			<Label for={controlId} class="text-sm font-medium {dimmed ? 'text-muted-foreground' : ''}">
 				{label}
 			</Label>
 			{#if required}

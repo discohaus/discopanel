@@ -505,7 +505,8 @@
 				<div>
 					<p class="font-medium text-foreground">Support bundle uploaded</p>
 					<p class="mt-1 text-xs leading-relaxed text-muted-foreground">
-						Quote the reference ID when you ask for help on Discord, open a GitHub issue, or contact support directly.
+						Quote the reference ID when you ask for help on Discord, open a GitHub issue, or contact
+						support directly.
 						<a
 							href="https://discopanel.app"
 							target="_blank"
