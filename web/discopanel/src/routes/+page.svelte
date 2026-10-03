@@ -226,24 +226,26 @@
 		</div>
 	{:else if servers.length === 0}
 		<div class="rounded-xl border bg-card">
-    <EmptyState
-        icon={ServerIcon}
-        title="Welcome to DiscoPanel"
-        description="Spin up your first Minecraft server, or browse modpacks to find something fun."
-        class="py-20"
-    >
-        <div class="flex flex-col sm:flex-row items-center justify-center gap-3 w-full max-w-xs sm:max-w-none">
-            <Button href={resolve('/servers/new')} class="glow-primary w-full sm:w-auto">
-                <Plus class="size-4" />
-                Create your first server
-            </Button>
-            <Button href={resolve('/modpacks')} variant="outline" class="w-full sm:w-auto">
-                <Package class="size-4" />
-                Browse modpacks
-            </Button>
-        </div>
-    </EmptyState>
-</div>
+			<EmptyState
+				icon={ServerIcon}
+				title="Welcome to DiscoPanel"
+				description="Spin up your first Minecraft server, or browse modpacks to find something fun."
+				class="py-20"
+			>
+				<div
+					class="flex w-full max-w-xs flex-col items-center justify-center gap-3 sm:max-w-none sm:flex-row"
+				>
+					<Button href={resolve('/servers/new')} class="glow-primary w-full sm:w-auto">
+						<Plus class="size-4" />
+						Create your first server
+					</Button>
+					<Button href={resolve('/modpacks')} variant="outline" class="w-full sm:w-auto">
+						<Package class="size-4" />
+						Browse modpacks
+					</Button>
+				</div>
+			</EmptyState>
+		</div>
 	{:else}
 		<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
 			<StatTile

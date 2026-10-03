@@ -13,7 +13,6 @@
 	import { rpcClient, rpcErrorMessage } from '$lib/api/rpc-client';
 	import { notify } from '$lib/stores/activity.svelte';
 	import {
-		ArrowLeft,
 		Camera,
 		Loader2,
 		Package,
@@ -473,15 +472,13 @@
 	</Button>
 {/snippet}
 
-<div class="mx-auto w-full max-w-6xl space-y-5 p-4 sm:p-6 2xl:max-w-7xl">
-	<div class="flex items-center gap-3">
-		<Button variant="ghost" size="icon" href={resolve('/servers')} class="size-8 shrink-0">
-			<ArrowLeft class="size-4" />
-			<span class="sr-only">Back to servers</span>
-		</Button>
-		<PageHeader title="Create a server" description="Set up a new Minecraft server" />
+<div class="border-b bg-card/40">
+	<div class="mx-auto w-full max-w-6xl px-4 pt-5 sm:px-6 2xl:max-w-7xl">
+		<PageHeader title="Create a server" description="Set up a new Minecraft server" class="pb-4" />
 	</div>
+</div>
 
+<div class="mx-auto w-full max-w-6xl space-y-5 p-4 sm:p-6 2xl:max-w-7xl">
 	<div class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_19rem]">
 		<form id="create-server-form" onsubmit={handleSubmit} class="min-w-0 space-y-4">
 			<SectionCard

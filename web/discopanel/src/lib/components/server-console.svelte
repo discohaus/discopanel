@@ -640,7 +640,7 @@
 
 		<!-- Own row on phones, inline tab strip again from sm upwards -->
 		<nav
-			class="flex shrink-0 items-center gap-1 border-t border-terminal-foreground/8 px-3 py-1 sm:order-none sm:items-end sm:border-t-0 sm:px-0 sm:pt-1.5"
+			class="flex shrink-0 items-center gap-1 border-t border-terminal-foreground/8 px-3 py-1 sm:order-0 sm:items-end sm:border-t-0 sm:px-0 sm:pt-1.5"
 			role="tablist"
 			aria-label="Console channels"
 		>
@@ -683,7 +683,7 @@
 						{#each visibleActions as a (a.id)}
 							{@const details = actionDetails(a)}
 							<button
-								class="action-line flex w-full items-baseline gap-2 text-left break-words whitespace-pre-wrap {actionHighlighted(
+								class="action-line flex w-full items-baseline gap-2 text-left wrap-break-word whitespace-pre-wrap {actionHighlighted(
 									a
 								)
 									? 'action-highlight'

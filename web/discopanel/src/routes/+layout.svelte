@@ -106,19 +106,37 @@
 		return servers.find((s) => s.id === match[1])?.name ?? null;
 	});
 
-	let crumb = $derived.by(() => {
-		const path = page.url.pathname;
-		if (path === '/') return { section: 'Home', detail: null };
-		if (path === '/servers') return { section: 'Servers', detail: null };
-		if (path === '/servers/new') return { section: 'Servers', detail: 'New server' };
-		if (path.startsWith('/servers/')) return { section: 'Servers', detail: currentServerName };
-		if (path.startsWith('/modpacks')) return { section: 'Modpacks', detail: null };
-		if (path.startsWith('/modules')) return { section: 'Modules', detail: null };
-		if (path.startsWith('/settings')) return { section: 'Settings', detail: null };
-		if (path.startsWith('/profile')) return { section: 'Profile', detail: null };
-		if (path.startsWith('/docs/api')) return { section: 'API reference', detail: null };
-		return { section: 'DiscoPanel', detail: null };
-	});
+	type SectionUrl =
+		| '/'
+		| '/servers'
+		| '/modpacks'
+		| '/modules'
+		| '/settings'
+		| '/profile'
+		| '/docs/api';
+
+	let crumb: { section: string; detail: string | null; sectionUrl: SectionUrl } = $derived.by(
+		() => {
+			const path = page.url.pathname;
+			if (path === '/') return { section: 'Home', detail: null, sectionUrl: '/' };
+			if (path === '/servers') return { section: 'Servers', detail: null, sectionUrl: '/servers' };
+			if (path === '/servers/new')
+				return { section: 'Servers', detail: 'New server', sectionUrl: '/servers' };
+			if (path.startsWith('/servers/'))
+				return { section: 'Servers', detail: currentServerName, sectionUrl: '/servers' };
+			if (path.startsWith('/modpacks'))
+				return { section: 'Modpacks', detail: null, sectionUrl: '/modpacks' };
+			if (path.startsWith('/modules'))
+				return { section: 'Modules', detail: null, sectionUrl: '/modules' };
+			if (path.startsWith('/settings'))
+				return { section: 'Settings', detail: null, sectionUrl: '/settings' };
+			if (path.startsWith('/profile'))
+				return { section: 'Profile', detail: null, sectionUrl: '/profile' };
+			if (path.startsWith('/docs/api'))
+				return { section: 'API reference', detail: null, sectionUrl: '/docs/api' };
+			return { section: 'DiscoPanel', detail: null, sectionUrl: '/' };
+		}
+	);
 
 	function getUserInitials(u: User) {
 		if (!u) return '';
@@ -266,9 +284,7 @@
 {:else}
 	<CommandPalette bind:open={paletteOpen} />
 	<SidebarProvider>
-		<Sidebar
-			collapsible="icon"
-		>
+		<Sidebar collapsible="icon">
 			<SidebarHeader>
 				<a
 					href={resolvePath('/')}
@@ -480,7 +496,7 @@
 						role="status"
 					>
 						<Info class="mt-px size-3.5 shrink-0 text-primary" />
-						<span class="min-w-0 break-words">{versionStatus.hubNotice}</span>
+						<span class="min-w-0 wrap-break-word">{versionStatus.hubNotice}</span>
 					</div>
 					<Tooltip.Root>
 						<Tooltip.Trigger
@@ -573,9 +589,16 @@
 					<div
 						class="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-sm sm:flex-initial"
 					>
-						<span class={crumb.detail ? 'truncate text-muted-foreground' : 'truncate font-medium'}>
-							{crumb.section}
-						</span>
+						<a
+							class="flex min-w-0 items-center transition-opacity hover:opacity-80"
+							href={resolvePath(crumb.sectionUrl)}
+						>
+							<span
+								class={crumb.detail ? 'truncate text-muted-foreground' : 'truncate font-medium'}
+							>
+								{crumb.section}
+							</span>
+						</a>
 						{#if crumb.detail}
 							<ChevronRight class="size-3.5 shrink-0 text-muted-foreground/60" />
 							<span class="truncate font-medium">{crumb.detail}</span>

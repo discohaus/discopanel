@@ -49,10 +49,10 @@
 </script>
 
 {#snippet slivers(count: number)}
-	<span class="flex min-w-0 flex-1 flex-col justify-center gap-[3px]">
+	<span class="flex min-w-0 flex-1 flex-col justify-center gap-0.75">
 		{#each Array.from({ length: Math.min(depth, count) }) as _, layer (layer)}
 			<span
-				class="h-[2px] rounded-full transition-colors {layer === 0
+				class="h-0.5 rounded-full transition-colors {layer === 0
 					? 'bg-border group-hover:bg-primary/50'
 					: 'bg-border/50 group-hover:bg-primary/30'}"
 			></span>

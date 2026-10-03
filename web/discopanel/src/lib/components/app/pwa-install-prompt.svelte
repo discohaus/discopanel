@@ -90,7 +90,7 @@
 {#if show}
 	<div
 		transition:fly={{ y: 20, duration: 300 }}
-		class="fixed bottom-[calc(2.25rem+env(safe-area-inset-bottom,0px))] inset-x-3 z-50 mx-auto max-w-md select-none rounded-xl border border-border/80 bg-card/95 p-3.5 shadow-2xl backdrop-blur-md"
+		class="fixed inset-x-3 bottom-[calc(2.25rem+env(safe-area-inset-bottom,0px))] z-50 mx-auto max-w-md rounded-xl border border-border/80 bg-card/95 p-3.5 shadow-2xl backdrop-blur-md select-none"
 		role="dialog"
 		aria-label="Install DiscoPanel"
 	>
@@ -109,18 +109,21 @@
 						<X class="size-4" />
 					</button>
 				</div>
-				<p class="text-xs text-muted-foreground leading-relaxed">
-					Tap the share button in Safari <Share class="inline size-3.5 text-primary mx-0.5" /> and select <span class="font-medium text-foreground"><PlusSquare class="inline size-3.5 mx-0.5" /> Add to Home Screen</span>.
+				<p class="text-xs leading-relaxed text-muted-foreground">
+					Tap the share button in Safari <Share class="mx-0.5 inline size-3.5 text-primary" /> and select
+					<span class="font-medium text-foreground"
+						><PlusSquare class="mx-0.5 inline size-3.5" /> Add to Home Screen</span
+					>.
 				</p>
 				<div class="flex justify-end pt-1">
-					<Button size="sm" variant="outline" class="h-7 text-xs" onclick={dismiss}>
-						Got it
-					</Button>
+					<Button size="sm" variant="outline" class="h-7 text-xs" onclick={dismiss}>Got it</Button>
 				</div>
 			</div>
 		{:else}
 			<div class="flex items-center gap-3">
-				<div class="flex size-10 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10">
+				<div
+					class="flex size-10 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10"
+				>
 					<DiscoLogo class="size-6" />
 				</div>
 				<div class="min-w-0 flex-1">
@@ -133,7 +136,7 @@
 				</div>
 				<button
 					onclick={dismiss}
-					class="p-1 text-muted-foreground/60 hover:text-foreground transition-colors"
+					class="p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
 					aria-label="Dismiss"
 					title="Dismiss"
 				>
