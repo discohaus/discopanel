@@ -28,6 +28,7 @@ import (
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/events"
 	"github.com/discohaus/discopanel/pkg/hub"
+	"github.com/discohaus/discopanel/pkg/indexers"
 	"github.com/discohaus/discopanel/pkg/logger"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
@@ -46,6 +47,7 @@ func main() {
 	// Init logger
 	log := logger.NewWithConfig(&cfg.Logging)
 	defer log.Close()
+	indexers.SetLogger(log)
 
 	// Heap ceiling
 	limit, err := memlimit.Resolve(cfg.Server.MemoryLimit, memlimit.DefaultPaths())

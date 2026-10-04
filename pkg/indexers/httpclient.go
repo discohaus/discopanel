@@ -14,7 +14,12 @@ import (
 	"time"
 
 	"github.com/discohaus/discopanel/pkg/hub"
+	"github.com/discohaus/discopanel/pkg/logger"
 )
+
+var clientLog = logger.New()
+
+func SetLogger(l *logger.Logger) { clientLog = l }
 
 // Wraps http.Client with common indexer request logic
 type HTTPClient struct {
@@ -115,6 +120,10 @@ func (h *HTTPClient) fetch(ctx context.Context, method, url string, payload []by
 		if err == nil {
 			return data, nil
 		}
+		if origin := indexOriginOf(err); origin != "" {
+			clientLog.Warn("%s: index could not serve %s (%v), requesting %s directly", h.indexer, url, err, origin)
+			return h.fetch(ctx, method, origin, payload, maxBytes)
+		}
 		lastErr = err
 		if !retry || ctx.Err() != nil {
 			return nil, lastErr
@@ -189,8 +198,12 @@ func (h *HTTPClient) once(ctx context.Context, method, url string, payload []byt
 		return data, false, nil
 	}
 
-	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	apiErr := NewAPIError(h.indexer, resp.StatusCode, url, string(bodyBytes))
+	if ie := hub.ParseIndexError(resp.Request.URL, bodyBytes); ie != nil {
+		apiErr.Origin = ie.Origin
+		return nil, false, apiErr
+	}
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
 		d := retryAfter(resp.Header)
@@ -203,6 +216,14 @@ func (h *HTTPClient) once(ctx context.Context, method, url string, payload []byt
 		return nil, true, apiErr
 	}
 	return nil, false, apiErr
+}
+
+func indexOriginOf(err error) string {
+	var ie *IndexerError
+	if errors.As(err, &ie) {
+		return ie.Origin
+	}
+	return ""
 }
 
 // Unmarshals a response body into dest with error classification

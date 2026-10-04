@@ -47,6 +47,7 @@ type IndexerError struct {
 	URL        string
 	Body       string
 	Err        error
+	Origin     string
 }
 
 func (e *IndexerError) Error() string {

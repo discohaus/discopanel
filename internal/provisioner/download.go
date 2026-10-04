@@ -166,6 +166,13 @@ func (p *Provisioner) downloadOnce(ctx context.Context, rawURL, dest string, sum
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// redirect to original url on index error, ideally this doesnt happen often
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if ie := hub.ParseIndexError(resp.Request.URL, body); ie != nil {
+			p.log.Warn("provisioner: index could not serve %s (%s: %s), downloading %s directly", rawURL, ie.Code, ie.Message, ie.Origin)
+			resp.Body.Close()
+			return p.downloadOnce(ctx, ie.Origin, dest, sum, headers, report)
+		}
 		return &httpStatusError{url: rawURL, status: resp.StatusCode}
 	}
 
