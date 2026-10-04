@@ -42,6 +42,7 @@ export default defineConfig({
 						{ label: 'Proxy & Domains', slug: 'guides/proxy' },
 						{ label: 'The Lobby', slug: 'guides/lobby' },
 						{ label: 'HTTPS & Certificates', slug: 'guides/tls' },
+						{ label: 'Server Console', slug: 'guides/console' },
 						{ label: 'Server Files', slug: 'guides/server-files' },
 						{ label: 'Server Backups', slug: 'guides/backups' },
 						{ label: 'Tasks & Automation', slug: 'guides/tasks' },

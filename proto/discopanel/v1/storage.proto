@@ -531,6 +531,12 @@ enum TriggeredEventType {
     label: "Player Chat"
     desc: "When a player chats ({{.player}}, message as {{.detail}})"
   }];
+
+  // The parent server gets deleted
+  TRIGGERED_EVENT_TYPE_SERVER_DELETE = 10 [(discopanel.options.v1.value) = {
+    label: "Server Delete"
+    desc: "When the server gets deleted"
+  }];
 }
 
 // Template origin kind

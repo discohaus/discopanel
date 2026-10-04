@@ -121,6 +121,15 @@ const shots = {
   async 'server-console'(page, srv) {
     await goTab(page, srv, 'Console');
   },
+  async 'command-completion'(page, srv) {
+    await goTab(page, srv, 'Console');
+    await sleep(500);
+    const input = await page.$('input[placeholder*="Type a command"]');
+    if (input) {
+      await input.type('op ');
+      await sleep(1500);
+    }
+  },
   async 'server-files'(page, srv) {
     await goTab(page, srv, 'Files');
   },
