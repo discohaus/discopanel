@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,32 +63,56 @@ func (s *Sender) SetJournal(rec *metrics.Recorder, streamer *logger.LogStreamer)
 	s.streamer = streamer
 }
 
-type rconResult struct {
-	output string
-	err    error
-}
-
+// Dials, authenticates, and sends one RCON command bounded by ctx
 func SendCommand(ctx context.Context, RCONHost string, RCONPort int, RCONPassword string, command string) (string, error) {
-	// initialize Client
-	rconClient := rcon.NewClient(fmt.Sprintf("rcon://%s:%d", RCONHost, RCONPort), RCONPassword, rcon.WithOptions(rcon.CharSetLatin1))
-
-	// run Command in a goroutine to allow for timeout handling
-	resultCh := make(chan rconResult, 1)
+	var dialer net.Dialer
+	sock, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(RCONHost, strconv.Itoa(RCONPort)))
+	if err != nil {
+		return "", fmt.Errorf("failed to establish connection: %w", err)
+	}
+	// Reads and writes stop at the context deadline
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = sock.SetDeadline(deadline)
+	}
+	// Cancellation closes the socket so the reader goroutine ends too
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
-		output, sendErr := rconClient.Send(command)
-		resultCh <- rconResult{output: output, err: sendErr}
+		select {
+		case <-ctx.Done():
+			_ = sock.Close()
+		case <-done:
+		}
 	}()
 
-	// wait for either the command result or a timeout
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	case result := <-resultCh:
-		if result.err != nil {
-			return "", result.err
-		}
-		return result.output, nil
+	// Failed logins close the socket inside NewConn
+	conn, err := rcon.NewConn(sock, RCONPassword, rcon.CharSetLatin1)
+	if err != nil {
+		return "", ctxOrErr(ctx, err)
 	}
+	defer conn.Close()
+
+	output, err := conn.SendCommand(command)
+	if err != nil {
+		return "", ctxOrErr(ctx, err)
+	}
+	// A dead socket ends the reader silently, treat as failure
+	if conn.IsClosed() {
+		return "", ctxOrErr(ctx, errors.New("rcon connection closed before the response completed"))
+	}
+	return output, nil
+}
+
+// Prefers the context's own error once it has fired
+func ctxOrErr(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	// Socket deadlines fire a hair before the context timer does
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return err
 }
 
 // Loads a server and refuses anything not running

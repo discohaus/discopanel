@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/discohaus/discopanel/pkg/hub"
 	"golang.org/x/time/rate"
 )
 
@@ -289,5 +290,73 @@ func TestRetryAfterParsing(t *testing.T) {
 	h.Set("Retry-After", time.Now().Add(30*time.Second).UTC().Format(http.TimeFormat))
 	if d := retryAfter(h); d < 25*time.Second || d > 31*time.Second {
 		t.Fatalf("date form want about 30s, got %v", d)
+	}
+}
+
+func configureIndex(t *testing.T, indexURL string) {
+	t.Helper()
+	settings := hub.Settings{SupportBase: hub.DefaultSupportBase, IndexBase: indexURL, IndexEnabled: true, InstallID: "0123456789abcdef0123456789abcdef"}
+	if err := hub.Configure(settings); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	t.Cleanup(func() {
+		hub.Configure(hub.Settings{SupportBase: hub.DefaultSupportBase, IndexBase: hub.DefaultIndexBase})
+	})
+}
+
+func TestRetriesAtTheOriginTheIndexNames(t *testing.T) {
+	fastRetries(t)
+	var originCalls atomic.Int32
+	var seen http.Header
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		seen = r.Header.Clone()
+		if r.URL.Path != "/v2/search" || r.URL.RawQuery != "query=sodium" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer origin.Close()
+	var indexCalls atomic.Int32
+	index := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		indexCalls.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprintf(w, `{"code":"unavailable","message":"modrinth answered 502","origin":"%s/v2/search?query=sodium"}`, origin.URL)
+	}))
+	defer index.Close()
+	configureIndex(t, index.URL)
+
+	c := testClient(t, map[string]string{"X-Api-Key": "k"})
+	var dest struct {
+		OK bool `json:"ok"`
+	}
+	if err := c.DoJSON(t.Context(), index.URL+"/modrinth/v2/search?query=sodium", &dest); err != nil {
+		t.Fatalf("DoJSON: %v", err)
+	}
+	if !dest.OK || indexCalls.Load() != 1 || originCalls.Load() != 1 {
+		t.Fatalf("ok=%v index calls=%d origin calls=%d", dest.OK, indexCalls.Load(), originCalls.Load())
+	}
+	if seen.Get("X-Api-Key") != "k" || seen.Get("User-Agent") != "discopanel-test" || seen.Get(hub.InstallIDHeader) != "" {
+		t.Fatalf("origin request headers = %v", seen)
+	}
+}
+
+func TestIndexErrorWithoutOriginFailsAsBefore(t *testing.T) {
+	fastRetries(t)
+	var calls atomic.Int32
+	index := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"code":"permission_denied","message":"nope"}`)
+	}))
+	defer index.Close()
+	configureIndex(t, index.URL)
+
+	var dest struct{}
+	err := testClient(t, nil).DoJSON(t.Context(), index.URL+"/modrinth/v2/search", &dest)
+	var ie *IndexerError
+	if !errors.As(err, &ie) || ie.Kind != ErrAuth || ie.Origin != "" || calls.Load() != 1 {
+		t.Fatalf("err = %v, calls = %d", err, calls.Load())
 	}
 }

@@ -147,6 +147,9 @@
 					goto(resolvePath('/login'));
 					return;
 				}
+			} else if (!authStatus.open) {
+				goto(resolvePath('/login'));
+				return;
 			}
 		} catch (err) {
 			loading = false;

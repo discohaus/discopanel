@@ -18,6 +18,7 @@ import (
 	storage "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/docker"
 	"github.com/discohaus/discopanel/internal/lifecycle"
+	"github.com/discohaus/discopanel/internal/memlimit"
 	"github.com/discohaus/discopanel/internal/metrics"
 	"github.com/discohaus/discopanel/internal/module"
 	"github.com/discohaus/discopanel/internal/provisioner"
@@ -27,6 +28,7 @@ import (
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/events"
 	"github.com/discohaus/discopanel/pkg/hub"
+	"github.com/discohaus/discopanel/pkg/indexers"
 	"github.com/discohaus/discopanel/pkg/logger"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
@@ -45,6 +47,22 @@ func main() {
 	// Init logger
 	log := logger.NewWithConfig(&cfg.Logging)
 	defer log.Close()
+	indexers.SetLogger(log)
+
+	// Heap ceiling
+	limit, err := memlimit.Resolve(cfg.Server.MemoryLimit, memlimit.DefaultPaths())
+	if err != nil {
+		log.Fatal("Invalid server.memory_limit: %v", err)
+	}
+	memlimit.Apply(limit)
+	switch {
+	case limit.Source == memlimit.SourceNone:
+		log.Info("Go memory limit not set, no cgroup memory limit found")
+	case limit.Bytes == 0:
+		log.Info("Go memory limit disabled by %s", limit.Source)
+	default:
+		log.Info("Go memory limit %d MiB from %s", limit.Bytes>>20, limit.Source)
+	}
 
 	// Create required directories
 	dirs := []string{
@@ -95,6 +113,7 @@ func main() {
 		RuntimeImage: cfg.Docker.RuntimeImage,
 		DNS:          cfg.Docker.DNS,
 		Labels:       cfg.Docker.Labels,
+		LogDriver:    cfg.Docker.LogDriver,
 	})
 	if err != nil {
 		log.Fatal("Failed to initialize Docker client: %v", err)
@@ -425,6 +444,9 @@ func main() {
 	// Self checks run once the panel answers requests
 	rpcServer.Diagnostics().Start()
 	defer rpcServer.Diagnostics().Stop()
+
+	// Provider discovery retries end with the process
+	defer rpcServer.OIDC().Stop()
 
 	// Heartbeat loop parks while turned off, first beat a minute in
 	heartbeat := rpcServer.Telemetry()

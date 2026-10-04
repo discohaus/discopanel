@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -13,7 +14,6 @@ var indexRewrites = map[string]string{
 	"https://piston-meta.mojang.com":   "/mojang/meta",
 	"https://piston-data.mojang.com":   "/mojang/data",
 	"https://launcher.mojang.com":      "/mojang/launcher",
-	"https://api.mojang.com":           "/mojang-api",
 	"https://meta.fabricmc.net":        "/fabric",
 	"https://meta.quiltmc.org":         "/quilt",
 	"https://maven.quiltmc.org":        "/quilt-maven",
@@ -27,10 +27,15 @@ var indexRewrites = map[string]string{
 }
 
 func TestUpstreamTableMatchesIndexRewrites(t *testing.T) {
-	if len(Upstreams) != len(indexRewrites) {
-		t.Fatalf("table has %d upstreams, the index fronts %d", len(Upstreams), len(indexRewrites))
-	}
+	fronted := 0
 	for _, u := range Upstreams {
+		if u.Prefix == "" {
+			if _, ok := indexRewrites[u.Origin]; ok {
+				t.Errorf("%s is routed direct but the index fronts %s", u.Name, u.Origin)
+			}
+			continue
+		}
+		fronted++
 		prefix, ok := indexRewrites[u.Origin]
 		if !ok {
 			t.Errorf("%s origin %s is not fronted by the index", u.Name, u.Origin)
@@ -39,6 +44,9 @@ func TestUpstreamTableMatchesIndexRewrites(t *testing.T) {
 		if prefix != u.Prefix {
 			t.Errorf("%s prefix = %s, index uses %s", u.Name, u.Prefix, prefix)
 		}
+	}
+	if fronted != len(indexRewrites) {
+		t.Fatalf("table fronts %d upstreams through the index, the index fronts %d", fronted, len(indexRewrites))
 	}
 }
 
@@ -51,7 +59,7 @@ func TestBasesThroughTheIndex(t *testing.T) {
 		MojangMeta():     "https://index.example/mojang/meta",
 		MojangData():     "https://index.example/mojang/data",
 		MojangLauncher(): "https://index.example/mojang/launcher",
-		MojangAPI():      "https://index.example/mojang-api",
+		MojangAPI():      "https://api.mojang.com",
 		Fabric():         "https://index.example/fabric",
 		Quilt():          "https://index.example/quilt",
 		QuiltMaven():     "https://index.example/quilt-maven",
@@ -68,7 +76,7 @@ func TestBasesThroughTheIndex(t *testing.T) {
 			t.Errorf("base = %s, want %s", got, want)
 		}
 	}
-	if hosts := UpstreamHosts(); len(hosts) != 1 || hosts[0] != "index.example" {
+	if hosts := UpstreamHosts(); !slices.Equal(hosts, []string{"api.mojang.com", "index.example"}) {
 		t.Errorf("upstream hosts through the index = %v", hosts)
 	}
 }

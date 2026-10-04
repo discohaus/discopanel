@@ -16,6 +16,7 @@ const (
 	ErrNetwork                    // DNS failure, timeout, connection refused
 	ErrAPI                        // Other non-2xx status codes
 	ErrDecode                     // JSON decode failures
+	ErrTooLarge                   // Body over the caller's size cap
 )
 
 func (k ErrorKind) String() string {
@@ -32,6 +33,8 @@ func (k ErrorKind) String() string {
 		return "API error"
 	case ErrDecode:
 		return "decode error"
+	case ErrTooLarge:
+		return "response too large"
 	default:
 		return "unknown error"
 	}
@@ -44,6 +47,7 @@ type IndexerError struct {
 	URL        string
 	Body       string
 	Err        error
+	Origin     string
 }
 
 func (e *IndexerError) Error() string {
@@ -100,6 +104,16 @@ func NewNetworkError(indexer string, url string, err error) *IndexerError {
 		Indexer: indexer,
 		URL:     url,
 		Err:     wrapped,
+	}
+}
+
+// Builds the error for a body over the cap
+func NewTooLargeError(indexer string, url string, limit int64) *IndexerError {
+	return &IndexerError{
+		Kind:    ErrTooLarge,
+		Indexer: indexer,
+		URL:     url,
+		Err:     fmt.Errorf("body exceeds %d bytes", limit),
 	}
 }
 

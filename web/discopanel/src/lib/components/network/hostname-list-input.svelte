@@ -40,9 +40,7 @@
 
 	let matches = $derived.by(() => {
 		if (requireLabel && !suggestLabel) return [];
-		return suggestionsFor(suggestLabel, suggestionBase).filter(
-			(name) => !hostnames.includes(name)
-		);
+		return suggestionsFor(suggestLabel, suggestionBase).filter((name) => !hostnames.includes(name));
 	});
 
 	function normalize(raw: string): string {

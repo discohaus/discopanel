@@ -628,6 +628,7 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 		RestartAfterInit:      msg.RestartAfterInit,
 		CertPem:               certPem,
 		KeyPem:                keyPem,
+		LogDriver:             msg.LogDriver,
 	}
 
 	// Manager mints a scoped token at container create
@@ -802,6 +803,9 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 	}
 	if msg.RestartAfterInit != nil {
 		module.RestartAfterInit = *msg.RestartAfterInit
+	}
+	if msg.LogDriver != nil {
+		module.LogDriver = *msg.LogDriver
 	}
 
 	template, err := getModuleTemplate(ctx, s.store, module.TemplateId)

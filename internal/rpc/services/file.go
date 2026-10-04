@@ -30,7 +30,7 @@ import (
 var _ discopanelv1connect.FileServiceHandler = (*FileService)(nil)
 
 // Largest file served inline through GetFile
-const maxInlineFileBytes = 10 << 20
+const MaxInlineFileBytes = 10 << 20
 
 // Tracks an in-progress or completed extraction
 type extractionOp struct {
@@ -138,7 +138,7 @@ func (s *FileService) GetFile(ctx context.Context, req *connect.Request[v1.GetFi
 	}
 
 	// Inline reads stay bounded, downloads handle big files
-	if info.Size() > maxInlineFileBytes {
+	if info.Size() > MaxInlineFileBytes {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("file too large to open, download it instead"))
 	}
 
@@ -245,6 +245,11 @@ func (s *FileService) UpdateFile(ctx context.Context, req *connect.Request[v1.Up
 	fullPath, err := files.ResolveUnder(server.DataPath, msg.Path)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid path"))
+	}
+
+	// Inline saves share the inline open limit
+	if len(msg.Content) > MaxInlineFileBytes {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("file too large to save inline, upload it instead"))
 	}
 
 	// Create directories if needed
@@ -875,6 +880,10 @@ func (s *FileService) ListContainerFiles(ctx context.Context, req *connect.Reque
 	stdout, _, err := s.docker.Exec(ctx, containerID, []string{"ls", "-1Ap", "--", path})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("the container is not running or cannot list this path"))
+	}
+	// A capped listing would present a partial directory as whole
+	if strings.HasPrefix(stdout, docker.ExecTruncatedPrefix) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("this path holds too many entries to list, type the path instead"))
 	}
 
 	var lsFiles []*v1.FileInfo

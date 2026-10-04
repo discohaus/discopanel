@@ -23,6 +23,7 @@ import (
 	"github.com/discohaus/discopanel/pkg/events"
 	"github.com/discohaus/discopanel/pkg/logger"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/utils"
 )
 
 // Manages scheduled tasks for all servers
@@ -398,7 +399,7 @@ func (s *Scheduler) executeTask(task *v1.ScheduledTask, trigger v1.TaskTrigger, 
 	endTime := time.Now()
 	execution.EndedAt = timestamppb.New(endTime)
 	execution.Duration = endTime.Sub(execution.StartedAt.AsTime()).Milliseconds()
-	execution.Output = output
+	execution.Output = boundTaskOutput(output)
 
 	if execErr != nil {
 		if execCtx.Err() == context.DeadlineExceeded {
@@ -537,6 +538,23 @@ func (s *Scheduler) executeStopTask(ctx context.Context, server *v1.Server, _ *v
 		return "", err
 	}
 	return "server stopped successfully", nil
+}
+
+// Newest output bytes an execution record keeps
+const maxTaskOutputBytes = 64 << 10
+
+// Keeps the newest output so one run cannot bloat records
+func boundTaskOutput(output string) string {
+	tail, dropped := utils.TailString(output, maxTaskOutputBytes)
+	if dropped == 0 {
+		return output
+	}
+	// Resumes at a line boundary when one exists
+	if i := strings.IndexByte(tail, '\n'); i >= 0 && i+1 < len(tail) {
+		dropped += int64(i + 1)
+		tail = tail[i+1:]
+	}
+	return fmt.Sprintf("[output truncated, %d bytes dropped]\n%s", dropped, tail)
 }
 
 func (s *Scheduler) executeScriptTask(ctx context.Context, server *v1.Server, task *v1.ScheduledTask) (string, error) {

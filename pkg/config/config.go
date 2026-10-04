@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/docker/go-units"
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 )
@@ -113,6 +114,7 @@ type ServerConfig struct {
 	ReadHeaderTimeout int    `mapstructure:"read_header_timeout" json:"read_header_timeout"`
 	IdleTimeout       int    `mapstructure:"idle_timeout" json:"idle_timeout"`
 	UserAgent         string `mapstructure:"user_agent" json:"user_agent"`
+	MemoryLimit       string `mapstructure:"memory_limit" json:"memory_limit"` // Go heap ceiling, auto follows the cgroup, off disables
 }
 
 type DockerConfig struct {
@@ -124,6 +126,7 @@ type DockerConfig struct {
 	AgentURL     string            `mapstructure:"agent_url" json:"agent_url"`         // Panel URL for runtime containers, auto-detected if empty
 	DNS          string            `mapstructure:"dns" json:"dns"`
 	Labels       map[string]string `mapstructure:"labels" json:"labels"`
+	LogDriver    string            `mapstructure:"log_driver" json:"log_driver"`
 }
 
 type StorageConfig struct {
@@ -268,6 +271,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.read_header_timeout", 15)
 	v.SetDefault("server.idle_timeout", 60)
 	v.SetDefault("server.user_agent", "DiscoPanel/1.0 (github.com/discohaus/discopanel)")
+	v.SetDefault("server.memory_limit", MemoryLimitAuto)
 
 	// Database defaults
 	v.SetDefault("database.path", "./data/discopanel.db")
@@ -285,6 +289,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("docker.agent_url", "")
 	v.SetDefault("docker.dns", "")
 	v.SetDefault("docker.labels", map[string]string{})
+	v.SetDefault("docker.log_driver", "local")
 
 	// Storage defaults
 	dataDir, err := filepath.Abs("./data")
@@ -380,6 +385,15 @@ func validateConfig(cfg *Config) error {
 		return fmt.Errorf("invalid temp directory: %w", err)
 	}
 
+	// Heap ceiling must parse before the runtime sees it
+	if _, _, err := ParseMemoryLimit(cfg.Server.MemoryLimit); err != nil {
+		return err
+	}
+	cfg.Server.MemoryLimit = strings.ToLower(strings.TrimSpace(cfg.Server.MemoryLimit))
+	if cfg.Server.MemoryLimit == "" {
+		cfg.Server.MemoryLimit = MemoryLimitAuto
+	}
+
 	// Validate port ranges
 	if cfg.Module.PortRangeMin >= cfg.Module.PortRangeMax {
 		return fmt.Errorf("module port range min must be less than max")
@@ -408,6 +422,29 @@ func validateConfig(cfg *Config) error {
 	}
 
 	return nil
+}
+
+// Modes server.memory_limit resolves to
+const (
+	MemoryLimitAuto  = "auto"
+	MemoryLimitOff   = "off"
+	MemoryLimitFixed = "fixed"
+)
+
+// Parses server.memory_limit, bytes only set for fixed sizes
+func ParseMemoryLimit(raw string) (string, int64, error) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	switch value {
+	case "", MemoryLimitAuto:
+		return MemoryLimitAuto, 0, nil
+	case MemoryLimitOff:
+		return MemoryLimitOff, 0, nil
+	}
+	size, err := units.RAMInBytes(value)
+	if err != nil || size <= 0 {
+		return "", 0, fmt.Errorf("server.memory_limit must be auto, off, or a size like 2GiB, got %q", raw)
+	}
+	return MemoryLimitFixed, size, nil
 }
 
 // Trims an origin, empty takes the default, a bare host takes https

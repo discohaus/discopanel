@@ -20,7 +20,7 @@ var Upstreams = []Upstream{
 	{Name: "mojang-meta", Origin: "https://piston-meta.mojang.com", Prefix: "/mojang/meta"},
 	{Name: "mojang-data", Origin: "https://piston-data.mojang.com", Prefix: "/mojang/data"},
 	{Name: "mojang-launcher", Origin: "https://launcher.mojang.com", Prefix: "/mojang/launcher"},
-	{Name: "mojang-api", Origin: "https://api.mojang.com", Prefix: "/mojang-api"},
+	{Name: "mojang-api", Origin: "https://api.mojang.com"},
 	{Name: "fabric", Origin: "https://meta.fabricmc.net", Prefix: "/fabric"},
 	{Name: "quilt", Origin: "https://meta.quiltmc.org", Prefix: "/quilt"},
 	{Name: "quilt-maven", Origin: "https://maven.quiltmc.org", Prefix: "/quilt-maven"},
@@ -43,11 +43,11 @@ func upstream(name string) Upstream {
 	panic("hub: unknown upstream " + name)
 }
 
-// Base url for a named upstream: the index prefix when enabled, its origin otherwise
+// Base url for a named upstream, the index prefix when enabled and fronted, its origin otherwise
 func Base(name string) string {
 	u := upstream(name)
 	st := current.Load()
-	if !st.indexOn {
+	if !st.indexOn || u.Prefix == "" {
 		return u.Origin
 	}
 	return st.index.String() + u.Prefix
@@ -72,14 +72,17 @@ func NeoForge() string       { return Base("neoforge") }
 func FTB() string            { return Base("ftb") }
 
 // Hosts the panel contacts for upstream data, sorted and distinct
-// The index host alone when enabled, every origin otherwise
+// The index host plus the origins it does not front when enabled, every origin otherwise
 func UpstreamHosts() []string {
 	st := current.Load()
+	hosts := make([]string, 0, len(Upstreams)+1)
 	if st.indexOn {
-		return []string{st.index.Host}
+		hosts = append(hosts, st.index.Host)
 	}
-	hosts := make([]string, 0, len(Upstreams))
 	for _, u := range Upstreams {
+		if st.indexOn && u.Prefix != "" {
+			continue
+		}
 		parsed, err := url.Parse(u.Origin)
 		if err != nil {
 			panic("hub: bad upstream origin " + u.Origin)

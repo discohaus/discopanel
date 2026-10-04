@@ -29,9 +29,21 @@ type LogStream struct {
 	mu          sync.RWMutex
 }
 
+// Container api the follow needs, the docker client satisfies it
+type logSource interface {
+	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
+	ContainerLogs(ctx context.Context, containerID string, options container.LogsOptions) (io.ReadCloser, error)
+}
+
+// Longest console line kept whole, the rest is dropped
+const maxLogLineBytes = 1 << 20
+
+// Read buffer for the follow, lines grow only when long
+const logReadBuffer = 64 << 10
+
 // LogStreamer manages log buffers and container follows for all keys
 type LogStreamer struct {
-	docker      *client.Client
+	docker      logSource
 	streams     map[string]*LogStream // key -> stream
 	mu          sync.RWMutex
 	log         *Logger
@@ -42,11 +54,16 @@ type LogStreamer struct {
 
 // NewLogStreamer creates a new log streamer
 func NewLogStreamer(dockerClient *client.Client, log *Logger, maxEntriesPerStream int) *LogStreamer {
+	return newLogStreamer(dockerClient, log, maxEntriesPerStream)
+}
+
+// Builds a streamer over any log source
+func newLogStreamer(source logSource, log *Logger, maxEntriesPerStream int) *LogStreamer {
 	if maxEntriesPerStream <= 0 {
 		maxEntriesPerStream = 10000
 	}
 	return &LogStreamer{
-		docker:      dockerClient,
+		docker:      source,
 		streams:     make(map[string]*LogStream),
 		log:         log,
 		maxEntries:  maxEntriesPerStream,
@@ -150,73 +167,109 @@ func (ls *LogStreamer) streamLogs(ctx context.Context, stream *LogStream, contai
 	}
 	defer reader.Close()
 
-	// Without TTY docker multiplexes the stream
-	var logReader io.Reader
+	// TTY streams arrive raw, without TTY docker multiplexes them
+	var logReader io.Reader = reader
 	if !inspect.Config.Tty {
 		pr, pw := io.Pipe()
+		// Closing the read side unblocks a demux stuck in Write
+		defer pr.Close()
 		go func() {
 			defer pw.Close()
 			_, err := stdcopy.StdCopy(pw, pw, reader)
-			if err != nil && err != io.EOF {
+			if err != nil && err != io.EOF && err != io.ErrClosedPipe {
 				ls.log.Error("Error demultiplexing logs for container %s: %v", containerID, err)
 			}
 		}()
 		logReader = pr
-	} else {
-		// TTY streams arrive raw without headers
-		logReader = reader
 	}
 
-	scanner := bufio.NewScanner(logReader)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB buffer for long lines
-
-	for scanner.Scan() {
+	lines := bufio.NewReaderSize(logReader, logReadBuffer)
+	for {
+		raw, dropped, err := readLogLine(lines)
+		if len(raw) == 0 && err != nil {
+			break
+		}
 		select {
 		case <-ctx.Done():
 			return
 		default:
-			line := scanner.Text()
-			// Split on \r carriage return and take last chunk
-			if strings.Contains(line, "\r") {
-				parts := strings.Split(line, "\r")
-				line = parts[len(parts)-1]
-			}
-
-			// Filter out RCON spam
-			if ls.shouldFilterLine(line) {
-				continue
-			}
-
-			if line == "" {
-				continue
-			}
-
-			level := detectLevel(line)
-			entry := &v1.LogEntry{
-				Timestamp: timestamppb.New(time.Now()),
-				Message:   line,
-				Level:     level,
-				Source:    "stdout",
-				IsCommand: false,
-				IsError:   level == "error" || level == "fatal",
-			}
-
-			stream.mu.Lock()
-			if stream.gen != gen {
-				// A newer follow replaced this one, stop writing
-				stream.mu.Unlock()
-				return
-			}
-			stream.appendLocked(entry)
-			stream.mu.Unlock()
-
-			ls.broadcast(stream.key, entry)
+		}
+		line := string(raw)
+		// Split on \r carriage return and take last chunk
+		if strings.Contains(line, "\r") {
+			parts := strings.Split(line, "\r")
+			line = parts[len(parts)-1]
+		}
+		if dropped > 0 {
+			line += fmt.Sprintf(" [line truncated, %d more bytes]", dropped)
+		}
+		if ls.deliverLine(stream, gen, line) {
+			return
+		}
+		if err != nil {
+			break
 		}
 	}
+}
 
-	if err := scanner.Err(); err != nil && err != io.EOF {
-		ls.log.Error("Error reading logs for container %s: %v", containerID, err)
+// Reads one line up to the cap, reports dropped bytes
+func readLogLine(r *bufio.Reader) ([]byte, int64, error) {
+	var line []byte
+	var dropped int64
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if room := maxLogLineBytes - len(line); len(chunk) <= room {
+			line = append(line, chunk...)
+		} else {
+			if room > 0 {
+				line = append(line, chunk[:room]...)
+			}
+			dropped += int64(len(chunk) - max(room, 0))
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		// The newline is not content on either side
+		if n := len(line); n > 0 && line[n-1] == '\n' {
+			line = line[:n-1]
+		} else if err == nil && dropped > 0 {
+			dropped--
+		}
+		return line, dropped, err
 	}
+}
+
+// Appends one line, true when the follow was replaced
+func (ls *LogStreamer) deliverLine(stream *LogStream, gen int, line string) bool {
+	// Filter out RCON spam
+	if ls.shouldFilterLine(line) {
+		return false
+	}
+	if line == "" {
+		return false
+	}
+
+	level := detectLevel(line)
+	entry := &v1.LogEntry{
+		Timestamp: timestamppb.New(time.Now()),
+		Message:   line,
+		Level:     level,
+		Source:    "stdout",
+		IsCommand: false,
+		IsError:   level == "error" || level == "fatal",
+	}
+
+	stream.mu.Lock()
+	if stream.gen != gen {
+		// A newer follow replaced this one, stop writing
+		stream.mu.Unlock()
+		return true
+	}
+	stream.appendLocked(entry)
+	stream.mu.Unlock()
+
+	ls.broadcast(stream.key, entry)
+	return false
 }
 
 // Appends an entry and trims, callers hold mu

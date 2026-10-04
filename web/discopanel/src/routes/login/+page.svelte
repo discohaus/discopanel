@@ -4,7 +4,7 @@
 	import { resolve } from '$app/paths';
 	import { create } from '@bufbuild/protobuf';
 	import { authStore } from '$lib/stores/auth';
-	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
+	import { rpcClient, rpcErrorMessage, silentCallOptions } from '$lib/api/rpc-client';
 	import { ValidateInviteRequestSchema } from '$lib/proto/discopanel/v1/auth_pb';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
@@ -25,6 +25,7 @@
 	let error = $state('');
 	let authStatus = $state({
 		enabled: false,
+		open: false,
 		firstUserSetup: false,
 		allowRegistration: false
 	});
@@ -44,6 +45,15 @@
 	let inviteRequiresPin = $state(false);
 	let inviteDescription = $state('');
 	let invitePin = $state('');
+
+	// OIDC Callback
+	const ssoErrorMessages: Record<string, string> = {
+		provider_unavailable: 'The identity provider could not be reached. Try again in a moment.',
+		access_denied:
+			'Your account claims are too restrictive and missing a required claim for discopanel',
+		no_mapped_roles: 'None of your groups map to a DiscoPanel role.',
+		membership_check_failed: 'The membership check against the identity provider failed.'
+	};
 
 	onMount(() => {
 		// Token in URL fragment means OIDC callback landed
@@ -74,6 +84,12 @@
 
 		const invite = urlParams.get('invite');
 
+		const ssoError = urlParams.get('error');
+		if (ssoError) {
+			error = ssoErrorMessages[ssoError] ?? `Sign in with SSO failed (${ssoError}).`;
+			window.history.replaceState({}, '', resolve('/login'));
+		}
+
 		if ($authStore.isAuthenticated) {
 			goto(resolve('/'));
 			return;
@@ -90,7 +106,12 @@
 			localAuthEnabled = $authStore.localAuthEnabled;
 
 			if (!status.enabled && !status.firstUserSetup) {
-				goto(resolve('/'));
+				if (status.open) {
+					goto(resolve('/'));
+					return;
+				}
+				error =
+					'The server reports no sign-in method yet still requires one. Check the DiscoPanel log for auth errors.';
 				return;
 			}
 
@@ -119,7 +140,7 @@
 			}
 		} catch (err) {
 			console.error('Failed to load auth status:', err);
-			error = 'Could not reach the server. Refresh to try again.';
+			error = `Could not reach the server (${rpcErrorMessage(err, 'unknown error')}). Refresh to try again.`;
 		}
 	}
 
@@ -183,7 +204,7 @@
 				window.location.href = response.loginUrl;
 			}
 		} catch (err: unknown) {
-			error = err instanceof Error ? err.message : 'Failed to initiate SSO login';
+			error = rpcErrorMessage(err, 'Failed to initiate SSO login');
 		}
 	}
 

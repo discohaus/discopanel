@@ -272,6 +272,10 @@ func (s *AuthService) GetOIDCLoginURL(ctx context.Context, req *connect.Request[
 	if s.oidcHandler == nil || !s.oidcHandler.IsEnabled() {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("OIDC is not enabled"))
 	}
+	if err := s.oidcHandler.EnsureProvider(ctx); err != nil {
+		s.log.Error("OIDC: identity provider unavailable: %v", err)
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("identity provider is unreachable: %w", err))
+	}
 
 	return connect.NewResponse(&v1.GetOIDCLoginURLResponse{
 		LoginUrl: "/api/v1/auth/oidc/login",

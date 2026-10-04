@@ -41,7 +41,18 @@ type ModService struct {
 
 	cfNamesMu sync.Mutex
 	cfNames   map[string]string
+	cfPrints  map[string]uint32
 	cfSweeps  map[string]bool
+	cfRetryAt map[string]time.Time
+}
+
+// Failed sweeps wait this long before asking the api again
+const cfSweepRetry = 10 * time.Minute
+
+// One jar queued for a fingerprint sweep
+type cfSweepFile struct {
+	path string
+	size int64
 }
 
 // NewModService creates a new mod service
@@ -54,7 +65,9 @@ func NewModService(store *storage.Store, docker *docker.Client, cfg *config.Conf
 		log:           log,
 		uploadManager: uploadManager,
 		cfNames:       map[string]string{},
+		cfPrints:      map[string]uint32{},
 		cfSweeps:      map[string]bool{},
+		cfRetryAt:     map[string]time.Time{},
 	}
 }
 
@@ -200,34 +213,25 @@ func (s *ModService) applyCFNames(ctx context.Context, serverID, modsDir string,
 			unknown = append(unknown, m)
 		}
 	}
-	sweeping := s.cfSweeps[serverID]
-	if len(unknown) > 0 && !sweeping {
+	// A failed sweep parks the server until the retry time
+	blocked := s.cfSweeps[serverID] || time.Now().Before(s.cfRetryAt[serverID])
+	if len(unknown) > 0 && !blocked {
 		s.cfSweeps[serverID] = true
 	}
 	s.cfNamesMu.Unlock()
 
-	if len(unknown) == 0 || sweeping {
+	if len(unknown) == 0 || blocked {
 		return
 	}
-	paths := make(map[uint32]string, len(unknown))
-	files := make([]struct {
-		path string
-		size int64
-	}, 0, len(unknown))
+	files := make([]cfSweepFile, 0, len(unknown))
 	for _, m := range unknown {
-		files = append(files, struct {
-			path string
-			size int64
-		}{filepath.Join(dirFor(m), m.FileName), m.FileSize})
+		files = append(files, cfSweepFile{filepath.Join(dirFor(m), m.FileName), m.FileSize})
 	}
-	go s.sweepCFNames(serverID, apiKey, files, paths)
+	go s.sweepCFNames(serverID, apiKey, files)
 }
 
 // Fingerprints jars and records their CurseForge project names
-func (s *ModService) sweepCFNames(serverID, apiKey string, files []struct {
-	path string
-	size int64
-}, paths map[uint32]string) {
+func (s *ModService) sweepCFNames(serverID, apiKey string, files []cfSweepFile) {
 	defer func() {
 		s.cfNamesMu.Lock()
 		delete(s.cfSweeps, serverID)
@@ -237,14 +241,25 @@ func (s *ModService) sweepCFNames(serverID, apiKey string, files []struct {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
+	// Prints from a failed sweep are reused, jars stream once
+	paths := make(map[uint32]string, len(files))
 	prints := make([]uint32, 0, len(files))
 	for _, f := range files {
-		data, err := os.ReadFile(f.path)
-		if err != nil {
-			continue
+		key := cfNameKey(f.path, f.size)
+		s.cfNamesMu.Lock()
+		fp, cached := s.cfPrints[key]
+		s.cfNamesMu.Unlock()
+		if !cached {
+			var err error
+			fp, err = utils.CFFingerprintFile(f.path)
+			if err != nil {
+				continue
+			}
+			s.cfNamesMu.Lock()
+			s.cfPrints[key] = fp
+			s.cfNamesMu.Unlock()
 		}
-		fp := utils.CFFingerprint(data)
-		paths[fp] = cfNameKey(f.path, f.size)
+		paths[fp] = key
 		prints = append(prints, fp)
 	}
 	if len(prints) == 0 {
@@ -254,7 +269,7 @@ func (s *ModService) sweepCFNames(serverID, apiKey string, files []struct {
 	client := fuego.NewClient(apiKey, s.config.Server.UserAgent)
 	matches, err := client.GetFingerprintMatches(ctx, prints)
 	if err != nil {
-		s.log.Debug("CF fingerprint sweep failed: %v", err)
+		s.deferCFSweep(serverID, "fingerprint", err)
 		return
 	}
 	modByKey := map[string]int{}
@@ -269,18 +284,32 @@ func (s *ModService) sweepCFNames(serverID, apiKey string, files []struct {
 	}
 	names := map[int]string{}
 	if len(modIDs) > 0 {
-		if mods, err := client.GetModsByIDs(ctx, modIDs); err == nil {
-			for i := range mods {
-				names[mods[i].ID] = mods[i].Name
-			}
+		mods, err := client.GetModsByIDs(ctx, modIDs)
+		if err != nil {
+			s.deferCFSweep(serverID, "mod lookup", err)
+			return
+		}
+		for i := range mods {
+			names[mods[i].ID] = mods[i].Name
 		}
 	}
 
 	s.cfNamesMu.Lock()
 	for _, key := range paths {
 		s.cfNames[key] = names[modByKey[key]]
+		// Named jars never sweep again so their prints go
+		delete(s.cfPrints, key)
 	}
+	delete(s.cfRetryAt, serverID)
 	s.cfNamesMu.Unlock()
+}
+
+// Records an api failure so later lists skip the sweep
+func (s *ModService) deferCFSweep(serverID, stage string, err error) {
+	s.cfNamesMu.Lock()
+	s.cfRetryAt[serverID] = time.Now().Add(cfSweepRetry)
+	s.cfNamesMu.Unlock()
+	s.log.Debug("CF %s sweep failed, retrying after %s: %v", stage, cfSweepRetry, err)
 }
 
 // GetMod gets a specific mod

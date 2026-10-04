@@ -96,6 +96,7 @@
 		if (overrides.shmSize) count++;
 		if (overrides.workingDir) count++;
 		if (overrides.command && overrides.command.length > 0) count++;
+		if (overrides.logDriver) count++;
 		return count;
 	});
 
@@ -169,6 +170,7 @@
 		if (overrides.shmSize) updates.shmSize = overrides.shmSize;
 		if (overrides.workingDir) updates.workingDir = overrides.workingDir;
 		if (overrides.command && overrides.command.length > 0) updates.command = [...overrides.command];
+		if (overrides.logDriver) updates.logDriver = overrides.logDriver;
 		return updates;
 	}
 
@@ -663,6 +665,26 @@
 						{:else}
 							<div class="text-xs text-muted-foreground italic">No labels configured</div>
 						{/if}
+					</div>
+
+					<div class="space-y-3">
+						<Label for="log-driver" class="text-sm">Log Driver</Label>
+						<Input
+							id="log-driver"
+							type="text"
+							placeholder="local (default)"
+							value={overrides?.logDriver || ''}
+							onchange={(e) => {
+								const value = e.currentTarget.value;
+								if (!value) {
+									updateOverride('logDriver', undefined);
+								} else {
+									updateOverride('logDriver', value);
+								}
+							}}
+							{disabled}
+							class="h-8 text-xs"
+						/>
 					</div>
 
 					{#if overrides?.extraHosts?.length || overrides?.securityOpt?.length || overrides?.workingDir || overrides?.command?.length || overrides?.readOnly || overrides?.shmSize}

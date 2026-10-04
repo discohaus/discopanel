@@ -74,6 +74,8 @@ type Runner struct {
 	versionBusy bool
 	// Hub heartbeat answers, the release check reads them when telemetry is on
 	releases ReleaseSource
+	// Panel's own OIDC client, the provider check reads its live state
+	oidc OIDCSource
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -128,6 +130,28 @@ func (r *Runner) SetReleaseSource(src ReleaseSource) {
 	r.versionMu.Unlock()
 }
 
+// Live state of the panel's own OIDC client
+type OIDCSource interface {
+	// True once provider discovery has completed
+	Ready() bool
+	// Runs discovery now when the provider is not ready
+	EnsureProvider(ctx context.Context) error
+}
+
+// Wires the OIDC handler the provider check exercises
+func (r *Runner) SetOIDCSource(src OIDCSource) {
+	r.versionMu.Lock()
+	r.oidc = src
+	r.versionMu.Unlock()
+}
+
+// Wired OIDC client, nil until the server attaches one
+func (r *Runner) oidcSource() OIDCSource {
+	r.versionMu.Lock()
+	defer r.versionMu.Unlock()
+	return r.oidc
+}
+
 // Kicks off the startup run and the GitHub release refresher
 func (r *Runner) Start() {
 	go r.versionLoop()
@@ -163,15 +187,23 @@ func (r *Runner) Last() (*v1.DiagnosticReport, bool) {
 // Runs every check, joining a run already in flight
 // Returns early on ctx cancel while the run continues
 func (r *Runner) Run(ctx context.Context, trigger string) (*v1.DiagnosticReport, error) {
+	return r.await(ctx, r.launch(trigger))
+}
+
+// Starts a run without waiting, joins one in flight
+func (r *Runner) Launch(trigger string) {
+	r.launch(trigger)
+}
+
+// Starts or joins a run, returns its done channel
+func (r *Runner) launch(trigger string) chan struct{} {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.inflight != nil {
-		done := r.inflight
-		r.mu.Unlock()
-		return r.await(ctx, done)
+		return r.inflight
 	}
 	done := make(chan struct{})
 	r.inflight = done
-	r.mu.Unlock()
 
 	go func() {
 		report := r.execute(trigger)
@@ -183,7 +215,7 @@ func (r *Runner) Run(ctx context.Context, trigger string) (*v1.DiagnosticReport,
 		r.logSummary(report)
 		close(done)
 	}()
-	return r.await(ctx, done)
+	return done
 }
 
 // Last report when younger than maxAge, else a fresh run

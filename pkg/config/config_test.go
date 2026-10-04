@@ -167,3 +167,69 @@ func TestHubBadOriginFails(t *testing.T) {
 		}
 	}
 }
+
+// Memory limit must accept the modes and real sizes only
+func TestParseMemoryLimit(t *testing.T) {
+	cases := []struct {
+		raw   string
+		mode  string
+		bytes int64
+		fails bool
+	}{
+		{"", MemoryLimitAuto, 0, false},
+		{"AUTO", MemoryLimitAuto, 0, false},
+		{" off ", MemoryLimitOff, 0, false},
+		{"2GiB", MemoryLimitFixed, 2 << 30, false},
+		{"512mb", MemoryLimitFixed, 512 << 20, false},
+		{"1073741824", MemoryLimitFixed, 1 << 30, false},
+		{"0", "", 0, true},
+		{"lots", "", 0, true},
+		{"-1g", "", 0, true},
+	}
+	for _, tc := range cases {
+		mode, size, err := ParseMemoryLimit(tc.raw)
+		if tc.fails {
+			if err == nil {
+				t.Errorf("%q parsed as %s %d, want error", tc.raw, mode, size)
+			}
+			continue
+		}
+		if err != nil || mode != tc.mode || size != tc.bytes {
+			t.Errorf("%q = %s %d %v, want %s %d", tc.raw, mode, size, err, tc.mode, tc.bytes)
+		}
+	}
+}
+
+// Loaded config must default and normalize the memory limit
+func TestLoadMemoryLimit(t *testing.T) {
+	dir := t.TempDir()
+	cfg, err := Load(filepath.Join(dir, "none.yaml"))
+	if err == nil || cfg != nil {
+		t.Fatal("missing file must fail before checking defaults")
+	}
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("server:\n  port: \"9999\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.MemoryLimit != MemoryLimitAuto {
+		t.Fatalf("default memory limit = %q", cfg.Server.MemoryLimit)
+	}
+
+	t.Setenv("DISCOPANEL_SERVER_MEMORY_LIMIT", " 1GiB ")
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.MemoryLimit != "1gib" {
+		t.Fatalf("env memory limit = %q", cfg.Server.MemoryLimit)
+	}
+
+	t.Setenv("DISCOPANEL_SERVER_MEMORY_LIMIT", "plenty")
+	if _, err := Load(path); err == nil {
+		t.Fatal("invalid memory limit must fail to load")
+	}
+}

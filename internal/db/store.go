@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/discohaus/discopanel/pkg/config"
@@ -21,6 +22,7 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+	"gorm.io/gorm/schema"
 )
 
 const MinecraftDefaultPort = 25565
@@ -96,6 +98,26 @@ type Store struct {
 	drift []string
 }
 
+// Bind values one sqlite statement accepts
+const sqliteMaxVariables = 32766
+
+// Rows per insert that keep the widest table bindable
+func createBatchSize() (int, error) {
+	widest := 0
+	cache := &sync.Map{}
+	for _, model := range v1.AllModels() {
+		parsed, err := schema.Parse(model, cache, schema.NamingStrategy{})
+		if err != nil {
+			return 0, fmt.Errorf("failed to size insert batches: %w", err)
+		}
+		widest = max(widest, len(parsed.DBNames))
+	}
+	if widest == 0 {
+		return 0, errors.New("no tables to size insert batches")
+	}
+	return sqliteMaxVariables / widest, nil
+}
+
 func NewSQLiteStore(cfg *config.Config) (*Store, error) {
 	dsn := cfg.Database.Path
 	// Pragmas reduce locked database errors under load
@@ -107,8 +129,13 @@ func NewSQLiteStore(cfg *config.Config) (*Store, error) {
 			dsn += "?" + pragmas
 		}
 	}
+	batch, err := createBatchSize()
+	if err != nil {
+		return nil, err
+	}
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger:          logger.Default.LogMode(logger.Silent),
+		CreateBatchSize: batch,
 		NowFunc: func() time.Time {
 			return time.Now().UTC()
 		},
@@ -211,20 +238,95 @@ func (s *Store) DeleteServer(ctx context.Context, id string) error {
 
 // Returns ordered samples, aggregated into buckets when bucketSeconds is positive
 func (s *Store) GetMetricsHistory(ctx context.Context, serverID string, from, to time.Time, bucketSeconds, rawSeconds int) ([]*v1.MetricsSample, error) {
+	if bucketSeconds > 0 {
+		// Default cadence when caller cannot say
+		if rawSeconds <= 0 {
+			rawSeconds = 30
+		}
+		return s.bucketedMetricsHistory(ctx, serverID, from, to, int64(bucketSeconds), rawSeconds)
+	}
 	var samples []*v1.MetricsSample
 	err := s.db.WithContext(ctx).
 		Where("server_id = ? AND timestamp >= ? AND timestamp <= ?",
 			serverID, from.UTC(), to.UTC()).
 		Order("timestamp ASC").
 		Find(&samples).Error
-	if err != nil || bucketSeconds <= 0 {
-		return samples, err
+	return samples, err
+}
+
+// One bucket the database aggregated for the history query
+type metricsBucketRow struct {
+	ServerID         string  `gorm:"column:server_id"`
+	BucketStart      int64   `gorm:"column:bucket_start"`
+	Tps              float64 `gorm:"column:tps"`
+	Mspt             float64 `gorm:"column:mspt"`
+	Players          int32   `gorm:"column:players"`
+	CpuPercent       float64 `gorm:"column:cpu_percent"`
+	MemoryMb         float64 `gorm:"column:memory_mb"`
+	DiskBytes        int64   `gorm:"column:disk_bytes"`
+	HeapUsedMb       float64 `gorm:"column:heap_used_mb"`
+	ProxyActiveConns int64   `gorm:"column:proxy_active_conns"`
+	ProxyBytesIn     int64   `gorm:"column:proxy_bytes_in"`
+	ProxyBytesOut    int64   `gorm:"column:proxy_bytes_out"`
+	ProxyLogins      int64   `gorm:"column:proxy_logins"`
+	GcPauseCount     int64   `gorm:"column:gc_pause_count"`
+	GcPauseTotalMs   float64 `gorm:"column:gc_pause_total_ms"`
+	GcPauseMaxMs     float64 `gorm:"column:gc_pause_max_ms"`
+}
+
+// Buckets samples inside the database, row weight is covered seconds
+func (s *Store) bucketedMetricsHistory(ctx context.Context, serverID string, from, to time.Time, bucket int64, rawSeconds int) ([]*v1.MetricsSample, error) {
+	const query = `
+SELECT server_id,
+       (CAST(strftime('%s', timestamp) AS INTEGER) / ?) * ? AS bucket_start,
+       SUM(tps * w) / SUM(w) AS tps,
+       SUM(mspt * w) / SUM(w) AS mspt,
+       MAX(players) AS players,
+       SUM(cpu_percent * w) / SUM(w) AS cpu_percent,
+       SUM(memory_mb * w) / SUM(w) AS memory_mb,
+       MAX(disk_bytes) AS disk_bytes,
+       SUM(heap_used_mb * w) / SUM(w) AS heap_used_mb,
+       MAX(proxy_active_conns) AS proxy_active_conns,
+       SUM(proxy_bytes_in) AS proxy_bytes_in,
+       SUM(proxy_bytes_out) AS proxy_bytes_out,
+       SUM(proxy_logins) AS proxy_logins,
+       SUM(gc_pause_count) AS gc_pause_count,
+       SUM(gc_pause_total_ms) AS gc_pause_total_ms,
+       MAX(gc_pause_max_ms) AS gc_pause_max_ms
+FROM (
+  SELECT *, CASE WHEN resolution > 0 THEN resolution ELSE ? END AS w
+  FROM metrics_samples
+  WHERE server_id = ? AND timestamp >= ? AND timestamp <= ?
+)
+GROUP BY server_id, bucket_start
+ORDER BY bucket_start ASC`
+	var rows []metricsBucketRow
+	if err := s.db.WithContext(ctx).Raw(query, bucket, bucket, rawSeconds, serverID, from.UTC(), to.UTC()).Scan(&rows).Error; err != nil {
+		return nil, err
 	}
-	// Default cadence when caller cannot say
-	if rawSeconds <= 0 {
-		rawSeconds = 30
+	samples := make([]*v1.MetricsSample, 0, len(rows))
+	for _, r := range rows {
+		samples = append(samples, &v1.MetricsSample{
+			ServerId:         r.ServerID,
+			Resolution:       int32(bucket),
+			Timestamp:        timestamppb.New(time.Unix(r.BucketStart, 0).UTC()),
+			Tps:              r.Tps,
+			Mspt:             r.Mspt,
+			Players:          r.Players,
+			CpuPercent:       r.CpuPercent,
+			MemoryMb:         r.MemoryMb,
+			DiskBytes:        r.DiskBytes,
+			HeapUsedMb:       r.HeapUsedMb,
+			ProxyActiveConns: r.ProxyActiveConns,
+			ProxyBytesIn:     r.ProxyBytesIn,
+			ProxyBytesOut:    r.ProxyBytesOut,
+			ProxyLogins:      r.ProxyLogins,
+			GcPauseCount:     r.GcPauseCount,
+			GcPauseTotalMs:   r.GcPauseTotalMs,
+			GcPauseMaxMs:     r.GcPauseMaxMs,
+		})
 	}
-	return rollupSamples(samples, int64(bucketSeconds), rawSeconds), nil
+	return samples, nil
 }
 
 // Folds raw samples older than cutoff into buckets

@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/discohaus/discopanel/pkg/config"
 )
 
 // Callback path the panel serves for OIDC
@@ -41,7 +43,7 @@ func onOff(b bool) string {
 	return "off"
 }
 
-// Fetches the provider discovery document and checks it
+// Fetches the discovery document and exercises the panel client
 func (r *Runner) checkOIDC(ctx context.Context, c *check) {
 	o := r.cfg.Auth.OIDC
 	if !o.Enabled {
@@ -65,6 +67,38 @@ func (r *Runner) checkOIDC(ctx context.Context, c *check) {
 		c.fix("Point auth.oidc.redirect_url at "+oidcCallbackPath+" and update the provider's allowed redirect list.", docsOIDC)
 	}
 
+	reachable := r.probeDiscovery(ctx, c, o)
+
+	src := r.oidcSource()
+	if src == nil {
+		c.fail("Panel OIDC client is not wired into diagnostics")
+		return
+	}
+	wasReady := src.Ready()
+	err := src.EnsureProvider(ctx)
+	if err == nil {
+		c.fact("panel_client", "ready")
+		if !wasReady {
+			c.note("Panel OIDC client completed discovery during this check")
+		}
+		if reachable {
+			c.pass("OIDC provider %s answers discovery and the panel client is ready", o.IssuerURI)
+		} else {
+			c.note("Panel OIDC client is ready, so Sign in with SSO works")
+		}
+		return
+	}
+	c.fact("panel_client", "unavailable")
+	c.note("Panel OIDC client discovery error: %v", err)
+	c.note("The panel retries discovery in the background and on every Sign in with SSO click")
+	if reachable {
+		c.fail("Provider answers discovery but the panel OIDC client cannot complete it: %v", err)
+		c.fix("Compare auth.oidc.issuer_uri and skip_tls_verify with the discovery document, the login library is stricter than this probe.", docsOIDC)
+	}
+}
+
+// Fetches and validates the discovery document, true when sound
+func (r *Runner) probeDiscovery(ctx context.Context, c *check, o config.OIDCConfig) bool {
 	client := r.http
 	if o.SkipTLSVerify {
 		client = &http.Client{Timeout: r.http.Timeout, Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
@@ -73,20 +107,20 @@ func (r *Runner) checkOIDC(ctx context.Context, c *check) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, discovery, nil)
 	if err != nil {
 		c.fail("Issuer URL is invalid: %v", err)
-		return
+		return false
 	}
 	req.Header.Set("User-Agent", r.userAgent())
 	resp, err := client.Do(req)
 	if err != nil {
 		c.fail("Provider discovery failed: %s", describeNetErr(err))
 		c.fix("The panel must reach the issuer over HTTPS. Check DNS, firewalls, and for self signed certificates set auth.oidc.skip_tls_verify.", docsOIDC)
-		return
+		return false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		c.fail("Provider discovery answered HTTP %d at %s", resp.StatusCode, discovery)
 		c.fix("The issuer must serve /.well-known/openid-configuration. Keycloak issuers look like https://host/realms/<realm>, Authelia and Authentik use their root URL.", docsOIDC)
-		return
+		return false
 	}
 	var doc struct {
 		Issuer        string `json:"issuer"`
@@ -95,13 +129,13 @@ func (r *Runner) checkOIDC(ctx context.Context, c *check) {
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
 		c.fail("Provider discovery document unreadable: %v", err)
-		return
+		return false
 	}
 	c.fact("authorization_endpoint", doc.Authorization)
 	if strings.TrimRight(doc.Issuer, "/") != strings.TrimRight(o.IssuerURI, "/") {
 		c.fail("Provider reports issuer %s but auth.oidc.issuer_uri is %s", doc.Issuer, o.IssuerURI)
 		c.fix("Set issuer_uri to exactly what the provider advertises, the login library rejects mismatches.", docsOIDC)
-		return
+		return false
 	}
-	c.pass("OIDC provider %s answers discovery", o.IssuerURI)
+	return true
 }

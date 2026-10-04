@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -25,75 +26,150 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// Bounds every request the panel makes to the identity provider
+const oidcHTTPTimeout = 15 * time.Second
+
+// Backoff bounds for background provider discovery retries
+const (
+	oidcRetryInitialDelay = 5 * time.Second
+	oidcRetryMaxDelay     = 5 * time.Minute
+)
+
 type OIDCHandler struct {
-	manager      *Manager
-	store        *db.Store
-	config       *config.OIDCConfig
+	manager    *Manager
+	store      *db.Store
+	config     *config.OIDCConfig
+	httpClient *http.Client
+	log        *logger.Logger
+
+	// Serializes discovery so one attempt runs at a time
+	discoverMu sync.Mutex
+
+	// Guards the provider pieces swapped in once discovery succeeds
+	mu           sync.RWMutex
 	provider     *oidc.Provider
 	verifier     *oidc.IDTokenVerifier
 	oauth2Config *oauth2.Config
-	httpClient   *http.Client
-	log          *logger.Logger
+
+	stop     chan struct{}
+	stopOnce sync.Once
 }
 
-func NewOIDCHandler(manager *Manager, store *db.Store, cfg *config.OIDCConfig, log *logger.Logger) (*OIDCHandler, error) {
+// Builds the handler and starts provider discovery with retries
+func NewOIDCHandler(manager *Manager, store *db.Store, cfg *config.OIDCConfig, log *logger.Logger) *OIDCHandler {
+	h := &OIDCHandler{
+		manager:    manager,
+		store:      store,
+		config:     cfg,
+		httpClient: &http.Client{Timeout: oidcHTTPTimeout},
+		log:        log,
+		stop:       make(chan struct{}),
+	}
 	if !cfg.Enabled {
-		return &OIDCHandler{
-			manager: manager,
-			store:   store,
-			config:  cfg,
-			log:     log,
-		}, nil
+		return h
 	}
 
-	var httpClient *http.Client
 	if cfg.SkipTLSVerify {
-		httpClient = &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
+		h.httpClient.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		}
 		log.Warn("OIDC: TLS verification disabled")
 	}
 
-	ctx := context.Background()
-	if httpClient != nil {
-		ctx = oidc.ClientContext(ctx, httpClient)
+	if err := h.EnsureProvider(context.Background()); err != nil {
+		log.Warn("OIDC: provider discovery failed, retrying in background: %v", err)
+		go h.retryLoop()
 	}
-	provider, err := oidc.NewProvider(ctx, cfg.IssuerURI)
+	return h
+}
+
+// True when OIDC login is turned on in configuration
+func (h *OIDCHandler) IsEnabled() bool {
+	return h.config.Enabled
+}
+
+// True once provider discovery has completed
+func (h *OIDCHandler) Ready() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.provider != nil
+}
+
+// Reuses the ready provider or runs discovery now
+func (h *OIDCHandler) EnsureProvider(ctx context.Context) error {
+	if h.Ready() {
+		return nil
+	}
+	h.discoverMu.Lock()
+	defer h.discoverMu.Unlock()
+	if h.Ready() {
+		return nil
+	}
+	return h.discover(ctx)
+}
+
+// Runs discovery and builds the verifier and oauth2 config
+func (h *OIDCHandler) discover(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(h.clientCtx(ctx), oidcHTTPTimeout)
+	defer cancel()
+	provider, err := oidc.NewProvider(ctx, h.config.IssuerURI)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create OIDC provider: %w", err)
+		return err
 	}
 
-	verifier := provider.Verifier(&oidc.Config{ClientID: cfg.ClientID})
-
-	scopes := cfg.Scopes
+	scopes := h.config.Scopes
 	if len(scopes) == 0 {
 		scopes = []string{oidc.ScopeOpenID, "profile", "email"}
 	}
 
-	oauth2Config := &oauth2.Config{
-		ClientID:     cfg.ClientID,
-		ClientSecret: cfg.ClientSecret,
-		RedirectURL:  cfg.RedirectURL,
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.provider = provider
+	h.verifier = provider.Verifier(&oidc.Config{ClientID: h.config.ClientID})
+	h.oauth2Config = &oauth2.Config{
+		ClientID:     h.config.ClientID,
+		ClientSecret: h.config.ClientSecret,
+		RedirectURL:  h.config.RedirectURL,
 		Endpoint:     provider.Endpoint(),
 		Scopes:       scopes,
 	}
-
-	return &OIDCHandler{
-		manager:      manager,
-		store:        store,
-		config:       cfg,
-		provider:     provider,
-		verifier:     verifier,
-		oauth2Config: oauth2Config,
-		httpClient:   httpClient,
-		log:          log,
-	}, nil
+	h.log.Info("OIDC: provider %s ready", h.config.IssuerURI)
+	return nil
 }
 
-func (h *OIDCHandler) IsEnabled() bool {
-	return h.config.Enabled && h.provider != nil
+// Retries discovery with capped backoff until success or stop
+func (h *OIDCHandler) retryLoop() {
+	delay := oidcRetryInitialDelay
+	for {
+		select {
+		case <-h.stop:
+			return
+		case <-time.After(delay):
+		}
+		err := h.EnsureProvider(context.Background())
+		if err == nil {
+			return
+		}
+		delay = min(delay*2, oidcRetryMaxDelay)
+		h.log.Warn("OIDC: provider discovery failed, next retry in %s: %v", delay, err)
+	}
+}
+
+// Stops the background discovery retries
+func (h *OIDCHandler) Stop() {
+	h.stopOnce.Do(func() { close(h.stop) })
+}
+
+// Attaches the panel's http client to provider calls
+func (h *OIDCHandler) clientCtx(ctx context.Context) context.Context {
+	return oidc.ClientContext(ctx, h.httpClient)
+}
+
+// Snapshot of the ready provider pieces
+func (h *OIDCHandler) client() (*oidc.Provider, *oidc.IDTokenVerifier, *oauth2.Config) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.provider, h.verifier, h.oauth2Config
 }
 
 func (h *OIDCHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
@@ -101,6 +177,12 @@ func (h *OIDCHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "OIDC is not enabled", http.StatusBadRequest)
 		return
 	}
+	if err := h.EnsureProvider(r.Context()); err != nil {
+		h.log.Error("OIDC: identity provider %s unavailable: %v", h.config.IssuerURI, err)
+		http.Redirect(w, r, "/login?error=provider_unavailable", http.StatusFound)
+		return
+	}
+	_, _, oauth2Config := h.client()
 
 	state, err := generateState()
 	if err != nil {
@@ -118,7 +200,7 @@ func (h *OIDCHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	http.Redirect(w, r, h.oauth2Config.AuthCodeURL(state), http.StatusFound)
+	http.Redirect(w, r, oauth2Config.AuthCodeURL(state), http.StatusFound)
 }
 
 func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
@@ -126,6 +208,12 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "OIDC is not enabled", http.StatusBadRequest)
 		return
 	}
+	if err := h.EnsureProvider(r.Context()); err != nil {
+		h.log.Error("OIDC: identity provider %s unavailable: %v", h.config.IssuerURI, err)
+		http.Redirect(w, r, "/login?error=provider_unavailable", http.StatusFound)
+		return
+	}
+	provider, verifier, oauth2Config := h.client()
 
 	// Verify state
 	stateCookie, err := r.Cookie("oidc_state")
@@ -144,11 +232,8 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Exchange code for token
-	ctx := r.Context()
-	if h.httpClient != nil {
-		ctx = oidc.ClientContext(ctx, h.httpClient)
-	}
-	oauth2Token, err := h.oauth2Config.Exchange(ctx, r.URL.Query().Get("code"))
+	ctx := h.clientCtx(r.Context())
+	oauth2Token, err := oauth2Config.Exchange(ctx, r.URL.Query().Get("code"))
 	if err != nil {
 		h.log.Error("OIDC: failed to exchange code for token: %v", err)
 		http.Error(w, "Failed to exchange code for token", http.StatusInternalServerError)
@@ -164,7 +249,7 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify ID token
-	idToken, err := h.verifier.Verify(ctx, rawIDToken)
+	idToken, err := verifier.Verify(ctx, rawIDToken)
 	if err != nil {
 		h.log.Error("OIDC: failed to verify ID token: %v", err)
 		http.Error(w, "Failed to verify ID token", http.StatusInternalServerError)
@@ -180,8 +265,8 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch UserInfo - some oidc sets role/groups here
-	tokenSource := h.oauth2Config.TokenSource(ctx, oauth2Token)
-	userInfo, err := h.provider.UserInfo(ctx, tokenSource)
+	tokenSource := oauth2Config.TokenSource(ctx, oauth2Token)
+	userInfo, err := provider.UserInfo(ctx, tokenSource)
 	if err == nil {
 		var uiClaims map[string]any
 		if err := userInfo.Claims(&uiClaims); err == nil {
@@ -385,18 +470,13 @@ func (h *OIDCHandler) resolveClaimRoles(claims map[string]any) []string {
 
 // Fetches extra claim from configured URL using gjson path
 func (h *OIDCHandler) fetchExtraClaims(ctx context.Context, accessToken string) (map[string]any, error) {
-	client := http.DefaultClient
-	if h.httpClient != nil {
-		client = h.httpClient
-	}
-
 	req, err := http.NewRequestWithContext(ctx, "GET", h.config.ExtraClaimsURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
-	resp, err := client.Do(req)
+	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
