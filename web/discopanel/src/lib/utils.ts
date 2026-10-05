@@ -58,3 +58,21 @@ export function centerInRail(rail: HTMLElement | null, tab: EventTarget | null |
 		behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
 	});
 }
+
+const MAX_ICON_SOURCE_PX = 512;
+
+// Bakes the EXIF rotation into pixels
+export async function encodeIconUpload(file: File): Promise<Uint8Array<ArrayBuffer>> {
+	const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+	const scale = Math.min(1, MAX_ICON_SOURCE_PX / Math.max(bitmap.width, bitmap.height));
+	const canvas = document.createElement('canvas');
+	canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+	canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+	const ctx = canvas.getContext('2d');
+	if (!ctx) throw new Error('Canvas is unavailable');
+	ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+	bitmap.close();
+	const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+	if (!blob) throw new Error('Could not encode the icon');
+	return new Uint8Array(await blob.arrayBuffer());
+}

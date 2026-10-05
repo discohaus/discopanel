@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { Button } from '$lib/components/ui/button';
@@ -45,7 +45,7 @@
 	import { volumeSourceRoots } from '$lib/components/files/picker-roots';
 	import { NetworkPortRowsEditor } from '$lib/components/app';
 	import MemorySlider from '$lib/components/memory-slider.svelte';
-	import { getUniqueDockerImages, getDockerImageDisplayName } from '$lib/utils';
+	import { getUniqueDockerImages, getDockerImageDisplayName, encodeIconUpload } from '$lib/utils';
 	import { fallbackAddresses, playerAddress } from '$lib/hostname';
 	import type { GetProxyStatusResponse } from '$lib/proto/discopanel/v1/proxy_pb';
 	import { uploadFile } from '$lib/utils/chunked-upload';
@@ -71,7 +71,7 @@
 	let worldFile = $state<File | null>(null);
 
 	// Icon picked now, uploaded right after create
-	let iconFile = $state<File | null>(null);
+	let iconImage = $state<Uint8Array<ArrayBuffer> | null>(null);
 	let iconPreview = $state('');
 	let iconInput = $state<HTMLInputElement | null>(null);
 
@@ -296,25 +296,28 @@
 		}
 	}
 
-	function handleIconSelect(e: Event) {
+	async function handleIconSelect(e: Event) {
 		const input = e.currentTarget as HTMLInputElement;
 		const file = input.files?.[0];
 		input.value = '';
 		if (!file) return;
-		if (file.size > 4 * 1024 * 1024) {
-			notify.error('Icon images must be under 4 MB');
-			return;
+		try {
+			const image = await encodeIconUpload(file);
+			clearIcon();
+			iconImage = image;
+			iconPreview = URL.createObjectURL(new Blob([image], { type: 'image/png' }));
+		} catch {
+			notify.error('Could not read that image');
 		}
-		iconFile = file;
-		const reader = new FileReader();
-		reader.onload = () => (iconPreview = String(reader.result));
-		reader.readAsDataURL(file);
 	}
 
 	function clearIcon() {
-		iconFile = null;
+		if (iconPreview) URL.revokeObjectURL(iconPreview);
+		iconImage = null;
 		iconPreview = '';
 	}
+
+	onDestroy(clearIcon);
 
 	function validatePort(port: number) {
 		portError = '';
@@ -433,10 +436,9 @@
 			if (created && useProxyMode && proxyCatchAll) {
 				await claimCatchAll(created.id);
 			}
-			if (iconFile && created) {
+			if (iconImage && created) {
 				try {
-					const image = new Uint8Array(await iconFile.arrayBuffer());
-					await rpcClient.server.uploadServerIcon({ id: created.id, image });
+					await rpcClient.server.uploadServerIcon({ id: created.id, image: iconImage });
 				} catch {
 					notify.warning('Server created, but the icon upload failed');
 				}
@@ -675,7 +677,7 @@
 						</span>
 					</button>
 					<span class="text-[11px] text-muted-foreground">Server icon</span>
-					{#if iconFile}
+					{#if iconImage}
 						<button
 							type="button"
 							class="text-[11px] text-muted-foreground underline-offset-2 hover:underline"

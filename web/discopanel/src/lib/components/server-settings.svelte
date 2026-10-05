@@ -26,7 +26,7 @@
 	import DockerOverridesEditor from '$lib/components/docker-overrides-editor.svelte';
 	import { containerRoot, volumeSourceRoots } from '$lib/components/files/picker-roots';
 	import MemorySlider from '$lib/components/memory-slider.svelte';
-	import { getUniqueDockerImages } from '$lib/utils';
+	import { getUniqueDockerImages, encodeIconUpload } from '$lib/utils';
 
 	interface Props {
 		server: Server;
@@ -245,13 +245,9 @@
 		const file = input.files?.[0];
 		input.value = '';
 		if (!file) return;
-		if (file.size > 4 * 1024 * 1024) {
-			notify.error('Icon images must be under 4 MB');
-			return;
-		}
 		iconUploading = true;
 		try {
-			const image = new Uint8Array(await file.arrayBuffer());
+			const image = await encodeIconUpload(file);
 			const response = await rpcClient.server.uploadServerIcon({ id: server.id, image });
 			uploadedFavicon = response.favicon;
 			notify.success(stopped ? 'Server icon updated' : 'Server icon updated. Shows after restart.');
