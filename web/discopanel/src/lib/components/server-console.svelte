@@ -270,7 +270,7 @@
 
 		const unsubCommandCompletionsResult = wsClient.onCommandCompletionsResult((result) => {
 			if (result.serverId === server.id) {
-				handleCompletionResult(result.tokens || []);
+				handleCompletionResult(result.command, result.tokens);
 			}
 		});
 
@@ -351,8 +351,7 @@
 	function navigateHistory(direction: -1 | 1) {
 		if (history.length === 0) return;
 		isNavigatingHistory = true;
-		showCompletions = false;
-		completionTokens = [];
+		clearCompletions();
 		if (historyIndex === -1) {
 			if (direction === 1) return;
 			draftCommand = command;
@@ -398,79 +397,67 @@
 			? localStorage.getItem('discopanel_completion_enabled') !== 'false'
 			: true
 	);
+	// Command the open or in flight suggestions belong to
+	let pendingCompletionCmd = '';
+	let completionAnswered = false;
 
 	function toggleCompletion() {
 		completionEnabled = !completionEnabled;
 		if (typeof window !== 'undefined') {
 			localStorage.setItem('discopanel_completion_enabled', String(completionEnabled));
 		}
-		if (!completionEnabled) {
-			showCompletions = false;
-			completionTokens = [];
-		}
+	}
+
+	function clearCompletions() {
+		pendingCompletionCmd = '';
+		completionTokens = [];
+		showCompletions = false;
 	}
 
 	$effect(() => {
 		const currentCmd = command;
-		if (!completionSupported || !completionEnabled || isNavigatingHistory) {
-			completionTokens = [];
-			showCompletions = false;
+		if (
+			!completionSupported ||
+			!completionEnabled ||
+			!canSend ||
+			isNavigatingHistory ||
+			!currentCmd.trim()
+		) {
+			clearCompletions();
 			return;
 		}
-		if (!canSend || !currentCmd.trim()) {
-			completionTokens = [];
-			showCompletions = false;
-			return;
-		}
-		fetchCompletions(currentCmd);
+		untrack(() => fetchCompletions(currentCmd));
 	});
 
-	let pendingCompletionCmd = '';
-
-	function handleCompletionResult(tokens: CommandToken[], cmd?: string) {
-		if ((!cmd || cmd === command) && !isNavigatingHistory && completionEnabled) {
-			completionTokens = tokens || [];
-			selectedTokenIndex = 0;
-			showCompletions = completionTokens.length > 0;
-		}
+	// Applies suggestions only when they answer the current input
+	function handleCompletionResult(cmd: string, tokens: CommandToken[]) {
+		if (!cmd || cmd !== pendingCompletionCmd) return;
+		completionAnswered = true;
+		completionTokens = tokens;
+		selectedTokenIndex = 0;
+		showCompletions = tokens.length > 0;
 	}
 
-	async function fetchCompletions(cmdToPredict: string) {
-		pendingCompletionCmd = cmdToPredict;
-
-		// Prefer WebSocket
-		if (wsClient.isReady) {
-			const sent = wsClient.sendCommandCompletions(server.id, cmdToPredict);
-			if (sent) {
-				const wsCmd = cmdToPredict;
-				setTimeout(() => {
-					if (pendingCompletionCmd === wsCmd && completionTokens.length === 0) {
-						fetchCompletionsViaRpc(wsCmd);
-					}
-				}, 500);
-				return;
-			}
+	function fetchCompletions(cmd: string) {
+		pendingCompletionCmd = cmd;
+		completionAnswered = false;
+		if (!wsClient.sendCommandCompletions(server.id, cmd)) {
+			fetchCompletionsViaRpc(cmd);
+			return;
 		}
-
-		// Fallback to Connect RPC
-		await fetchCompletionsViaRpc(cmdToPredict);
+		// Falls back to RPC when the socket reply never comes
+		setTimeout(() => {
+			if (pendingCompletionCmd === cmd && !completionAnswered) fetchCompletionsViaRpc(cmd);
+		}, 500);
 	}
 
-	async function fetchCompletionsViaRpc(cmdToPredict: string) {
+	async function fetchCompletionsViaRpc(cmd: string) {
 		try {
-			const req = create(GetCommandCompletionsRequestSchema, {
-				id: server.id,
-				command: cmdToPredict
-			});
+			const req = create(GetCommandCompletionsRequestSchema, { id: server.id, command: cmd });
 			const res = await rpcClient.server.getCommandCompletions(req, silentCallOptions);
-			if (pendingCompletionCmd === cmdToPredict) {
-				handleCompletionResult(res.tokens || [], cmdToPredict);
-			}
+			handleCompletionResult(cmd, res.tokens);
 		} catch {
-			if (pendingCompletionCmd === cmdToPredict) {
-				completionTokens = [];
-				showCompletions = false;
-			}
+			if (pendingCompletionCmd === cmd) clearCompletions();
 		}
 	}
 
@@ -478,8 +465,7 @@
 		const parts = command.split(' ');
 		parts[parts.length - 1] = token.text;
 		command = parts.join(' ');
-		showCompletions = false;
-		completionTokens = [];
+		clearCompletions();
 		isNavigatingHistory = false;
 		inputRef?.focus();
 	}
@@ -517,13 +503,13 @@
 				return;
 			} else if (e.key === 'Escape') {
 				e.preventDefault();
-				showCompletions = false;
+				clearCompletions();
 				return;
 			}
 		}
 
 		if (e.key === 'Enter') {
-			showCompletions = false;
+			clearCompletions();
 			isNavigatingHistory = false;
 			sendCommand();
 		} else if (e.key === 'ArrowUp') {

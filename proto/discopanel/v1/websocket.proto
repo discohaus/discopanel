@@ -145,9 +145,10 @@ message CommandCompletionsMessage {
   string command = 2;
 }
 
-// Command completions response
+// Command completions response, echoes the command it answers
 message CommandCompletionsResultMessage {
   string server_id = 1;
   repeated CommandToken tokens = 2;
+  string command = 3;
 }
 

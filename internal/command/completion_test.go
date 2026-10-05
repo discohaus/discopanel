@@ -3,11 +3,14 @@ package command
 import (
 	"context"
 	"path/filepath"
+	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/logger"
+	"github.com/discohaus/discopanel/pkg/mcconsole"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
@@ -185,5 +188,48 @@ func TestIsAvailable(t *testing.T) {
 				t.Errorf("Expected IsAvailable=%v for server %s (loader %v, version %s), got %v", tt.expectAvailable, tt.serverId, tt.modLoader, tt.mcVersion, available)
 			}
 		})
+	}
+}
+
+// Engine stub that races on a plain map without external locking
+type racyEngine struct {
+	calls map[string]int
+}
+
+func (e *racyEngine) GetPredictions(command string) ([]*mcconsole.Token, error) {
+	e.calls[command]++
+	return []*mcconsole.Token{{Text: command}}, nil
+}
+
+func TestGetCompletion_SerializesEngineAccess(t *testing.T) {
+	comp, _ := setupTestCompletion(t)
+	engine := &racyEngine{calls: make(map[string]int)}
+	comp.engineCache.SetEngine("srv-shared", engine)
+
+	const workers = 32
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			cmd := "cmd" + strconv.Itoa(i%4)
+			tokens, err := comp.GetCompletion(context.Background(), "srv-shared", cmd)
+			if err != nil {
+				t.Errorf("GetCompletion error: %v", err)
+				return
+			}
+			if len(tokens) != 1 || tokens[0].Text != cmd {
+				t.Errorf("GetCompletion(%q) = %v, want one token %q", cmd, tokens, cmd)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	total := 0
+	for _, n := range engine.calls {
+		total += n
+	}
+	if total != workers {
+		t.Errorf("engine saw %d calls, want %d", total, workers)
 	}
 }

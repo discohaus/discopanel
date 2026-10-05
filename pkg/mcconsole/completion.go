@@ -30,13 +30,6 @@ func (f PlayerListFunc) GetPlayers() ([]string, error) {
 	return f()
 }
 
-// One top level command a server knows
-type BaseCommand struct {
-	Name        string
-	Description *string
-	Aliases     []string
-}
-
 // One known value an argument accepts
 type MappedValue struct {
 	Text     string
@@ -52,11 +45,24 @@ type Token struct {
 	IsPlayer   bool
 }
 
+// Converts completion tokens into their wire form
+func ProtoTokens(tokens []*Token) []*v1.CommandToken {
+	out := make([]*v1.CommandToken, 0, len(tokens))
+	for _, t := range tokens {
+		out = append(out, &v1.CommandToken{
+			Text:       t.Text,
+			IsOptional: t.IsOptional,
+			IsArgument: t.IsArgument,
+			IsStatic:   t.IsStatic,
+			IsPlayer:   t.IsPlayer,
+		})
+	}
+	return out
+}
+
 // Predicts console commands from server help output
 type CompletionEngine interface {
 	GetPredictions(command string) ([]*Token, error)
-	GetBaseCommands() ([]*BaseCommand, error)
-	LoadCommands() error
 }
 
 // Help output dialect a server prints

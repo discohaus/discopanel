@@ -64,12 +64,13 @@ func checkSupport(server *v1.Server) error {
 func (c *Completion) IsAvailable(ctx context.Context, serverID string) (bool, error) {
 	server, err := c.store.GetServer(ctx, serverID)
 	if err != nil {
-		return false, fmt.Errorf("failed to fetch server properties: %w", err)
+		return false, fmt.Errorf("failed to fetch server: %w", err)
 	}
 	return checkSupport(server) == nil, nil
 }
 
 func (c *Completion) GetCompletion(ctx context.Context, serverID string, cmd string) ([]*mcconsole.Token, error) {
+	defer c.engineCache.Lock(serverID)()
 	engine, ok := c.engineCache.GetEngine(serverID)
 	if !ok || engine == nil {
 		var err error
@@ -87,7 +88,7 @@ func (c *Completion) GetCompletion(ctx context.Context, serverID string, cmd str
 func (c *Completion) CreateEngine(ctx context.Context, serverID string) (mcconsole.CompletionEngine, error) {
 	server, err := c.store.GetServer(ctx, serverID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch server properties: %w", err)
+		return nil, fmt.Errorf("failed to fetch server: %w", err)
 	}
 	if err := checkSupport(server); err != nil {
 		return nil, err

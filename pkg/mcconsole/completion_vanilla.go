@@ -23,6 +23,16 @@ type VanillaCommand struct {
 	Aliases  []string
 }
 
+// Finds a command by name or alias
+func findCommand(commands []*VanillaCommand, name string) *VanillaCommand {
+	for _, cmd := range commands {
+		if cmd.Text == name || slices.Contains(cmd.Aliases, name) {
+			return cmd
+		}
+	}
+	return nil
+}
+
 // Predicts vanilla help syntax commands, expanding lazily
 type VanillaEngine struct {
 	Commands         []*VanillaCommand
@@ -128,23 +138,6 @@ func (e *VanillaEngine) expandPath(path []string) {
 	e.Commands = e.loadCommandsFromRawHelpWithQuery(rawHelp, path)
 }
 
-func (e *VanillaEngine) GetBaseCommands() ([]*BaseCommand, error) {
-	err := e.EnsureCommandsLoaded()
-	if err != nil {
-		return nil, err
-	}
-
-	commands := make([]*BaseCommand, 0, len(e.Commands))
-	for _, cmd := range e.Commands {
-		commands = append(commands, &BaseCommand{
-			Name:        cmd.Text,
-			Description: nil,
-			Aliases:     cmd.Aliases,
-		})
-	}
-	return commands, nil
-}
-
 func (e *VanillaEngine) GetPredictions(command string) ([]*Token, error) {
 	err := e.EnsureCommandsLoaded()
 	if err != nil {
@@ -155,47 +148,15 @@ func (e *VanillaEngine) GetPredictions(command string) ([]*Token, error) {
 	firstToken := tokens[0]
 	remainingTokens := tokens[1:]
 
-	// Suggests base commands when only one token typed
 	if len(remainingTokens) == 0 {
-		predictions := make([]*Token, 0)
-		for _, cmd := range e.Commands {
-			if strings.HasPrefix(cmd.Text, firstToken) {
-				predictions = append(predictions, &Token{Text: cmd.Text})
-			}
-			for _, alias := range cmd.Aliases {
-				if strings.HasPrefix(alias, firstToken) {
-					predictions = append(predictions, &Token{Text: alias})
-				}
-			}
-		}
-		sort.Slice(predictions, func(i, j int) bool {
-			return predictions[i].Text < predictions[j].Text
-		})
-		return predictions, nil
+		return e.baseCommandPredictions(firstToken), nil
 	}
 
-	// Finds the base command the first token names
-	var targetCmd *VanillaCommand
-	for _, cmd := range e.Commands {
-		if cmd.Text == firstToken {
-			targetCmd = cmd
-			break
-		}
-		if slices.Contains(cmd.Aliases, firstToken) {
-			targetCmd = cmd
-		}
-		if targetCmd != nil {
-			break
-		}
-	}
-
+	targetCmd := findCommand(e.Commands, firstToken)
 	if targetCmd == nil {
 		return []*Token{}, nil
 	}
-
-	if !e.expandedPaths[targetCmd.Text] {
-		e.expandPath([]string{targetCmd.Text})
-	}
+	e.expandPath([]string{targetCmd.Text})
 
 	currentNodes := targetCmd.Children
 	path := []string{targetCmd.Text}
@@ -214,25 +175,10 @@ func (e *VanillaEngine) GetPredictions(command string) ([]*Token, error) {
 
 		if hasWildcard {
 			if isLastToken {
-				baseCmds, err := e.GetBaseCommands()
-				if err != nil {
-					return nil, err
-				}
-				predictions := make([]*Token, 0)
-				for _, baseCmd := range baseCmds {
-					if strings.HasPrefix(baseCmd.Name, token) {
-						predictions = append(predictions, &Token{Text: baseCmd.Name})
-					}
-				}
-				sort.Slice(predictions, func(i, j int) bool {
-					return predictions[i].Text < predictions[j].Text
-				})
-				return predictions, nil
-			} else {
-				// Delegates remaining tokens to the nested command
-				subCommand := strings.Join(remainingTokens[i:], " ")
-				return e.GetPredictions(subCommand)
+				return e.baseCommandPredictions(token), nil
 			}
+			// Delegates remaining tokens to the nested command
+			return e.GetPredictions(strings.Join(remainingTokens[i:], " "))
 		}
 
 		if len(currentNodes) == 0 {
@@ -247,9 +193,7 @@ func (e *VanillaEngine) GetPredictions(command string) ([]*Token, error) {
 			}
 
 			predictions := make([]*Token, 0)
-			effectiveNodes := currentNodes
-
-			for _, node := range effectiveNodes {
+			for _, node := range currentNodes {
 				if node.isArgument {
 					hasMappedMatches := false
 
@@ -308,14 +252,7 @@ func (e *VanillaEngine) GetPredictions(command string) ([]*Token, error) {
 
 		for _, node := range currentNodes {
 			if node.redirectTarget != "" {
-				var redirCmd *VanillaCommand
-				for _, cmd := range e.Commands {
-					if cmd.Text == node.redirectTarget {
-						redirCmd = cmd
-						break
-					}
-				}
-				if redirCmd != nil {
+				if redirCmd := findCommand(e.Commands, node.redirectTarget); redirCmd != nil {
 					nextNodes = append(nextNodes, redirCmd.Children...)
 					matchedNode = node
 				}
@@ -344,19 +281,31 @@ func (e *VanillaEngine) GetPredictions(command string) ([]*Token, error) {
 	return []*Token{}, nil
 }
 
+// Suggests base commands and aliases matching the typed prefix
+func (e *VanillaEngine) baseCommandPredictions(prefix string) []*Token {
+	predictions := make([]*Token, 0)
+	for _, cmd := range e.Commands {
+		if strings.HasPrefix(cmd.Text, prefix) {
+			predictions = append(predictions, &Token{Text: cmd.Text})
+		}
+		for _, alias := range cmd.Aliases {
+			if strings.HasPrefix(alias, prefix) {
+				predictions = append(predictions, &Token{Text: alias})
+			}
+		}
+	}
+	sort.Slice(predictions, func(i, j int) bool {
+		return predictions[i].Text < predictions[j].Text
+	})
+	return predictions
+}
+
 func (e *VanillaEngine) getNodesAtPath(path []string) []*VanillaToken {
 	if len(path) == 0 {
 		return nil
 	}
 
-	var targetCmd *VanillaCommand
-	for _, cmd := range e.Commands {
-		if cmd.Text == path[0] || slices.Contains(cmd.Aliases, path[0]) {
-			targetCmd = cmd
-			break
-		}
-	}
-
+	targetCmd := findCommand(e.Commands, path[0])
 	if targetCmd == nil {
 		return nil
 	}
@@ -367,14 +316,7 @@ func (e *VanillaEngine) getNodesAtPath(path []string) []*VanillaToken {
 		var nextNodes []*VanillaToken
 		for _, node := range currentNodes {
 			if node.redirectTarget != "" {
-				var redirCmd *VanillaCommand
-				for _, c := range e.Commands {
-					if c.Text == node.redirectTarget {
-						redirCmd = c
-						break
-					}
-				}
-				if redirCmd != nil {
+				if redirCmd := findCommand(e.Commands, node.redirectTarget); redirCmd != nil {
 					nextNodes = append(nextNodes, redirCmd.Children...)
 				}
 			} else if node.Text == step || node.isArgument {
@@ -429,7 +371,7 @@ func (e *VanillaEngine) loadCommandsFromRawHelpWithQuery(rawHelpString string, q
 		commands = make([]*VanillaCommand, 0)
 	}
 
-	aliasesMap := make(map[string]string)
+	var aliases [][2]string
 
 	for _, rawCommand := range rawCommands {
 		normalizedRawCommand := strings.TrimSpace(rawCommand)
@@ -443,7 +385,7 @@ func (e *VanillaEngine) loadCommandsFromRawHelpWithQuery(rawHelpString string, q
 		}
 
 		if len(rawTokens) >= 3 && rawTokens[1] == "->" {
-			aliasesMap[rawTokens[0]] = rawTokens[2]
+			aliases = append(aliases, [2]string{rawTokens[0], rawTokens[2]})
 			continue
 		}
 
@@ -503,14 +445,7 @@ func (e *VanillaEngine) loadCommandsFromRawHelpWithQuery(rawHelpString string, q
 		}
 
 		baseCmdText := rawTokens[0]
-		var cmd *VanillaCommand
-		for _, existingCmd := range commands {
-			if existingCmd.Text == baseCmdText {
-				cmd = existingCmd
-				break
-			}
-		}
-
+		cmd := findCommand(commands, baseCmdText)
 		if cmd == nil {
 			cmd = &VanillaCommand{
 				Text:     baseCmdText,
@@ -553,32 +488,13 @@ func (e *VanillaEngine) loadCommandsFromRawHelpWithQuery(rawHelpString string, q
 		}
 	}
 
-	if len(aliasesMap) > 0 {
-		cmdLookup := make(map[string]*VanillaCommand)
-		for _, c := range commands {
-			cmdLookup[c.Text] = c
+	// Attaches each alias to the command it redirects to
+	for _, pair := range aliases {
+		targetCmd := findCommand(commands, pair[1])
+		if targetCmd == nil || targetCmd.Text == pair[0] || slices.Contains(targetCmd.Aliases, pair[0]) {
+			continue
 		}
-
-		for alias, target := range aliasesMap {
-			if targetCmd, exists := cmdLookup[target]; exists {
-				var aliasCmd *VanillaCommand
-				for _, c := range commands {
-					if c.Text == alias {
-						aliasCmd = c
-						break
-					}
-				}
-				if aliasCmd == nil {
-					aliasCmd = &VanillaCommand{
-						Text:     alias,
-						Children: targetCmd.Children,
-					}
-					commands = append(commands, aliasCmd)
-				} else {
-					aliasCmd.Children = targetCmd.Children
-				}
-			}
-		}
+		targetCmd.Aliases = append(targetCmd.Aliases, pair[0])
 	}
 
 	return commands

@@ -30,6 +30,7 @@ import (
 	"github.com/discohaus/discopanel/pkg/files"
 	"github.com/discohaus/discopanel/pkg/indexers"
 	"github.com/discohaus/discopanel/pkg/logger"
+	"github.com/discohaus/discopanel/pkg/mcconsole"
 	"github.com/discohaus/discopanel/pkg/minecraft"
 	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
@@ -1115,7 +1116,7 @@ func (s *ServerService) SendCommand(ctx context.Context, req *connect.Request[v1
 	}), nil
 }
 
-// GetCommandCompletions fetches command completion predictions
+// Predicts completions for a partially typed console command
 func (s *ServerService) GetCommandCompletions(ctx context.Context, req *connect.Request[v1.GetCommandCompletionsRequest]) (*connect.Response[v1.GetCommandCompletionsResponse], error) {
 	tokens, err := s.completion.GetCompletion(ctx, req.Msg.Id, req.Msg.Command)
 	if err != nil {
@@ -1123,23 +1124,12 @@ func (s *ServerService) GetCommandCompletions(ctx context.Context, req *connect.
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	pbTokens := make([]*v1.CommandToken, 0, len(tokens))
-	for _, t := range tokens {
-		pbTokens = append(pbTokens, &v1.CommandToken{
-			Text:       t.Text,
-			IsOptional: t.IsOptional,
-			IsArgument: t.IsArgument,
-			IsStatic:   t.IsStatic,
-			IsPlayer:   t.IsPlayer,
-		})
-	}
-
 	return connect.NewResponse(&v1.GetCommandCompletionsResponse{
-		Tokens: pbTokens,
+		Tokens: mcconsole.ProtoTokens(tokens),
 	}), nil
 }
 
-// IsCommandCompletionAvailable checks if command completion is available for a server
+// Reports whether the server's loader and version support completion
 func (s *ServerService) IsCommandCompletionAvailable(ctx context.Context, req *connect.Request[v1.IsCommandCompletionAvailableRequest]) (*connect.Response[v1.IsCommandCompletionAvailableResponse], error) {
 	available, err := s.completion.IsAvailable(ctx, req.Msg.Id)
 	if err != nil {
