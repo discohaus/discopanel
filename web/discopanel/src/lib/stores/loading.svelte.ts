@@ -30,20 +30,6 @@ function createLoadingStore() {
 				state.global = state.operations.size > 0;
 				return state;
 			});
-		},
-		isLoading(operationId?: string): boolean {
-			let loading = false;
-			subscribe((state) => {
-				loading = operationId ? state.operations.has(operationId) : state.global;
-			})();
-			return loading;
-		},
-		clear() {
-			update((state) => {
-				state.operations.clear();
-				state.global = false;
-				return state;
-			});
 		}
 	};
 }

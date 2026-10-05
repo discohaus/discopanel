@@ -3,8 +3,9 @@ syntax = "proto3";
 package discopanel.v1;
 
 import "discopanel/v1/server.proto";
+import "discopanel/v1/storage.proto";
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
 // WebSocket message types
 enum WSMessageType {
@@ -15,6 +16,7 @@ enum WSMessageType {
   WS_MESSAGE_TYPE_UNSUBSCRIBE = 3;
   WS_MESSAGE_TYPE_COMMAND = 4;
   WS_MESSAGE_TYPE_PING = 5;
+  WS_MESSAGE_TYPE_COMMAND_COMPLETIONS = 6;
   // Server -> Client
   WS_MESSAGE_TYPE_AUTH_OK = 10;
   WS_MESSAGE_TYPE_AUTH_FAIL = 11;
@@ -25,6 +27,8 @@ enum WSMessageType {
   WS_MESSAGE_TYPE_COMMAND_RESULT = 16;
   WS_MESSAGE_TYPE_ERROR = 17;
   WS_MESSAGE_TYPE_PONG = 18;
+  WS_MESSAGE_TYPE_METRICS = 19;
+  WS_MESSAGE_TYPE_COMMAND_COMPLETIONS_RESULT = 20;
 }
 
 // Client -> Server messages
@@ -36,6 +40,7 @@ message WebSocketClientMessage {
     SubscribeMessage subscribe = 3;
     UnsubscribeMessage unsubscribe = 4;
     CommandMessage command = 5;
+    CommandCompletionsMessage command_completions = 6;
   }
 }
 
@@ -52,6 +57,8 @@ message WebSocketServerMessage {
     LogMessage log = 7;
     CommandResultMessage command_result = 8;
     ErrorMessage error = 9;
+    MetricsMessage metrics = 10;
+    CommandCompletionsResultMessage command_completions_result = 11;
   }
 }
 
@@ -60,15 +67,17 @@ message AuthMessage {
   string token = 1;
 }
 
-// Subscribe to server logs
+// Subscribe to server logs or metrics
 message SubscribeMessage {
   string server_id = 1;
   int32 tail = 2;
+  bool metrics = 3; // Subscribe to live metrics instead of logs
 }
 
-// Unsubscribe from server logs
+// Unsubscribe from server logs or metrics
 message UnsubscribeMessage {
   string server_id = 1;
+  bool metrics = 2; // Drop the metrics subscription instead of logs
 }
 
 // Send command to server
@@ -123,3 +132,23 @@ message CommandResultMessage {
 message ErrorMessage {
   string error = 1;
 }
+
+// Live metrics point for a subscribed server
+message MetricsMessage {
+  string server_id = 1;
+  MetricsSample sample = 2;
+}
+
+// Command completions request
+message CommandCompletionsMessage {
+  string server_id = 1;
+  string command = 2;
+}
+
+// Command completions response, echoes the command it answers
+message CommandCompletionsResultMessage {
+  string server_id = 1;
+  repeated CommandToken tokens = 2;
+  string command = 3;
+}
+

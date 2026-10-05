@@ -31,7 +31,7 @@ DiscoPanel creates Docker bind mounts for each managed Minecraft server. When Di
 | Variable | Purpose | Example |
 |---|---|---|
 | `DISCOPANEL_HOST_DATA_PATH` | The host path that `DISCOPANEL_DATA_DIR` is mounted from | `/opt/discopanel/data` |
-| `DISCOPANEL_DATA_DIR` | Where DiscoPanel reads/writes data inside the container — you can usually leave this as the default | `/app/data` |
+| `DISCOPANEL_DATA_DIR` | Where DiscoPanel reads/writes data inside the container - you can usually leave this as the default | `/app/data` |
 
 These **must** correspond to the same volume entry. If your compose file maps `/srv/minecraft/data:/app/data`, then set `DISCOPANEL_HOST_DATA_PATH=/srv/minecraft/data`.
 

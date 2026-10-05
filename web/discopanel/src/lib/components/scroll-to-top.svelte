@@ -9,6 +9,12 @@
 	onMount(() => {
 		// Function to find the scrollable element
 		const findScrollableElement = () => {
+			// Pages with a pinned header mark their own scroll pane
+			const marked = document.querySelector('[data-scroll-root]');
+			if (marked) {
+				return marked;
+			}
+
 			// Check the main element
 			const mainElement = document.querySelector('main');
 			if (mainElement) {
@@ -72,9 +78,9 @@
 		<Button
 			size="icon"
 			onclick={scrollToTop}
-			class="bg-primary text-primary-foreground shadow-lg transition-all hover:scale-110 hover:bg-primary/90 hover:shadow-xl"
+			class="bg-primary text-primary-foreground shadow-lg hover:bg-primary/90"
 		>
-			<ArrowUp class="h-5 w-5" />
+			<ArrowUp class="size-5" />
 		</Button>
 	</div>
 {/if}

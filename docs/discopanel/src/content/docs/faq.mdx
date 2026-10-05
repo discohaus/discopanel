@@ -6,7 +6,7 @@ description: Frequently asked questions.
 Answers to the questions that get asked over and over.
 
 <details>
-  <summary>How do I update Discopanel?</summary>
+  <summary>How do I update DiscoPanel?</summary>
 
   <details>
     <summary>Docker Compose</summary>
@@ -14,7 +14,7 @@ Answers to the questions that get asked over and over.
 In the folder where your `compose.yml` file is, run:
 
 1. `docker compose down`
-2. `docker pull nickheyer/discopanel`
+2. `docker pull ghcr.io/discohaus/discopanel`
 3. `docker compose up -d`
 
   </details>
@@ -27,13 +27,18 @@ Open the console for the container and enter `update`.
   </details>
 
   <details>
-    <summary>Source</summary>
+    <summary>Binary / Source</summary>
 
-Download the new binary and run it.
-
-*Needs more specific documentation.*
+Stop DiscoPanel, replace the binary with the new one from the [releases page](https://github.com/discohaus/discopanel/releases) (or `git pull` and `make build` if you build from source), and start it again. Your data folder is untouched, and database migrations run automatically on startup.
 
   </details>
+</details>
+
+<details>
+  <summary>How do I upgrade from v2 to v3?</summary>
+
+Swap the binary or image and start it - the database migrates itself, with an automatic backup kept next to it. Come from v2.0.15 (boot that once first if you're older), and expect each server's first start to take longer while it reinstalls on the v3 runtime. Details in [Upgrading from v2](/getting-started/upgrade-v2/).
+
 </details>
 
 <details>
@@ -53,7 +58,14 @@ Or set the `DISCOPANEL_SERVER_PORT` environment variable to whatever port you wa
 <details>
   <summary>How do I set up the proxy for my servers?</summary>
 
-*TODO*
+Enable it in your config with your domain, add a wildcard DNS record, and forward one port. Each server then gets an address like `survival.mc.example.com`. The [Proxy & Domains guide](/guides/proxy/) has the full walkthrough.
+
+</details>
+
+<details>
+  <summary>Why does my server say "Sleeping"?</summary>
+
+Auto-pause froze it because nobody was online. It still shows up in the server list, and joining wakes it in about a second. See the [Auto-Pause guide](/guides/autopause/).
 
 </details>
 
@@ -65,7 +77,7 @@ Create a **Backup** task in your server's Tasks tab. It archives your world data
 </details>
 
 <details>
-  <summary>How do I get an API key from Curseforge?</summary>
+  <summary>How do I get an API key from CurseForge?</summary>
 
 Go to https://console.curseforge.com/#/api-keys
 
@@ -74,102 +86,85 @@ Go to https://console.curseforge.com/#/api-keys
 <details>
   <summary>Why can't I change my RAM allocation in the server JVM config?</summary>
 
-RAM maximums are adjusted via the Memory field in the overview section. It is done this way so that the minecraft docker container can have some amount of RAM available to handle all the other things it needs to do other than just run a minecraft server. The JVM allocation is then computed from the Memory value it is given to have enough space.
+Set the **Memory** field in the server's overview section instead. That number is the total the server's container gets, and DiscoPanel sizes the Java heap from it automatically - leaving headroom, because Java always needs some memory beyond the heap. If the heap were set to the full amount, the container would run out of memory and the server would crash.
 
 </details>
 
 <details>
   <summary>Where do I find my logs?</summary>
 
-In Settings → Logs.
+In Settings > Logs.
 
 </details>
 
 <details>
   <summary>I'm using Simple Voice Chat or Square/Dynmap and I want to expose that port. How do I do that?</summary>
 
-This is best done using the 'Additional Ports' section of the overview tab of the server you want to adjust. At current there is no reverse proxy built into Discopanel for these, but Simple Voice Chat does have its own implementation that you should check out.
+This is best done using the 'Additional Ports' section of the overview tab of the server you want to adjust. At current there is no reverse proxy built into DiscoPanel for these, but Simple Voice Chat does have its own implementation that you should check out.
 
 </details>
 
 <details>
-  <summary>How do I stop Discopanel from updating my servers?</summary>
+  <summary>How do I stop DiscoPanel from updating my servers?</summary>
 
   <details>
-    <summary>Curseforge</summary>
+    <summary>CurseForge</summary>
 
-Jump to the Curseforge config options of the desired server and edit the `CF_URL`, `CF_FILE_ID`, or `CF_FILENAME_MATCHER` fields to pin a specific version.
+Packs don't update on their own anymore. If you want to lock a server to a specific version anyway, set `CurseForge Page URL` or `CurseForge File ID` in the server properties.
 
 For example, to pin ATM10 to v2.42:
-- `CF_URL`: `https://www.curseforge.com/minecraft/modpacks/all-the-mods-10/files/6378501`
-- `CF_FILE_ID`: `6378501`
-- `CF_FILENAME_MATCHER`: `2.42`
+- `CurseForge Page URL`: `https://www.curseforge.com/minecraft/modpacks/all-the-mods-10/files/6378501`
+- `CurseForge File ID`: `6378501`
 
-More info in the [itzg/docker-minecraft docs](https://docker-minecraft-server.readthedocs.io/en/latest/).
+More detail in the [Modpacks guide](/guides/modpacks/).
 
   </details>
 
   <details>
     <summary>Modrinth</summary>
 
-Refer to the [itzg/docker-minecraft docs](https://docker-minecraft-server.readthedocs.io/en/latest/types-and-platforms/mod-platforms/modrinth-modpacks/#modpack-version).
+Set the `Modrinth Version` field to a specific version to pin the pack. Packs never update on their own either way. See the [Modpacks guide](/guides/modpacks/).
 
   </details>
 </details>
 
 <details>
-  <summary>Discopanel keeps deleting the mods I upload. How do I stop it?</summary>
+  <summary>DiscoPanel keeps deleting the mods I upload. How do I stop it?</summary>
 
-  <details>
-    <summary>Curseforge</summary>
-
-If you're uploading a new mod, you can do it via:
-
-- A download repo via the `CF_DOWNLOADS_REPO` environment variable — just download the mods you want to that folder.
-- The `CURSEFORGE_FILES` environment variable using the project ID and file ID for the mod you want.
-  - For example, to add Distant Horizons v2.45-b, you would set `508933:7375285`.
-
-Both options are configured in the **Docker Container Overrides** section of the Overview tab. They are not currently exposed in the normal config options but are useful nonetheless.
-
-  </details>
-
-  <details>
-    <summary>Modrinth</summary>
-    Check [here](https://docker-minecraft-server.readthedocs.io/en/latest/types-and-platforms/mod-platforms/modrinth-modpacks/).
-  </details>
+It doesn't anymore. DiscoPanel never deletes files it didn't install, so mods you upload to the `mods` folder stay put through restarts and pack updates. If you'd like DiscoPanel to fetch mods for you, use the `Modrinth Projects` field in the server properties.
 </details>
 
 <details>
   <summary>Failed to start server: [failed_precondition] ... etc</summary>
 
-This is usually a permissions issue. Discopanel runs Minecraft server containers as `PUID:GID 1000:1000` by default, so if that user/group doesn't have access to Discopanel's install directory, you'll hit this error. Use `ls -la` to check permissions, `chown` to change ownership, and `chmod` to adjust permissions.
+This is usually a permissions issue. DiscoPanel needs to write to its data directory, and server containers run as user `1000:1000` by default. Use `ls -la` to check permissions, `chown` to change ownership, and `chmod` to adjust permissions. More in [Troubleshooting](/troubleshooting/).
 
 </details>
 
 <details>
-  <summary>Issues related to Fuego, Curseforge API, or download errors in the server console</summary>
+  <summary>Issues related to Fuego, CurseForge API, or download errors in the server console</summary>
 
-These are likely not something we can help with. Either your DNS isn't working properly, Curseforge's API is having issues, or your connection to Curseforge is otherwise blocked (e.g. by a firewall).
+These are likely not something we can help with. Either your DNS isn't working properly, CurseForge's API is having issues, or your connection to CurseForge is otherwise blocked (e.g. by a firewall).
 
 </details>
 
 <details>
-  <summary>My curseforge API key isn't working.</summary>
+  <summary>My CurseForge API key isn't working.</summary>
 
-Sometimes it takes a day or two for the key to start working in Discopanel when it works fine via curl or Postman. Sometimes it helps remaking the key once or twice too.
+Sometimes it takes a day or two for the key to start working in DiscoPanel when it works fine via curl or Postman. Sometimes it helps remaking the key once or twice too.
 </details>
 
 <details>
-  <summary>Discopanel ran out of memory or failed when uploading a file</summary>
+  <summary>DiscoPanel ran out of memory or failed when uploading a file</summary>
 
 Try uploading the file using `scp` or `ftp` to move it directly into the folder it needs to be in.
 
-**Make sure the file has the right permissions so Discopanel can read and write to it.**
+**Make sure the file has the right permissions so DiscoPanel can read and write to it.**
 
 </details>
 
 <details>
-  <summary>Does Discopanel have a widget?</summary>
+  <summary>Does DiscoPanel have a widget?</summary>
 
 Yep! We have a Glance widget. It's in the community repo but not yet merged at time of writing.
 
@@ -178,5 +173,3 @@ Yep! We have a Glance widget. It's in the community repo but not yet merged at t
 <img src="/discopanel_glance_widget.png" />
 
 </details>
-
-*This section is a work in progress.*

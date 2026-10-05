@@ -21,7 +21,7 @@ services:
     build:
       context: ../../
       dockerfile: docker/Dockerfile.discopanel
-    #image: nickheyer/discopanel:dev
+    #image: ghcr.io/discohaus/discopanel:dev
     container_name: discopanel
     restart: unless-stopped
     network_mode: host
@@ -61,9 +61,9 @@ services:
       # ------------------------------------ GUILD RESTRICTION (OPTIONAL) ------------------------------------
       #
       # OPTION A: Restrict to members of a specific Discord server.
-      #   1. Add "guilds" to SCOPES above → openid,identify,email,guilds
+      #   1. Add "guilds" to SCOPES above, giving openid,identify,email,guilds
       #   2. Uncomment the lines below, replacing YOUR_GUILD_ID with your server's ID
-      #      (enable Developer Mode in Discord, right-click the server → Copy Server ID)
+      #      (enable Developer Mode in Discord, right-click the server, Copy Server ID)
       #
       # - DISCOPANEL_AUTH_OIDC_EXTRA_CLAIMS_URL=https://discord.com/api/users/@me/guilds
       # - DISCOPANEL_AUTH_OIDC_EXTRA_CLAIMS_KEY=#.id
@@ -74,8 +74,8 @@ services:
       # ------------------------------------ ROLE MAPPING (OPTIONAL) ------------------------------------
       #
       # OPTION B: Restrict to a guild AND map Discord server roles to DiscoPanel roles.
-      #   1. Add "guilds.members.read" to SCOPES above → openid,identify,email,guilds.members.read
-      #   2. Install your Discord application in the server (OAuth2 → URL Generator → select "bot" scope → invite)
+      #   1. Add "guilds.members.read" to SCOPES above, giving openid,identify,email,guilds.members.read
+      #   2. Install your Discord application in the server (OAuth2 > URL Generator, select the "bot" scope, use the invite link)
       #   3. Set EXTRA_CLAIMS_URL to the guild member endpoint with your server ID:
       #
       # - DISCOPANEL_AUTH_OIDC_EXTRA_CLAIMS_URL=https://discord.com/api/users/@me/guilds/YOUR_GUILD_ID/member
@@ -85,5 +85,5 @@ services:
       # - DISCOPANEL_AUTH_OIDC_ROLE_MAPPING={"DISCORD_ROLE_ID":"admin","OTHER_ROLE_ID":"moderator"}
       # - DISCOPANEL_AUTH_OIDC_REJECT_UNMAPPED=true
       #
-      #   This also restricts access to guild members — non-members get a 403 from Discord's API.
-      #   To find role IDs: Server Settings → Roles → right-click a role → Copy Role ID
+      #   This also restricts access to guild members - non-members get a 403 from Discord's API.
+      #   Find role IDs under Server Settings > Roles, right-click a role, Copy Role ID

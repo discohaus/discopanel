@@ -1,6 +1,6 @@
 <script lang="ts">
 	import '../app.css';
-	import { ModeWatcher } from 'mode-watcher';
+	import { ModeWatcher, toggleMode, mode } from 'mode-watcher';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { resolve as resolvePath } from '$app/paths';
@@ -19,8 +19,6 @@
 		SidebarFooter,
 		SidebarTrigger
 	} from '$lib/components/ui/sidebar';
-	import { Separator } from '$lib/components/ui/separator';
-	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Avatar, AvatarFallback } from '$lib/components/ui/avatar';
 	import {
@@ -32,15 +30,24 @@
 		DropdownMenuTrigger
 	} from '$lib/components/ui/dropdown-menu';
 	import { get } from 'svelte/store';
-	import { serversStore, runningServers, activitySortedServers } from '$lib/stores/servers';
+	import { serversStore, activitySortedServers } from '$lib/stores/servers';
+	import { systemModules } from '$lib/stores/system-modules.svelte';
+	import { runPageRefreshers } from '$lib/stores/refresh';
 	import { authStore, currentUser, canAccessSettings, authEnabled } from '$lib/stores/auth';
 	import { onMount } from 'svelte';
-	import { Toaster } from '$lib/components/ui/sonner';
-	import GlobalLoading from '$lib/components/global-loading.svelte';
-
 	import {
+		CommandPalette,
+		StatusDot,
+		ServerAvatar,
+		DiscoLogo,
+		StatusBar,
+		PwaInstallPrompt
+	} from '$lib/components/app';
+	import { networkStore } from '$lib/stores/network';
+	import { isStandalonePwa } from '$lib/pwa';
+	import {
+		House,
 		Server,
-		Home,
 		Settings,
 		Package,
 		User as UserIcon,
@@ -49,28 +56,96 @@
 		FileText,
 		Sun,
 		Moon,
-		Puzzle
+		Puzzle,
+		Search,
+		ChevronRight,
+		RefreshCcw,
+		Info,
+		WifiOff
 	} from '@lucide/svelte';
-	import { toggleMode, mode } from 'mode-watcher';
-	import { ServerStatus, type User } from '$lib/proto/discopanel/v1/common_pb';
+	import type { User } from '$lib/proto/discopanel/v1/storage_pb';
+	import type { GetVersionStatusResponse } from '$lib/proto/discopanel/v1/support_pb';
+	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
+	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
 
 	let { children } = $props();
+	let versionStatus = $state<GetVersionStatusResponse | null>(null);
 
 	let servers = $derived($activitySortedServers);
-	let runningCount = $derived($runningServers.length);
 	let user = $derived($currentUser);
 	let showSettingsNav = $derived($canAccessSettings);
 	let loading = $state(true);
 	let isAuthEnabled = $derived($authEnabled);
+	let paletteOpen = $state(false);
+	let refreshing = $state(false);
 
-	function getUserInitials(user: User) {
-		if (!user) return '';
-		return user.username.slice(0, 2).toUpperCase();
+	// Spins long enough for the click to read
+	async function refresh() {
+		if (refreshing) return;
+		refreshing = true;
+		const spin = new Promise((r) => setTimeout(r, 600));
+		try {
+			systemModules.refresh();
+			await Promise.all([serversStore.fetchServers(true, true), runPageRefreshers(), spin]);
+		} catch (error) {
+			// Interceptor already reports, just log
+			console.error('Refresh failed:', error);
+		} finally {
+			refreshing = false;
+		}
 	}
 
-	function getDisplayRole(user: User): string {
-		if (!user?.roles?.length) return 'No roles';
-		return user.roles[0];
+	let systemRunning = $derived(systemModules.running);
+	let systemTitle = $derived(
+		`System modules running: ${systemRunning.map((m) => m.name).join(', ')}`
+	);
+
+	let currentServerName = $derived.by(() => {
+		const match = page.url.pathname.match(/^\/servers\/([^/]+)/);
+		if (!match || match[1] === 'new') return null;
+		return servers.find((s) => s.id === match[1])?.name ?? null;
+	});
+
+	type SectionUrl =
+		| '/'
+		| '/servers'
+		| '/modpacks'
+		| '/modules'
+		| '/settings'
+		| '/profile'
+		| '/docs/api';
+
+	let crumb: { section: string; detail: string | null; sectionUrl: SectionUrl } = $derived.by(
+		() => {
+			const path = page.url.pathname;
+			if (path === '/') return { section: 'Home', detail: null, sectionUrl: '/' };
+			if (path === '/servers') return { section: 'Servers', detail: null, sectionUrl: '/servers' };
+			if (path === '/servers/new')
+				return { section: 'Servers', detail: 'New server', sectionUrl: '/servers' };
+			if (path.startsWith('/servers/'))
+				return { section: 'Servers', detail: currentServerName, sectionUrl: '/servers' };
+			if (path.startsWith('/modpacks'))
+				return { section: 'Modpacks', detail: null, sectionUrl: '/modpacks' };
+			if (path.startsWith('/modules'))
+				return { section: 'Modules', detail: null, sectionUrl: '/modules' };
+			if (path.startsWith('/settings'))
+				return { section: 'Settings', detail: null, sectionUrl: '/settings' };
+			if (path.startsWith('/profile'))
+				return { section: 'Profile', detail: null, sectionUrl: '/profile' };
+			if (path.startsWith('/docs/api'))
+				return { section: 'API reference', detail: null, sectionUrl: '/docs/api' };
+			return { section: 'DiscoPanel', detail: null, sectionUrl: '/' };
+		}
+	);
+
+	function getUserInitials(u: User) {
+		if (!u) return '';
+		return u.username.slice(0, 2).toUpperCase();
+	}
+
+	function getDisplayRole(u: User): string {
+		if (!u?.roles?.length) return 'No roles';
+		return u.roles[0];
 	}
 
 	async function handleLogout() {
@@ -79,68 +154,122 @@
 
 	let statusPollingInterval: ReturnType<typeof setInterval> | null = null;
 
-	onMount(() => {
-		return new Promise((resolve, reject) => {
-			authStore
-				.checkAuthStatus()
-				.then(async (authStatus) => {
-					loading = false;
-					if (authStatus.enabled) {
-						if (authStatus.firstUserSetup) {
-							goto(resolvePath('/login'));
-							return false;
-						}
-						const isValid = await authStore.validateSession();
-						if (!isValid) {
-							// If anonymous access is enabled, allow browsing without login
-							const state = get(authStore);
-							if (!state.anonymousAccessEnabled) {
-								goto(resolvePath('/login'));
-								return false;
-							}
-						}
-					}
-					return true;
-				})
-				.then((shouldFetch) => {
-					// Only fetch servers if auth succeeded (not redirecting to login)
-					if (shouldFetch && page.url.pathname !== '/login') {
-						serversStore.fetchServers(false).catch((err) => {
-							console.error('Failed to fetch initial servers:', err);
-						});
+	async function bootstrap() {
+		try {
+			const authStatus = await authStore.checkAuthStatus();
+			loading = false;
+			if (authStatus.enabled) {
+				if (authStatus.firstUserSetup) {
+					goto(resolvePath('/login'));
+					return;
+				}
+				// Session already validated inside checkAuthStatus
+				const state = get(authStore);
+				if (!state.isAuthenticated && !state.anonymousAccessEnabled) {
+					goto(resolvePath('/login'));
+					return;
+				}
+			} else if (!authStatus.open) {
+				goto(resolvePath('/login'));
+				return;
+			}
+		} catch (err) {
+			loading = false;
+			console.debug(`DiscoPanel auth bootstrap error: ${err}`);
+		}
+	}
 
-						if (!statusPollingInterval) {
-							statusPollingInterval = setInterval(() => {
-								if (page.url.pathname !== '/login') {
-									serversStore.fetchServers(true);
-								}
-							}, 10000);
-						}
-					}
+	function stopPolling() {
+		if (statusPollingInterval) {
+			clearInterval(statusPollingInterval);
+			statusPollingInterval = null;
+		}
+	}
 
-					// Clean up on unmount
-					resolve(() => {
-						if (statusPollingInterval) {
-							clearInterval(statusPollingInterval);
-							statusPollingInterval = null;
-						}
-					});
-				})
-				.catch((err) => {
-					console.debug(`Discopanel caught a polling error: ${err}`);
-					reject(err);
-				});
+	let sessionKey = $derived.by(() => {
+		if (loading) return null;
+		if (page.url.pathname === '/login') return null;
+		const auth = $authStore;
+		const enabled = auth.localAuthEnabled || auth.oidcEnabled;
+		if (enabled && !auth.isAuthenticated && !auth.anonymousAccessEnabled) return null;
+		return auth.token ?? 'anon';
+	});
+
+	let activeSessionKey: string | null = null;
+
+	$effect(() => {
+		const key = sessionKey;
+		if (key === activeSessionKey) return;
+		activeSessionKey = key;
+		stopPolling();
+		if (key === null) return;
+		// Full first fetch seeds live statuses for the sidebar
+		serversStore.fetchServers(false, true).catch((err) => {
+			console.error('Failed to fetch initial servers:', err);
 		});
+		statusPollingInterval = setInterval(() => {
+			serversStore.fetchServers(true);
+		}, 10000);
+	});
+
+	$effect(() => {
+		if (sessionKey === null) return;
+		rpcClient.support
+			.getVersionStatus({}, silentCallOptions)
+			.then((res) => (versionStatus = res))
+			.catch(() => (versionStatus = null));
+	});
+
+	// System module indicator polls only for privileged sessions
+	$effect(() => {
+		if (sessionKey === null || !showSettingsNav) {
+			systemModules.stop();
+			return;
+		}
+		systemModules.start();
+		return () => systemModules.stop();
+	});
+
+	onMount(() => {
+		if (isStandalonePwa()) networkStore.init();
+		bootstrap();
+		return () => stopPolling();
+	});
+
+	// Add event listener to check for window display mode to be "standalone" (PWA)
+	let isStandalone = $state(false);
+
+	onMount(() => {
+		const mq = window.matchMedia('(display-mode: standalone)');
+		const sync = () => (isStandalone = isStandalonePwa());
+		sync();
+		mq.addEventListener('change', sync);
+		return () => mq.removeEventListener('change', sync);
+	});
+
+	// Mirrors the app.css background tokens for the in-app theme toggle
+	const THEME_COLORS = { light: '#dbdbd6', dark: '#0b0b12' } as const;
+
+	$effect(() => {
+		const isLight = mode.current === 'light';
+		const color = isLight ? THEME_COLORS.light : THEME_COLORS.dark;
+		document.documentElement.style.colorScheme = isLight ? 'light' : 'dark';
+		document
+			.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+			?.setAttribute('content', color);
+		document
+			.querySelector<HTMLMetaElement>('meta[name="apple-mobile-web-app-status-bar-style"]')
+			?.setAttribute('content', isLight ? 'default' : 'black-translucent');
 	});
 </script>
 
 <svelte:head>
-	<title>DiscoPanel - Minecraft Server Management</title>
+	<title>DiscoPanel</title>
 </svelte:head>
 
 <ModeWatcher />
-<Toaster position="bottom-center" expand={true} richColors />
-<GlobalLoading />
+<StatusBar />
+<PwaInstallPrompt />
 
 {#if page.url.pathname === '/login'}
 	{@render children?.()}
@@ -149,226 +278,404 @@
 		<div class="h-8 w-8 animate-spin rounded-full border-b-2 border-primary"></div>
 	</div>
 {:else}
-	<div>
-		<SidebarProvider>
-			<Sidebar collapsible="icon">
-				<SidebarHeader class="my-2">
-					<div class="m-auto flex items-center gap-2">
-						<img src="/g1_24x24.png" alt="DiscoPanel Logo" class="h-6 w-6" />
-						<span class="text-lg font-bold group-data-[collapsible=icon]:hidden">DiscoPanel</span>
-					</div>
-				</SidebarHeader>
+	<CommandPalette bind:open={paletteOpen} />
+	<SidebarProvider>
+		<Sidebar collapsible="icon">
+			<SidebarHeader>
+				<a
+					href={resolvePath('/')}
+					class="flex items-center gap-2 rounded-md px-2 py-1.5 transition-colors group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-1 hover:bg-sidebar-accent"
+				>
+					<DiscoLogo class="size-6" />
+					<span
+						class="truncate font-mono text-base font-bold tracking-tight group-data-[collapsible=icon]:hidden"
+						>disco<span class="text-[#55aa55]">panel</span></span
+					>
+				</a>
+			</SidebarHeader>
 
-				<SidebarContent>
-					<SidebarGroup>
-						<SidebarGroupLabel class="group-data-[collapsible=icon]:opacity-0"
-							>Navigation</SidebarGroupLabel
-						>
-						<SidebarGroupContent>
-							<SidebarMenu>
+			<SidebarContent>
+				<SidebarGroup>
+					<SidebarGroupContent>
+						<SidebarMenu>
+							<SidebarMenuItem>
+								<SidebarMenuButton isActive={page.url.pathname === '/'} tooltipContent="Home">
+									{#snippet child({ props })}
+										<a href={resolvePath('/')} {...props}>
+											<House class="size-4" />
+											<span class="group-data-[collapsible=icon]:hidden">Home</span>
+										</a>
+									{/snippet}
+								</SidebarMenuButton>
+							</SidebarMenuItem>
+							<SidebarMenuItem>
+								<SidebarMenuButton
+									isActive={page.url.pathname.startsWith('/servers')}
+									tooltipContent="Servers"
+								>
+									{#snippet child({ props })}
+										<a href={resolvePath('/servers')} {...props}>
+											<Server class="size-4" />
+											<span class="group-data-[collapsible=icon]:hidden">Servers</span>
+										</a>
+									{/snippet}
+								</SidebarMenuButton>
+							</SidebarMenuItem>
+							<SidebarMenuItem>
+								<SidebarMenuButton
+									isActive={page.url.pathname.startsWith('/modpacks')}
+									tooltipContent="Modpacks"
+								>
+									{#snippet child({ props })}
+										<a href={resolvePath('/modpacks')} {...props}>
+											<Package class="size-4" />
+											<span class="group-data-[collapsible=icon]:hidden">Modpacks</span>
+										</a>
+									{/snippet}
+								</SidebarMenuButton>
+							</SidebarMenuItem>
+							{#if showSettingsNav}
 								<SidebarMenuItem>
-									<SidebarMenuButton isActive={page.url.pathname === '/'}>
+									<SidebarMenuButton
+										isActive={page.url.pathname.startsWith('/modules')}
+										tooltipContent="Modules"
+									>
 										{#snippet child({ props })}
-											<a href={resolvePath('/')} {...props}>
-												<Home class="h-4 w-4" />
-												<span class="group-data-[collapsible=icon]:hidden">Dashboard</span>
-											</a>
-										{/snippet}
-									</SidebarMenuButton>
-								</SidebarMenuItem>
-								<SidebarMenuItem>
-									<SidebarMenuButton isActive={page.url.pathname.startsWith('/servers')}>
-										{#snippet child({ props })}
-											<a href={resolvePath('/servers')} {...props}>
-												<Server class="h-4 w-4" />
-												<span class="group-data-[collapsible=icon]:hidden">Servers</span>
-												{#if runningCount > 0}
-													<Badge
-														variant="secondary"
-														class="ml-auto group-data-[collapsible=icon]:hidden"
-														>{runningCount}</Badge
+											<a href={resolvePath('/modules')} {...props}>
+												<Puzzle class="size-4" />
+												<span class="group-data-[collapsible=icon]:hidden">Modules</span>
+												{#if systemRunning.length > 0}
+													<span
+														class="ml-auto flex items-center gap-1.5 group-data-[collapsible=icon]:hidden"
+														title={systemTitle}
 													>
+														<span class="tabular text-xs text-muted-foreground"
+															>{systemRunning.length}</span
+														>
+														<span class="glow-ok size-2 rounded-full bg-status-ok"></span>
+													</span>
 												{/if}
 											</a>
 										{/snippet}
 									</SidebarMenuButton>
 								</SidebarMenuItem>
 								<SidebarMenuItem>
-									<SidebarMenuButton isActive={page.url.pathname.startsWith('/modpacks')}>
+									<SidebarMenuButton
+										isActive={page.url.pathname === '/settings'}
+										tooltipContent="Settings"
+									>
 										{#snippet child({ props })}
-											<a href={resolvePath('/modpacks')} {...props}>
-												<Package class="h-4 w-4" />
-												<span class="group-data-[collapsible=icon]:hidden">Modpacks</span>
+											<a href={resolvePath('/settings')} {...props}>
+												<Settings class="size-4" />
+												<span class="group-data-[collapsible=icon]:hidden">Settings</span>
 											</a>
 										{/snippet}
 									</SidebarMenuButton>
 								</SidebarMenuItem>
-								{#if showSettingsNav}
+							{/if}
+						</SidebarMenu>
+					</SidebarGroupContent>
+				</SidebarGroup>
+
+				{#if servers.length > 0}
+					<SidebarGroup>
+						<SidebarGroupLabel class="group-data-[collapsible=icon]:hidden">
+							Your servers
+						</SidebarGroupLabel>
+						<SidebarGroupContent>
+							<SidebarMenu>
+								{#each servers as server (server.id)}
 									<SidebarMenuItem>
-										<SidebarMenuButton isActive={page.url.pathname.startsWith('/modules')}>
+										<SidebarMenuButton
+											isActive={page.url.pathname === `/servers/${server.id}`}
+											tooltipContent={server.name}
+											class="group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:p-1!"
+										>
 											{#snippet child({ props })}
-												<a href={resolvePath('/modules')} {...props}>
-													<Puzzle class="h-4 w-4" />
-													<span class="group-data-[collapsible=icon]:hidden">Modules</span>
+												<a href={resolvePath(`/servers/${server.id}`)} {...props}>
+													<ServerAvatar
+														name={server.name}
+														favicon={server.favicon}
+														size="sm"
+														class="size-6 group-data-[collapsible=icon]:size-6"
+													/>
+													<span class="truncate group-data-[collapsible=icon]:hidden"
+														>{server.name}</span
+													>
+													<StatusDot
+														status={server.status}
+														class="ml-auto group-data-[collapsible=icon]:hidden"
+													/>
 												</a>
 											{/snippet}
 										</SidebarMenuButton>
 									</SidebarMenuItem>
-								{/if}
-								{#if showSettingsNav}
-									<SidebarMenuItem>
-										<SidebarMenuButton isActive={page.url.pathname === '/settings'}>
-											{#snippet child({ props })}
-												<a href={resolvePath('/settings')} {...props}>
-													<Settings class="h-4 w-4" />
-													<span class="group-data-[collapsible=icon]:hidden">Settings</span>
-												</a>
-											{/snippet}
-										</SidebarMenuButton>
-									</SidebarMenuItem>
-								{/if}
-								<SidebarMenuItem>
-									<SidebarMenuButton isActive={page.url.pathname.startsWith('/docs/api')}>
-										{#snippet child({ props })}
-											<a href={resolvePath('/docs/api')} {...props}>
-												<FileText class="h-4 w-4" />
-												<span class="group-data-[collapsible=icon]:hidden">API</span>
-											</a>
-										{/snippet}
-									</SidebarMenuButton>
-								</SidebarMenuItem>
+								{/each}
 							</SidebarMenu>
 						</SidebarGroupContent>
 					</SidebarGroup>
+				{/if}
+			</SidebarContent>
 
-					{#if servers.length > 0}
-						<div class="group-data-[collapsible=icon]:hidden">
-							<Separator />
-							<SidebarGroup>
-								<SidebarGroupLabel>Quick Access</SidebarGroupLabel>
-								<SidebarGroupContent>
-									<SidebarMenu>
-										{#each servers as server (server.id)}
-											<SidebarMenuItem>
-												<SidebarMenuButton isActive={page.url.pathname === `/servers/${server.id}`}>
-													{#snippet child({ props })}
-														<a href={resolvePath(`/servers/${server.id}`)} {...props}>
-															<div class="flex w-full items-center gap-2">
-																<div
-																	class="h-2 w-2 rounded-full {server.status ===
-																	ServerStatus.RUNNING
-																		? 'bg-green-500'
-																		: server.status === ServerStatus.ERROR
-																			? 'animate-pulse bg-red-500'
-																			: server.status === ServerStatus.STARTING ||
-																				  server.status === ServerStatus.STOPPING ||
-																				  server.status === ServerStatus.UNHEALTHY
-																				? 'bg-yellow-500'
-																				: 'bg-gray-400'}"
-																></div>
-																<span class="truncate">{server.name}</span>
-															</div>
-														</a>
-													{/snippet}
-												</SidebarMenuButton>
-											</SidebarMenuItem>
-										{/each}
-									</SidebarMenu>
-								</SidebarGroupContent>
-							</SidebarGroup>
-						</div>
-					{/if}
-				</SidebarContent>
-
-				<SidebarFooter>
-					{#if isAuthEnabled && user}
-						<Separator orientation="horizontal" />
-						<div class="flex items-center justify-between">
-							<DropdownMenu>
-								<div class="w-full py-2">
-									<DropdownMenuTrigger
-										class="h-full w-full justify-start group-data-[collapsible=icon]:p-0"
-									>
-										{#snippet child({ props })}
-											<Button {...props} variant="ghost">
-												<Avatar class="h-8 w-8">
-													<AvatarFallback>{getUserInitials(user)}</AvatarFallback>
-												</Avatar>
-												<div class="ml-2 flex-1 text-left group-data-[collapsible=icon]:hidden">
-													<p class="text-sm leading-none font-medium">{user.username}</p>
-													<p class="text-xs text-muted-foreground capitalize">
-														{getDisplayRole(user)}
-													</p>
-												</div>
-											</Button>
-										{/snippet}
-									</DropdownMenuTrigger>
+			<SidebarFooter class="gap-1 border-t border-sidebar-border">
+				{#if isAuthEnabled && user}
+					<DropdownMenu>
+						<DropdownMenuTrigger class="w-full">
+							{#snippet child({ props })}
+								<Button
+									{...props}
+									variant="ghost"
+									class="h-auto w-full justify-start px-2 py-1.5 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
+								>
+									<Avatar class="size-7">
+										<AvatarFallback class="text-xs">{getUserInitials(user)}</AvatarFallback>
+									</Avatar>
+									<div class="ml-1 min-w-0 flex-1 text-left group-data-[collapsible=icon]:hidden">
+										<p class="truncate text-sm leading-tight font-medium">{user.username}</p>
+										<p class="truncate text-xs leading-tight text-muted-foreground capitalize">
+											{getDisplayRole(user)}
+										</p>
+									</div>
+								</Button>
+							{/snippet}
+						</DropdownMenuTrigger>
+						<DropdownMenuContent class="w-56" align="start" side="top">
+							<DropdownMenuLabel>
+								<div class="flex flex-col space-y-1">
+									<p class="text-sm leading-none font-medium">{user.username}</p>
+									{#if user.email}
+										<p class="text-xs leading-none text-muted-foreground">{user.email}</p>
+									{/if}
+									<p class="text-xs leading-none text-muted-foreground capitalize">
+										{user.roles?.length ? user.roles.join(', ') : 'No roles'}
+									</p>
 								</div>
-								<DropdownMenuContent class="w-56" align="end">
-									<DropdownMenuLabel>
-										<div class="flex flex-col space-y-1">
-											<p class="text-sm leading-none font-medium">{user.username}</p>
-											{#if user.email}
-												<p class="text-xs leading-none text-muted-foreground">{user.email}</p>
-											{/if}
-											<p class="text-xs leading-none text-muted-foreground capitalize">
-												{user.roles?.length ? user.roles.join(', ') : 'No roles'}
-											</p>
-										</div>
-									</DropdownMenuLabel>
-									<DropdownMenuSeparator />
-									<DropdownMenuItem onclick={() => goto(resolvePath('/profile'))}>
-										<UserIcon class="mr-2 h-4 w-4" />
-										<span>Profile</span>
-									</DropdownMenuItem>
-									<DropdownMenuSeparator />
-									<DropdownMenuItem onclick={handleLogout}>
-										<LogOut class="mr-2 h-4 w-4" />
-										<span>Log out</span>
-									</DropdownMenuItem>
-								</DropdownMenuContent>
-							</DropdownMenu>
-						</div>
-					{:else if isAuthEnabled && $authStore.anonymousAccessEnabled && !user}
-						<Separator orientation="horizontal" />
-						<div class="w-full py-2">
-							<Button
-								variant="ghost"
-								class="w-full justify-start"
-								onclick={() => goto(resolvePath('/login'))}
-							>
-								<LogIn class="h-4 w-4" />
-								<span class="group-data-[collapsible=icon]:hidden">Login</span>
-							</Button>
-						</div>
-					{/if}
-					<Separator orientation="horizontal" class="mb-2" />
-					<div class="ml-auto flex items-center gap-2">
-						<span class="text-xs text-muted-foreground group-data-[collapsible=icon]:hidden"
-							>{__APP_VERSION__}</span
+							</DropdownMenuLabel>
+							<DropdownMenuSeparator />
+							<DropdownMenuItem onclick={() => goto(resolvePath('/profile'))}>
+								<UserIcon class="mr-2 size-4" />
+								<span>Profile</span>
+							</DropdownMenuItem>
+							<DropdownMenuItem onclick={() => goto(resolvePath('/docs/api'))}>
+								<FileText class="mr-2 size-4" />
+								<span>API reference</span>
+							</DropdownMenuItem>
+							<DropdownMenuSeparator />
+							<DropdownMenuItem onclick={handleLogout}>
+								<LogOut class="mr-2 size-4" />
+								<span>Log out</span>
+							</DropdownMenuItem>
+						</DropdownMenuContent>
+					</DropdownMenu>
+				{:else if isAuthEnabled && $authStore.anonymousAccessEnabled && !user}
+					<Button
+						variant="ghost"
+						class="w-full justify-start px-2"
+						onclick={() => goto(resolvePath('/login'))}
+					>
+						<LogIn class="size-4" />
+						<span class="group-data-[collapsible=icon]:hidden">Log in</span>
+					</Button>
+				{:else}
+					<Button
+						variant="ghost"
+						class="w-full justify-start px-2 group-data-[collapsible=icon]:hidden"
+						onclick={() => goto(resolvePath('/docs/api'))}
+					>
+						<FileText class="size-4" />
+						<span>API reference</span>
+					</Button>
+				{/if}
+				{#if versionStatus?.hubNotice}
+					<div
+						class="flex items-start gap-2 rounded-md border border-primary/25 bg-primary/10 px-2 py-1.5 text-[11px] leading-snug text-foreground group-data-[collapsible=icon]:hidden"
+						role="status"
+					>
+						<Info class="mt-px size-3.5 shrink-0 text-primary" />
+						<span class="min-w-0 wrap-break-word">{versionStatus.hubNotice}</span>
+					</div>
+					<Tooltip.Root>
+						<Tooltip.Trigger
+							class="hidden size-7 items-center justify-center text-primary group-data-[collapsible=icon]:flex"
 						>
+							<Info class="size-4" />
+						</Tooltip.Trigger>
+						<Tooltip.Content class="max-w-64">{versionStatus.hubNotice}</Tooltip.Content>
+					</Tooltip.Root>
+				{/if}
+				<div class="flex items-center gap-1 group-data-[collapsible=icon]:flex-col">
+					<span
+						class="flex min-w-0 flex-1 items-center gap-1.5 pl-2 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden"
+					>
+						<span class="truncate">{__APP_VERSION__}</span>
+						{#if versionStatus?.updateAvailable}
+							<Tooltip.Root>
+								<Tooltip.Trigger>
+									<!-- eslint-disable svelte/no-navigation-without-resolve -- external release URL -->
+									<a
+										href={versionStatus.releaseUrl ||
+											'https://github.com/discohaus/discopanel/releases'}
+										target="_blank"
+										rel="noopener noreferrer"
+										class="inline-flex shrink-0 items-center gap-1 rounded-full border border-status-warn/25 bg-status-warn/10 px-1.5 py-px text-[10px] font-medium text-status-warn hover:bg-status-warn/20"
+									>
+										<span class="size-1.5 animate-pulse rounded-full bg-status-warn"></span>
+										{versionStatus.latestVersion}
+									</a>
+								</Tooltip.Trigger>
+								<Tooltip.Content>
+									Update available: {versionStatus.latestVersion} (running {versionStatus.currentVersion})
+								</Tooltip.Content>
+							</Tooltip.Root>
+						{/if}
+					</span>
+					{#if versionStatus?.updateAvailable}
+						<!-- eslint-disable svelte/no-navigation-without-resolve -- external release URL -->
+						<a
+							href={versionStatus.releaseUrl || 'https://github.com/discohaus/discopanel/releases'}
+							target="_blank"
+							rel="noopener noreferrer"
+							class="hidden size-7 items-center justify-center group-data-[collapsible=icon]:flex"
+							title="Update available: {versionStatus.latestVersion}"
+						>
+							<span class="size-2 animate-pulse rounded-full bg-status-warn"></span>
+						</a>
+					{/if}
+					<Button
+						variant="ghost"
+						size="icon"
+						class="size-7 text-muted-foreground"
+						onclick={toggleMode}
+						title="Toggle theme"
+					>
+						{#if mode.current === 'light'}
+							<Moon class="size-4" />
+						{:else}
+							<Sun class="size-4" />
+						{/if}
+					</Button>
+				</div>
+			</SidebarFooter>
+		</Sidebar>
+
+		<SidebarInset
+			class="flex h-[calc(100svh-1.75rem-env(safe-area-inset-bottom,0px))] flex-col overflow-hidden"
+		>
+			<div class="page-ambient pointer-events-none absolute inset-0" aria-hidden="true"></div>
+			<header
+				class="relative flex shrink-0 flex-col border-b bg-background/80 pt-[env(safe-area-inset-top,0px)] backdrop-blur-sm"
+			>
+				{#if isStandalone}
+					<div class="flex h-11 items-center gap-2 border-b px-3">
+						<a
+							href={resolvePath('/')}
+							class="flex items-center gap-2 transition-opacity hover:opacity-80"
+						>
+							<DiscoLogo class="size-5" />
+							<span class="font-mono text-base font-bold tracking-tight"
+								>disco<span class="text-[#55aa55]">panel</span></span
+							>
+						</a>
+					</div>
+				{/if}
+				<div class="flex h-13 shrink-0 items-center gap-2 px-3 sm:px-4">
+					<SidebarTrigger
+						class="-ml-1 flex size-8 shrink-0 items-center justify-center sm:size-7"
+					/>
+					<div
+						class="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-sm sm:flex-initial"
+					>
+						<a
+							class="flex min-w-0 items-center transition-opacity hover:opacity-80"
+							href={resolvePath(crumb.sectionUrl)}
+						>
+							<span
+								class={crumb.detail ? 'truncate text-muted-foreground' : 'truncate font-medium'}
+							>
+								{crumb.section}
+							</span>
+						</a>
+						{#if crumb.detail}
+							<ChevronRight class="size-3.5 shrink-0 text-muted-foreground/60" />
+							<span class="truncate font-medium">{crumb.detail}</span>
+						{/if}
+					</div>
+					<div class="ml-auto flex items-center gap-1.5 sm:gap-2">
+						<!-- Mobile search button (icon only) -->
+						<Button
+							variant="outline"
+							size="icon"
+							class="size-8 shrink-0 text-muted-foreground sm:hidden"
+							onclick={() => (paletteOpen = true)}
+							title="Search"
+						>
+							<Search class="size-3.5" />
+						</Button>
+
+						<!-- Desktop search button (bar with shortcut) -->
+						<Button
+							variant="outline"
+							size="sm"
+							class="hidden h-8 w-44 items-center justify-start gap-2 px-2.5 text-muted-foreground sm:inline-flex md:w-60 lg:w-72"
+							onclick={() => (paletteOpen = true)}
+						>
+							<Search class="size-3.5 shrink-0" />
+							<span class="truncate">Search</span>
+							<kbd
+								class="pointer-events-none ml-auto hidden rounded border bg-muted px-1.5 font-mono text-[10px] font-medium lg:inline-block"
+							>
+								⌘K
+							</kbd>
+						</Button>
+
 						<Button
 							variant="ghost"
 							size="icon"
-							class="h-7 w-7 group-data-[collapsible=icon]:hidden"
-							onclick={toggleMode}
+							class="size-8 shrink-0 text-muted-foreground"
+							onclick={refresh}
+							disabled={refreshing}
+							title="Refresh"
 						>
-							{#if mode.current === 'light'}
-								<Moon class="h-4 w-4 text-muted-foreground" />
-							{:else}
-								<Sun class="h-4 w-4 text-muted-foreground" />
-							{/if}
+							<RefreshCcw class="size-4 {refreshing ? 'animate-spin' : ''}" />
 						</Button>
-						<SidebarTrigger />
 					</div>
-				</SidebarFooter>
-			</Sidebar>
+				</div>
+			</header>
+			<main class="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
+				{@render children?.()}
+			</main>
+		</SidebarInset>
+	</SidebarProvider>
+{/if}
 
-			<SidebarInset class="flex h-screen flex-col">
-				<main class="flex-1">
-					{@render children?.()}
-				</main>
-			</SidebarInset>
-		</SidebarProvider>
+{#if isStandalone && !$networkStore.online}
+	<div
+		class="fixed inset-0 z-50 flex flex-col items-center justify-center bg-background/85 p-6 text-center backdrop-blur-md select-none"
+		role="alert"
+		aria-live="assertive"
+	>
+		<div
+			class="relative mb-4 flex size-16 items-center justify-center rounded-2xl border border-destructive/30 bg-destructive/10 text-destructive shadow-lg"
+		>
+			<WifiOff class="size-8 animate-pulse" />
+		</div>
+		<h2 class="text-xl font-bold tracking-tight text-foreground sm:text-2xl">
+			No Server Connection
+		</h2>
+		<p class="mt-2 max-w-sm text-sm text-muted-foreground">
+			Connection to the DiscoPanel server was lost. Please check your network or server status.
+		</p>
+		<div class="mt-6 flex flex-col gap-2 sm:flex-row">
+			<Button
+				variant="default"
+				size="default"
+				class="gap-2 shadow-sm"
+				disabled={$networkStore.checking}
+				onclick={() => networkStore.checkConnection()}
+			>
+				<RefreshCcw class="size-4 {$networkStore.checking ? 'animate-spin' : ''}" />
+				<span>{$networkStore.checking ? 'Checking connection...' : 'Try again'}</span>
+			</Button>
+		</div>
 	</div>
 {/if}

@@ -1,7 +1,4 @@
-/**
- * Copy text to clipboard with fallback for non-secure contexts (HTTP).
- * navigator.clipboard only works in secure contexts (HTTPS or localhost).
- */
+// Copies text with a fallback for insecure contexts
 export async function copyToClipboard(text: string): Promise<boolean> {
 	if (navigator.clipboard?.writeText) {
 		try {

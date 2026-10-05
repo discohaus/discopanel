@@ -7,15 +7,17 @@ import {
 } from '@connectrpc/connect';
 import { createConnectTransport } from '@connectrpc/connect-web';
 import { authStore } from '$lib/stores/auth';
-import { toast } from 'svelte-sonner';
+import { notify } from '$lib/stores/activity.svelte';
 import { loadingStore } from '$lib/stores/loading.svelte';
+import { networkStore } from '$lib/stores/network';
+import { isStandalonePwa } from '$lib/pwa';
 
 // Rpc state
 let loggingOut = false;
 
 // SERVICES
 import { AuthService } from '$lib/proto/discopanel/v1/auth_pb';
-import { ConfigService } from '$lib/proto/discopanel/v1/config_pb';
+import { PropertiesService } from '$lib/proto/discopanel/v1/properties_pb';
 import { FileService } from '$lib/proto/discopanel/v1/file_pb';
 import { MinecraftService } from '$lib/proto/discopanel/v1/minecraft_pb';
 import { ModService } from '$lib/proto/discopanel/v1/mod_pb';
@@ -29,10 +31,28 @@ import { UserService } from '$lib/proto/discopanel/v1/user_pb';
 import { RoleService } from '$lib/proto/discopanel/v1/role_pb';
 import { ModuleService } from '$lib/proto/discopanel/v1/module_pb';
 
+// Bare backend reason for inline error surfaces
+export function rpcErrorMessage(error: unknown, fallback: string): string {
+	if (error instanceof ConnectError) return error.rawMessage || fallback;
+	return error instanceof Error ? error.message : fallback;
+}
+
 // Header to mark requests as silent / no loader
 const SILENT_HEADER = 'X-Silent-Request';
 
 export const silentCallOptions = { headers: new Headers({ [SILENT_HEADER]: 'true' }) };
+
+// These are not and should not be app errors, they are transport errors that mean server is unreachable
+const TRANSPORT_CODES = new Set([Code.Unavailable, Code.DeadlineExceeded]);
+
+function isTransportFailure(error: unknown): boolean {
+	// Caller aborted the call, the server was never asked
+	if (error instanceof DOMException && error.name === 'AbortError') return false;
+	if (error instanceof ConnectError) return TRANSPORT_CODES.has(error.code);
+
+	// Bare TypeError on unreachable origin
+	return error instanceof TypeError;
+}
 
 // Login auth interception
 const authInterceptor: Interceptor = (next) => async (req) => {
@@ -56,6 +76,7 @@ const authInterceptor: Interceptor = (next) => async (req) => {
 
 	try {
 		const res = await next(req);
+		if (isStandalonePwa()) networkStore.reportSuccess();
 		return res;
 	} catch (error) {
 		const onLoginPage = typeof window !== 'undefined' && window.location.pathname === '/login';
@@ -68,13 +89,19 @@ const authInterceptor: Interceptor = (next) => async (req) => {
 					loggingOut = false;
 				});
 			}
-			// Never toast auth errors — the auto-logout redirect handles them
+			// Never report auth errors, auto-logout redirect handles them
 			throw error;
 		}
 
-		if (!isSilent && !onLoginPage) {
+		const standalone = isStandalonePwa();
+		if (standalone && isTransportFailure(error)) {
+			networkStore.reportFailure();
+		}
+
+		// Offline overlay already covers the screen, skip stacking toasts
+		if (!isSilent && !onLoginPage && (!standalone || networkStore.isOnline())) {
 			const message = error instanceof Error ? error.message : 'An error occurred';
-			toast.error(message);
+			notify.error(message);
 		}
 		throw error;
 	} finally {
@@ -93,7 +120,7 @@ const transport = createConnectTransport({
 // Clients for each service
 export class RpcClient {
 	public readonly auth: Client<typeof AuthService>;
-	public readonly config: Client<typeof ConfigService>;
+	public readonly properties: Client<typeof PropertiesService>;
 	public readonly file: Client<typeof FileService>;
 	public readonly minecraft: Client<typeof MinecraftService>;
 	public readonly mod: Client<typeof ModService>;
@@ -109,7 +136,7 @@ export class RpcClient {
 
 	constructor() {
 		this.auth = createClient(AuthService, transport);
-		this.config = createClient(ConfigService, transport);
+		this.properties = createClient(PropertiesService, transport);
 		this.file = createClient(FileService, transport);
 		this.minecraft = createClient(MinecraftService, transport);
 		this.mod = createClient(ModService, transport);
@@ -125,5 +152,5 @@ export class RpcClient {
 	}
 }
 
-// singleton
+// Singleton
 export const rpcClient = new RpcClient();
