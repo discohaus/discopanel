@@ -9,6 +9,8 @@ import { createConnectTransport } from '@connectrpc/connect-web';
 import { authStore } from '$lib/stores/auth';
 import { notify } from '$lib/stores/activity.svelte';
 import { loadingStore } from '$lib/stores/loading.svelte';
+import { networkStore } from '$lib/stores/network';
+import { isStandalonePwa } from '$lib/pwa';
 
 // Rpc state
 let loggingOut = false;
@@ -40,6 +42,18 @@ const SILENT_HEADER = 'X-Silent-Request';
 
 export const silentCallOptions = { headers: new Headers({ [SILENT_HEADER]: 'true' }) };
 
+// These are not and should not be app errors, they are transport errors that mean server is unreachable
+const TRANSPORT_CODES = new Set([Code.Unavailable, Code.DeadlineExceeded]);
+
+function isTransportFailure(error: unknown): boolean {
+	// Caller aborted the call, the server was never asked
+	if (error instanceof DOMException && error.name === 'AbortError') return false;
+	if (error instanceof ConnectError) return TRANSPORT_CODES.has(error.code);
+
+	// Bare TypeError on unreachable origin
+	return error instanceof TypeError;
+}
+
 // Login auth interception
 const authInterceptor: Interceptor = (next) => async (req) => {
 	// Auth headers
@@ -62,6 +76,7 @@ const authInterceptor: Interceptor = (next) => async (req) => {
 
 	try {
 		const res = await next(req);
+		if (isStandalonePwa()) networkStore.reportSuccess();
 		return res;
 	} catch (error) {
 		const onLoginPage = typeof window !== 'undefined' && window.location.pathname === '/login';
@@ -78,7 +93,13 @@ const authInterceptor: Interceptor = (next) => async (req) => {
 			throw error;
 		}
 
-		if (!isSilent && !onLoginPage) {
+		const standalone = isStandalonePwa();
+		if (standalone && isTransportFailure(error)) {
+			networkStore.reportFailure();
+		}
+
+		// Offline overlay already covers the screen, skip stacking toasts
+		if (!isSilent && !onLoginPage && (!standalone || networkStore.isOnline())) {
 			const message = error instanceof Error ? error.message : 'An error occurred';
 			notify.error(message);
 		}

@@ -122,7 +122,7 @@
 			</Button>
 		{/if}
 	</PopoverTrigger>
-	<PopoverContent class="max-h-96 w-96 overflow-y-auto p-0" align="end">
+	<PopoverContent class="max-h-96 w-[min(24rem,calc(100vw-2rem))] overflow-y-auto p-0" align="end">
 		<div class="border-b p-3">
 			<h4 class="text-sm font-medium">Available Aliases</h4>
 			<p class="mt-1 text-xs text-muted-foreground">Click to copy an alias to clipboard</p>

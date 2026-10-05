@@ -12,7 +12,7 @@
 		rows = $bindable([]),
 		variant = 'card',
 		separator = '=',
-		keyClass = 'w-56',
+		keyClass = 'w-full sm:w-56',
 		keyPlaceholder = 'key',
 		valuePlaceholder = 'value',
 		entryLabel = 'entry',
@@ -71,7 +71,7 @@
 				</Button>
 			</div>
 		{:else}
-			<div class="flex items-center gap-2 rounded-lg border bg-card p-3">
+			<div class="flex flex-col gap-2 rounded-lg border bg-card p-3 sm:flex-row sm:items-center">
 				<Input
 					bind:value={row.key}
 					onchange={() => onrowchange?.(row.key)}
@@ -80,7 +80,7 @@
 					{disabled}
 					class="{keyClass} font-mono"
 				/>
-				<span class="text-muted-foreground">{separator}</span>
+				<span class="hidden text-muted-foreground sm:inline">{separator}</span>
 				<Input
 					bind:value={row.value}
 					onchange={() => onrowchange?.()}

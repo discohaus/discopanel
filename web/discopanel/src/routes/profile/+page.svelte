@@ -205,19 +205,25 @@
 	<title>Profile · DiscoPanel</title>
 </svelte:head>
 
-<div class="mx-auto w-full max-w-4xl space-y-5 p-4 sm:p-6">
-	{#if user}
-		<div class="flex items-center gap-4">
-			<div
-				class="flex size-12 shrink-0 items-center justify-center rounded-xl bg-primary/15 text-lg font-bold text-primary"
-			>
-				{initials}
+<div class="border-b bg-card/40">
+	<div class="mx-auto w-full max-w-6xl px-4 pt-5 sm:px-6 2xl:max-w-7xl">
+		{#if user}
+			<div class="flex items-center gap-4 pb-4">
+				<div
+					class="flex size-12 shrink-0 items-center justify-center rounded-xl bg-primary/15 text-lg font-bold text-primary"
+				>
+					{initials}
+				</div>
+				<PageHeader title={user.username} description="Your account, security, and API access">
+					<Badge variant={getRoleBadgeVariant(primaryRole)}>{primaryRole}</Badge>
+				</PageHeader>
 			</div>
-			<PageHeader title={user.username} description="Your account, security, and API access">
-				<Badge variant={getRoleBadgeVariant(primaryRole)}>{primaryRole}</Badge>
-			</PageHeader>
-		</div>
+		{/if}
+	</div>
+</div>
 
+<div class="mx-auto w-full max-w-6xl space-y-5 p-4 sm:p-6 2xl:max-w-7xl">
+	{#if user}
 		<div class="grid gap-5 md:grid-cols-2">
 			<SectionCard title="Account" description="Details and roles">
 				<dl class="space-y-3 text-sm">

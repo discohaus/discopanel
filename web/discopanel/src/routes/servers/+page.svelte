@@ -209,6 +209,7 @@
 		tabs={filterTabs}
 		value={filter}
 		onValueChange={(v) => (filter = (v as typeof filter) || 'all')}
+		stackRail
 	>
 		{#snippet header()}
 			<PageHeader title="Servers" description="Manage every server on this panel" class="pt-5 pb-4">
@@ -227,14 +228,14 @@
 		{#snippet rail()}
 			{#if servers.length > 0}
 				<div class="flex flex-wrap items-center gap-2 pb-2">
-					<div class="relative">
+					<div class="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
 						<Search
 							class="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
 						/>
 						<Input
 							type="search"
 							placeholder="Search servers..."
-							class="h-8 w-48 pl-8 sm:w-64"
+							class="h-8 w-full pl-8"
 							bind:value={searchQuery}
 						/>
 					</div>

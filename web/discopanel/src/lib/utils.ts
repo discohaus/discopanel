@@ -47,3 +47,14 @@ export function getDockerImageDisplayName(
 	// Use the displayName field from the generated type
 	return image.displayName || image.tag;
 }
+
+// Keeps the clicked tab centered while the rail scrolls sideways
+export function centerInRail(rail: HTMLElement | null, tab: EventTarget | null | undefined) {
+	if (!rail || !(tab instanceof HTMLElement) || rail.scrollWidth <= rail.clientWidth) return;
+	const railRect = rail.getBoundingClientRect();
+	const tabRect = tab.getBoundingClientRect();
+	rail.scrollBy({
+		left: tabRect.left - railRect.left - (railRect.width - tabRect.width) / 2,
+		behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
+	});
+}
