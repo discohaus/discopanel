@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -193,13 +192,9 @@ func (s *Server) setupHandler() {
 
 	// Admin heap profile for memory spikes, bearer auth only
 	mux.Handle("/api/v1/debug/heap", handlers.NewHeapProfileHandler(s.authManager, s.log))
+
 	// Health check endpoint
-	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
+	mux.HandleFunc("/api/health", handlers.Health)
 
 	// Serve dynamic OpenAPI spec
 	mux.HandleFunc("/api/v1/openapi.yaml", handlers.NewOpenAPIHandler(s.log, s.authManager.IsAnyAuthEnabled))
@@ -414,108 +409,13 @@ func (s *Server) isPollingProcedure(procedure string) bool {
 
 // Frontend serving
 func (s *Server) setupFrontend(mux *http.ServeMux) {
-	// Get frontend source
-	fs := s.getFrontendFS()
-	if fs == nil {
+	buildFS, err := web.BuildFS()
+	if err != nil {
 		s.log.Warn("No frontend found - API only mode")
 		return
 	}
-
-	// Serve frontend for root path
-	mux.Handle("/", s.createFrontendHandler(fs))
-}
-
-// Get frontend fs
-func (s *Server) getFrontendFS() http.FileSystem {
-	// Try embedded frontend first
-	if buildFS, err := web.BuildFS(); err == nil {
-		s.log.Info("Using embedded frontend")
-		return http.FS(buildFS)
-	}
-	return nil
-}
-
-// Create frontend handler
-func (s *Server) createFrontendHandler(fs http.FileSystem) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Only serve frontend for non-Connect paths
-		if isConnectPath(r.URL.Path) {
-			http.NotFound(w, r)
-			return
-		}
-
-		path := r.URL.Path
-		if path == "/" {
-			path = "/index.html"
-		}
-
-		cleanPath := strings.TrimPrefix(path, "/")
-
-		// Set content headers Go cannot infer on its own.
-		// The stdlib mime table has no .webmanifest entry and the alpine
-		// runtime ships no /etc/mime.types, so the manifest would be sniffed
-		// as text/plain. Browsers then ignore it and install the app as a bare
-		// shortcut with an address bar instead of a standalone window.
-		setContentHeaders := func(targetPath string) {
-			if strings.HasSuffix(targetPath, ".webmanifest") {
-				w.Header().Set("Content-Type", "application/manifest+json")
-			} else if strings.HasSuffix(targetPath, ".js") {
-				w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-			} else if strings.HasSuffix(targetPath, ".mjs") {
-				w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-			}
-			if targetPath == "service-worker.js" {
-				w.Header().Set("Service-Worker-Allowed", "/")
-			}
-		}
-
-		file, err := fs.Open(path)
-		if err == nil {
-			defer file.Close()
-			stat, statErr := file.Stat()
-			if statErr == nil && !stat.IsDir() {
-				setContentHeaders(cleanPath)
-				http.ServeContent(w, r, path, stat.ModTime(), file)
-				return
-			}
-		}
-
-		// Never serve SPA index.html fallback for unmatched /api/ paths
-		if strings.HasPrefix(path, "/api/") {
-			http.NotFound(w, r)
-			return
-		}
-
-		// Serve index.html for client-side routing fallback
-		indexFile, err := fs.Open("/index.html")
-		if err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		defer indexFile.Close()
-
-		stat, _ := indexFile.Stat()
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		http.ServeContent(w, r, "/index.html", stat.ModTime(), indexFile)
-	}
-}
-
-// Checks if a path is a Connect RPC path
-func isConnectPath(path string) bool {
-	// Connect paths start with service names
-	connectPrefixes := []string{
-		"/discopanel.v1.",
-		"/discopanel.agent.",
-		"/grpc.reflection.",
-		"/connect.",
-	}
-
-	for _, prefix := range connectPrefixes {
-		if len(path) > len(prefix) && path[:len(prefix)] == prefix {
-			return true
-		}
-	}
-	return false
+	s.log.Info("Using embedded frontend")
+	mux.Handle("/", handlers.NewFrontendHandler(buildFS))
 }
 
 // Clears secrets a handler forgot to redact

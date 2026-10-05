@@ -32,12 +32,14 @@
 
 	async function install() {
 		if (deferredPrompt) {
-			deferredPrompt.prompt();
-			const choiceResult = await deferredPrompt.userChoice;
-			if (choiceResult?.outcome === 'accepted') {
-				dismiss();
-			}
+			await deferredPrompt.prompt();
+			const { outcome } = await deferredPrompt.userChoice;
 			deferredPrompt = null;
+			if (outcome === 'accepted') {
+				dismiss();
+			} else {
+				show = false;
+			}
 		} else if (isIos) {
 			showIosInstructions = true;
 		}

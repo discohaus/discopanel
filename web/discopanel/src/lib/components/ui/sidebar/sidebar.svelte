@@ -51,8 +51,7 @@
 			<div
 				class="flex h-full w-full flex-col"
 				onclick={(e) => {
-					const target = (e.target as HTMLElement)?.closest('a, [data-sidebar-close]');
-					if (target) {
+					if ((e.target as HTMLElement).closest('a')) {
 						sidebar.closeMobile();
 					}
 				}}

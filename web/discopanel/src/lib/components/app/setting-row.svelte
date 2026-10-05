@@ -20,7 +20,6 @@
 		actions
 	}: {
 		id: string;
-		// Id of the control the label points at, omitted when the row has no control
 		controlId?: string;
 		label: string;
 		description?: string;

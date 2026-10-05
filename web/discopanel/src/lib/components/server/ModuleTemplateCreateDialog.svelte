@@ -345,7 +345,7 @@
 
 <Dialog bind:open>
 	<DialogContent
-		class="flex h-[92dvh]! w-[calc(100vw-1rem)]! max-w-4xl! flex-col gap-0! overflow-hidden p-0! sm:h-[85vh] sm:w-[95vw]!"
+		class="flex h-[92dvh]! w-[calc(100vw-1rem)]! max-w-4xl! flex-col gap-0! overflow-hidden p-0! sm:h-[85vh]! sm:w-[95vw]!"
 		showCloseButton={false}
 	>
 		<SectionedDialogLayout

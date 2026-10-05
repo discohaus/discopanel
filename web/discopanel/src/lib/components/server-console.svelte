@@ -644,7 +644,7 @@
 	<div
 		class="flex shrink-0 flex-col border-b border-terminal-foreground/8 bg-terminal-foreground/4 transition-colors duration-300 sm:h-9.5 sm:flex-row sm:items-stretch sm:gap-3 sm:pr-2 sm:pl-3"
 	>
-		<!-- Row one on phones, unwrapped back into the single toolbar on desktop -->
+		<!-- First toolbar row on phones, inline on desktop -->
 		<div class="flex h-9.5 min-w-0 items-center gap-2 px-3 sm:contents">
 			<div class="flex min-w-0 items-center gap-2 sm:py-2">
 				<span class="relative flex size-2 shrink-0">
@@ -793,7 +793,7 @@
 			</div>
 		</div>
 
-		<!-- Own row on phones, inline tab strip again from sm upwards -->
+		<!-- Tab strip gets its own row on phones -->
 		<nav
 			class="flex shrink-0 items-center gap-1 border-t border-terminal-foreground/8 px-3 py-1 sm:order-0 sm:items-end sm:border-t-0 sm:px-0 sm:pt-1.5"
 			role="tablist"

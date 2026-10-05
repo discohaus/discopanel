@@ -1,7 +1,7 @@
 <script lang="ts" generics="T extends string">
 	import type { Component, Snippet } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
-	import { cn } from '$lib/utils';
+	import { cn, centerInRail } from '$lib/utils';
 	import { X } from '@lucide/svelte';
 
 	interface NavItem {
@@ -41,25 +41,15 @@
 
 	let nav = $state<HTMLElement | null>(null);
 
-	// Keeps the clicked tab centered while the rail scrolls sideways
 	function selectSection(id: T, event: MouseEvent) {
 		activeSection = id;
-		const rail = nav;
-		const tab = event.currentTarget;
-		if (!rail || !(tab instanceof HTMLElement) || rail.scrollWidth <= rail.clientWidth) return;
-		const railRect = rail.getBoundingClientRect();
-		const tabRect = tab.getBoundingClientRect();
-		const offset = tabRect.left - railRect.left - (railRect.width - tabRect.width) / 2;
-		rail.scrollBy({
-			left: offset,
-			behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
-		});
+		centerInRail(nav, event.currentTarget);
 	}
 </script>
 
 <div class="flex h-full min-h-0 flex-col md:flex-row">
 	<aside class={cn('flex shrink-0 flex-col border-b md:border-r md:border-b-0', sidebarClass)}>
-		<!-- Rail tabs carry the section name on mobile, so the title row collapses to a close button -->
+		<!-- Mobile title row collapses to a close button -->
 		<div class="flex items-center justify-between gap-3 border-b md:hidden">
 			<div class="min-w-0 flex-1">
 				{@render sidebarHeader?.()}

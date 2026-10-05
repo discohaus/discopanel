@@ -61,19 +61,6 @@
 						});
 						window.parent.postMessage({ type: 'scalar-loaded' }, '*');
 					});
-
-					window.addEventListener('message', (e) => {
-						if (e.data?.type === 'scalar-set-mode') {
-							if (e.data.isDark) {
-								document.body.classList.add('dark-mode');
-								document.body.classList.remove('light-mode');
-							} else {
-								document.body.classList.add('light-mode');
-								document.body.classList.remove('dark-mode');
-							}
-							window.dispatchEvent(new CustomEvent('scalar-update-dark-mode', { detail: e.data.isDark }));
-						}
-					});
 				${'<'}/script>
 			</body>
 			</html>
@@ -111,13 +98,6 @@
 			clearInterval(progressInterval);
 			window.removeEventListener('message', handleMessage);
 		};
-	});
-
-	$effect(() => {
-		const dark = isDark;
-		if (iframeElement?.contentWindow) {
-			iframeElement.contentWindow.postMessage({ type: 'scalar-set-mode', isDark: dark }, '*');
-		}
 	});
 </script>
 

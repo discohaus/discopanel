@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import { cn } from '$lib/utils';
+	import { cn, centerInRail } from '$lib/utils';
 	import { Tabs, TabsList, TabsTrigger } from '$lib/components/ui/tabs';
 	import { UNDERLINE_TAB } from '$lib/tabs';
 
@@ -32,19 +32,11 @@
 
 	let tabStrip = $state<HTMLElement | null>(null);
 
-	// Keeps the clicked tab centered when the strip overflows
 	function centerTab(event: MouseEvent) {
-		const strip = tabStrip;
-		const trigger = (event.target as HTMLElement | null)?.closest('[data-slot="tabs-trigger"]');
-		if (!strip || !(trigger instanceof HTMLElement) || strip.scrollWidth <= strip.clientWidth)
-			return;
-		const stripRect = strip.getBoundingClientRect();
-		const tabRect = trigger.getBoundingClientRect();
-		const offset = tabRect.left - stripRect.left - (stripRect.width - tabRect.width) / 2;
-		strip.scrollBy({
-			left: offset,
-			behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
-		});
+		centerInRail(
+			tabStrip,
+			(event.target as HTMLElement | null)?.closest('[data-slot="tabs-trigger"]')
+		);
 	}
 </script>
 

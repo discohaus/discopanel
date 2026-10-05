@@ -236,9 +236,7 @@
 		return () => stopPolling();
 	});
 
-	// An installed PWA has no browser address bar, so on small screens the
-	// product identity needs a home of its own above the toolbar.
-	// iOS Safari home screen apps report standalone through navigator instead
+	// Add event listener to check for window display mode to be "standalone" (PWA)
 	let isStandalone = $state(false);
 
 	onMount(() => {
@@ -249,9 +247,7 @@
 		return () => mq.removeEventListener('change', sync);
 	});
 
-	// Dark mode is driven by a .dark class, so prefers-color-scheme metas would
-	// ignore the in-app toggle. Keep the values in sync with --background in
-	// app.css instead.
+	// Mirrors the app.css background tokens for the in-app theme toggle
 	const THEME_COLORS = { light: '#dbdbd6', dark: '#0b0b12' } as const;
 
 	$effect(() => {

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { centerInRail } from '$lib/utils';
 	import { onMount, untrack } from 'svelte';
 	import { SvelteURL } from 'svelte/reactivity';
 	import { Button } from '$lib/components/ui/button';
@@ -125,20 +126,7 @@
 		const url = new SvelteURL(window.location.href);
 		url.hash = slug;
 		window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
-		centerCategory(event?.currentTarget);
-	}
-
-	// Keeps the clicked category centered while the rail scrolls sideways
-	function centerCategory(tab: EventTarget | null | undefined) {
-		const rail = categoryNav;
-		if (!rail || !(tab instanceof HTMLElement) || rail.scrollWidth <= rail.clientWidth) return;
-		const railRect = rail.getBoundingClientRect();
-		const tabRect = tab.getBoundingClientRect();
-		const offset = tabRect.left - railRect.left - (railRect.width - tabRect.width) / 2;
-		rail.scrollBy({
-			left: offset,
-			behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
-		});
+		centerInRail(categoryNav, event?.currentTarget);
 	}
 
 	function flashField(id: string) {

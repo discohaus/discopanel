@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { centerInRail } from '$lib/utils';
 	import { onMount, untrack } from 'svelte';
 	import { SvelteURL } from 'svelte/reactivity';
 	import { Input } from '$lib/components/ui/input';
@@ -84,18 +85,7 @@
 		const url = new SvelteURL(window.location.href);
 		url.hash = slug;
 		window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
-
-		// Keeps the clicked category centered while the rail scrolls sideways
-		const rail = categoryNav;
-		const tab = event.currentTarget;
-		if (!rail || !(tab instanceof HTMLElement) || rail.scrollWidth <= rail.clientWidth) return;
-		const railRect = rail.getBoundingClientRect();
-		const tabRect = tab.getBoundingClientRect();
-		const offset = tabRect.left - railRect.left - (railRect.width - tabRect.width) / 2;
-		rail.scrollBy({
-			left: offset,
-			behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
-		});
+		centerInRail(categoryNav, event.currentTarget);
 	}
 
 	async function copyFieldLink(key: string) {
