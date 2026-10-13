@@ -662,6 +662,11 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 	}
 	if msg.ModLoader != v1.ModLoader_MOD_LOADER_UNSPECIFIED && msg.ModLoader != originalModLoader {
 		server.ModLoader = msg.ModLoader
+		// Leaving the pack platforms drops the pack link
+		if minecraft.PackSourceFor(msg.ModLoader) == optionsv1.PackSource_PACK_SOURCE_UNSPECIFIED {
+			server.ModpackId = ""
+			clearModpackState(server)
+		}
 		needsRecreation = true
 	}
 	if msg.McVersion != "" && msg.McVersion != originalMCVersion {
@@ -784,6 +789,10 @@ func (s *ServerService) applyModpackSelection(ctx context.Context, server *v1.Se
 		return fmt.Errorf("unsupported modpack indexer %q", modpack.Indexer)
 	}
 	server.ModLoader = loader
+	if server.ModpackId != modpack.Id {
+		server.ModpackId = modpack.Id
+		clearModpackState(server)
+	}
 
 	// Stale identities from earlier selections must not linger
 	clearPackSelection(serverConfig)
@@ -823,6 +832,38 @@ func (s *ServerService) applyModpackSelection(ctx context.Context, server *v1.Se
 	s.adoptModpackIcon(ctx, server, modpack)
 	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_MODPACK_SELECT, metrics.Attrs{"modpack": modpack.Name}, "selected modpack %s", modpack.Name)
 	return nil
+}
+
+// Forgets installed and advertised versions when the pack changes
+func clearModpackState(server *v1.Server) {
+	server.ModpackVersionId = ""
+	server.ModpackUpdateVersionId = ""
+	server.ModpackUpdateVersionName = ""
+	server.ModpackUpdateFileDate = nil
+	server.ModpackUpdateDismissedId = ""
+}
+
+// Hides the advertised modpack update until a newer one appears
+func (s *ServerService) DismissModpackUpdate(ctx context.Context, req *connect.Request[v1.DismissModpackUpdateRequest]) (*connect.Response[v1.DismissModpackUpdateResponse], error) {
+	server, err := getServer(ctx, s.store, req.Msg.Id)
+	if err != nil {
+		return nil, err
+	}
+	versionID := req.Msg.VersionId
+	if versionID == "" || versionID != server.ModpackUpdateVersionId {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no modpack update %q is advertised for this server", versionID))
+	}
+	if err := s.store.UpdateServerFields(ctx, server.Id, map[string]any{"modpack_update_dismissed_id": versionID}); err != nil {
+		s.log.Error("Failed to dismiss modpack update: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to dismiss modpack update"))
+	}
+	server.ModpackUpdateDismissedId = versionID
+	if err := s.store.HydrateProxyPorts(ctx, server); err != nil {
+		s.log.Error("Failed to hydrate proxy port: %v", err)
+	}
+	s.applyMetrics(server)
+	server.Favicon = s.serverFavicon(server)
+	return connect.NewResponse(&v1.DismissModpackUpdateResponse{Server: server.Redact()}), nil
 }
 
 // Clears pack identity properties from earlier selections

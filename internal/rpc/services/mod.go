@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	storage "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/docker"
 	"github.com/discohaus/discopanel/internal/metrics"
+	"github.com/discohaus/discopanel/internal/provisioner"
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/files"
 	"github.com/discohaus/discopanel/pkg/hub"
@@ -38,6 +41,7 @@ type ModService struct {
 	rec           *metrics.Recorder
 	log           *logger.Logger
 	uploadManager *transfer.UploadManager
+	prov          *provisioner.Provisioner
 
 	cfNamesMu sync.Mutex
 	cfNames   map[string]string
@@ -56,7 +60,7 @@ type cfSweepFile struct {
 }
 
 // NewModService creates a new mod service
-func NewModService(store *storage.Store, docker *docker.Client, cfg *config.Config, uploadManager *transfer.UploadManager, rec *metrics.Recorder, log *logger.Logger) *ModService {
+func NewModService(store *storage.Store, docker *docker.Client, cfg *config.Config, uploadManager *transfer.UploadManager, prov *provisioner.Provisioner, rec *metrics.Recorder, log *logger.Logger) *ModService {
 	return &ModService{
 		store:         store,
 		docker:        docker,
@@ -64,6 +68,7 @@ func NewModService(store *storage.Store, docker *docker.Client, cfg *config.Conf
 		rec:           rec,
 		log:           log,
 		uploadManager: uploadManager,
+		prov:          prov,
 		cfNames:       map[string]string{},
 		cfPrints:      map[string]uint32{},
 		cfSweeps:      map[string]bool{},
@@ -170,7 +175,16 @@ func (s *ModService) ListMods(ctx context.Context, req *connect.Request[v1.ListM
 	}
 
 	mods := scanModDir(msg.ServerId, modsDir, server.ModLoader, true)
-	mods = append(mods, scanModDir(msg.ServerId, modsDir+"_disabled", server.ModLoader, false)...)
+	// Enabled copy hides a disabled twin of the same name
+	listed := make(map[string]bool, len(mods))
+	for _, m := range mods {
+		listed[m.FileName] = true
+	}
+	for _, m := range scanModDir(msg.ServerId, modsDir+"_disabled", server.ModLoader, false) {
+		if !listed[m.FileName] {
+			mods = append(mods, m)
+		}
+	}
 	s.applyCFNames(ctx, msg.ServerId, modsDir, mods)
 
 	return connect.NewResponse(&v1.ListModsResponse{
@@ -360,65 +374,138 @@ func (s *ModService) ImportUploadedMod(ctx context.Context, req *connect.Request
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("upload session not found or not completed"))
 	}
 
-	// Validate file is appropriate for this mod loader
-	if !minecraft.IsValidModFile(originalFilename, server.ModLoader) {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid file type for this mod loader"))
+	// Upload wins over enabled jars declaring the same mod id
+	mod, superseded, err := s.placeMod(ctx, server, tempPath, originalFilename, true, metrics.Attrs{"file": originalFilename})
+	if err != nil {
+		return nil, err
 	}
-
-	// Get the correct mods directory based on mod loader
-	modsDir := minecraft.GetModsPath(server.DataPath, server.ModLoader)
-	if modsDir == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("this server type does not support mods"))
-	}
-
-	// Create mods directory if needed
-	if err := os.MkdirAll(modsDir, 0755); err != nil {
-		s.log.Error("Failed to create mods directory: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create mods directory"))
-	}
-
-	// Move file from temp location to mods dir
-	modPath := filepath.Join(modsDir, originalFilename)
-	if err := os.Rename(tempPath, modPath); err != nil {
-		if err := files.CopyFile(tempPath, modPath); err != nil {
-			s.log.Error("Failed to move mod file: %v", err)
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to save mod"))
-		}
-		os.Remove(tempPath)
-	}
-
-	// Cleanup the upload session
 	s.uploadManager.CleanupSession(msg.UploadSessionId)
 
-	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_MOD_INSTALL, metrics.Attrs{"file": originalFilename}, "installed mod %s", originalFilename)
+	return connect.NewResponse(&v1.ImportUploadedModResponse{
+		Mod:        mod,
+		Message:    "Mod uploaded successfully",
+		Superseded: superseded,
+	}), nil
+}
 
-	// Get file info for the response
-	info, err := os.Stat(modPath)
+// Installs a mod sourced by id through the indexers
+func (s *ModService) InstallMod(ctx context.Context, req *connect.Request[v1.InstallModRequest]) (*connect.Response[v1.InstallModResponse], error) {
+	msg := req.Msg
+	if msg.ModId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("mod_id is required"))
+	}
+	server, err := getServer(ctx, s.store, msg.ServerId)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := s.store.GetServerProperties(ctx, server.Id)
+	if err != nil {
+		s.log.Error("Failed to get server properties: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get server configuration"))
+	}
+	stage, err := os.MkdirTemp(s.config.Storage.TempDir, "mod-install-")
+	if err != nil {
+		s.log.Error("Failed to create staging dir: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to stage the download"))
+	}
+	defer os.RemoveAll(stage)
+	path, err := s.prov.SourceMod(ctx, server, cfg, stage, msg.ModId, msg.VersionRange, msg.Dialect)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("no indexer could source %s: %w", msg.ModId, err))
+	}
+	// Newest copy stays enabled, the fresh jar breaks ties
+	mod, superseded, err := s.placeMod(ctx, server, path, filepath.Base(path), false, metrics.Attrs{"file": filepath.Base(path), "mod_id": msg.ModId})
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&v1.InstallModResponse{Mod: mod, Superseded: superseded}), nil
+}
+
+// Places a jar in the mods dir with full bookkeeping
+func (s *ModService) placeMod(ctx context.Context, server *v1.Server, srcPath, name string, keptWins bool, attrs metrics.Attrs) (*v1.Mod, []string, error) {
+	if !minecraft.IsValidModFile(name, server.ModLoader) {
+		return nil, nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid file type for this mod loader"))
+	}
+	modsDir := minecraft.GetModsPath(server.DataPath, server.ModLoader)
+	if modsDir == "" {
+		return nil, nil, connect.NewError(connect.CodeInvalidArgument, errors.New("this server type does not support mods"))
+	}
+	if err := os.MkdirAll(modsDir, 0755); err != nil {
+		s.log.Error("Failed to create mods directory: %v", err)
+		return nil, nil, connect.NewError(connect.CodeInternal, errors.New("failed to create mods directory"))
+	}
+	modPath := filepath.Join(modsDir, name)
+	if err := os.Rename(srcPath, modPath); err != nil {
+		if err := files.CopyFile(srcPath, modPath); err != nil {
+			s.log.Error("Failed to move mod file: %v", err)
+			return nil, nil, connect.NewError(connect.CodeInternal, errors.New("failed to save mod"))
+		}
+		os.Remove(srcPath)
+	}
+	// Fresh jar replaces a disabled twin of the same name
+	if err := os.Remove(filepath.Join(modsDir+"_disabled", name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		s.log.Error("Failed to remove disabled copy of %s: %v", name, err)
+		return nil, nil, connect.NewError(connect.CodeInternal, errors.New("mod installed but its disabled copy could not be removed"))
+	}
+	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_MOD_INSTALL, attrs, "installed mod %s", name)
+
+	superseded, err := s.disableSupersededMods(ctx, server, modsDir, name, keptWins)
+	if err != nil {
+		s.log.Error("Failed to disable superseded mod: %v", err)
+		return nil, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("mod installed but %v", err))
+	}
+	// An outranked fresh jar lands disabled with a choice row
+	dir, enabled := modsDir, true
+	if slices.Contains(superseded, name) {
+		dir, enabled = modsDir+"_disabled", false
+	}
+	info, err := os.Stat(filepath.Join(dir, name))
 	if err != nil {
 		s.log.Error("Failed to stat mod file: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get mod info"))
+		return nil, nil, connect.NewError(connect.CodeInternal, errors.New("failed to get mod info"))
 	}
-
-	// Create mod record
-	mod := &v1.Mod{
-		Id:          modEntryID(msg.ServerId, originalFilename),
-		ServerId:    msg.ServerId,
-		FileName:    originalFilename,
-		DisplayName: modDisplayName(originalFilename),
-		Enabled:     true,
-		FileSize:    info.Size(),
-		UploadedAt:  timestamppb.New(info.ModTime()),
+	mod := modFromFile(server.Id, dir, name, enabled, info)
+	if enabled {
+		// Fresh enabled jar clears any stored toggle for the name
+		if err := s.store.DeleteMod(ctx, mod.Id); err != nil {
+			s.log.Error("Failed to clear mod row: %v", err)
+		}
 	}
+	return mod, superseded, nil
+}
 
-	// Fresh upload clears any stored toggle for the name
-	if err := s.store.DeleteMod(ctx, mod.Id); err != nil {
-		s.log.Error("Failed to clear mod row: %v", err)
+// Disables jars the fresh jar outranks, choices outlive reinstalls
+func (s *ModService) disableSupersededMods(ctx context.Context, server *v1.Server, modsDir, fileName string, keptWins bool) ([]string, error) {
+	metas := minecraft.ScanModsDir(modsDir)
+	dialects := minecraft.ResolveDialects(server.ModLoader, server.DataPath, modsDir)
+	kept := map[string]bool{fileName: true}
+	losers := minecraft.SupersededJars(metas, dialects, kept)
+	if keptWins {
+		losers = minecraft.SupersededByKept(metas, dialects, kept)
 	}
-
-	return connect.NewResponse(&v1.ImportUploadedModResponse{
-		Mod:     mod,
-		Message: "Mod uploaded successfully",
-	}), nil
+	disabled := make([]string, 0, len(losers))
+	for _, name := range slices.Sorted(maps.Keys(losers)) {
+		// Only pairs involving the fresh jar belong to this install
+		if name != fileName && losers[name] != fileName {
+			continue
+		}
+		info, err := os.Stat(filepath.Join(modsDir, name))
+		if err != nil {
+			return disabled, fmt.Errorf("%s could not be read: %w", name, err)
+		}
+		if err := minecraft.DisableModJar(modsDir, name); err != nil {
+			return disabled, fmt.Errorf("%s could not be disabled: %w", name, err)
+		}
+		mod := modFromFile(server.Id, modsDir+"_disabled", name, false, info)
+		if err := s.store.SaveModChoice(ctx, mod); err != nil {
+			return disabled, fmt.Errorf("saving the choice for %s failed: %w", name, err)
+		}
+		s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_MOD_DISABLE,
+			metrics.Attrs{"file": name, "reason": "superseded", "by": losers[name]},
+			"disabled %s, %s wins the same mod id", name, losers[name])
+		disabled = append(disabled, name)
+	}
+	return disabled, nil
 }
 
 // UpdateMod updates a mod

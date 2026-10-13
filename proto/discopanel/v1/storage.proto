@@ -736,6 +736,8 @@ enum ServerActionKind {
   SERVER_ACTION_KIND_ROUTING_UPDATE = 41 [(discopanel.options.v1.value) = {label: "Routing Updated"}];
   SERVER_ACTION_KIND_PROVISION_INSTALL = 42 [(discopanel.options.v1.value) = {label: "Provisioned"}];
   SERVER_ACTION_KIND_PROVISION_MC_VERSION = 43 [(discopanel.options.v1.value) = {label: "Version Pinned"}];
+  SERVER_ACTION_KIND_MODPACK_UPDATE_AVAILABLE = 44 [(discopanel.options.v1.value) = {label: "Modpack Update Available"}];
+  SERVER_ACTION_KIND_PROVISION_SWEEP = 45 [(discopanel.options.v1.value) = {label: "Stale Pack Files Removed"}];
 }
 
 // One container port for servers and modules alike
@@ -1038,6 +1040,17 @@ message Server {
   string agent_token_hash = 52 [(protogorm.v1.db) = {redact: true}];
   // Who wrote server-icon.png
   IconSource icon_source = 53;
+
+  // Indexed modpack row the server provisions from
+  string modpack_id = 55 [(protogorm.v1.db) = {tag: "index"}];
+  // Modpack version the provisioner last installed
+  string modpack_version_id = 56;
+  // Newest upstream modpack version the version scan found
+  string modpack_update_version_id = 57;
+  string modpack_update_version_name = 58;
+  optional google.protobuf.Timestamp modpack_update_file_date = 59;
+  // Advertised version the operator chose to ignore
+  string modpack_update_dismissed_id = 60;
 }
 
 // TCP proxy listener endpoint
@@ -1828,6 +1841,8 @@ message IndexedModpackFile {
   string mod_loader = 10;
   optional string server_pack_file_id = 11;
   IndexedModpack modpack = 12 [(protogorm.v1.db) = {tag: "constraint:OnDelete:CASCADE"}];
+  // Ready made server archive paired with a client file
+  bool is_server_pack = 13;
 }
 
 // One favorited modpack row

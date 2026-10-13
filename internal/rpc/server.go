@@ -17,6 +17,7 @@ import (
 	"github.com/discohaus/discopanel/internal/lifecycle"
 	"github.com/discohaus/discopanel/internal/metrics"
 	"github.com/discohaus/discopanel/internal/module"
+	"github.com/discohaus/discopanel/internal/provisioner"
 	"github.com/discohaus/discopanel/internal/proxy"
 	"github.com/discohaus/discopanel/internal/rbac"
 	"github.com/discohaus/discopanel/internal/rpc/handlers"
@@ -62,6 +63,7 @@ type Server struct {
 	agentHub         *metrics.Hub
 	uploadManager    *transfer.UploadManager
 	downloadManager  *transfer.DownloadManager
+	prov             *provisioner.Provisioner
 	completion       *command.Completion
 	wsHub            *ws.Hub
 	diagnostics      *diagnostics.Runner
@@ -69,7 +71,7 @@ type Server struct {
 }
 
 // Creates new Connect RPC server
-func NewServer(store *storage.Store, docker *docker.Client, sender *command.Sender, cfg *config.Config, proxyManager *proxy.Manager, sched *scheduler.Scheduler, lifecycleManager *lifecycle.Manager, metricsCollector *metrics.Collector, moduleManager *module.Manager, bus *events.Bus, agentHub *metrics.Hub, rec *metrics.Recorder, log *logger.Logger) (*Server, error) {
+func NewServer(store *storage.Store, docker *docker.Client, sender *command.Sender, cfg *config.Config, proxyManager *proxy.Manager, sched *scheduler.Scheduler, lifecycleManager *lifecycle.Manager, metricsCollector *metrics.Collector, moduleManager *module.Manager, bus *events.Bus, agentHub *metrics.Hub, prov *provisioner.Provisioner, rec *metrics.Recorder, log *logger.Logger) (*Server, error) {
 	// RBAC init failure is fatal, authz must never silently vanish
 	enforcer, err := rbac.NewEnforcer(store.DB())
 	if err != nil {
@@ -136,6 +138,7 @@ func NewServer(store *storage.Store, docker *docker.Client, sender *command.Send
 		bus:              bus,
 		agentHub:         agentHub,
 		uploadManager:    uploadManager,
+		prov:             prov,
 		downloadManager:  downloadManager,
 		completion:       completion,
 		wsHub:            wsHub,
@@ -240,7 +243,7 @@ func (s *Server) registerServices(mux *http.ServeMux, opts []connect.HandlerOpti
 	propertiesService := services.NewPropertiesService(s.store, s.config, s.docker, s.lifecycle, s.rec, s.log)
 	fileService := services.NewFileService(s.store, s.docker, s.uploadManager, s.downloadManager, s.rec, s.log)
 	minecraftService := services.NewMinecraftService(s.store, s.docker, s.log)
-	modService := services.NewModService(s.store, s.docker, s.config, s.uploadManager, s.rec, s.log)
+	modService := services.NewModService(s.store, s.docker, s.config, s.uploadManager, s.prov, s.rec, s.log)
 	modpackService := services.NewModpackService(s.store, s.config, s.uploadManager, s.log)
 	proxyService := services.NewProxyService(s.store, s.docker, s.proxyManager, s.moduleManager, s.config, s.rec, s.log)
 	serverService := services.NewServerService(s.store, s.docker, s.sender, s.config, s.proxyManager, s.lifecycle, s.authManager, s.logStreamer, s.metricsCollector, s.moduleManager, s.bus, s.uploadManager, s.completion, s.rec, s.log)

@@ -135,12 +135,18 @@ func (e *Enforcer) SeedDefaultPolicies(anonymousEnabled bool) error {
 			optionsv1.ResourceType_RESOURCE_TYPE_SERVER_PROPERTIES,
 			optionsv1.ResourceType_RESOURCE_TYPE_MODPACKS,
 		),
-		"doctor": append(readGrants(
+		// Doctor repairs and installs mods through the panel
+		"doctor": append(append(readGrants(
 			optionsv1.ResourceType_RESOURCE_TYPE_SERVERS,
 			optionsv1.ResourceType_RESOURCE_TYPE_SERVER_PROPERTIES,
 			optionsv1.ResourceType_RESOURCE_TYPE_SETTINGS,
 			optionsv1.ResourceType_RESOURCE_TYPE_MODPACKS,
+			optionsv1.ResourceType_RESOURCE_TYPE_MODS,
 		), serverOps...),
+			grant{optionsv1.ResourceType_RESOURCE_TYPE_MODS, optionsv1.ActionType_ACTION_TYPE_CREATE},
+			grant{optionsv1.ResourceType_RESOURCE_TYPE_MODS, optionsv1.ActionType_ACTION_TYPE_UPDATE},
+			grant{optionsv1.ResourceType_RESOURCE_TYPE_MODS, optionsv1.ActionType_ACTION_TYPE_DELETE},
+		),
 		// Bot relays chat, runs commands, reads crash reports, answers prompts
 		"bot": append(append(readGrants(
 			optionsv1.ResourceType_RESOURCE_TYPE_SERVERS,
@@ -163,6 +169,15 @@ func (e *Enforcer) SeedDefaultPolicies(anonymousEnabled bool) error {
 		}
 
 		for _, g := range grants {
+			if _, err := e.enforcer.AddPolicy(role, resourceName(g.resource), actionName(g.action), "*"); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Module roles gain missing grants on every boot
+	for _, role := range []string{"module", "doctor", "bot"} {
+		for _, g := range policies[role] {
 			if _, err := e.enforcer.AddPolicy(role, resourceName(g.resource), actionName(g.action), "*"); err != nil {
 				return err
 			}

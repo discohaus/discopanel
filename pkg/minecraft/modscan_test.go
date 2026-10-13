@@ -303,3 +303,44 @@ func TestNestedServiceJarProvidesModID(t *testing.T) {
 		}
 	}
 }
+
+func TestSupersededJars(t *testing.T) {
+	fab := func(id, version string) ModInfo {
+		return ModInfo{ID: id, Version: version, Declared: true, Dialect: "fabric"}
+	}
+	metas := []ModJarMeta{
+		{FileName: "foo-1.1.jar", Mods: []ModInfo{fab("foo", "1.1.0")}},
+		{FileName: "foo-1.0.jar", Mods: []ModInfo{fab("foo", "1.0.0")}},
+		{FileName: "bar-1.0.jar", Mods: []ModInfo{fab("bar", "1.0.0"), {ID: "foo", Dialect: "fabric"}}},
+		{FileName: "baz-2.0.jar", Mods: []ModInfo{fab("baz", "2.0.0")}},
+		{FileName: "baz-1.0.jar", Mods: []ModInfo{fab("baz", "1.0.0")}},
+		{FileName: "qux-a.jar", Mods: []ModInfo{fab("qux", "1.0.0")}},
+		{FileName: "qux-b.jar", Mods: []ModInfo{fab("qux", "1.0.0")}},
+	}
+	dialects := []string{"fabric"}
+	kept := map[string]bool{"foo-1.0.jar": true, "baz-2.0.jar": true, "qux-b.jar": true}
+
+	// Newest wins, kept only breaks ties, nested ids never count
+	got := SupersededJars(metas, dialects, kept)
+	assertLosers(t, got, map[string]string{"foo-1.0.jar": "foo-1.1.jar", "baz-1.0.jar": "baz-2.0.jar", "qux-a.jar": "qux-b.jar"})
+
+	// Kept wins whatever the version
+	got = SupersededByKept(metas, dialects, kept)
+	assertLosers(t, got, map[string]string{"foo-1.1.jar": "foo-1.0.jar", "baz-1.0.jar": "baz-2.0.jar", "qux-a.jar": "qux-b.jar"})
+
+	// Unknown dialects still pair the same declared id
+	got = SupersededJars(metas, nil, kept)
+	assertLosers(t, got, map[string]string{"foo-1.0.jar": "foo-1.1.jar", "baz-1.0.jar": "baz-2.0.jar", "qux-a.jar": "qux-b.jar"})
+}
+
+func assertLosers(t *testing.T, got, want map[string]string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("superseded = %v, want %v", got, want)
+	}
+	for name, by := range want {
+		if got[name] != by {
+			t.Fatalf("superseded[%s] = %q, want %q", name, got[name], by)
+		}
+	}
+}

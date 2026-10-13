@@ -21,6 +21,7 @@ import (
 
 	_ "golang.org/x/image/webp"
 
+	storage "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/pkg/hub"
 	"github.com/discohaus/discopanel/pkg/indexers"
 	"github.com/discohaus/discopanel/pkg/minecraft"
@@ -73,9 +74,8 @@ func (p *Provisioner) writeServerProperties(server *v1.Server, cfg *v1.ServerPro
 	if _, ok := props["rcon.port"]; !ok {
 		props["rcon.port"] = "25575"
 	}
-	if _, ok := props["server-port"]; !ok {
-		props["server-port"] = fmt.Sprintf("%d", server.Port)
-	}
+	// Proxied containers bind the port the proxy dials
+	props["server-port"] = strconv.Itoa(storage.InContainerPort(server))
 
 	// Proxied servers admit transfer joins unless explicitly disabled
 	if _, ok := props["accepts-transfers"]; !ok && len(server.ProxyHostnames) > 0 && server.ProxyListenerId != "" {
@@ -117,7 +117,10 @@ func (p *Provisioner) writeServerProperties(server *v1.Server, cfg *v1.ServerPro
 			continue
 		}
 		if k, v, ok := strings.Cut(line, "="); ok {
-			props[strings.TrimSpace(k)] = strings.TrimSpace(v)
+			// The managed port never yields to a raw pair
+			if k = strings.TrimSpace(k); k != "server-port" {
+				props[k] = strings.TrimSpace(v)
+			}
 		}
 	}
 

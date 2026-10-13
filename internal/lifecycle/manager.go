@@ -262,6 +262,21 @@ func (m *Manager) start(ctx context.Context, serverID string) error {
 		server.JavaVersion = java
 		resolved["java_version"] = server.JavaVersion
 	}
+	installed := ""
+	if result.Modpack != nil {
+		installed = result.Modpack.VersionId
+	}
+	if installed != server.ModpackVersionId {
+		server.ModpackVersionId = installed
+		resolved["modpack_version_id"] = installed
+		// Installing the advertised version retires the notice
+		if installed != "" && installed == server.ModpackUpdateVersionId {
+			server.ModpackUpdateVersionId, server.ModpackUpdateVersionName, server.ModpackUpdateFileDate = "", "", nil
+			resolved["modpack_update_version_id"] = ""
+			resolved["modpack_update_version_name"] = ""
+			resolved["modpack_update_file_date"] = nil
+		}
+	}
 	if len(resolved) > 0 {
 		if err := m.store.UpdateServerFields(ctx, server.Id, resolved); err != nil {
 			m.log.Error("lifecycle: failed to persist resolved versions for %s: %v", server.Name, err)

@@ -32,6 +32,7 @@
 	import { get } from 'svelte/store';
 	import { serversStore, activitySortedServers } from '$lib/stores/servers';
 	import { systemModules } from '$lib/stores/system-modules.svelte';
+	import { watchModpackUpdates } from '$lib/stores/modpack-updates.svelte';
 	import { runPageRefreshers } from '$lib/stores/refresh';
 	import { authStore, currentUser, canAccessSettings, authEnabled } from '$lib/stores/auth';
 	import { onMount } from 'svelte';
@@ -218,6 +219,12 @@
 			.getVersionStatus({}, silentCallOptions)
 			.then((res) => (versionStatus = res))
 			.catch(() => (versionStatus = null));
+	});
+
+	// Status bar announces modpack updates while signed in
+	$effect(() => {
+		if (sessionKey === null) return;
+		return watchModpackUpdates();
 	});
 
 	// System module indicator polls only for privileged sessions

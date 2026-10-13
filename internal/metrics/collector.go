@@ -146,13 +146,14 @@ func (m *ServerMetrics) agentHealthProof() bool {
 
 // Configuration for metrics collector
 type CollectorConfig struct {
-	StatsInterval   time.Duration // Default 5s
-	EventsInterval  time.Duration // Default 10s
-	DiskInterval    time.Duration // Default 60s
-	SLPInterval     time.Duration // Default 15s
-	SLPTimeout      time.Duration // Default 5s
-	SLPEnabled      bool          // Default true
-	HistoryInterval time.Duration // Default 30s
+	StatsInterval          time.Duration // Default 5s
+	EventsInterval         time.Duration // Default 10s
+	DiskInterval           time.Duration // Default 60s
+	SLPInterval            time.Duration // Default 15s
+	SLPTimeout             time.Duration // Default 5s
+	SLPEnabled             bool          // Default true
+	HistoryInterval        time.Duration // Default 30s
+	ModpackVersionInterval time.Duration // Default 6h
 
 	// Panel-side health, SLP is the source, replaces in-container checks
 	HealthStartupGrace  time.Duration // Starting to unhealthy without a ping, default 15m
@@ -162,15 +163,16 @@ type CollectorConfig struct {
 // Get default collector configuration
 func DefaultConfig() CollectorConfig {
 	return CollectorConfig{
-		StatsInterval:       5 * time.Second,
-		EventsInterval:      10 * time.Second,
-		DiskInterval:        60 * time.Second,
-		SLPInterval:         15 * time.Second,
-		SLPTimeout:          5 * time.Second,
-		SLPEnabled:          true,
-		HistoryInterval:     30 * time.Second,
-		HealthStartupGrace:  15 * time.Minute,
-		HealthFailThreshold: 3,
+		StatsInterval:          5 * time.Second,
+		EventsInterval:         10 * time.Second,
+		DiskInterval:           60 * time.Second,
+		SLPInterval:            15 * time.Second,
+		SLPTimeout:             5 * time.Second,
+		SLPEnabled:             true,
+		HistoryInterval:        30 * time.Second,
+		ModpackVersionInterval: 6 * time.Hour,
+		HealthStartupGrace:     15 * time.Minute,
+		HealthFailThreshold:    3,
 	}
 }
 
@@ -194,6 +196,9 @@ func (cc CollectorConfig) withDefaults() CollectorConfig {
 	}
 	if cc.HistoryInterval <= 0 {
 		cc.HistoryInterval = def.HistoryInterval
+	}
+	if cc.ModpackVersionInterval <= 0 {
+		cc.ModpackVersionInterval = def.ModpackVersionInterval
 	}
 	if cc.HealthStartupGrace <= 0 {
 		cc.HealthStartupGrace = def.HealthStartupGrace
@@ -223,6 +228,7 @@ type Collector struct {
 	config *config.Config
 	log    *logger.Logger
 	bus    *events.Bus
+	rec    *Recorder
 
 	metrics map[string]*ServerMetrics
 	mu      sync.RWMutex
@@ -252,6 +258,11 @@ type Collector struct {
 	wg       sync.WaitGroup
 
 	collectorConfig CollectorConfig
+}
+
+// Wires the activity ledger the version scan writes to
+func (c *Collector) SetRecorder(rec *Recorder) {
+	c.rec = rec
 }
 
 // Wires the proxy counter source after construction
@@ -300,7 +311,7 @@ func (c *Collector) Start() error {
 	}
 
 	// Start collection goroutines
-	loopCount := 4 // Stats, disk, lifecycle-events, history
+	loopCount := 5 // Stats, disk, lifecycle-events, history, modpack versions
 	if c.collectorConfig.SLPEnabled {
 		loopCount += 1
 	}
@@ -314,6 +325,7 @@ func (c *Collector) Start() error {
 	// First pass seeds baselines so running servers stay quiet
 	go c.loop(eventsInterval, c.detectLifecycleEvents)
 	go c.collectHistoryLoop()
+	go c.collectModpackVersionsLoop()
 	if c.collectorConfig.SLPEnabled {
 		go c.loop(c.collectorConfig.SLPInterval, c.collectSLPData)
 	}
@@ -615,6 +627,10 @@ func (c *Collector) onLifecycleEvent(ctx context.Context, e events.Event) {
 			return
 		}
 		c.sampleDiskUsage(server.Id, server.DataPath)
+		// A fresh install may have changed the installed pack version
+		if e.Type == v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_SERVER_START {
+			c.checkModpackVersion(lookupCtx, server, nil)
+		}
 	}()
 }
 

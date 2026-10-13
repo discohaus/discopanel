@@ -58,4 +58,6 @@ message Manifest {
   int32 java_major = 5;
   ModpackRef modpack = 6;
   google.protobuf.Timestamp provisioned_at = 7;
+  // Data dir relative files the pack install claimed
+  repeated string pack_files = 8;
 }

@@ -31,7 +31,8 @@
 		Loader2,
 		Trash2,
 		Copy,
-		ServerOff
+		ServerOff,
+		CircleArrowUp
 	} from '@lucide/svelte';
 	import { create } from '@bufbuild/protobuf';
 	import type { Server } from '$lib/proto/discopanel/v1/storage_pb';
@@ -46,6 +47,7 @@
 	import { loaderDisplayName } from '$lib/stores/loaders';
 	import { formatDate } from '$lib/utils/time';
 	import { copyToClipboard } from '$lib/utils/clipboard';
+	import { modpackUpdatePending, modpackSettingsHref } from '$lib/stores/modpack-updates.svelte';
 	import StatusPanel from '$lib/components/server/overview/status-panel.svelte';
 	import ConnectionPanel from '$lib/components/server/overview/connection-panel.svelte';
 	import ResourcesPanel from '$lib/components/server/overview/resources-panel.svelte';
@@ -218,8 +220,17 @@
 		}
 	}
 
+	function openModpackSettings() {
+		if (!serverId) {
+			return;
+		}
+		goto(modpackSettingsHref(serverId), { noScroll: true, keepFocus: true });
+	}
+
 	async function copyServerId() {
-		if (!server) return;
+		if (!server) {
+			return;
+		}
 		const ok = await copyToClipboard(server.id);
 		if (ok) notify.success('Server ID copied');
 		else notify.error('Failed to copy server ID');
@@ -277,6 +288,17 @@
 								{#if $loaderDisplayName(srv.modLoader)}
 									<span>·</span>
 									<span>{$loaderDisplayName(srv.modLoader)}</span>
+								{/if}
+								{#if modpackUpdatePending(srv)}
+									<button
+										type="button"
+										class="inline-flex items-center text-status-busy/80 transition-colors hover:text-status-busy"
+										title="Modpack update available: {srv.modpackUpdateVersionName}"
+										aria-label="Modpack update available"
+										onclick={openModpackSettings}
+									>
+										<CircleArrowUp class="size-3.5" />
+									</button>
 								{/if}
 								{#if srv.javaVersion}
 									<span>·</span>

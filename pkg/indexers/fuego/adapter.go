@@ -192,6 +192,7 @@ func (f *FuegoIndexer) GetModpackFiles(ctx context.Context, modpackID string, ga
 			GameVersions:     file.GameVersions,
 			ModLoader:        fileLoader,
 			ServerPackFileId: &serverPackID,
+			IsServerPack:     file.IsServerPack,
 		}
 	}
 

@@ -225,31 +225,55 @@ func (c *Client) SearchProjects(ctx context.Context, query string, classID int, 
 	return &result, nil
 }
 
+// Files per page, the api maximum
+const filesPageSize = 50
+
+// Deepest offset the api serves
+const filesMaxOffset = 10000
+
+// Pages through every file of a project, newest first
 func (c *Client) GetModpackFiles(ctx context.Context, modID int, gameVersion string, modLoader ModLoaderType) ([]File, error) {
 	if c.missingKey() {
 		return nil, indexers.NewAuthConfigError("fuego", "API key not configured")
 	}
 
-	params := url.Values{}
-	if gameVersion != "" {
-		params.Set("gameVersion", gameVersion)
-	}
-	if modLoader != ModLoaderAny {
-		params.Set("modLoaderType", strconv.Itoa(int(modLoader)))
-	}
-	endpoint := fmt.Sprintf("%s/mods/%d/files", BaseURL(), modID)
-	if len(params) > 0 {
-		endpoint += "?" + params.Encode()
+	var files []File
+	seen := make(map[int]bool)
+	for index := 0; index < filesMaxOffset; index += filesPageSize {
+		params := url.Values{}
+		params.Set("index", strconv.Itoa(index))
+		params.Set("pageSize", strconv.Itoa(filesPageSize))
+		if gameVersion != "" {
+			params.Set("gameVersion", gameVersion)
+		}
+		if modLoader != ModLoaderAny {
+			params.Set("modLoaderType", strconv.Itoa(int(modLoader)))
+		}
+		endpoint := fmt.Sprintf("%s/mods/%d/files?%s", BaseURL(), modID, params.Encode())
+
+		var result struct {
+			Data       []File     `json:"data"`
+			Pagination Pagination `json:"pagination"`
+		}
+		if err := c.http.DoJSON(ctx, endpoint, &result); err != nil {
+			return nil, err
+		}
+		// A page adding nothing new means the upstream ignores offsets
+		added := 0
+		for _, f := range result.Data {
+			if !seen[f.ID] {
+				seen[f.ID] = true
+				files = append(files, f)
+				added++
+			}
+		}
+		next := index + len(result.Data)
+		if added == 0 || len(result.Data) < filesPageSize || (result.Pagination.TotalCount > 0 && next >= result.Pagination.TotalCount) {
+			break
+		}
 	}
 
-	var result struct {
-		Data []File `json:"data"`
-	}
-	if err := c.http.DoJSON(ctx, endpoint, &result); err != nil {
-		return nil, err
-	}
-
-	return result.Data, nil
+	return files, nil
 }
 
 func (c *Client) GetModpack(ctx context.Context, modID int) (*Modpack, error) {

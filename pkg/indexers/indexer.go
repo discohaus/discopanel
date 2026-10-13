@@ -147,6 +147,23 @@ func PackSourceFor(indexer string) optionsv1.PackSource {
 	return optionsv1.PackSource_PACK_SOURCE_UNSPECIFIED
 }
 
+// Indexers serving the pack's source go first
+func OrderByPackSource(infos []IndexerInfo, source optionsv1.PackSource) []IndexerInfo {
+	none := optionsv1.PackSource_PACK_SOURCE_UNSPECIFIED
+	out := make([]IndexerInfo, 0, len(infos))
+	for _, info := range infos {
+		if source != none && info.PackSource == source {
+			out = append(out, info)
+		}
+	}
+	for _, info := range infos {
+		if source == none || info.PackSource != source {
+			out = append(out, info)
+		}
+	}
+	return out
+}
+
 // Lists every registered indexer sorted by name
 func Indexers() []IndexerInfo {
 	registryMu.RLock()

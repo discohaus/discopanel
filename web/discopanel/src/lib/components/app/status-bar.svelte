@@ -126,6 +126,20 @@
 								<p class="truncate text-[10px] text-muted-foreground">{event.detail}</p>
 							{/if}
 						</div>
+						{#if event.actions?.length}
+							<div class="flex shrink-0 items-center gap-0.5">
+								{#each event.actions as action (action.label)}
+									<Button
+										variant="ghost"
+										size="sm"
+										class="h-6 px-1.5 text-[11px]"
+										onclick={() => action.run(event)}
+									>
+										{action.label}
+									</Button>
+								{/each}
+							</div>
+						{/if}
 						<span class="tabular shrink-0 text-[10px] text-muted-foreground">{ago(event.at)}</span>
 					</div>
 				{/snippet}

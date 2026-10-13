@@ -271,6 +271,7 @@ func (p *Provisioner) installFromMrpackIndex(ctx context.Context, server *v1.Ser
 		if len(file.Downloads) == 0 {
 			return nil, fmt.Errorf("mrpack file %q has no download URLs", file.Path)
 		}
+		opts.files.claim(joinData(server.DataPath, file.Path))
 		if !force && fileExists(joinData(server.DataPath, file.Path)) {
 			continue
 		}
@@ -312,7 +313,7 @@ func (p *Provisioner) installFromMrpackIndex(ctx context.Context, server *v1.Ser
 
 	// Apply overrides then server-overrides on top
 	for _, dir := range []string{"overrides/", "server-overrides/"} {
-		if err := p.extractZipPrefix(reader, prefix+dir, server.DataPath, !force, excludes); err != nil {
+		if err := p.extractZipPrefix(reader, prefix+dir, server.DataPath, !force, excludes, opts.files); err != nil {
 			return nil, fmt.Errorf("failed to apply %s: %w", strings.TrimSuffix(dir, "/"), err)
 		}
 	}

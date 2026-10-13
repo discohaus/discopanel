@@ -8,11 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/discohaus/discopanel/internal/docker"
 	"github.com/discohaus/discopanel/internal/metrics"
@@ -79,8 +82,147 @@ func splitMCPrefix(version string) (string, string) {
 // Install options threaded through pack format handlers
 type packInstallOpts struct {
 	force    bool
-	depth    int      // Nested pack reference depth
-	excludes []string // Extra excludes injected by wrapping formats
+	depth    int          // Nested pack reference depth
+	excludes []string     // Extra excludes injected by wrapping formats
+	files    *packFileSet // Claims every file the pack ships
+}
+
+// Data dir relative paths one pack install shipped
+type packFileSet struct {
+	root  string
+	mu    sync.Mutex
+	paths map[string]struct{}
+}
+
+func newPackFileSet(root string) *packFileSet {
+	return &packFileSet{root: root, paths: make(map[string]struct{})}
+}
+
+// Claims one absolute data dir path, nil safe
+func (s *packFileSet) claim(abs string) {
+	if s == nil {
+		return
+	}
+	rel, err := filepath.Rel(s.root, abs)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return
+	}
+	s.mu.Lock()
+	s.paths[filepath.ToSlash(rel)] = struct{}{}
+	s.mu.Unlock()
+}
+
+// Sorted claimed paths
+func (s *packFileSet) list() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.paths))
+	for rel := range s.paths {
+		out = append(out, rel)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// Root files the panel owns, pack sweeps never touch them
+var panelOwnedFiles = map[string]bool{
+	"server.properties": true, "eula.txt": true, "ops.json": true, "whitelist.json": true,
+	"banned-players.json": true, "banned-ips.json": true, "usercache.json": true, "server-icon.png": true,
+}
+
+// Dir prefixes a sweep never enters, state dir and worlds
+func protectedPackPrefixes(dataPath string) []string {
+	prefixes := []string{runtimespec.StateDir + "/"}
+	entries, err := os.ReadDir(dataPath)
+	if err != nil {
+		return prefixes
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && fileExists(filepath.Join(dataPath, entry.Name(), "level.dat")) {
+			prefixes = append(prefixes, entry.Name()+"/")
+		}
+	}
+	return prefixes
+}
+
+func protectedPackPath(rel string, prefixes []string) bool {
+	if panelOwnedFiles[rel] {
+		return true
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(rel, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// Removes previous pack files the new install left unclaimed
+func (p *Provisioner) sweepStalePackFiles(ctx context.Context, server *v1.Server, previous, current []string) {
+	if len(previous) == 0 {
+		return
+	}
+	keep := make(map[string]struct{}, len(current))
+	for _, rel := range current {
+		keep[rel] = struct{}{}
+	}
+	protected := protectedPackPrefixes(server.DataPath)
+	removed := 0
+	for _, rel := range previous {
+		if _, ok := keep[rel]; ok || protectedPackPath(rel, protected) {
+			continue
+		}
+		if os.Remove(joinData(server.DataPath, rel)) == nil {
+			removed++
+		}
+		// Disabled twins live in a sibling dir
+		if dir := path.Dir(rel); dir != "." {
+			if os.Remove(joinData(server.DataPath, path.Join(dir+"_disabled", path.Base(rel)))) == nil {
+				removed++
+			}
+		}
+	}
+	if removed == 0 {
+		return
+	}
+	p.action(ctx, server, "provisioner", v1.ServerActionKind_SERVER_ACTION_KIND_PROVISION_SWEEP,
+		metrics.Attrs{"removed": strconv.Itoa(removed)}, "removed %d files the previous pack version shipped", removed)
+}
+
+// Disables jars outranked by a pack jar's mod id
+func (p *Provisioner) sweepSupersededMods(ctx context.Context, server *v1.Server, claimed []string) {
+	modsDir := minecraft.GetModsPath(server.DataPath, server.ModLoader)
+	if modsDir == "" || len(claimed) == 0 {
+		return
+	}
+	modsRel, err := filepath.Rel(server.DataPath, modsDir)
+	if err != nil {
+		return
+	}
+	modsRel = filepath.ToSlash(modsRel) + "/"
+	packJars := make(map[string]bool, len(claimed))
+	for _, rel := range claimed {
+		if strings.HasPrefix(rel, modsRel) && !strings.Contains(strings.TrimPrefix(rel, modsRel), "/") {
+			packJars[strings.TrimPrefix(rel, modsRel)] = true
+		}
+	}
+	if len(packJars) == 0 {
+		return
+	}
+	dialects := minecraft.ResolveDialects(server.ModLoader, server.DataPath, modsDir)
+	losers := minecraft.SupersededJars(minecraft.ScanModsDir(modsDir), dialects, packJars)
+	for _, name := range slices.Sorted(maps.Keys(losers)) {
+		if err := minecraft.DisableModJar(modsDir, name); err != nil {
+			p.progress(server, "could not disable superseded mod %s (%v)", name, err)
+			continue
+		}
+		p.action(ctx, server, "provisioner", v1.ServerActionKind_SERVER_ACTION_KIND_MOD_DISABLE,
+			metrics.Attrs{"file": name, "reason": "superseded", "by": losers[name]},
+			"disabled %s, %s wins the same mod id", name, losers[name])
+	}
 }
 
 // Installs the first usable archive the source offers
@@ -97,6 +239,7 @@ func (p *Provisioner) installPack(ctx context.Context, server *v1.Server, cfg *v
 		return nil, fmt.Errorf("modpack %q offers no downloadable archive", desired.id)
 	}
 
+	files := newPackFileSet(server.DataPath)
 	var lastErr error
 	for i, payload := range payloads {
 		archive, err := payload.fetch(ctx)
@@ -109,11 +252,14 @@ func (p *Provisioner) installPack(ctx context.Context, server *v1.Server, cfg *v
 			}
 			return nil, err
 		}
-		res, err := p.installPackArchive(ctx, server, cfg, archive, packInstallOpts{force: force})
+		res, err := p.installPackArchive(ctx, server, cfg, archive, packInstallOpts{force: force, files: files})
 		if err != nil && errors.Is(err, errNoLaunchTarget) && i+1 < len(payloads) {
 			p.progress(server, "%s has no launchable server, trying %s...", payload.label, payloads[i+1].label)
 			lastErr = err
 			continue
+		}
+		if res != nil {
+			res.PackFiles = files.list()
 		}
 		return res, err
 	}
@@ -132,7 +278,7 @@ func (p *Provisioner) installPackArchive(ctx context.Context, server *v1.Server,
 	// FTB stubs point at the api holding real server files
 	if packID, versionID, ok := ftbInstallerRef(&reader.Reader); ok {
 		p.progress(server, "pack is an FTB installer stub, using the FTB api...")
-		return p.installFTBPack(ctx, server, cfg, packID, versionID, opts.force)
+		return p.installFTBPack(ctx, server, cfg, packID, versionID, opts)
 	}
 	if manifest, prefix := readFTBServerManifest(&reader.Reader); manifest != nil {
 		p.progress(server, "pack carries an FTB server manifest...")
@@ -151,7 +297,7 @@ func (p *Provisioner) installPackArchive(ctx context.Context, server *v1.Server,
 		}
 		if packID, versionID, ok := parseFTBAppInstance(data); ok {
 			p.progress(server, "pack is an FTB app instance, using the FTB api...")
-			return p.installFTBPack(ctx, server, cfg, packID, versionID, opts.force)
+			return p.installFTBPack(ctx, server, cfg, packID, versionID, opts)
 		}
 	}
 	if pack, prefix := readMMCPack(&reader.Reader); pack != nil {
@@ -168,7 +314,7 @@ func (p *Provisioner) installPackArchive(ctx context.Context, server *v1.Server,
 	}
 	if hasTechnicLayout(&reader.Reader) {
 		p.progress(server, "pack looks like a Technic pack, extracting...")
-		if err := p.extractServerPack(reader, server.DataPath, !opts.force, p.packRuleExcludes(server, cfg, opts)); err != nil {
+		if err := p.extractServerPack(reader, server.DataPath, !opts.force, p.packRuleExcludes(server, cfg, opts), opts.files); err != nil {
 			return nil, err
 		}
 		return p.installPackRuntime(ctx, server, cfg, technicEvidence(server.DataPath))
@@ -176,7 +322,7 @@ func (p *Provisioner) installPackArchive(ctx context.Context, server *v1.Server,
 
 	// No manifest means ready made server pack, unpack wholesale
 	p.progress(server, "extracting server pack...")
-	if err := p.extractServerPack(reader, server.DataPath, !opts.force, p.packRuleExcludes(server, cfg, opts)); err != nil {
+	if err := p.extractServerPack(reader, server.DataPath, !opts.force, p.packRuleExcludes(server, cfg, opts), opts.files); err != nil {
 		return nil, err
 	}
 	return p.installPackRuntime(ctx, server, cfg, packEvidence{})
@@ -369,9 +515,9 @@ func stagedArchivePath(dataPath, upstreamName string) string {
 }
 
 // Extracts server pack zip, strips single wrapping dir
-func (p *Provisioner) extractServerPack(reader *zip.ReadCloser, dataPath string, skipExisting bool, excludes []string) error {
+func (p *Provisioner) extractServerPack(reader *zip.ReadCloser, dataPath string, skipExisting bool, excludes []string, files *packFileSet) error {
 	prefix := commonZipRoot(&reader.Reader)
-	return p.extractZipPrefix(reader, prefix, dataPath, skipExisting, excludes)
+	return p.extractZipPrefix(reader, prefix, dataPath, skipExisting, excludes, files)
 }
 
 // Returns "dir/" when all entries share one wrapping dir
@@ -405,12 +551,12 @@ func commonZipRoot(reader *zip.Reader) string {
 }
 
 // Extracts entries under prefix from an open zip into destDir
-func (p *Provisioner) extractZipPrefix(reader *zip.ReadCloser, prefix, destDir string, skipExisting bool, excludes []string) error {
-	return p.extractZipFiltered(reader, prefix, destDir, skipExisting, excludes, nil)
+func (p *Provisioner) extractZipPrefix(reader *zip.ReadCloser, prefix, destDir string, skipExisting bool, excludes []string, files *packFileSet) error {
+	return p.extractZipFiltered(reader, prefix, destDir, skipExisting, excludes, nil, files)
 }
 
-// Extracts entries under prefix, an optional skip gates each
-func (p *Provisioner) extractZipFiltered(reader *zip.ReadCloser, prefix, destDir string, skipExisting bool, excludes []string, skip func(rel string) bool) error {
+// Extracts entries under prefix, skip gates each, files claims shipped
+func (p *Provisioner) extractZipFiltered(reader *zip.ReadCloser, prefix, destDir string, skipExisting bool, excludes []string, skip func(rel string) bool, files *packFileSet) error {
 	for _, f := range reader.File {
 		if !strings.HasPrefix(f.Name, prefix) || f.Name == prefix {
 			continue
@@ -430,6 +576,7 @@ func (p *Provisioner) extractZipFiltered(reader *zip.ReadCloser, prefix, destDir
 			}
 			continue
 		}
+		files.claim(target)
 		if skipExisting && fileExists(target) {
 			continue
 		}

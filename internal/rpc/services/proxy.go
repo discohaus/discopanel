@@ -1201,6 +1201,10 @@ func (s *ProxyService) applyServerRouting(ctx context.Context, server *v1.Server
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update server"))
 	}
 	netClaim.Confirm()
+	// Managed properties follow the port the container binds
+	if err := s.store.SyncServerPropertiesWithServer(ctx, server); err != nil {
+		s.log.Error("Failed to sync server properties after routing change: %v", err)
+	}
 
 	// Handle container recreation if needed
 	if recreate {

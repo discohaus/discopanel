@@ -90,7 +90,7 @@ func instanceJunk(rel string) bool {
 // Extracts instance game files then provisions the runtime
 func (p *Provisioner) installFromInstanceRoot(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, reader *zip.ReadCloser, prefix string, ev packEvidence, opts packInstallOpts) (*Result, error) {
 	excludes := p.packRuleExcludes(server, cfg, opts)
-	if err := p.extractZipFiltered(reader, prefix, server.DataPath, !opts.force, excludes, instanceJunk); err != nil {
+	if err := p.extractZipFiltered(reader, prefix, server.DataPath, !opts.force, excludes, instanceJunk, opts.files); err != nil {
 		return nil, err
 	}
 	return p.installPackRuntime(ctx, server, cfg, ev)
@@ -201,7 +201,7 @@ func ftbServerManifestEvidence(m *ftbServerManifest) packEvidence {
 // Extracts FTB server files then provisions the declared loader
 func (p *Provisioner) installFromFTBServerManifest(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, reader *zip.ReadCloser, manifest *ftbServerManifest, prefix string, opts packInstallOpts) (*Result, error) {
 	excludes := p.packRuleExcludes(server, cfg, opts)
-	if err := p.extractZipFiltered(reader, prefix, server.DataPath, !opts.force, excludes, nil); err != nil {
+	if err := p.extractZipFiltered(reader, prefix, server.DataPath, !opts.force, excludes, nil, opts.files); err != nil {
 		return nil, err
 	}
 	return p.installPackRuntime(ctx, server, cfg, ftbServerManifestEvidence(manifest))
@@ -281,7 +281,7 @@ func (p *Provisioner) installFromMMCPack(ctx context.Context, server *v1.Server,
 	}
 	if content != "" {
 		excludes := p.packRuleExcludes(server, cfg, opts)
-		if err := p.extractZipFiltered(reader, content, server.DataPath, !opts.force, excludes, instanceJunk); err != nil {
+		if err := p.extractZipFiltered(reader, content, server.DataPath, !opts.force, excludes, instanceJunk, opts.files); err != nil {
 			return nil, err
 		}
 	}

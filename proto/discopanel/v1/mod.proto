@@ -33,6 +33,14 @@ service ModService {
       object_id_field: "server_id"
     };
   }
+  // Install a mod sourced by id through the indexers
+  rpc InstallMod(InstallModRequest) returns (InstallModResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODS
+      action: ACTION_TYPE_CREATE
+      object_id_field: "server_id"
+    };
+  }
   // Update mod metadata
   rpc UpdateMod(UpdateModRequest) returns (UpdateModResponse) {
     option (discopanel.options.v1.perm) = {
@@ -84,6 +92,24 @@ message ImportUploadedModRequest {
 message ImportUploadedModResponse {
   Mod mod = 1;
   string message = 2;
+  // Enabled jars the upload replaced for the same mod id
+  repeated string superseded = 3;
+}
+
+// Mod to source by its declared id
+message InstallModRequest {
+  string server_id = 1;
+  string mod_id = 2;
+  // Loader syntax version range the jar must satisfy
+  string version_range = 3;
+  // Metadata dialect the range is written in
+  string dialect = 4;
+}
+
+// Installed mod and the jars it replaced
+message InstallModResponse {
+  Mod mod = 1;
+  repeated string superseded = 2;
 }
 
 // Mod fields to update

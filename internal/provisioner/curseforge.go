@@ -255,7 +255,7 @@ func (p *Provisioner) installFromCFManifest(ctx context.Context, server *v1.Serv
 	if overrides == "" {
 		overrides = "overrides"
 	}
-	if err := p.extractZipPrefix(reader, prefix+overrides+"/", server.DataPath, !force, excludes); err != nil {
+	if err := p.extractZipPrefix(reader, prefix+overrides+"/", server.DataPath, !force, excludes, opts.files); err != nil {
 		return nil, fmt.Errorf("failed to apply pack overrides: %w", err)
 	}
 
@@ -324,6 +324,7 @@ func (p *Provisioner) installFromCFManifest(ctx context.Context, server *v1.Serv
 		total++
 
 		dest := joinData(server.DataPath, filepath.Join(classDir, file.FileName))
+		opts.files.claim(dest)
 		if fileExists(dest) && !force {
 			continue
 		}

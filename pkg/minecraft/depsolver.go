@@ -203,6 +203,56 @@ func duplicateIssues(idx *depIndex) []DepIssue {
 	return issues
 }
 
+// Losing jars per mod id, newest wins and kept breaks ties
+func SupersededJars(metas []ModJarMeta, dialects []string, kept map[string]bool) map[string]string {
+	return supersededJars(metas, dialects, kept, false)
+}
+
+// Losing jars per mod id, kept wins whatever its version
+func SupersededByKept(metas []ModJarMeta, dialects []string, kept map[string]bool) map[string]string {
+	return supersededJars(metas, dialects, kept, true)
+}
+
+// Maps each losing jar to the winner of its mod id
+func supersededJars(metas []ModJarMeta, dialects []string, kept map[string]bool, keptWins bool) map[string]string {
+	// Unknown dialects read every manifest, same id same mod
+	active := metas
+	if len(dialects) > 0 {
+		active = activeMetas(metas, dialects)
+	}
+	idx := buildDepIndex(active)
+	losers := make(map[string]string)
+	for _, refs := range idx.declared {
+		var win *providerRef
+		for i := range refs {
+			if refs[i].file == "" {
+				continue
+			}
+			if win == nil || outranks(&refs[i], win, kept, keptWins) {
+				win = &refs[i]
+			}
+		}
+		if win == nil {
+			continue
+		}
+		for i := range refs {
+			if refs[i].file != "" && refs[i].file != win.file {
+				losers[refs[i].file] = win.file
+			}
+		}
+	}
+	return losers
+}
+
+// True when a beats b for one mod id
+func outranks(a, b *providerRef, kept map[string]bool, keptWins bool) bool {
+	cmp := CompareVersions(a.version, b.version)
+	if kept[a.file] != kept[b.file] && (keptWins || cmp == 0) {
+		return kept[a.file]
+	}
+	return cmp > 0
+}
+
 func checkDep(meta *ModJarMeta, dep ModDep, idx *depIndex) *DepIssue {
 	providers := idx.providers[dep.ID]
 

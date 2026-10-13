@@ -78,6 +78,14 @@ service ServerService {
       object_id_field: "id"
     };
   }
+  // Hide the advertised modpack update until a newer one appears
+  rpc DismissModpackUpdate(DismissModpackUpdateRequest) returns (DismissModpackUpdateResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "id"
+    };
+  }
   // Remove server and data
   rpc DeleteServer(DeleteServerRequest) returns (DeleteServerResponse) {
     option (discopanel.options.v1.perm) = {
@@ -358,6 +366,17 @@ message UploadServerIconRequest {
 // Installed icon as a data URI
 message UploadServerIconResponse {
   string favicon = 1;
+}
+
+// Advertised modpack version to ignore
+message DismissModpackUpdateRequest {
+  string id = 1;
+  string version_id = 2;
+}
+
+// Server after the dismissal
+message DismissModpackUpdateResponse {
+  Server server = 1;
 }
 
 // Server to delete

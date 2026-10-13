@@ -2,12 +2,19 @@ import type { StatusTone } from '$lib/server-status';
 
 export type ActivityKind = 'ok' | 'err' | 'warn' | 'info';
 
+// Button shown on an event in the status bar history
+export interface ActivityAction {
+	label: string;
+	run: (event: ActivityEvent) => void | Promise<void>;
+}
+
 export interface ActivityEvent {
 	id: number;
 	kind: ActivityKind;
 	message: string;
 	detail?: string;
 	at: number;
+	actions?: ActivityAction[];
 }
 
 // Maps event kinds onto shared status tones
@@ -33,13 +40,19 @@ class ActivityStore {
 
 	current = $derived(this.events[0] ?? null);
 
-	report(kind: ActivityKind, message: string, detail?: string, holdMs?: number) {
+	report(
+		kind: ActivityKind,
+		message: string,
+		detail?: string,
+		holdMs?: number,
+		actions?: ActivityAction[]
+	) {
 		const head = this.events[0];
 		// Same message twice in a row folds into one
 		if (head && head.kind === kind && head.message === message && Date.now() - head.at < DUPE_MS) {
 			head.at = Date.now();
 		} else {
-			const event = { id: this.nextId++, kind, message, detail, at: Date.now() };
+			const event = { id: this.nextId++, kind, message, detail, at: Date.now(), actions };
 			this.events = [event, ...this.events].slice(0, MAX_EVENTS);
 			if (kind === 'err') this.unseenErrors += 1;
 		}
@@ -58,6 +71,10 @@ class ActivityStore {
 		this.unseenErrors = 0;
 	}
 
+	remove(id: number) {
+		this.events = this.events.filter((event) => event.id !== id);
+	}
+
 	clear() {
 		if (this.holdTimer) clearTimeout(this.holdTimer);
 		this.holdTimer = null;
@@ -72,16 +89,17 @@ export const activity = new ActivityStore();
 interface NotifyOpts {
 	description?: string;
 	duration?: number;
+	actions?: ActivityAction[];
 }
 
 // Same call shape the old toast api had
 export const notify = {
 	success: (message: string, opts?: NotifyOpts) =>
-		activity.report('ok', message, opts?.description, opts?.duration),
+		activity.report('ok', message, opts?.description, opts?.duration, opts?.actions),
 	error: (message: string, opts?: NotifyOpts) =>
-		activity.report('err', message, opts?.description, opts?.duration),
+		activity.report('err', message, opts?.description, opts?.duration, opts?.actions),
 	warning: (message: string, opts?: NotifyOpts) =>
-		activity.report('warn', message, opts?.description, opts?.duration),
+		activity.report('warn', message, opts?.description, opts?.duration, opts?.actions),
 	info: (message: string, opts?: NotifyOpts) =>
-		activity.report('info', message, opts?.description, opts?.duration)
+		activity.report('info', message, opts?.description, opts?.duration, opts?.actions)
 };

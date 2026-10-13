@@ -551,3 +551,170 @@ func TestDetectPackLaunchOrder(t *testing.T) {
 		t.Fatalf("fabric launch jar must win, got %+v", spec)
 	}
 }
+
+func TestExtractClaimsShippedFiles(t *testing.T) {
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	for _, name := range []string{"pack/mods/a.jar", "pack/config/x.cfg", "pack/dir/"} {
+		if _, err := w.Create(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	zipPath := filepath.Join(t.TempDir(), "pack.zip")
+	if err := os.WriteFile(zipPath, buf.Bytes(), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dataPath := t.TempDir()
+	// Present files still belong to the pack
+	if err := os.MkdirAll(filepath.Join(dataPath, "config"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataPath, "config", "x.cfg"), []byte("user"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	p := New(nil, nil, &config.Config{}, nil, logger.New())
+	files := newPackFileSet(dataPath)
+	if err := p.extractServerPack(reader, dataPath, true, nil, files); err != nil {
+		t.Fatal(err)
+	}
+	got := files.list()
+	want := []string{"config/x.cfg", "mods/a.jar"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("claims = %v, want %v", got, want)
+	}
+	if data, _ := os.ReadFile(filepath.Join(dataPath, "config", "x.cfg")); string(data) != "user" {
+		t.Fatalf("existing file overwritten with skipExisting")
+	}
+}
+
+func TestSweepStalePackFilesSparesProtected(t *testing.T) {
+	dataPath := t.TempDir()
+	write := func(rel string) {
+		t.Helper()
+		full := filepath.Join(dataPath, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, rel := range []string{
+		"mods/old.jar", "mods_disabled/old.jar", "mods/keep.jar", "config/gone.cfg",
+		"world/level.dat", "world/region/r.0.0.mca", "server.properties", ".discopanel/manifest.json",
+	} {
+		write(rel)
+	}
+	previous := []string{"mods/old.jar", "mods/keep.jar", "config/gone.cfg", "world/region/r.0.0.mca", "server.properties", ".discopanel/manifest.json"}
+	current := []string{"mods/keep.jar"}
+
+	p := New(nil, nil, &config.Config{}, nil, logger.New())
+	server := &v1.Server{Id: "s1", Name: "s1", DataPath: dataPath}
+	p.sweepStalePackFiles(context.Background(), server, previous, current)
+
+	exists := func(rel string) bool {
+		_, err := os.Stat(filepath.Join(dataPath, filepath.FromSlash(rel)))
+		return err == nil
+	}
+	for _, rel := range []string{"mods/old.jar", "mods_disabled/old.jar", "config/gone.cfg"} {
+		if exists(rel) {
+			t.Fatalf("%s should have been swept", rel)
+		}
+	}
+	for _, rel := range []string{"mods/keep.jar", "world/region/r.0.0.mca", "server.properties", ".discopanel/manifest.json"} {
+		if !exists(rel) {
+			t.Fatalf("%s must survive the sweep", rel)
+		}
+	}
+}
+
+func TestSweepSupersededModsDisablesOlderJar(t *testing.T) {
+	dataPath := t.TempDir()
+	modsDir := filepath.Join(dataPath, "mods")
+	writeClientJar(t, modsDir, "foo-1.0.jar", `{"schemaVersion":1,"id":"foo","version":"1.0"}`)
+	writeClientJar(t, modsDir, "foo-1.1.jar", `{"schemaVersion":1,"id":"foo","version":"1.1"}`)
+	writeClientJar(t, modsDir, "bar-1.0.jar", `{"schemaVersion":1,"id":"bar","version":"1.0"}`)
+
+	p := New(nil, nil, &config.Config{}, nil, logger.New())
+	server := &v1.Server{Id: "s1", Name: "s1", DataPath: dataPath, ModLoader: v1.ModLoader_MOD_LOADER_FABRIC}
+	p.sweepSupersededMods(context.Background(), server, []string{"mods/foo-1.1.jar"})
+
+	if _, err := os.Stat(filepath.Join(modsDir, "foo-1.0.jar")); err == nil {
+		t.Fatalf("superseded foo-1.0.jar should be disabled")
+	}
+	if _, err := os.Stat(filepath.Join(modsDir+"_disabled", "foo-1.0.jar")); err != nil {
+		t.Fatalf("superseded jar should move to the disabled dir: %v", err)
+	}
+	for _, name := range []string{"foo-1.1.jar", "bar-1.0.jar"} {
+		if _, err := os.Stat(filepath.Join(modsDir, name)); err != nil {
+			t.Fatalf("%s must stay enabled: %v", name, err)
+		}
+	}
+}
+
+func TestProxiedServersBindDefaultPort(t *testing.T) {
+	p := testProvisioner(t)
+	readPort := func(server *v1.Server) string {
+		props, err := minecraft.LoadPropertiesFile(server.DataPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return props["server-port"]
+	}
+
+	port := int32(25572)
+	proxied := &v1.Server{Id: "s1", Name: "s1", DataPath: t.TempDir(), Port: 25572,
+		ProxyHostnames: []string{"play.example.com"}, ProxyListenerId: "l1"}
+	if err := p.writeServerProperties(proxied, &v1.ServerProperties{ServerPort: &port}, "1.21.1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := readPort(proxied); got != "25565" {
+		t.Fatalf("proxied server must bind the in-container default, got %q", got)
+	}
+
+	direct := &v1.Server{Id: "s2", Name: "s2", DataPath: t.TempDir(), Port: 25572}
+	if err := p.writeServerProperties(direct, &v1.ServerProperties{ServerPort: &port}, "1.21.1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := readPort(direct); got != "25572" {
+		t.Fatalf("direct server must bind its host port, got %q", got)
+	}
+
+	custom := "server-port=1234"
+	overridden := &v1.Server{Id: "s3", Name: "s3", DataPath: t.TempDir(), Port: 25572,
+		ProxyHostnames: []string{"play.example.com"}, ProxyListenerId: "l1"}
+	if err := p.writeServerProperties(overridden, &v1.ServerProperties{CustomServerProperties: &custom}, "1.21.1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := readPort(overridden); got != "25565" {
+		t.Fatalf("raw pairs must not move the managed port, got %q", got)
+	}
+}
+
+func TestGateModJar(t *testing.T) {
+	dir := t.TempDir()
+	writeClientJar(t, dir, "lib-1.2.jar", `{"schemaVersion":1,"id":"lib","version":"1.2.0"}`)
+	if err := gateModJar(filepath.Join(dir, "lib-1.2.jar"), "Lib", "lib", ">=1.0.0", "fabric"); err != nil {
+		t.Fatalf("matching jar must pass, got %v", err)
+	}
+	writeClientJar(t, dir, "lib-0.9.jar", `{"schemaVersion":1,"id":"lib","version":"0.9.0"}`)
+	if err := gateModJar(filepath.Join(dir, "lib-0.9.jar"), "Lib", "lib", ">=1.0.0", "fabric"); err == nil {
+		t.Fatal("jar below the range must be refused")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "lib-0.9.jar")); err == nil {
+		t.Fatal("refused jar must be removed")
+	}
+	writeClientJar(t, dir, "other.jar", `{"schemaVersion":1,"id":"other","version":"1.0.0"}`)
+	if err := gateModJar(filepath.Join(dir, "other.jar"), "Other", "lib", "", "fabric"); err == nil {
+		t.Fatal("jar without the id must be refused")
+	}
+}

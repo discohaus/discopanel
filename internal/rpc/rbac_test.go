@@ -30,6 +30,7 @@ const (
 	rFiles    = optionsv1.ResourceType_RESOURCE_TYPE_FILES
 	rSettings = optionsv1.ResourceType_RESOURCE_TYPE_SETTINGS
 	rTasks    = optionsv1.ResourceType_RESOURCE_TYPE_TASKS
+	rMods     = optionsv1.ResourceType_RESOURCE_TYPE_MODS
 	aRead     = optionsv1.ActionType_ACTION_TYPE_READ
 	aCreate   = optionsv1.ActionType_ACTION_TYPE_CREATE
 	aUpdate   = optionsv1.ActionType_ACTION_TYPE_UPDATE
@@ -155,10 +156,13 @@ func TestSeededDefaultRoleMatrix(t *testing.T) {
 	}
 	ops := []string{"servers:start", "servers:stop", "servers:restart"}
 	want := map[string][]string{
-		"admin":     {"*:*"},
-		"user":      append(append(slices.Clone(browse), ops...), "servers:command"),
-		"module":    {"servers:read", "server_properties:read", "modpacks:read"},
-		"doctor":    append([]string{"servers:read", "server_properties:read", "settings:read", "modpacks:read"}, ops...),
+		"admin":  {"*:*"},
+		"user":   append(append(slices.Clone(browse), ops...), "servers:command"),
+		"module": {"servers:read", "server_properties:read", "modpacks:read"},
+		"doctor": append([]string{
+			"servers:read", "server_properties:read", "settings:read", "modpacks:read",
+			"mods:read", "mods:create", "mods:update", "mods:delete",
+		}, ops...),
 		"bot":       append([]string{"servers:read", "servers:command", "modules:read", "modules:update", "files:read"}, ops...),
 		"anonymous": browse,
 	}
@@ -204,6 +208,9 @@ func TestSeededDefaultRoleMatrix(t *testing.T) {
 		{"module cannot read files", []string{"module"}, rFiles, aRead, "*", false},
 		{"doctor reads settings", []string{"doctor"}, rSettings, aRead, "*", true},
 		{"doctor cannot command servers", []string{"doctor"}, rServers, aCommand, "*", false},
+		{"doctor toggles mods", []string{"doctor"}, rMods, aUpdate, "srv-1", true},
+		{"doctor installs mods", []string{"doctor"}, rMods, aCreate, "srv-1", true},
+		{"doctor cannot read files", []string{"doctor"}, rFiles, aRead, "*", false},
 		{"bot commands servers", []string{"bot"}, rServers, aCommand, "srv-1", true},
 		{"bot reads crash reports", []string{"bot"}, rFiles, aRead, "srv-1", true},
 		{"bot cannot read settings", []string{"bot"}, rSettings, aRead, "*", false},
@@ -243,6 +250,25 @@ func TestReseedKeepsRoleEdits(t *testing.T) {
 	}
 	if err := s.enforcer.SetPermissionsForRole("admin", custom); err == nil {
 		t.Fatal("admin role edit was not refused")
+	}
+}
+
+// Older installs gain the doctor's mod grants on reseed
+func TestReseedGrowsModuleRoles(t *testing.T) {
+	s := testRig(t)
+	old := []*v1.Permission{{Resource: rServers, Action: aRead}, {Resource: rSettings, Action: aRead}}
+	if err := s.enforcer.SetPermissionsForRole("doctor", old); err != nil {
+		t.Fatalf("role edit failed %v", err)
+	}
+	if err := s.enforcer.SeedDefaultPolicies(false); err != nil {
+		t.Fatalf("reseed failed %v", err)
+	}
+	allowed, err := s.enforcer.Enforce([]string{"doctor"}, rMods, aUpdate, "srv-1")
+	if err != nil || !allowed {
+		t.Fatalf("doctor must regain mods:update on reseed, got %v %v", allowed, err)
+	}
+	if n := len(s.enforcer.GetPermissionsForRole("doctor")); n != 11 {
+		t.Fatalf("doctor grants must be complete and unique, got %d", n)
 	}
 }
 

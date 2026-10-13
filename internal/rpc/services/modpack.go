@@ -68,11 +68,11 @@ func NewModpackService(store *storage.Store, cfg *config.Config, uploadManager *
 func (s *ModpackService) getIndexer(ctx context.Context, name string) (indexers.ModpackIndexer, error) {
 	apiKey := ""
 	if info, ok := indexers.LookupIndexer(name); ok && info.CredentialProperty != "" {
-		globalSettings, _, err := s.store.GetGlobalSettings(ctx)
-		if err != nil || globalSettings == nil {
+		key, err := s.store.IndexerCredential(ctx, info.CredentialProperty)
+		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get global settings"))
 		}
-		apiKey = propertyValueByKey(globalSettings, info.CredentialProperty)
+		apiKey = key
 		if apiKey == "" && indexers.CredentialRequired(info) {
 			return nil, connect.NewError(connect.CodeInvalidArgument,
 				fmt.Errorf("indexer %q requires the %s setting while the index is off", name, info.CredentialProperty))

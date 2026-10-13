@@ -47,6 +47,8 @@ type Result struct {
 	LoaderVersion string
 	McVersion     string
 	JavaMajor     int
+	Modpack       *v1.ModpackRef // Installed pack identity, nil without a pack
+	PackFiles     []string       // Data dir relative files the pack shipped
 }
 
 func New(store *storage.Store, dockerClient *docker.Client, cfg *config.Config, rec *metrics.Recorder, log *logger.Logger) *Provisioner {
@@ -138,7 +140,13 @@ func (p *Provisioner) Ensure(ctx context.Context, server *v1.Server, cfg *v1.Ser
 				Id:        desired.id,
 				VersionId: desired.versionID,
 			}
+			// Previous pack leftovers must not load beside the new version
+			if manifest != nil {
+				p.sweepStalePackFiles(ctx, server, manifest.PackFiles, result.PackFiles)
+			}
+			p.sweepSupersededMods(ctx, server, result.PackFiles)
 		}
+		result.Modpack = mref
 		if err := runtimespec.WriteManifest(server.DataPath, &v1.Manifest{
 			Version:       1,
 			Loader:        server.ModLoader,
@@ -146,6 +154,7 @@ func (p *Provisioner) Ensure(ctx context.Context, server *v1.Server, cfg *v1.Ser
 			McVersion:     result.McVersion,
 			JavaMajor:     int32(result.JavaMajor),
 			Modpack:       mref,
+			PackFiles:     result.PackFiles,
 			ProvisionedAt: timestamppb.Now(),
 		}); err != nil {
 			return nil, fmt.Errorf("failed to write provision manifest: %w", err)
@@ -160,6 +169,8 @@ func (p *Provisioner) Ensure(ctx context.Context, server *v1.Server, cfg *v1.Ser
 			LoaderVersion: manifest.LoaderVersion,
 			McVersion:     manifest.McVersion,
 			JavaMajor:     int(manifest.JavaMajor),
+			Modpack:       manifest.Modpack,
+			PackFiles:     manifest.PackFiles,
 		}
 		p.progress(server, "server files verified (%s %s, MC %s, Java %d)",
 			protometa.Name(result.Loader), result.LoaderVersion, result.McVersion, result.JavaMajor)
@@ -369,7 +380,12 @@ func (p *Provisioner) install(ctx context.Context, server *v1.Server, cfg *v1.Se
 	// Uploaded FTB server files testify their pack
 	if packID, versionID, ok := ftbInstallerRefDir(server.DataPath); ok {
 		p.progress(server, "found an FTB installer stub, using the FTB api...")
-		return p.installFTBPack(ctx, server, cfg, packID, versionID, force)
+		files := newPackFileSet(server.DataPath)
+		res, err := p.installFTBPack(ctx, server, cfg, packID, versionID, packInstallOpts{force: force, files: files})
+		if res != nil {
+			res.PackFiles = files.list()
+		}
+		return res, err
 	}
 	// User staged server files can still testify a launch
 	if spec := detectPackLaunch(server.DataPath, server.ModLoader); spec != nil {

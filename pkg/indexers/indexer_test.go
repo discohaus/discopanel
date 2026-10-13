@@ -40,3 +40,21 @@ func TestNewIndexerUnknown(t *testing.T) {
 		t.Fatal("unknown indexer must error")
 	}
 }
+
+func TestOrderByPackSourcePrefersPackSource(t *testing.T) {
+	infos := []IndexerInfo{
+		{Name: "aaa"},
+		{Name: "mmm", PackSource: optionsv1.PackSource_PACK_SOURCE_CURSEFORGE},
+		{Name: "zzz", PackSource: optionsv1.PackSource_PACK_SOURCE_MODRINTH},
+	}
+
+	got := OrderByPackSource(infos, optionsv1.PackSource_PACK_SOURCE_MODRINTH)
+	if len(got) != 3 || got[0].Name != "zzz" || got[1].Name != "aaa" || got[2].Name != "mmm" {
+		t.Fatalf("pack source must lead, got %+v", got)
+	}
+
+	got = OrderByPackSource(infos, optionsv1.PackSource_PACK_SOURCE_UNSPECIFIED)
+	if len(got) != 3 || got[0].Name != "aaa" || got[1].Name != "mmm" || got[2].Name != "zzz" {
+		t.Fatalf("no pack source keeps registry order, got %+v", got)
+	}
+}

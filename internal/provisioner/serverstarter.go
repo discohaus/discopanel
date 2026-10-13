@@ -80,7 +80,7 @@ func ssEvidence(ssc *serverStarterConfig) packEvidence {
 // Extracts server files, installs the referenced pack, then the loader
 func (p *Provisioner) installFromServerStarter(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, reader *zip.ReadCloser, ssc *serverStarterConfig, prefix string, opts packInstallOpts) (*Result, error) {
 	excludes := p.packRuleExcludes(server, cfg, opts)
-	if err := p.extractZipFiltered(reader, prefix, server.DataPath, !opts.force, excludes, nil); err != nil {
+	if err := p.extractZipFiltered(reader, prefix, server.DataPath, !opts.force, excludes, nil, opts.files); err != nil {
 		return nil, err
 	}
 

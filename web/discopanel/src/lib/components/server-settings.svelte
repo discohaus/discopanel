@@ -11,9 +11,17 @@
 	import { rpcClient } from '$lib/api/rpc-client';
 	import { create } from '@bufbuild/protobuf';
 	import { notify } from '$lib/stores/activity.svelte';
-	import { Loader2, Save, RotateCcw, Lock, Camera } from '@lucide/svelte';
-	import type { Server } from '$lib/proto/discopanel/v1/storage_pb';
-	import { ServerStatus } from '$lib/proto/discopanel/v1/storage_pb';
+	import { Loader2, Save, RotateCcw, Lock, Camera, CircleArrowUp } from '@lucide/svelte';
+	import type { Server, IndexedModpack } from '$lib/proto/discopanel/v1/storage_pb';
+	import {
+		ServerStatus,
+		ReleaseType,
+		ReleaseTypeSchema
+	} from '$lib/proto/discopanel/v1/storage_pb';
+	import type { Version } from '$lib/proto/discopanel/v1/modpack_pb';
+	import { enumLabel } from '$lib/proto-meta';
+	import { formatDate } from '$lib/utils/time';
+	import { dismissModpackUpdate, modpackUpdatePending } from '$lib/stores/modpack-updates.svelte';
 	import type { UpdateServerRequest } from '$lib/proto/discopanel/v1/server_pb';
 	import { UpdateServerRequestSchema } from '$lib/proto/discopanel/v1/server_pb';
 	import type {
@@ -36,7 +44,7 @@
 	let { server, onUpdate }: Props = $props();
 
 	// Old section anchors stay valid for shared links
-	const SECTION_IDS = ['general', 'runtime', 'network', 'lifecycle', 'container'];
+	const SECTION_IDS = ['modpack', 'general', 'runtime', 'network', 'lifecycle', 'container'];
 
 	const FIELD_KEYS = [
 		'name',
@@ -68,6 +76,89 @@
 
 	let stopped = $derived(server.status === ServerStatus.STOPPED);
 	let proxied = $derived((server.proxyHostnames ?? []).length > 0);
+
+	let modpack = $state<IndexedModpack | null>(null);
+	let modpackVersions = $state<Version[]>([]);
+	let loadingModpack = $state(false);
+	let selectedModpackVersion = $state('');
+	let updatingModpack = $state(false);
+	let ignoringUpdate = $state(false);
+
+	let modpackVersionLabel = $derived(
+		(id: string) => modpackVersions.find((v) => v.id === id)?.displayName || id
+	);
+	let canInstallModpackVersion = $derived(
+		stopped &&
+			!updatingModpack &&
+			!loadingModpack &&
+			!!selectedModpackVersion &&
+			selectedModpackVersion !== server.modpackVersionId
+	);
+
+	// Pack metadata and versions follow the linked pack
+	$effect(() => {
+		const id = server.modpackId;
+		untrack(() => loadModpack(id));
+	});
+
+	async function loadModpack(id: string) {
+		modpack = null;
+		modpackVersions = [];
+		selectedModpackVersion = '';
+		if (!id) return;
+		loadingModpack = true;
+		try {
+			const [pack, versions] = await Promise.all([
+				rpcClient.modpack.getModpack({ id }),
+				rpcClient.modpack.getModpackVersions({ id, gameVersion: '', modLoader: '' })
+			]);
+			if (server.modpackId !== id) return;
+			modpack = pack.modpack ?? null;
+			modpackVersions = versions.versions ?? [];
+			selectedModpackVersion = server.modpackUpdateVersionId || server.modpackVersionId || '';
+		} catch (error) {
+			console.error('Failed to load modpack versions:', error);
+		} finally {
+			loadingModpack = false;
+		}
+	}
+
+	// Pins the chosen version, the next start installs it
+	async function installModpackVersion() {
+		if (!canInstallModpackVersion) return;
+		updatingModpack = true;
+		try {
+			await rpcClient.server.updateServer(
+				create(UpdateServerRequestSchema, {
+					id: server.id,
+					modpackId: server.modpackId,
+					modpackVersionId: selectedModpackVersion
+				})
+			);
+			notify.success(
+				`Modpack set to ${modpackVersionLabel(selectedModpackVersion)}. Start the server to install it.`
+			);
+			onUpdate?.();
+		} catch (error) {
+			// Interceptor already toasts the failure
+			console.error(error);
+		} finally {
+			updatingModpack = false;
+		}
+	}
+
+	async function ignoreModpackUpdate() {
+		ignoringUpdate = true;
+		try {
+			await dismissModpackUpdate(server);
+			onUpdate?.();
+		} catch (error) {
+			// Interceptor already toasts the failure
+			console.error(error);
+		} finally {
+			ignoringUpdate = false;
+		}
+	}
 	let displayFavicon = $derived(uploadedFavicon || server.favicon);
 	let usedPorts = $state<Record<number, boolean>>({});
 
@@ -355,6 +446,99 @@
 
 	<div class="min-h-0 flex-1 overflow-y-auto">
 		<div class="w-full space-y-7 px-2 py-2">
+			{#if server.modpackId && (loadingModpack || modpackVersions.length > 0 || server.modpackUpdateVersionId)}
+				<section id="modpack" class="scroll-mt-4">
+					<h3 class="mb-2 text-sm font-medium">Modpack</h3>
+					<div
+						class="flex flex-col gap-4 rounded-xl border bg-card p-4 sm:flex-row sm:items-start sm:justify-between"
+					>
+						<div class="min-w-0">
+							<p class="truncate text-sm font-medium">{modpack?.name ?? 'Modpack'}</p>
+							{#if server.modpackVersionId}
+								<p class="mt-0.5 text-xs text-muted-foreground">
+									Installed {modpackVersionLabel(server.modpackVersionId)}
+								</p>
+							{/if}
+							{#if server.modpackUpdateVersionId}
+								<p class="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-status-busy">
+									<CircleArrowUp class="size-3.5 shrink-0" />
+									<span>{server.modpackUpdateVersionName} is available</span>
+									{#if server.modpackUpdateFileDate}
+										<span class="text-muted-foreground">
+											· {formatDate(server.modpackUpdateFileDate)}
+										</span>
+									{/if}
+									{#if modpackUpdatePending(server)}
+										<button
+											type="button"
+											class="text-muted-foreground underline-offset-2 hover:underline disabled:opacity-50"
+											disabled={ignoringUpdate}
+											onclick={ignoreModpackUpdate}
+										>
+											Ignore
+										</button>
+									{/if}
+								</p>
+							{/if}
+						</div>
+						<div class="flex w-full flex-col gap-2 sm:w-72 sm:shrink-0">
+							{@render fieldLabel('modpackVersion', 'modpack_version', 'Version', !stopped)}
+							<Select
+								type="single"
+								value={selectedModpackVersion}
+								onValueChange={(value: string | undefined) =>
+									(selectedModpackVersion = value || '')}
+								disabled={loadingModpack ||
+									!stopped ||
+									updatingModpack ||
+									modpackVersions.length === 0}
+							>
+								<SelectTrigger id="modpack_version" class="h-9 w-full">
+									<span class="truncate">
+										{#if loadingModpack}
+											Loading versions...
+										{:else if selectedModpackVersion}
+											{modpackVersionLabel(selectedModpackVersion)}
+										{:else if modpackVersions.length === 0}
+											No versions published
+										{:else}
+											Select a version
+										{/if}
+									</span>
+								</SelectTrigger>
+								<SelectContent>
+									{#each modpackVersions as version (version.id)}
+										<SelectItem value={version.id}>
+											{version.displayName}
+											{#if version.releaseType && version.releaseType !== ReleaseType.RELEASE}
+												({enumLabel(ReleaseTypeSchema, version.releaseType)})
+											{/if}
+											{#if version.id === server.modpackVersionId}
+												· installed
+											{:else if version.id === server.modpackUpdateVersionId}
+												· newer
+											{/if}
+										</SelectItem>
+									{/each}
+								</SelectContent>
+							</Select>
+							<Button
+								size="sm"
+								onclick={installModpackVersion}
+								disabled={!canInstallModpackVersion}
+							>
+								{#if updatingModpack}
+									<Loader2 class="size-4 animate-spin" />
+								{:else}
+									<CircleArrowUp class="size-4" />
+								{/if}
+								Install version
+							</Button>
+						</div>
+					</div>
+				</section>
+			{/if}
+
 			<section id="runtime" class="scroll-mt-4">
 				<h3 class="mb-2 text-sm font-medium">Runtime</h3>
 				<div

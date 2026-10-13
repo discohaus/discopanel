@@ -117,7 +117,8 @@ func ftbStubIDs(content string) (int, int, bool) {
 }
 
 // Installs server files straight from the FTB api
-func (p *Provisioner) installFTBPack(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, packID, versionID int, force bool) (*Result, error) {
+func (p *Provisioner) installFTBPack(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, packID, versionID int, opts packInstallOpts) (*Result, error) {
+	force := opts.force
 	manifestURL := fmt.Sprintf("%s/%d/%d", ftbAPIBase(), packID, versionID)
 	var manifest ftbVersionManifest
 	if err := p.getJSON(ctx, manifestURL, &manifest); err != nil {
@@ -150,6 +151,7 @@ func (p *Provisioner) installFTBPack(ctx context.Context, server *v1.Server, cfg
 			packFlagged = append(packFlagged, strings.ToLower(file.Name))
 		}
 		total++
+		opts.files.claim(ftbDest(server.DataPath, &file))
 		if !force && fileExists(ftbDest(server.DataPath, &file)) {
 			continue
 		}

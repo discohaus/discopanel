@@ -88,6 +88,7 @@
 		uploadAbortController = new AbortController();
 
 		try {
+			const superseded: string[] = [];
 			for (const file of files) {
 				currentUploadFilename = file.name;
 				uploadProgress = null;
@@ -99,12 +100,17 @@
 					signal: uploadAbortController.signal
 				});
 
-				await rpcClient.mod.importUploadedMod({
+				const imported = await rpcClient.mod.importUploadedMod({
 					serverId: server.id,
 					uploadSessionId: result.sessionId
 				});
+				superseded.push(...imported.superseded);
 			}
-			notify.success(`Uploaded ${files.length} ${files.length === 1 ? 'file' : 'files'}`);
+			notify.success(`Uploaded ${files.length} ${files.length === 1 ? 'file' : 'files'}`, {
+				description: superseded.length
+					? `Disabled ${superseded.join(', ')} for the same mod`
+					: undefined
+			});
 			await loadMods();
 		} catch (error: unknown) {
 			if (error instanceof Error && error.message === 'Upload cancelled') {

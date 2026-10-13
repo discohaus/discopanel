@@ -428,7 +428,7 @@ func (s *Store) SyncServerPropertiesWithServer(ctx context.Context, server *v1.S
 	}
 
 	int32Ptr := func(i int32) *int32 { return &i }
-	config.ServerPort = int32Ptr(server.Port)
+	config.ServerPort = int32Ptr(int32(InContainerPort(server)))
 	config.MaxPlayers = int32Ptr(server.MaxPlayers)
 	runtimespec.SyncPropertiesMemory(config, server)
 
@@ -566,17 +566,53 @@ func (s *Store) CheckModpackInUse(ctx context.Context, modpackID string) ([]*v1.
 		return nil, err
 	}
 
+	q := s.db.WithContext(ctx).Where("modpack_id = ?", modpackID)
 	if len(configs) > 0 {
 		serverIDs := make([]string, 0, len(configs))
 		for _, config := range configs {
 			serverIDs = append(serverIDs, config.ServerId)
 		}
-		if err := s.db.WithContext(ctx).Where("id IN ?", serverIDs).Find(&servers).Error; err != nil {
-			return nil, err
-		}
+		q = q.Or("id IN ?", serverIDs)
+	}
+	if err := q.Find(&servers).Error; err != nil {
+		return nil, err
 	}
 
 	return servers, nil
+}
+
+// Indexed modpack matching a slug or upstream id per indexer
+func (s *Store) FindIndexedModpack(ctx context.Context, indexerNames []string, ref string) (*v1.IndexedModpack, error) {
+	if len(indexerNames) == 0 || ref == "" {
+		return nil, nil
+	}
+	var row v1.IndexedModpack
+	err := s.db.WithContext(ctx).Where("indexer IN ? AND (slug = ? OR indexer_id = ?)", indexerNames, ref, ref).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
+// Operator credential stored under one global settings property key
+func (s *Store) IndexerCredential(ctx context.Context, property string) (string, error) {
+	global, _, err := s.GetGlobalSettings(ctx)
+	if err != nil {
+		return "", err
+	}
+	if global == nil {
+		return "", nil
+	}
+	m := global.ProtoReflect()
+	fd := m.Descriptor().Fields().ByJSONName(property)
+	if fd == nil {
+		return "", nil
+	}
+	value, _ := protometa.ScalarString(m, fd)
+	return value, nil
 }
 
 // Favorited modpack ids as a lookup set

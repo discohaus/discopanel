@@ -218,6 +218,7 @@ func main() {
 
 	// Initialize metrics collector, the panel side health source
 	metricsCollector := metrics.NewCollector(store, dockerClient, cfg, eventBus, log, metrics.DefaultConfig())
+	metricsCollector.SetRecorder(rec)
 	dockerClient.SetHealthChecker(metricsCollector)
 	metricsCollector.SetProxyTrafficSource(proxyManager.GetRouteStats)
 
@@ -263,7 +264,7 @@ func main() {
 	defer lifecycleManager.StopIdleWatcher()
 
 	// Initialize RPC server with full configuration
-	rpcServer, err := rpc.NewServer(store, dockerClient, sender, cfg, proxyManager, taskScheduler, lifecycleManager, metricsCollector, moduleManager, eventBus, agentHub, rec, log)
+	rpcServer, err := rpc.NewServer(store, dockerClient, sender, cfg, proxyManager, taskScheduler, lifecycleManager, metricsCollector, moduleManager, eventBus, agentHub, prov, rec, log)
 	if err != nil {
 		log.Fatal("Failed to initialize RPC server: %v", err)
 	}
