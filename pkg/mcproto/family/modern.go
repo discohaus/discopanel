@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/discohaus/discopanel/pkg/mcproto"
+	"github.com/discohaus/discopanel/pkg/mcproto/mcdata"
 	"github.com/discohaus/discopanel/pkg/mcproto/packet"
 )
 
@@ -27,7 +28,7 @@ const maxConfigFrames = 64
 // Game event id starting the chunk wait
 const gameEventStartChunks = 13
 
-// Modern family codec covering 754 through 776
+// Modern family codec from 754 through the newest generated tables
 type modernCodec struct{}
 
 // Codec registers itself at package load
@@ -38,8 +39,13 @@ func init() {
 // Protocol numbers this codec speaks
 func (modernCodec) Protocols() []int32 {
 	var out []int32
-	for p := int32(ModernFloor); p <= ModernCeiling; p++ {
+	for p := int32(ModernFloor); p < dataFloor; p++ {
 		out = append(out, p)
+	}
+	for _, p := range mcdata.All() {
+		if ModernIDsFor(p.Protocol) != nil {
+			out = append(out, p.Protocol)
+		}
 	}
 	return out
 }
@@ -202,13 +208,8 @@ func (s *modernSession) runConfig(join JoinData) error {
 		return s.refuseDeclared(join, false)
 	}
 
-	if s.ids.CfgKnownPacks >= 0 {
-		var packs bytes.Buffer
-		mcproto.WriteVarInt(&packs, mcproto.VarInt(s.ids.CfgKnownPacks))
-		mcproto.WriteVarInt(&packs, 0)
-		if err := s.send(packs.Bytes()); err != nil {
-			return err
-		}
+	if !s.ids.RegistryCompound {
+		return fmt.Errorf("protocol %d has no registry tables", s.protocol)
 	}
 
 	var flags bytes.Buffer
@@ -219,28 +220,12 @@ func (s *modernSession) runConfig(join JoinData) error {
 		return err
 	}
 
-	if s.ids.RegistryCompound {
-		var reg bytes.Buffer
-		mcproto.WriteVarInt(&reg, mcproto.VarInt(s.ids.CfgRegistryData))
-		if err := packet.WriteNetworkNBT(&reg, registryCompoundNBT(s.protocol)); err != nil {
-			return err
-		}
-		if err := s.send(reg.Bytes()); err != nil {
-			return err
-		}
-	} else {
-		regs, err := hubRegistries(s.protocol)
-		if err != nil {
-			return err
-		}
-		for _, reg := range regs {
-			if err := s.send(reg); err != nil {
-				return err
-			}
-		}
+	var reg bytes.Buffer
+	mcproto.WriteVarInt(&reg, mcproto.VarInt(s.ids.CfgRegistryData))
+	if err := packet.WriteNetworkNBT(&reg, registryCompoundNBT(s.protocol)); err != nil {
+		return err
 	}
-
-	if err := s.sendConfigTags(); err != nil {
+	if err := s.send(reg.Bytes()); err != nil {
 		return err
 	}
 
@@ -313,29 +298,22 @@ func (s *modernSession) runMirrorConfig(join JoinData, regs []syncedRegistry) er
 	return s.awaitFinishAck()
 }
 
-// Binds the tag names modern clients require
-// Shared config ids cover every tagged era
+// Replays the vanilla tag payload captured for the protocol
 func (s *modernSession) sendConfigTags() error {
 	set := syncedTagSet(s.protocol)
 	if len(set) == 0 {
-		return nil
+		return fmt.Errorf("protocol %d has no tag tables", s.protocol)
 	}
 	var body bytes.Buffer
-	mcproto.WriteVarInt(&body, mcproto.VarInt(mcproto.CfgCBUpdateTags))
+	mcproto.WriteVarInt(&body, mcproto.VarInt(s.ids.CfgUpdateTags))
 	mcproto.WriteVarInt(&body, mcproto.VarInt(len(set)))
 	for _, reg := range set {
-		packet.WriteString(&body, reg.name)
-		mcproto.WriteVarInt(&body, mcproto.VarInt(len(reg.tags)))
-		for _, tag := range reg.tags {
-			packet.WriteString(&body, tag.name)
-			ids := make([]int32, 0, len(tag.entries))
-			for _, entry := range tag.entries {
-				if id, ok := syncedEntryID(s.protocol, reg.name, entry); ok {
-					ids = append(ids, id)
-				}
-			}
-			mcproto.WriteVarInt(&body, mcproto.VarInt(len(ids)))
-			for _, id := range ids {
+		packet.WriteString(&body, reg.Name)
+		mcproto.WriteVarInt(&body, mcproto.VarInt(len(reg.Tags)))
+		for _, tag := range reg.Tags {
+			packet.WriteString(&body, tag.Name)
+			mcproto.WriteVarInt(&body, mcproto.VarInt(len(tag.IDs)))
+			for _, id := range tag.IDs {
 				mcproto.WriteVarInt(&body, mcproto.VarInt(id))
 			}
 		}
@@ -362,7 +340,7 @@ func (s *modernSession) mirrorRegistryBody(reg syncedRegistry, confirmed bool) (
 	packet.WriteString(&body, reg.Name)
 	mcproto.WriteVarInt(&body, mcproto.VarInt(len(reg.Entries)))
 	for _, entry := range reg.Entries {
-		packet.WriteString(&body, "minecraft:"+entry)
+		packet.WriteString(&body, entry)
 		if data == nil {
 			packet.WriteBool(&body, false)
 			continue
@@ -399,7 +377,7 @@ func (s *modernSession) fallbackRegistryData(registry string) (func(string) pack
 	case "minecraft:chat_type":
 		return func(string) packet.Tag { return chatTypeNBT() }, nil
 	case "minecraft:damage_type":
-		return damageTypeNBT, nil
+		return func(entry string) packet.Tag { return damageTypeNBT(NormalizeBlock(entry)) }, nil
 	case "minecraft:world_clock":
 		return func(string) packet.Tag { return packet.NBTCompound{} }, nil
 	}
@@ -668,7 +646,12 @@ func (s *modernSession) sendModernJoin(join JoinData) error {
 	packet.WriteString(&body, "minecraft:overworld")
 	packet.WriteNum(&body, int64(0))
 	body.WriteByte(2)
-	body.WriteByte(0xff)
+	if s.ids.VarIntPrevMode {
+		// Zero means no previous game mode
+		mcproto.WriteVarInt(&body, 0)
+	} else {
+		body.WriteByte(0xff)
+	}
 	packet.WriteBool(&body, false)
 	packet.WriteBool(&body, true)
 	packet.WriteBool(&body, false)
@@ -936,7 +919,7 @@ func (s *modernSession) Encode(ev Event) error {
 			}
 			return s.send(body.Bytes())
 		}
-		mcproto.WriteVarInt(&body, ModernSignEntity)
+		mcproto.WriteVarInt(&body, mcproto.VarInt(s.ids.SignEntity))
 		if err := writeEraNBT(&body, s.ids, signTextNBT(e.Lines, s.ids)); err != nil {
 			return err
 		}
@@ -975,11 +958,17 @@ func (s *modernSession) sendEntityMove(e EvEntityMove) error {
 	if s.ids.EntityPosSync >= 0 {
 		mcproto.WriteVarInt(&body, mcproto.VarInt(s.ids.EntityPosSync))
 		mcproto.WriteVarInt(&body, mcproto.VarInt(e.EntityID))
+		if s.ids.PathedPosSync {
+			// Linear path type straight to the position
+			mcproto.WriteVarInt(&body, 0)
+		}
 		packet.WriteNum(&body, e.Pos.X)
 		packet.WriteNum(&body, e.Pos.Y)
 		packet.WriteNum(&body, e.Pos.Z)
-		for range 3 {
-			packet.WriteNum(&body, float64(0))
+		if !s.ids.PathedPosSync {
+			for range 3 {
+				packet.WriteNum(&body, float64(0))
+			}
 		}
 		packet.WriteNum(&body, e.Pos.Yaw)
 		packet.WriteNum(&body, e.Pos.Pitch)

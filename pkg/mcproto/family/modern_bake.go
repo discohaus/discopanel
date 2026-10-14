@@ -18,9 +18,6 @@ const (
 // Light sections pad the world by two
 const modernLightSections = modernSections + 2
 
-// Sign block entity type id, stable in the group
-const ModernSignEntity = 7
-
 // Heightmap entries fit this world in nine bits
 const modernHeightBits = 9
 
@@ -85,7 +82,7 @@ func bakeModernChunk(grid *Grid, protocol int32, ids *ModernIDs, cx, cz int) ([]
 	for _, sg := range signs {
 		body.WriteByte(byte((sg.X&15)<<4 | sg.Z&15))
 		packet.WriteNum(&body, int16(sg.Y))
-		mcproto.WriteVarInt(&body, ModernSignEntity)
+		mcproto.WriteVarInt(&body, mcproto.VarInt(ids.SignEntity))
 		if err := writeEraNBT(&body, ids, signTextNBT(sg.Lines, ids)); err != nil {
 			return nil, err
 		}
@@ -102,7 +99,7 @@ func bakeModernChunk(grid *Grid, protocol int32, ids *ModernIDs, cx, cz int) ([]
 	if ids.TrustEdges {
 		packet.WriteBool(&body, true)
 	}
-	writeModernLight(&body)
+	writeModernLight(&body, ids)
 	return body.Bytes(), nil
 }
 
@@ -181,10 +178,10 @@ func bakeLegacyChunk(grid *Grid, protocol int32, ids *ModernIDs, cx, cz int) ([]
 		mcproto.WriteVarInt(&light, 0)
 		mcproto.WriteVarInt(&light, mcproto.VarInt(legacyLightMask))
 	} else {
-		writeBitset(&light, legacyLightMask)
-		writeBitset(&light, 0)
-		writeBitset(&light, 0)
-		writeBitset(&light, legacyLightMask)
+		writeBitset(&light, ids, legacyLightMask)
+		writeBitset(&light, ids, 0)
+		writeBitset(&light, ids, 0)
+		writeBitset(&light, ids, legacyLightMask)
 	}
 	bright := bytes.Repeat([]byte{0xff}, 2048)
 	if !ids.VarIntMask {
@@ -473,12 +470,12 @@ func signFace(lines [4]string, ids *ModernIDs, glow bool) packet.Tag {
 }
 
 // Writes full bright sky light for the column
-func writeModernLight(w *bytes.Buffer) {
+func writeModernLight(w *bytes.Buffer, ids *ModernIDs) {
 	full := uint64(1)<<modernLightSections - 1
-	writeBitset(w, full)
-	writeBitset(w, 0)
-	writeBitset(w, 0)
-	writeBitset(w, full)
+	writeBitset(w, ids, full)
+	writeBitset(w, ids, 0)
+	writeBitset(w, ids, 0)
+	writeBitset(w, ids, full)
 
 	bright := bytes.Repeat([]byte{0xff}, 2048)
 	mcproto.WriteVarInt(w, modernLightSections)
@@ -489,12 +486,21 @@ func writeModernLight(w *bytes.Buffer) {
 	mcproto.WriteVarInt(w, 0)
 }
 
-// Writes one long bitset in wire shape
-func writeBitset(w *bytes.Buffer, bits uint64) {
+// Writes one bitset as longs or as bytes per the era
+func writeBitset(w *bytes.Buffer, ids *ModernIDs, bits uint64) {
 	if bits == 0 {
 		mcproto.WriteVarInt(w, 0)
 		return
 	}
-	mcproto.WriteVarInt(w, 1)
-	packet.WriteNum(w, bits)
+	if !ids.ByteMasks {
+		mcproto.WriteVarInt(w, 1)
+		packet.WriteNum(w, bits)
+		return
+	}
+	var raw []byte
+	for v := bits; v != 0; v >>= 8 {
+		raw = append(raw, byte(v))
+	}
+	mcproto.WriteVarInt(w, mcproto.VarInt(len(raw)))
+	w.Write(raw)
 }

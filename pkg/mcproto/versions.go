@@ -1,6 +1,10 @@
 package mcproto
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/discohaus/discopanel/pkg/mcproto/mcdata"
+)
 
 // Oldest protocol carrying the transfer packet
 const TransferProtocol int32 = 766
@@ -11,7 +15,7 @@ type versionEntry struct {
 	proto int32
 }
 
-// Release names in age order oldest first
+// Release names before generated tables, oldest first
 var versionEntries = []versionEntry{
 	{"1.7.2", 4}, {"1.7.4", 4}, {"1.7.5", 4},
 	{"1.7.6", 5}, {"1.7.7", 5}, {"1.7.8", 5}, {"1.7.9", 5}, {"1.7.10", 5},
@@ -30,17 +34,17 @@ var versionEntries = []versionEntry{
 	{"1.18", 757}, {"1.18.1", 757}, {"1.18.2", 758},
 	{"1.19", 759}, {"1.19.1", 760}, {"1.19.2", 760}, {"1.19.3", 761}, {"1.19.4", 762},
 	{"1.20", 763}, {"1.20.1", 763}, {"1.20.2", 764}, {"1.20.3", 765}, {"1.20.4", 765},
-	{"1.20.5", 766}, {"1.20.6", 766},
-	{"1.21", 767}, {"1.21.1", 767}, {"1.21.2", 768}, {"1.21.3", 768},
-	{"1.21.4", 769}, {"1.21.5", 770}, {"1.21.6", 771}, {"1.21.7", 772}, {"1.21.8", 772},
-	{"1.21.9", 773}, {"1.21.10", 773}, {"1.21.11", 774},
-	{"26.1", 775}, {"26.1.1", 775}, {"26.1.2", 775},
-	{"26.2", 776},
 }
 
 var protocolByVersion = map[string]int32{}
 
+// Generated tables append their releases after the hand list
 func init() {
+	for _, p := range mcdata.All() {
+		for _, v := range p.Versions {
+			versionEntries = append(versionEntries, versionEntry{name: v, proto: p.Protocol})
+		}
+	}
 	for _, e := range versionEntries {
 		protocolByVersion[e.name] = e.proto
 	}

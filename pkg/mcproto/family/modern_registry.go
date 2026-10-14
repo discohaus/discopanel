@@ -1,10 +1,6 @@
 package family
 
 import (
-	"bytes"
-	"fmt"
-
-	"github.com/discohaus/discopanel/pkg/mcproto"
 	"github.com/discohaus/discopanel/pkg/mcproto/packet"
 )
 
@@ -22,22 +18,10 @@ var modernDamageBase = []string{
 	"unattributed_fireball", "wither", "wither_skull",
 }
 
-// Later groups append their new damage types
+// Compound eras drop the names younger than them
 // Deltas verified against vanilla data per version
 func modernDamageTypes(protocol int32) []string {
 	out := append([]string{}, modernDamageBase...)
-	if protocol >= 767 {
-		out = append(out, "campfire", "wind_charge")
-	}
-	if protocol >= 768 {
-		out = append(out, "ender_pearl", "mace_smash")
-	}
-	if protocol >= 774 {
-		out = append(out, "spear")
-	}
-	if protocol >= 776 {
-		out = append(out, "sulfur_cube_hot")
-	}
 	if protocol < 766 {
 		out = dropNames(out, "spit")
 	}
@@ -265,64 +249,3 @@ const attribDimensionJSON = `{"ambient_light": 0.0, "attributes": {"minecraft:au
 
 // Vanilla plains mirrored for attribute era clients
 const attribBiomeJSON = `{"attributes": {"minecraft:visual/sky_color": "#78a7ff"}, "downfall": 0.4, "effects": {"water_color": "#3f76e4"}, "has_precipitation": true, "temperature": 0.8}`
-
-// Builds one registry data packet body
-func registryBody(registry string, names []string, data func(string) packet.Tag) ([]byte, error) {
-	var body bytes.Buffer
-	mcproto.WriteVarInt(&body, 0x07)
-	packet.WriteString(&body, registry)
-	mcproto.WriteVarInt(&body, mcproto.VarInt(len(names)))
-	for _, name := range names {
-		packet.WriteString(&body, "minecraft:"+name)
-		packet.WriteBool(&body, true)
-		if err := packet.WriteNetworkNBT(&body, data(name)); err != nil {
-			return nil, err
-		}
-	}
-	return body.Bytes(), nil
-}
-
-// Registry payloads a modern join requires
-func hubRegistries(protocol int32) ([][]byte, error) {
-	ids := ModernIDsFor(protocol)
-	if ids == nil {
-		return nil, fmt.Errorf("no modern ids for protocol %d", protocol)
-	}
-
-	dimTag, biomeTag := hubDimensionNBT(), hubBiomeNBT()
-	if ids.AttribRegistries {
-		var err error
-		if dimTag, err = packet.JSONToNBT([]byte(attribDimensionJSON)); err != nil {
-			return nil, err
-		}
-		if biomeTag, err = packet.JSONToNBT([]byte(attribBiomeJSON)); err != nil {
-			return nil, err
-		}
-	}
-
-	var out [][]byte
-	if ids.ClockTime {
-		// Empty bodies keep every vanilla clock default
-		clocks, err := registryBody("minecraft:world_clock", []string{"overworld", "the_end"},
-			func(string) packet.Tag { return packet.NBTCompound{} })
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, clocks)
-	}
-	dim, err := registryBody("minecraft:dimension_type", []string{"overworld"},
-		func(string) packet.Tag { return dimTag })
-	if err != nil {
-		return nil, err
-	}
-	biome, err := registryBody("minecraft:worldgen/biome", []string{"plains"},
-		func(string) packet.Tag { return biomeTag })
-	if err != nil {
-		return nil, err
-	}
-	damage, err := registryBody("minecraft:damage_type", modernDamageTypes(protocol), damageTypeNBT)
-	if err != nil {
-		return nil, err
-	}
-	return append(out, dim, biome, damage), nil
-}

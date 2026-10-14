@@ -1,6 +1,11 @@
 package family
 
-import "github.com/discohaus/discopanel/pkg/mcproto"
+import (
+	"fmt"
+	"sync"
+
+	"github.com/discohaus/discopanel/pkg/mcproto/mcdata"
+)
 
 // Play state ids for one modern protocol group
 type ModernIDs struct {
@@ -57,11 +62,14 @@ type ModernIDs struct {
 	CfgDisconnect   int32
 	CfgPingCB       int32
 	CfgPongSB       int32
+	CfgUpdateTags   int32
 
 	// Registry facts riding along with the group
 	PlayerTypeID int32
 	// Chunk block entity id for beacons in the group
 	BeaconEntity int32
+	// Chunk block entity id for signs in the group
+	SignEntity int32
 	// Player spawn packet id when the era has one
 	SpawnPlayer int32
 	// Movement flags widen at this group when true
@@ -122,25 +130,14 @@ type ModernIDs struct {
 	DimensionInline bool
 	// Join game lacks simulation distance when true
 	NoSimDistance bool
+	// Entity position syncs ride a position path when true
+	PathedPosSync bool
+	// Previous game mode rides an optional varint when true
+	VarIntPrevMode bool
+	// Light masks ride as byte arrays when true
+	ByteMasks bool
 	// Separate light packet id when the era has one
 	UpdateLight int32
-}
-
-// Stamps the config ids shared by 766 and up
-func init() {
-	for _, ids := range []*ModernIDs{&modern766, &modern768, &modern770, &modern773, &modern775} {
-		ids.CfgFinishCB = mcproto.CfgCBFinish
-		ids.CfgRegistryData = mcproto.CfgCBRegistryData
-		ids.CfgFeatureFlags = mcproto.CfgCBFeatureFlags
-		ids.CfgKnownPacks = mcproto.CfgCBKnownPacks
-		ids.CfgFinishAckSB = mcproto.CfgSBFinishAck
-		ids.CfgKnownPacksSB = mcproto.CfgSBKnownPacks
-		ids.CfgPluginMsgCB = mcproto.CfgCBPluginMessage
-		ids.CfgPluginMsgSB = mcproto.CfgSBPluginMessage
-		ids.CfgDisconnect = mcproto.CfgCBDisconnect
-		ids.CfgPingCB = mcproto.CfgCBPing
-		ids.CfgPongSB = mcproto.CfgSBPong
-	}
 }
 
 // Ids for protocol 754, masks still ride varints
@@ -340,8 +337,8 @@ var legacy765 = ModernIDs{
 	RegistryCompound: true, DimTypeString: true,
 }
 
-// Ids for protocols 766 and 767
-var modern766 = ModernIDs{
+// Ids for protocols 766 and 767, jars predating packet reports
+var legacy766 = ModernIDs{
 	JoinGame: 0x2b, KeepAliveCB: 0x26, ChunkData: 0x27, UnloadChunk: 0x21,
 	DisconnectCB: 0x1d, PlayerInfoUpdate: 0x3e, PlayerInfoRemove: 0x3d,
 	AddEntity: 0x01, EntityTeleport: 0x70, EntityPosSync: -1,
@@ -353,76 +350,44 @@ var modern766 = ModernIDs{
 	KeepAliveSB:     0x18, PlayerPos: 0x1a, PlayerPosRot: 0x1b, PlayerRot: 0x1c,
 	PlayerStatus: 0x1d, ChatSB: 0x06, ClientInfoSB: 0x0a, PluginMessageSB: 0x12,
 	TeleportConfirm: 0x00, ClientCommand: 0x09,
-	PlayerTypeID: 128, BeaconEntity: 14, StrictFlag: true,
+	CfgFinishCB: 0x03, CfgRegistryData: 0x07, CfgFeatureFlags: 0x0c,
+	CfgKnownPacks: 0x0e, CfgFinishAckSB: 0x03, CfgKnownPacksSB: 0x07,
+	CfgPluginMsgCB: 0x01, CfgPluginMsgSB: 0x02, CfgDisconnect: 0x02,
+	CfgPingCB: 0x05, CfgPongSB: 0x05, CfgUpdateTags: 0x0d,
+	SpawnPlayer: -1, UpdateLight: -1,
 }
 
-// Ids for protocols 768 and 769
-var modern768 = ModernIDs{
-	JoinGame: 0x2c, KeepAliveCB: 0x27, ChunkData: 0x28, UnloadChunk: 0x22,
-	DisconnectCB: 0x1d, PlayerInfoUpdate: 0x40, PlayerInfoRemove: 0x3f,
-	AddEntity: 0x01, EntityTeleport: 0x77, EntityPosSync: 0x20,
-	EntityPos: 0x2f, EntityPosRot: 0x30, EntityRot: 0x32, EntityHeadLook: 0x4d,
-	RemoveEntities: 0x47, SyncPlayerPos: 0x42, SystemChat: 0x73, PlayerChat: 0x3b,
-	SpawnPosition: 0x5b, Abilities: 0x3a, TimeUpdate: 0x6b, BlockUpdate: 0x09,
-	Transfer: 0x7a, GameEvent: 0x23, SetCenterChunk: 0x58, SetRenderDist: 0x59,
-	BlockEntityData: 0x07,
-	KeepAliveSB:     0x1a, PlayerPos: 0x1c, PlayerPosRot: 0x1d, PlayerRot: 0x1e,
-	PlayerStatus: 0x1f, ChatSB: 0x07, ClientInfoSB: 0x0c, PluginMessageSB: 0x14,
-	TeleportConfirm: 0x00, ClientCommand: 0x0a,
-	PlayerTypeID: 148, BeaconEntity: 15, WideTeleport: true,
+// Legacy tables share the sign entity id and tag id gap
+func init() {
+	for _, ids := range []*ModernIDs{&legacy754, &legacy755, &legacy757, &legacy759, &legacy760, &legacy761, &legacy762, &legacy764, &legacy765} {
+		ids.SignEntity = 7
+		ids.CfgUpdateTags = -1
+	}
 }
 
-// Ids for protocols 770 through 772
-var modern770 = ModernIDs{
-	JoinGame: 0x2b, KeepAliveCB: 0x26, ChunkData: 0x27, UnloadChunk: 0x21,
-	DisconnectCB: 0x1c, PlayerInfoUpdate: 0x3f, PlayerInfoRemove: 0x3e,
-	AddEntity: 0x01, EntityTeleport: 0x76, EntityPosSync: 0x1f,
-	EntityPos: 0x2e, EntityPosRot: 0x2f, EntityRot: 0x31, EntityHeadLook: 0x4c,
-	RemoveEntities: 0x46, SyncPlayerPos: 0x41, SystemChat: 0x72, PlayerChat: 0x3a,
-	SpawnPosition: 0x5a, Abilities: 0x39, TimeUpdate: 0x6a, BlockUpdate: 0x08,
-	Transfer: 0x7a, GameEvent: 0x22, SetCenterChunk: 0x57, SetRenderDist: 0x58,
-	BlockEntityData: 0x06,
-	KeepAliveSB:     0x1b, PlayerPos: 0x1d, PlayerPosRot: 0x1e, PlayerRot: 0x1f,
-	PlayerStatus: 0x20, ChatSB: 0x08, ClientInfoSB: 0x0d, PluginMessageSB: 0x15,
-	TeleportConfirm: 0x00, ClientCommand: 0x0b,
-	PlayerTypeID: 148, BeaconEntity: 15, WideTeleport: true, VarIntHeightmaps: true,
-	UnprefixedSections: true, ChatChecksum: true,
+// Layout flags switched on from one protocol onward
+var eraFlags = []struct {
+	floor int32
+	apply func(ids *ModernIDs)
+}{
+	{766, func(ids *ModernIDs) { ids.StrictFlag = true }},
+	{768, func(ids *ModernIDs) { ids.StrictFlag = false; ids.WideTeleport = true }},
+	{770, func(ids *ModernIDs) {
+		ids.VarIntHeightmaps, ids.UnprefixedSections, ids.ChatChecksum = true, true, true
+	}},
+	{773, func(ids *ModernIDs) { ids.LpVelocity, ids.GlobalRespawn = true, true }},
+	{775, func(ids *ModernIDs) { ids.ClockTime, ids.AttribRegistries, ids.FluidCounts = true, true, true }},
+	{776, func(ids *ModernIDs) { ids.LoginOnlineFlag, ids.LoginSessionID = true, true }},
+	{777, func(ids *ModernIDs) { ids.PathedPosSync, ids.VarIntPrevMode, ids.ByteMasks = true, true, true }},
 }
 
-// Ids for protocols 773 and 774
-var modern773 = ModernIDs{
-	JoinGame: 0x30, KeepAliveCB: 0x2b, ChunkData: 0x2c, UnloadChunk: 0x25,
-	DisconnectCB: 0x20, PlayerInfoUpdate: 0x44, PlayerInfoRemove: 0x43,
-	AddEntity: 0x01, EntityTeleport: 0x7b, EntityPosSync: 0x23,
-	EntityPos: 0x33, EntityPosRot: 0x34, EntityRot: 0x36, EntityHeadLook: 0x51,
-	RemoveEntities: 0x4b, SyncPlayerPos: 0x46, SystemChat: 0x77, PlayerChat: 0x3f,
-	SpawnPosition: 0x5f, Abilities: 0x3e, TimeUpdate: 0x6f, BlockUpdate: 0x08,
-	Transfer: 0x7f, GameEvent: 0x26, SetCenterChunk: 0x5c, SetRenderDist: 0x5d,
-	BlockEntityData: 0x06,
-	KeepAliveSB:     0x1b, PlayerPos: 0x1d, PlayerPosRot: 0x1e, PlayerRot: 0x1f,
-	PlayerStatus: 0x20, ChatSB: 0x08, ClientInfoSB: 0x0d, PluginMessageSB: 0x15,
-	TeleportConfirm: 0x00, ClientCommand: 0x0b,
-	PlayerTypeID: 151, BeaconEntity: 15, WideTeleport: true, VarIntHeightmaps: true,
-	UnprefixedSections: true, ChatChecksum: true, LpVelocity: true, GlobalRespawn: true,
-}
+// First protocol whose tables come from generated data
+const dataFloor = 766
 
-// Ids for protocols 775 and 776
-var modern775 = ModernIDs{
-	JoinGame: 0x31, KeepAliveCB: 0x2c, ChunkData: 0x2d, UnloadChunk: 0x25,
-	DisconnectCB: 0x20, PlayerInfoUpdate: 0x46, PlayerInfoRemove: 0x45,
-	AddEntity: 0x01, EntityTeleport: 0x7d, EntityPosSync: 0x23,
-	EntityPos: 0x35, EntityPosRot: 0x36, EntityRot: 0x38, EntityHeadLook: 0x53,
-	RemoveEntities: 0x4d, SyncPlayerPos: 0x48, SystemChat: 0x79, PlayerChat: 0x41,
-	SpawnPosition: 0x61, Abilities: 0x40, TimeUpdate: 0x71, BlockUpdate: 0x08,
-	Transfer: 0x81, GameEvent: 0x26, SetCenterChunk: 0x5e, SetRenderDist: 0x5f,
-	BlockEntityData: 0x06,
-	KeepAliveSB:     0x1c, PlayerPos: 0x1e, PlayerPosRot: 0x1f, PlayerRot: 0x20,
-	PlayerStatus: 0x21, ChatSB: 0x09, ClientInfoSB: 0x0e, PluginMessageSB: 0x16,
-	TeleportConfirm: 0x00, ClientCommand: 0x0c,
-	PlayerTypeID: 155, BeaconEntity: 15, WideTeleport: true, VarIntHeightmaps: true,
-	UnprefixedSections: true, ChatChecksum: true, LpVelocity: true, GlobalRespawn: true,
-	ClockTime: true, AttribRegistries: true, FluidCounts: true,
-}
+var (
+	dataIDsMu sync.Mutex
+	dataIDs   = map[int32]*ModernIDs{}
+)
 
 // Group table for one modern protocol
 func ModernIDsFor(protocol int32) *ModernIDs {
@@ -449,49 +414,177 @@ func ModernIDsFor(protocol int32) *ModernIDs {
 		return &legacy764
 	case 765:
 		return &legacy765
-	case 766, 767:
-		return &modern766
-	case 768:
-		ids := modern768
-		ids.PlayerTypeID = 148
-		return &ids
-	case 769:
-		ids := modern768
-		ids.PlayerTypeID = 147
-		return &ids
-	case 770:
-		ids := modern770
-		ids.PlayerTypeID = 148
-		return &ids
-	case 771, 772:
-		ids := modern770
-		ids.PlayerTypeID = 149
-		return &ids
-	case 773:
-		ids := modern773
-		ids.PlayerTypeID = 151
-		return &ids
-	case 774:
-		ids := modern773
-		ids.PlayerTypeID = 155
-		return &ids
-	case 775:
-		ids := modern775
-		ids.PlayerTypeID = 155
-		return &ids
-	case 776:
-		ids := modern775
-		ids.PlayerTypeID = 156
-		ids.LoginOnlineFlag = true
-		ids.LoginSessionID = true
-		return &ids
-	default:
+	}
+	if protocol < dataFloor {
 		return nil
 	}
+	dataIDsMu.Lock()
+	defer dataIDsMu.Unlock()
+	if ids, ok := dataIDs[protocol]; ok {
+		return ids
+	}
+	p := mcdata.Lookup(protocol)
+	if p == nil {
+		return nil
+	}
+	ids, err := idsFromData(p)
+	if err != nil {
+		return nil
+	}
+	dataIDs[protocol] = ids
+	return ids
+}
+
+// Packet names the modern codec binds from generated tables
+var (
+	playClientboundNames = map[string]func(*ModernIDs) *int32{
+		"login":                      func(i *ModernIDs) *int32 { return &i.JoinGame },
+		"keep_alive":                 func(i *ModernIDs) *int32 { return &i.KeepAliveCB },
+		"level_chunk_with_light":     func(i *ModernIDs) *int32 { return &i.ChunkData },
+		"forget_level_chunk":         func(i *ModernIDs) *int32 { return &i.UnloadChunk },
+		"disconnect":                 func(i *ModernIDs) *int32 { return &i.DisconnectCB },
+		"player_info_update":         func(i *ModernIDs) *int32 { return &i.PlayerInfoUpdate },
+		"player_info_remove":         func(i *ModernIDs) *int32 { return &i.PlayerInfoRemove },
+		"add_entity":                 func(i *ModernIDs) *int32 { return &i.AddEntity },
+		"teleport_entity":            func(i *ModernIDs) *int32 { return &i.EntityTeleport },
+		"move_entity_pos":            func(i *ModernIDs) *int32 { return &i.EntityPos },
+		"move_entity_pos_rot":        func(i *ModernIDs) *int32 { return &i.EntityPosRot },
+		"move_entity_rot":            func(i *ModernIDs) *int32 { return &i.EntityRot },
+		"rotate_head":                func(i *ModernIDs) *int32 { return &i.EntityHeadLook },
+		"remove_entities":            func(i *ModernIDs) *int32 { return &i.RemoveEntities },
+		"player_position":            func(i *ModernIDs) *int32 { return &i.SyncPlayerPos },
+		"system_chat":                func(i *ModernIDs) *int32 { return &i.SystemChat },
+		"player_chat":                func(i *ModernIDs) *int32 { return &i.PlayerChat },
+		"set_default_spawn_position": func(i *ModernIDs) *int32 { return &i.SpawnPosition },
+		"player_abilities":           func(i *ModernIDs) *int32 { return &i.Abilities },
+		"set_time":                   func(i *ModernIDs) *int32 { return &i.TimeUpdate },
+		"block_update":               func(i *ModernIDs) *int32 { return &i.BlockUpdate },
+		"transfer":                   func(i *ModernIDs) *int32 { return &i.Transfer },
+		"game_event":                 func(i *ModernIDs) *int32 { return &i.GameEvent },
+		"set_chunk_cache_center":     func(i *ModernIDs) *int32 { return &i.SetCenterChunk },
+		"set_chunk_cache_radius":     func(i *ModernIDs) *int32 { return &i.SetRenderDist },
+		"block_entity_data":          func(i *ModernIDs) *int32 { return &i.BlockEntityData },
+	}
+	playServerboundNames = map[string]func(*ModernIDs) *int32{
+		"keep_alive":              func(i *ModernIDs) *int32 { return &i.KeepAliveSB },
+		"move_player_pos":         func(i *ModernIDs) *int32 { return &i.PlayerPos },
+		"move_player_pos_rot":     func(i *ModernIDs) *int32 { return &i.PlayerPosRot },
+		"move_player_rot":         func(i *ModernIDs) *int32 { return &i.PlayerRot },
+		"move_player_status_only": func(i *ModernIDs) *int32 { return &i.PlayerStatus },
+		"chat":                    func(i *ModernIDs) *int32 { return &i.ChatSB },
+		"client_information":      func(i *ModernIDs) *int32 { return &i.ClientInfoSB },
+		"custom_payload":          func(i *ModernIDs) *int32 { return &i.PluginMessageSB },
+		"accept_teleportation":    func(i *ModernIDs) *int32 { return &i.TeleportConfirm },
+		"client_command":          func(i *ModernIDs) *int32 { return &i.ClientCommand },
+	}
+	configClientboundNames = map[string]func(*ModernIDs) *int32{
+		"finish_configuration":    func(i *ModernIDs) *int32 { return &i.CfgFinishCB },
+		"registry_data":           func(i *ModernIDs) *int32 { return &i.CfgRegistryData },
+		"update_enabled_features": func(i *ModernIDs) *int32 { return &i.CfgFeatureFlags },
+		"select_known_packs":      func(i *ModernIDs) *int32 { return &i.CfgKnownPacks },
+		"custom_payload":          func(i *ModernIDs) *int32 { return &i.CfgPluginMsgCB },
+		"disconnect":              func(i *ModernIDs) *int32 { return &i.CfgDisconnect },
+		"ping":                    func(i *ModernIDs) *int32 { return &i.CfgPingCB },
+		"update_tags":             func(i *ModernIDs) *int32 { return &i.CfgUpdateTags },
+	}
+	configServerboundNames = map[string]func(*ModernIDs) *int32{
+		"finish_configuration": func(i *ModernIDs) *int32 { return &i.CfgFinishAckSB },
+		"select_known_packs":   func(i *ModernIDs) *int32 { return &i.CfgKnownPacksSB },
+		"custom_payload":       func(i *ModernIDs) *int32 { return &i.CfgPluginMsgSB },
+		"pong":                 func(i *ModernIDs) *int32 { return &i.CfgPongSB },
+	}
+)
+
+// Position sync arrived with 768, older data eras teleport instead
+const posSyncFloor = 768
+
+// Binds one generated table into the codec id shape
+func idsFromData(p *mcdata.Protocol) (*ModernIDs, error) {
+	ids := &ModernIDs{SpawnPlayer: -1, UpdateLight: -1, EntityPosSync: -1}
+	if !p.HasPackets() {
+		if p.Protocol > 767 {
+			return nil, fmt.Errorf("protocol %d shipped no packet report", p.Protocol)
+		}
+		copied := legacy766
+		ids = &copied
+	}
+	bind := func(state, dir string, names map[string]func(*ModernIDs) *int32) error {
+		for name, field := range names {
+			id, ok := p.PacketID(state, dir, name)
+			if !ok {
+				return fmt.Errorf("protocol %d lacks %s/%s %s", p.Protocol, state, dir, name)
+			}
+			*field(ids) = id
+		}
+		return nil
+	}
+	if p.HasPackets() {
+		if err := bind("play", "clientbound", playClientboundNames); err != nil {
+			return nil, err
+		}
+		if err := bind("play", "serverbound", playServerboundNames); err != nil {
+			return nil, err
+		}
+		if err := bind("configuration", "clientbound", configClientboundNames); err != nil {
+			return nil, err
+		}
+		if err := bind("configuration", "serverbound", configServerboundNames); err != nil {
+			return nil, err
+		}
+	}
+	if p.Protocol >= posSyncFloor {
+		id, ok := p.PacketID("play", "clientbound", "entity_position_sync")
+		if !ok {
+			return nil, fmt.Errorf("protocol %d lacks play/clientbound entity_position_sync", p.Protocol)
+		}
+		ids.EntityPosSync = id
+	}
+	var ok bool
+	if ids.PlayerTypeID, ok = p.EntityTypes["minecraft:player"]; !ok {
+		return nil, fmt.Errorf("protocol %d lacks the player entity type", p.Protocol)
+	}
+	if ids.BeaconEntity, ok = p.BlockEntityTypes["minecraft:beacon"]; !ok {
+		return nil, fmt.Errorf("protocol %d lacks the beacon block entity", p.Protocol)
+	}
+	if ids.SignEntity, ok = p.BlockEntityTypes["minecraft:sign"]; !ok {
+		return nil, fmt.Errorf("protocol %d lacks the sign block entity", p.Protocol)
+	}
+	for _, era := range eraFlags {
+		if p.Protocol >= era.floor {
+			era.apply(ids)
+		}
+	}
+	return ids, nil
+}
+
+// Rejects generated tables the codec cannot bind
+func ValidateData(p *mcdata.Protocol) error {
+	if p.Protocol < dataFloor {
+		return fmt.Errorf("protocol %d predates generated tables", p.Protocol)
+	}
+	if _, err := idsFromData(p); err != nil {
+		return err
+	}
+	for _, spelling := range PaletteStates() {
+		if _, ok := p.StateID(spelling); !ok {
+			return fmt.Errorf("protocol %d lacks block state %s", p.Protocol, spelling)
+		}
+	}
+	for _, need := range [][2]string{{"minecraft:dimension_type", "minecraft:overworld"}, {"minecraft:worldgen/biome", "minecraft:plains"}} {
+		if _, ok := p.EntryID(need[0], need[1]); !ok {
+			return fmt.Errorf("protocol %d lacks %s %s", p.Protocol, need[0], need[1])
+		}
+	}
+	if len(p.Tags) == 0 {
+		return fmt.Errorf("protocol %d carries no tags", p.Protocol)
+	}
+	return nil
 }
 
 // Oldest protocol the codec speaks
 const ModernFloor = 754
 
-// Newest protocol the modern family speaks
-const ModernCeiling = 776
+// Newest protocol with generated tables
+func NewestProtocol() int32 {
+	return mcdata.Newest()
+}

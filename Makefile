@@ -170,6 +170,10 @@ proto-lint:
 gen: proto-clean proto
 	go generate ./...
 
+mcproto:
+	@echo "Regenerating hub wire tables from official jars..."
+	go run ./scripts/mcprotogen gen --since 1.20.5
+
 proto-format:
 	@echo "Formatting proto files (using Docker)..."
 	$(BUF_RUN) format -w
@@ -220,6 +224,7 @@ help:
 	@echo "  make kill-dev       - Kill any orphaned dev processes"
 	@echo "  make deps           - Install all dependencies"
 	@echo "  make test           - Run tests"
+	@echo "  make mcproto        - Regenerate hub wire tables for every Minecraft release since 1.20.5"
 	@echo "  make fmt            - Format code"
 	@echo "  make lint           - Lint code"
 	@echo "  make check          - Type check frontend"

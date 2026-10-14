@@ -15,6 +15,7 @@ discopanel
 !cmd/discopanel
 !web/discopanel
 data/
+!pkg/mcproto/mcdata/data/
 *.db
 config.yaml
 **/schemav1.yaml

@@ -223,7 +223,7 @@ func (s *ListenerSocket) serveHubless(clientConn net.Conn, br *bufio.Reader, han
 		s.logger.Debug("Intent target %s has no route, keeping hub", targetID)
 	}
 	if !hubRT.serve(s, clientConn, br, handshake, login, nil) {
-		s.kick(clientConn, handshake, kickHubVersion())
+		s.kick(clientConn, handshake, kickHubVersion(int32(handshake.ProtocolVersion)))
 	}
 }
 

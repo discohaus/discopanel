@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/discohaus/discopanel/pkg/mcproto"
+	"github.com/discohaus/discopanel/pkg/mcproto/mcdata"
 	"github.com/discohaus/discopanel/pkg/mcproto/packet"
 )
 
@@ -36,15 +37,75 @@ func testGrid(t *testing.T) *Grid {
 	return grid
 }
 
-// Every modern protocol resolves to the codec
+// Every legacy and generated protocol resolves to the codec
 func TestModernCodecRegistered(t *testing.T) {
-	for p := int32(ModernFloor); p <= ModernCeiling; p++ {
+	for p := int32(ModernFloor); p < dataFloor; p++ {
 		if Lookup(p) == nil {
 			t.Fatalf("protocol %d has no codec", p)
 		}
 	}
-	if Lookup(ModernFloor-1) != nil || Lookup(ModernCeiling+1) != nil {
+	if len(mcdata.All()) == 0 {
+		t.Fatal("no generated tables embedded")
+	}
+	for _, p := range mcdata.All() {
+		if err := ValidateData(p); err != nil {
+			t.Fatalf("protocol %d: %v", p.Protocol, err)
+		}
+		if Lookup(p.Protocol) == nil {
+			t.Fatalf("protocol %d has no codec", p.Protocol)
+		}
+	}
+	if Lookup(ModernFloor-1) != nil || Lookup(NewestProtocol()+1) != nil {
 		t.Fatal("codec leaked outside its range")
+	}
+	if NewestProtocol() < 777 {
+		t.Fatalf("newest protocol %d, 26.3 tables missing", NewestProtocol())
+	}
+}
+
+// Generated eras agree with the frozen hand facts
+func TestGeneratedEraFacts(t *testing.T) {
+	cases := map[int32]struct {
+		joinGame, transfer, player, beacon, cfgTags int32
+		pathed, varIntPrev, byteMasks               bool
+	}{
+		766: {joinGame: 0x2b, transfer: 0x73, player: 128, beacon: 14, cfgTags: 0x0d},
+		776: {joinGame: 0x31, transfer: 0x81, player: 156, beacon: 15, cfgTags: 0x0d},
+		777: {joinGame: 0x32, transfer: 0x84, player: 159, beacon: 15, cfgTags: 0x0e, pathed: true, varIntPrev: true, byteMasks: true},
+	}
+	for proto, want := range cases {
+		ids := ModernIDsFor(proto)
+		if ids == nil {
+			t.Fatalf("protocol %d has no ids", proto)
+		}
+		if ids.JoinGame != want.joinGame || ids.Transfer != want.transfer || ids.CfgUpdateTags != want.cfgTags {
+			t.Fatalf("protocol %d ids join %#x transfer %#x tags %#x", proto, ids.JoinGame, ids.Transfer, ids.CfgUpdateTags)
+		}
+		if ids.PlayerTypeID != want.player || ids.BeaconEntity != want.beacon || ids.SignEntity != 7 {
+			t.Fatalf("protocol %d player %d beacon %d sign %d", proto, ids.PlayerTypeID, ids.BeaconEntity, ids.SignEntity)
+		}
+		if ids.PathedPosSync != want.pathed || ids.VarIntPrevMode != want.varIntPrev || ids.ByteMasks != want.byteMasks {
+			t.Fatalf("protocol %d layout flags pathed %v prev %v masks %v", proto, ids.PathedPosSync, ids.VarIntPrevMode, ids.ByteMasks)
+		}
+	}
+	if id, ok := ModernStateID(776, "minecraft:beacon"); !ok || id != 9980 {
+		t.Fatalf("776 beacon state %d %v", id, ok)
+	}
+	if id, ok := ModernStateID(776, "end_rod"); !ok || id != 14640 {
+		t.Fatalf("776 upward end rod state %d %v", id, ok)
+	}
+	if id, ok := ModernStateID(777, "nether_portal[axis=z]"); !ok || id != 8688 {
+		t.Fatalf("777 portal state %d %v", id, ok)
+	}
+	var masks bytes.Buffer
+	writeBitset(&masks, ModernIDsFor(777), uint64(1)<<modernLightSections-1)
+	if got := masks.Bytes(); !bytes.Equal(got, []byte{4, 0xff, 0xff, 0xff, 0x03}) {
+		t.Fatalf("777 light mask bytes % x", got)
+	}
+	masks.Reset()
+	writeBitset(&masks, ModernIDsFor(776), uint64(1)<<modernLightSections-1)
+	if got := masks.Bytes(); !bytes.Equal(got, []byte{1, 0, 0, 0, 0, 0x03, 0xff, 0xff, 0xff}) {
+		t.Fatalf("776 light mask bytes % x", got)
 	}
 }
 
@@ -169,7 +230,7 @@ func walkChunkFrame(t *testing.T, frame []byte, ids *ModernIDs) int {
 		readN(t, r, 3)
 		kind := readVarInt(t, r)
 		switch kind {
-		case ModernSignEntity:
+		case ids.SignEntity:
 			signs++
 		case ids.BeaconEntity:
 		default:
@@ -828,7 +889,7 @@ func TestModernSessionSignEncode(t *testing.T) {
 		if packet.ReadNum(r, &raw) != nil || raw != packet.PositionNew(3, -57, -14) {
 			t.Fatalf("position %d", raw)
 		}
-		if kind := readVarInt(t, r); kind != ModernSignEntity {
+		if kind := readVarInt(t, r); kind != s.ids.SignEntity {
 			t.Fatalf("entity kind %d", kind)
 		}
 		data, err := packet.ReadNetworkNBT(r)
@@ -945,15 +1006,15 @@ func readTagBlock(t *testing.T, buf *bytes.Reader) (string, map[string][]int32) 
 }
 
 // Reads a whole update tags frame into registries
-func readTagsFrame(t *testing.T, out *bytes.Buffer) map[string]map[string][]int32 {
+func readTagsFrame(t *testing.T, out *bytes.Buffer, ids *ModernIDs) map[string]map[string][]int32 {
 	t.Helper()
 	frame, err := packet.ReadFrame(out)
 	if err != nil {
 		t.Fatalf("tags frame unreadable %v", err)
 	}
 	buf := bytes.NewReader(frame)
-	if pid, _ := mcproto.ReadVarInt(buf); int32(pid) != mcproto.CfgCBUpdateTags {
-		t.Fatalf("tags id = %d, want %d", pid, mcproto.CfgCBUpdateTags)
+	if pid, _ := mcproto.ReadVarInt(buf); int32(pid) != ids.CfgUpdateTags {
+		t.Fatalf("tags id = %d, want %d", pid, ids.CfgUpdateTags)
 	}
 	count, err := mcproto.ReadVarInt(buf)
 	if err != nil {
@@ -967,107 +1028,59 @@ func readTagsFrame(t *testing.T, out *bytes.Buffer) map[string]map[string][]int3
 	return regs
 }
 
-// Tag payloads bind what each era requires
+// Tag payloads replay the captured vanilla tables
 func TestConfigTagsPayload(t *testing.T) {
-	var out bytes.Buffer
-	s := &modernSession{w: &out, protocol: 776, ids: ModernIDsFor(776)}
-	if err := s.sendConfigTags(); err != nil {
-		t.Fatalf("tags send failed %v", err)
-	}
-	regs := readTagsFrame(t, &out)
-	if len(regs) != 5 {
-		t.Fatalf("776 registries = %d, want 5", len(regs))
-	}
-	dialog := regs["minecraft:dialog"]
-	if len(dialog) != 2 {
-		t.Fatalf("dialog tags = %d, want 2", len(dialog))
-	}
-	for name, ids := range dialog {
-		if len(ids) != 0 {
-			t.Fatalf("dialog tag %s must stay empty, got %v", name, ids)
+	for _, p := range mcdata.All() {
+		var out bytes.Buffer
+		ids := ModernIDsFor(p.Protocol)
+		s := &modernSession{w: &out, protocol: p.Protocol, ids: ids}
+		if err := s.sendConfigTags(); err != nil {
+			t.Fatalf("%d tags send failed %v", p.Protocol, err)
 		}
-	}
-	timeline := regs["minecraft:timeline"]
-	if len(timeline["minecraft:in_overworld"]) != 4 {
-		t.Fatalf("in_overworld ids = %v, want 4 members", timeline["minecraft:in_overworld"])
-	}
-	damage := regs["minecraft:damage_type"]
-	if len(damage["minecraft:is_fire"]) == 0 {
-		t.Fatal("is_fire must carry members, item components need it")
-	}
-	if len(regs["minecraft:banner_pattern"]) == 0 {
-		t.Fatal("banner pattern tags missing")
-	}
-	blocks := regs["minecraft:block"]
-	if len(blocks) == 0 {
-		t.Fatal("block tag names missing")
-	}
-	for name, ids := range blocks {
-		if len(ids) != 0 {
-			t.Fatalf("block tag %s must bind empty, got %v", name, ids)
+		regs := readTagsFrame(t, &out, ids)
+		if len(regs) != len(p.Tags) {
+			t.Fatalf("%d registries = %d, want %d", p.Protocol, len(regs), len(p.Tags))
 		}
-	}
-
-	out.Reset()
-	s = &modernSession{w: &out, protocol: 775, ids: ModernIDsFor(775)}
-	if err := s.sendConfigTags(); err != nil {
-		t.Fatalf("775 tags send failed %v", err)
-	}
-	regs = readTagsFrame(t, &out)
-	if len(regs) != 4 {
-		t.Fatalf("775 registries = %d, want 4 without block", len(regs))
-	}
-	if len(regs["minecraft:damage_type"]["minecraft:is_fire"]) == 0 {
-		t.Fatal("775 is_fire must carry members")
-	}
-
-	out.Reset()
-	s = &modernSession{w: &out, protocol: 772, ids: ModernIDsFor(772)}
-	if err := s.sendConfigTags(); err != nil {
-		t.Fatalf("772 tags send failed %v", err)
-	}
-	regs = readTagsFrame(t, &out)
-	if len(regs) != 1 || regs["minecraft:dialog"] == nil {
-		t.Fatalf("772 must send dialog only, got %d registries", len(regs))
-	}
-
-	out.Reset()
-	s = &modernSession{w: &out, protocol: 766, ids: ModernIDsFor(766)}
-	if err := s.sendConfigTags(); err != nil {
-		t.Fatalf("766 tags send failed %v", err)
-	}
-	if out.Len() != 0 {
-		t.Fatal("pre dialog eras must send no tags")
-	}
-}
-
-// Pack parsed traps stay out of the synced sets
-func TestSyncedSetsSkipPackParsedTraps(t *testing.T) {
-	for proto, regs := range syncedByProtocol {
-		for _, reg := range regs {
-			switch reg.Name {
-			case "minecraft:enchantment", "minecraft:sulfur_cube_archetype":
-				t.Fatalf("protocol %d syncs %s, clients can't pack parse it", proto, reg.Name)
+		if len(regs["minecraft:block"]["minecraft:logs"]) == 0 {
+			t.Fatalf("%d block logs tag carries no members", p.Protocol)
+		}
+		if len(regs["minecraft:damage_type"]["minecraft:is_fire"]) == 0 {
+			t.Fatalf("%d is_fire carries no members", p.Protocol)
+		}
+		for _, reg := range p.Tags {
+			for _, tag := range reg.Tags {
+				got := regs[reg.Name][tag.Name]
+				if len(got) != len(tag.IDs) {
+					t.Fatalf("%d %s %s = %d ids, want %d", p.Protocol, reg.Name, tag.Name, len(got), len(tag.IDs))
+				}
 			}
 		}
 	}
 }
 
-// Dimension refs need clocks and timelines already loaded
-func TestSyncedSetsOrderDimensionDeps(t *testing.T) {
-	for proto, regs := range syncedByProtocol {
-		position := map[string]int{}
-		for i, reg := range regs {
-			position[reg.Name] = i
+// Synced sets mirror vanilla with the lobby essentials present
+func TestSyncedSetsCarryEssentials(t *testing.T) {
+	for _, p := range mcdata.All() {
+		regs, ok := syncedRegistrySet(p.Protocol)
+		if !ok || len(regs) == 0 {
+			t.Fatalf("protocol %d has no synced set", p.Protocol)
 		}
-		dim, ok := position["minecraft:dimension_type"]
-		if !ok {
-			t.Fatalf("protocol %d misses dimension_type", proto)
-		}
-		for _, dep := range []string{"minecraft:timeline", "minecraft:world_clock"} {
-			if at, present := position[dep]; present && at > dim {
-				t.Fatalf("protocol %d sends %s after dimension_type", proto, dep)
+		for _, need := range []string{"minecraft:dimension_type", "minecraft:worldgen/biome", "minecraft:damage_type", "minecraft:chat_type"} {
+			found := false
+			for _, reg := range regs {
+				if reg.Name == need && len(reg.Entries) > 0 {
+					found = true
+				}
 			}
+			if !found {
+				t.Fatalf("protocol %d misses %s", p.Protocol, need)
+			}
+		}
+		if id, ok := syncedEntryID(p.Protocol, "dimension_type", "overworld"); !ok || id < 0 {
+			t.Fatalf("protocol %d has no overworld dimension", p.Protocol)
+		}
+		if _, ok := syncedEntryID(p.Protocol, "worldgen/biome", "plains"); !ok {
+			t.Fatalf("protocol %d has no plains biome", p.Protocol)
 		}
 	}
 }

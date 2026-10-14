@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"time"
 
@@ -270,10 +271,24 @@ func kickAuthFailed() minecraft.Text {
 }
 
 // Kick screen naming the versions the lobby speaks
-func kickHubVersion() minecraft.Text {
+// Newer clients hear the newest version the panel knows
+func kickHubVersion(protocol int32) minecraft.Text {
+	newest := family.NewestProtocol()
+	if protocol > newest {
+		name, _ := mcproto.NewestVersionForProtocol(newest)
+		yours := fmt.Sprintf("protocol %d", protocol)
+		if v, ok := mcproto.NewestVersionForProtocol(protocol); ok {
+			yours = "minecraft " + v
+		}
+		return poster(
+			headline("this discopanel can't host "+yours+" yet", inkEmber),
+			minecraft.Plain("\n"),
+			minecraft.Solid("newest it speaks is minecraft "+name+", ask the owner to update discopanel", inkGray),
+		)
+	}
 	floor, _ := mcproto.OldestVersionForProtocol(family.ModernFloor)
 	return poster(
-		headline("the lobby can't host your version yet", inkEmber),
+		headline("the lobby can't host your version", inkEmber),
 		minecraft.Plain("\n"),
 		minecraft.Solid("join with minecraft "+floor+" or newer", inkGray),
 	)
