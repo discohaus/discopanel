@@ -15,6 +15,7 @@ service ServerService {
     option (discopanel.options.v1.perm) = {
       resource: RESOURCE_TYPE_SERVERS
       action: ACTION_TYPE_READ
+      collection: true
     };
   }
   // Get single server details

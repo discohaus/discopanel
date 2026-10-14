@@ -246,7 +246,7 @@ func (s *Server) registerServices(mux *http.ServeMux, opts []connect.HandlerOpti
 	modService := services.NewModService(s.store, s.docker, s.config, s.uploadManager, s.prov, s.rec, s.log)
 	modpackService := services.NewModpackService(s.store, s.config, s.uploadManager, s.log)
 	proxyService := services.NewProxyService(s.store, s.docker, s.proxyManager, s.moduleManager, s.config, s.rec, s.log)
-	serverService := services.NewServerService(s.store, s.docker, s.sender, s.config, s.proxyManager, s.lifecycle, s.authManager, s.logStreamer, s.metricsCollector, s.moduleManager, s.bus, s.uploadManager, s.completion, s.rec, s.log)
+	serverService := services.NewServerService(s.store, s.docker, s.sender, s.config, s.proxyManager, s.lifecycle, s.authManager, s.enforcer, s.logStreamer, s.metricsCollector, s.moduleManager, s.bus, s.uploadManager, s.completion, s.rec, s.log)
 	supportService := services.NewSupportService(s.store, s.docker, s.config, s.diagnostics, s.telemetry, s.downloadManager, s.log)
 	taskService := services.NewTaskService(s.store, s.scheduler, s.rec, s.log)
 	userService := services.NewUserService(s.store, s.authManager, s.log)
@@ -372,6 +372,14 @@ func (s *Server) authInterceptor() connect.UnaryInterceptorFunc {
 				s.log.Error("RBAC enforcement error: %v", err)
 				return nil, connect.NewError(connect.CodeInternal, err)
 			}
+			// Collection reads admit object-scoped grants, the handler filters rows
+			if !allowed && perm.GetCollection() {
+				allowed, err = s.enforcer.EnforceAny(user.Roles, perm.Resource, perm.Action)
+				if err != nil {
+					s.log.Error("RBAC enforcement error: %v", err)
+					return nil, connect.NewError(connect.CodeInternal, err)
+				}
+			}
 			if !allowed {
 				return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("insufficient permissions for %s/%s", protometa.Name(perm.Resource), protometa.Name(perm.Action)))
 			}
@@ -388,6 +396,11 @@ var pollingProcedures = []string{
 	discopanelv1connect.ServerServiceGetServerProcedure,
 	discopanelv1connect.ServerServiceGetServerLogsProcedure,
 	discopanelv1connect.ProxyServiceGetProxyStatusProcedure,
+	discopanelv1connect.ProxyServiceGetProxyRoutesProcedure,
+	discopanelv1connect.ProxyServiceGetProxyListenersProcedure,
+	discopanelv1connect.ProxyServiceGetNetworkTopologyProcedure,
+	discopanelv1connect.TaskServiceListTasksProcedure,
+	discopanelv1connect.TaskServiceGetSchedulerStatusProcedure,
 	discopanelv1connect.SupportServiceGetApplicationLogsProcedure,
 	discopanelv1connect.SupportServiceGetDiagnosticsProcedure,
 	discopanelv1connect.SupportServiceGetVersionStatusProcedure,
@@ -399,6 +412,7 @@ var pollingProcedures = []string{
 	discopanelv1connect.ModuleServiceGetModuleLogsProcedure,
 	discopanelv1connect.ModuleServiceListModulesProcedure,
 	discopanelv1connect.ModuleServiceListModulePromptsProcedure,
+	discopanelv1connect.ModuleServiceGetModulePromptProcedure,
 	discopanelv1connect.ModuleServiceGetModuleStatusSnapshotProcedure,
 	discopanelv1connect.ModuleServiceGetResolvedAliasesProcedure,
 	discopanelv1connect.PropertiesServiceGetGlobalSettingsProcedure,

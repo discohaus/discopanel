@@ -201,6 +201,26 @@ func (e *Enforcer) Enforce(roles []string, resource optionsv1.ResourceType, acti
 	return false, nil
 }
 
+// True if any role grants the action on some object
+func (e *Enforcer) EnforceAny(roles []string, resource optionsv1.ResourceType, action optionsv1.ActionType) (bool, error) {
+	res, act := resourceName(resource), actionName(action)
+	for _, role := range roles {
+		policies, err := e.enforcer.GetFilteredPolicy(0, role)
+		if err != nil {
+			return false, err
+		}
+		for _, p := range policies {
+			if len(p) < 4 {
+				continue
+			}
+			if (p[1] == "*" || p[1] == res) && (p[2] == "*" || p[2] == act) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 // Returns all permissions currently assigned to role
 func (e *Enforcer) GetPermissionsForRole(role string) []*v1.Permission {
 	policies, err := e.enforcer.GetFilteredPolicy(0, role)

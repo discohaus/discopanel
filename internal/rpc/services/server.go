@@ -25,6 +25,7 @@ import (
 	"github.com/discohaus/discopanel/internal/module"
 	"github.com/discohaus/discopanel/internal/provisioner"
 	"github.com/discohaus/discopanel/internal/proxy"
+	"github.com/discohaus/discopanel/internal/rbac"
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/events"
 	"github.com/discohaus/discopanel/pkg/files"
@@ -65,6 +66,7 @@ type ServerService struct {
 	proxy            *proxy.Manager
 	lifecycle        *lifecycle.Manager
 	authManager      *auth.Manager
+	enforcer         *rbac.Enforcer
 	rec              *metrics.Recorder
 	log              *logger.Logger
 	logStreamer      *logger.LogStreamer
@@ -169,7 +171,7 @@ func networkPortsEqual(a, b []*v1.NetworkPort) bool {
 }
 
 // NewServerService creates a new server service
-func NewServerService(store *storage.Store, docker *docker.Client, sender *command.Sender, config *config.Config, proxy *proxy.Manager, lifecycleManager *lifecycle.Manager, authManager *auth.Manager, logStreamer *logger.LogStreamer, metricsCollector *metrics.Collector, moduleManager *module.Manager, bus *events.Bus, uploadManager *transfer.UploadManager, completion *command.Completion, rec *metrics.Recorder, log *logger.Logger) *ServerService {
+func NewServerService(store *storage.Store, docker *docker.Client, sender *command.Sender, config *config.Config, proxy *proxy.Manager, lifecycleManager *lifecycle.Manager, authManager *auth.Manager, enforcer *rbac.Enforcer, logStreamer *logger.LogStreamer, metricsCollector *metrics.Collector, moduleManager *module.Manager, bus *events.Bus, uploadManager *transfer.UploadManager, completion *command.Completion, rec *metrics.Recorder, log *logger.Logger) *ServerService {
 	return &ServerService{
 		store:            store,
 		docker:           docker,
@@ -178,6 +180,7 @@ func NewServerService(store *storage.Store, docker *docker.Client, sender *comma
 		proxy:            proxy,
 		lifecycle:        lifecycleManager,
 		authManager:      authManager,
+		enforcer:         enforcer,
 		rec:              rec,
 		log:              log,
 		logStreamer:      logStreamer,
@@ -279,12 +282,17 @@ func (s *ServerService) applyMetrics(server *v1.Server) {
 	server.ClassCount = int32(m.ClassCount)
 }
 
-// ListServers lists all servers
+// Lists the servers the caller holds a read grant on
 func (s *ServerService) ListServers(ctx context.Context, req *connect.Request[v1.ListServersRequest]) (*connect.Response[v1.ListServersResponse], error) {
 	servers, err := s.store.ListServers(ctx)
 	if err != nil {
 		s.log.Error("Failed to list servers: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list servers"))
+	}
+
+	servers, err = s.readableServers(ctx, servers)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := s.store.HydrateProxyPorts(ctx, servers...); err != nil {
@@ -317,6 +325,34 @@ func (s *ServerService) ListServers(ctx context.Context, req *connect.Request[v1
 	return connect.NewResponse(&v1.ListServersResponse{
 		Servers: protoServers,
 	}), nil
+}
+
+// Keeps only servers the caller's roles may read
+func (s *ServerService) readableServers(ctx context.Context, servers []*v1.Server) ([]*v1.Server, error) {
+	user := auth.GetUserFromContext(ctx)
+	if user == nil {
+		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("not authenticated"))
+	}
+	all, err := s.enforcer.Enforce(user.Roles, optionsv1.ResourceType_RESOURCE_TYPE_SERVERS, optionsv1.ActionType_ACTION_TYPE_READ, "*")
+	if err != nil {
+		s.log.Error("RBAC enforcement error: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if all {
+		return servers, nil
+	}
+	readable := make([]*v1.Server, 0, len(servers))
+	for _, server := range servers {
+		allowed, err := s.enforcer.Enforce(user.Roles, optionsv1.ResourceType_RESOURCE_TYPE_SERVERS, optionsv1.ActionType_ACTION_TYPE_READ, server.Id)
+		if err != nil {
+			s.log.Error("RBAC enforcement error: %v", err)
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		if allowed {
+			readable = append(readable, server)
+		}
+	}
+	return readable, nil
 }
 
 // GetServer gets a specific server

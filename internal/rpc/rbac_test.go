@@ -138,6 +138,9 @@ func TestEveryProcedureCarriesAnnotation(t *testing.T) {
 				if perm.Scope != optionsv1.ObjectScope_OBJECT_SCOPE_UNSPECIFIED && perm.ObjectIdField == "" {
 					t.Errorf("%s declares scope without object id field", procedure)
 				}
+				if perm.GetCollection() && (perm.ObjectIdField != "" || perm.GetPublic() || perm.GetSession()) {
+					t.Errorf("%s declares collection alongside object id field, public, or session", procedure)
+				}
 			}
 		}
 		return true
@@ -301,6 +304,7 @@ func TestAuthInterceptor(t *testing.T) {
 	adminToken := seedUser(t, s, "boss", "admin")
 	userToken := seedUser(t, s, "player", "user")
 	scopedToken := seedUser(t, s, "tenant", "scoped")
+	blindToken := seedUser(t, s, "auditor", "blind")
 
 	if err := s.store.CreateRole(ctx, &v1.Role{Id: "role-scoped", Name: "scoped"}); err != nil {
 		t.Fatalf("role create failed %v", err)
@@ -311,6 +315,13 @@ func TestAuthInterceptor(t *testing.T) {
 	}
 	if err := s.enforcer.SetPermissionsForRole("scoped", scopedPerms); err != nil {
 		t.Fatalf("scoped grants failed %v", err)
+	}
+	if err := s.store.CreateRole(ctx, &v1.Role{Id: "role-blind", Name: "blind"}); err != nil {
+		t.Fatalf("role create failed %v", err)
+	}
+	blindPerms := []*v1.Permission{{Resource: rTasks, Action: aRead, ObjectId: "srv-1"}}
+	if err := s.enforcer.SetPermissionsForRole("blind", blindPerms); err != nil {
+		t.Fatalf("blind grants failed %v", err)
 	}
 	if err := s.store.CreateScheduledTask(ctx, &v1.ScheduledTask{Id: "task-1", ServerId: "srv-1", Name: "backup"}); err != nil {
 		t.Fatalf("task create failed %v", err)
@@ -365,8 +376,11 @@ func TestAuthInterceptor(t *testing.T) {
 		{"object grant stops at other servers", connect.CodePermissionDenied, func() error {
 			return call[v1.GetServerRequest, v1.GetServerResponse](base, discopanelv1connect.ServerServiceGetServerProcedure, scopedToken, &v1.GetServerRequest{Id: "srv-2"})
 		}},
-		{"object grant never widens to all", connect.CodePermissionDenied, func() error {
+		{"object grant admits collection listing", 0, func() error {
 			return call[v1.ListServersRequest, v1.ListServersResponse](base, discopanelv1connect.ServerServiceListServersProcedure, scopedToken, &v1.ListServersRequest{})
+		}},
+		{"collection still denies roles without any grant", connect.CodePermissionDenied, func() error {
+			return call[v1.ListServersRequest, v1.ListServersResponse](base, discopanelv1connect.ServerServiceListServersProcedure, blindToken, &v1.ListServersRequest{})
 		}},
 		{"task scope resolves to granted server", 0, func() error {
 			return call[v1.GetTaskRequest, v1.GetTaskResponse](base, discopanelv1connect.TaskServiceGetTaskProcedure, scopedToken, &v1.GetTaskRequest{Id: "task-1"})

@@ -164,6 +164,7 @@ message RpcPerm {
   ObjectScope scope = 4;
   bool public = 5; // No authentication required
   bool session = 6; // Authenticated only, no resource permission
+  bool collection = 7; // Any object grant admits, handler returns only granted objects
 }
 
 extend google.protobuf.EnumOptions {
