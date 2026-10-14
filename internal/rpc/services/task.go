@@ -2,17 +2,19 @@ package services
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"time"
 
 	"connectrpc.com/connect"
+	storage "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/internal/metrics"
+	"github.com/discohaus/discopanel/internal/scheduler"
+	"github.com/discohaus/discopanel/internal/webhook"
+	"github.com/discohaus/discopanel/pkg/logger"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
+	"github.com/discohaus/discopanel/pkg/protometa"
 	"github.com/google/uuid"
-	storage "github.com/nickheyer/discopanel/internal/db"
-	"github.com/nickheyer/discopanel/internal/scheduler"
-	"github.com/nickheyer/discopanel/internal/webhook"
-	"github.com/nickheyer/discopanel/pkg/logger"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
-	"github.com/nickheyer/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -23,214 +25,29 @@ var _ discopanelv1connect.TaskServiceHandler = (*TaskService)(nil)
 type TaskService struct {
 	store     *storage.Store
 	scheduler *scheduler.Scheduler
+	rec       *metrics.Recorder
 	log       *logger.Logger
 }
 
 // NewTaskService creates a new task service
-func NewTaskService(store *storage.Store, sched *scheduler.Scheduler, log *logger.Logger) *TaskService {
+func NewTaskService(store *storage.Store, sched *scheduler.Scheduler, rec *metrics.Recorder, log *logger.Logger) *TaskService {
 	return &TaskService{
 		store:     store,
 		scheduler: sched,
+		rec:       rec,
 		log:       log,
 	}
 }
 
-// dbTaskTypeToProto converts database task type to proto
-func dbTaskTypeToProto(t storage.TaskType) v1.TaskType {
-	switch t {
-	case storage.TaskTypeCommand:
-		return v1.TaskType_TASK_TYPE_COMMAND
-	case storage.TaskTypeBackup:
-		return v1.TaskType_TASK_TYPE_BACKUP
-	case storage.TaskTypeRestart:
-		return v1.TaskType_TASK_TYPE_RESTART
-	case storage.TaskTypeStart:
-		return v1.TaskType_TASK_TYPE_START
-	case storage.TaskTypeStop:
-		return v1.TaskType_TASK_TYPE_STOP
-	case storage.TaskTypeScript:
-		return v1.TaskType_TASK_TYPE_SCRIPT
-	case storage.TaskTypeWebhook:
-		return v1.TaskType_TASK_TYPE_WEBHOOK
-	default:
-		return v1.TaskType_TASK_TYPE_UNSPECIFIED
-	}
-}
-
-// protoTaskTypeToDB converts proto task type to database
-func protoTaskTypeToDB(t v1.TaskType) storage.TaskType {
-	switch t {
-	case v1.TaskType_TASK_TYPE_COMMAND:
-		return storage.TaskTypeCommand
-	case v1.TaskType_TASK_TYPE_BACKUP:
-		return storage.TaskTypeBackup
-	case v1.TaskType_TASK_TYPE_RESTART:
-		return storage.TaskTypeRestart
-	case v1.TaskType_TASK_TYPE_START:
-		return storage.TaskTypeStart
-	case v1.TaskType_TASK_TYPE_STOP:
-		return storage.TaskTypeStop
-	case v1.TaskType_TASK_TYPE_SCRIPT:
-		return storage.TaskTypeScript
-	case v1.TaskType_TASK_TYPE_WEBHOOK:
-		return storage.TaskTypeWebhook
-	default:
-		return storage.TaskTypeCommand
-	}
-}
-
-// dbTaskStatusToProto converts database task status to proto
-func dbTaskStatusToProto(s storage.TaskStatus) v1.TaskStatus {
-	switch s {
-	case storage.TaskStatusEnabled:
-		return v1.TaskStatus_TASK_STATUS_ENABLED
-	case storage.TaskStatusDisabled:
-		return v1.TaskStatus_TASK_STATUS_DISABLED
-	case storage.TaskStatusPaused:
-		return v1.TaskStatus_TASK_STATUS_PAUSED
-	default:
-		return v1.TaskStatus_TASK_STATUS_UNSPECIFIED
-	}
-}
-
-// protoTaskStatusToDB converts proto task status to database
-func protoTaskStatusToDB(s v1.TaskStatus) storage.TaskStatus {
-	switch s {
-	case v1.TaskStatus_TASK_STATUS_ENABLED:
-		return storage.TaskStatusEnabled
-	case v1.TaskStatus_TASK_STATUS_DISABLED:
-		return storage.TaskStatusDisabled
-	case v1.TaskStatus_TASK_STATUS_PAUSED:
-		return storage.TaskStatusPaused
-	default:
-		return storage.TaskStatusEnabled
-	}
-}
-
-// dbScheduleTypeToProto converts database schedule type to proto
-func dbScheduleTypeToProto(s storage.ScheduleType) v1.ScheduleType {
-	switch s {
-	case storage.ScheduleTypeCron:
-		return v1.ScheduleType_SCHEDULE_TYPE_CRON
-	case storage.ScheduleTypeInterval:
-		return v1.ScheduleType_SCHEDULE_TYPE_INTERVAL
-	case storage.ScheduleTypeOnce:
-		return v1.ScheduleType_SCHEDULE_TYPE_ONCE
-	case storage.ScheduleTypeEvent:
-		return v1.ScheduleType_SCHEDULE_TYPE_EVENT
-	default:
-		return v1.ScheduleType_SCHEDULE_TYPE_UNSPECIFIED
-	}
-}
-
-// protoScheduleTypeToDB converts proto schedule type to database
-func protoScheduleTypeToDB(s v1.ScheduleType) storage.ScheduleType {
-	switch s {
-	case v1.ScheduleType_SCHEDULE_TYPE_CRON:
-		return storage.ScheduleTypeCron
-	case v1.ScheduleType_SCHEDULE_TYPE_INTERVAL:
-		return storage.ScheduleTypeInterval
-	case v1.ScheduleType_SCHEDULE_TYPE_ONCE:
-		return storage.ScheduleTypeOnce
-	case v1.ScheduleType_SCHEDULE_TYPE_EVENT:
-		return storage.ScheduleTypeEvent
-	default:
-		return storage.ScheduleTypeCron
-	}
-}
-
-// dbExecutionStatusToProto converts database execution status to proto
-func dbExecutionStatusToProto(s storage.ExecutionStatus) v1.ExecutionStatus {
-	switch s {
-	case storage.ExecutionStatusPending:
-		return v1.ExecutionStatus_EXECUTION_STATUS_PENDING
-	case storage.ExecutionStatusRunning:
-		return v1.ExecutionStatus_EXECUTION_STATUS_RUNNING
-	case storage.ExecutionStatusCompleted:
-		return v1.ExecutionStatus_EXECUTION_STATUS_COMPLETED
-	case storage.ExecutionStatusFailed:
-		return v1.ExecutionStatus_EXECUTION_STATUS_FAILED
-	case storage.ExecutionStatusSkipped:
-		return v1.ExecutionStatus_EXECUTION_STATUS_SKIPPED
-	case storage.ExecutionStatusCancelled:
-		return v1.ExecutionStatus_EXECUTION_STATUS_CANCELLED
-	case storage.ExecutionStatusTimeout:
-		return v1.ExecutionStatus_EXECUTION_STATUS_TIMEOUT
-	default:
-		return v1.ExecutionStatus_EXECUTION_STATUS_UNSPECIFIED
-	}
-}
-
-// dbTaskToProto converts a database task to proto
-func dbTaskToProto(task *storage.ScheduledTask) *v1.ScheduledTask {
-	if task == nil {
-		return nil
-	}
-
-	protoTask := &v1.ScheduledTask{
-		Id:            task.ID,
-		ServerId:      task.ServerID,
-		Name:          task.Name,
-		Description:   task.Description,
-		TaskType:      dbTaskTypeToProto(task.TaskType),
-		Status:        dbTaskStatusToProto(task.Status),
-		Schedule:      dbScheduleTypeToProto(task.Schedule),
-		CronExpr:      task.CronExpr,
-		IntervalSecs:  int32(task.IntervalSecs),
-		Timezone:      task.Timezone,
-		Config:        task.Config,
-		Timeout:       int32(task.Timeout),
-		RetryCount:    int32(task.RetryCount),
-		RetryDelay:    int32(task.RetryDelay),
-		RequireOnline: task.RequireOnline,
-		FailureNotify: task.FailureNotify,
-		EventTriggers: task.EventTriggers,
-		CreatedAt:     timestamppb.New(task.CreatedAt),
-		UpdatedAt:     timestamppb.New(task.UpdatedAt),
-	}
-
-	if task.RunAt != nil {
-		protoTask.RunAt = timestamppb.New(*task.RunAt)
-	}
-	if task.NextRun != nil {
-		protoTask.NextRun = timestamppb.New(*task.NextRun)
-	}
-	if task.LastRun != nil {
-		protoTask.LastRun = timestamppb.New(*task.LastRun)
-	}
-
-	return protoTask
-}
-
-// dbExecutionToProto converts a database execution to proto
-func dbExecutionToProto(exec *storage.TaskExecution) *v1.TaskExecution {
-	if exec == nil {
-		return nil
-	}
-
-	protoExec := &v1.TaskExecution{
-		Id:        exec.ID,
-		TaskId:    exec.TaskID,
-		ServerId:  exec.ServerID,
-		Status:    dbExecutionStatusToProto(exec.Status),
-		StartedAt: timestamppb.New(exec.StartedAt),
-		Duration:  exec.Duration,
-		Output:    exec.Output,
-		Error:     exec.Error,
-		RetryNum:  int32(exec.RetryNum),
-		Trigger:   exec.Trigger,
-	}
-
-	if exec.EndedAt != nil {
-		protoExec.EndedAt = timestamppb.New(*exec.EndedAt)
-	}
-
-	return protoExec
-}
-
 // ListTasks lists all tasks for a server
 func (s *TaskService) ListTasks(ctx context.Context, req *connect.Request[v1.ListTasksRequest]) (*connect.Response[v1.ListTasksResponse], error) {
-	tasks, err := s.store.ListScheduledTasks(ctx, req.Msg.ServerId)
+	var tasks []*v1.ScheduledTask
+	var err error
+	if req.Msg.ServerId != "" {
+		tasks, err = s.store.ListServerScheduledTasks(ctx, req.Msg.ServerId)
+	} else {
+		tasks, err = s.store.ListScheduledTasks(ctx)
+	}
 	if err != nil {
 		s.log.Error("Failed to list tasks: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list tasks"))
@@ -238,7 +55,8 @@ func (s *TaskService) ListTasks(ctx context.Context, req *connect.Request[v1.Lis
 
 	protoTasks := make([]*v1.ScheduledTask, len(tasks))
 	for i, task := range tasks {
-		protoTasks[i] = dbTaskToProto(task)
+		task.Server = nil
+		protoTasks[i] = task
 	}
 
 	return connect.NewResponse(&v1.ListTasksResponse{
@@ -253,8 +71,9 @@ func (s *TaskService) GetTask(ctx context.Context, req *connect.Request[v1.GetTa
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("task not found"))
 	}
 
+	task.Server = nil
 	return connect.NewResponse(&v1.GetTaskResponse{
-		Task: dbTaskToProto(task),
+		Task: task,
 	}), nil
 }
 
@@ -263,9 +82,9 @@ func (s *TaskService) CreateTask(ctx context.Context, req *connect.Request[v1.Cr
 	msg := req.Msg
 
 	// Validate server exists
-	_, err := s.store.GetServer(ctx, msg.ServerId)
+	_, err := getServer(ctx, s.store, msg.ServerId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("server not found"))
+		return nil, err
 	}
 
 	// Validate required fields
@@ -274,43 +93,46 @@ func (s *TaskService) CreateTask(ctx context.Context, req *connect.Request[v1.Cr
 	}
 
 	// Validate cron expression if using cron schedule
-	scheduleType := protoScheduleTypeToDB(msg.Schedule)
-	if scheduleType == storage.ScheduleTypeCron && msg.CronExpr != "" {
+	scheduleType := msg.Schedule
+	if scheduleType == v1.ScheduleType_SCHEDULE_TYPE_CRON && msg.CronExpr != "" {
 		if err := s.scheduler.ValidateCronExpr(msg.CronExpr); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid cron expression: %v", err))
 		}
 	}
 
 	// Validate event-triggered tasks
-	taskType := protoTaskTypeToDB(msg.TaskType)
+	taskType := msg.TaskType
 	eventTriggers := msg.EventTriggers
-	if scheduleType == storage.ScheduleTypeEvent && len(eventTriggers) == 0 {
+	if scheduleType == v1.ScheduleType_SCHEDULE_TYPE_EVENT && len(eventTriggers) == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("at least one event_trigger is required for event-scheduled tasks"))
 	}
 
 	// Validate webhook task config
-	if taskType == storage.TaskTypeWebhook {
-		if err := validateWebhookConfig(msg.Config); err != nil {
+	if taskType == v1.TaskType_TASK_TYPE_WEBHOOK {
+		if err := validateWebhookConfig(msg.WebhookConfig); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 	}
 
 	// Create task
-	task := &storage.ScheduledTask{
-		ID:            uuid.New().String(),
-		ServerID:      msg.ServerId,
+	task := &v1.ScheduledTask{
+		Id:            uuid.New().String(),
+		ServerId:      msg.ServerId,
 		Name:          msg.Name,
 		Description:   msg.Description,
 		TaskType:      taskType,
-		Status:        storage.TaskStatusEnabled,
+		Status:        v1.TaskStatus_TASK_STATUS_ENABLED,
 		Schedule:      scheduleType,
 		CronExpr:      msg.CronExpr,
-		IntervalSecs:  int(msg.IntervalSecs),
+		IntervalSecs:  msg.IntervalSecs,
 		Timezone:      msg.Timezone,
-		Config:        msg.Config,
-		Timeout:       int(msg.Timeout),
-		RetryCount:    int(msg.RetryCount),
-		RetryDelay:    int(msg.RetryDelay),
+		CommandConfig: msg.CommandConfig,
+		BackupConfig:  msg.BackupConfig,
+		ScriptConfig:  msg.ScriptConfig,
+		WebhookConfig: msg.WebhookConfig,
+		Timeout:       msg.Timeout,
+		RetryCount:    msg.RetryCount,
+		RetryDelay:    msg.RetryDelay,
 		RequireOnline: msg.RequireOnline,
 		EventTriggers: eventTriggers,
 	}
@@ -325,16 +147,15 @@ func (s *TaskService) CreateTask(ctx context.Context, req *connect.Request[v1.Cr
 
 	// Set run_at for once schedule
 	if msg.RunAt != nil {
-		runAt := msg.RunAt.AsTime()
-		task.RunAt = &runAt
+		task.RunAt = msg.RunAt
 	}
 
-	// Calculate next run
+	// Bad schedules reject instead of never running
 	nextRun, err := s.scheduler.CalculateNextRun(task)
 	if err != nil {
-		s.log.Debug("Could not calculate next run: %v", err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid schedule: %w", err))
 	}
-	task.NextRun = nextRun
+	task.NextRun = nextRunPb(nextRun)
 
 	// Save to database
 	if err := s.store.CreateScheduledTask(ctx, task); err != nil {
@@ -342,10 +163,12 @@ func (s *TaskService) CreateTask(ctx context.Context, req *connect.Request[v1.Cr
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create task"))
 	}
 
-	s.log.Info("Created scheduled task: %s for server %s", task.Name, task.ServerID)
+	s.log.Info("Created scheduled task: %s for server %s", task.Name, task.ServerId)
+	s.rec.Record(ctx, task.ServerId, v1.ServerActionKind_SERVER_ACTION_KIND_TASK_CREATE, metrics.Attrs{"task": task.Name, "type": protometa.Name(task.TaskType)}, "created task %q", task.Name)
 
+	task.Server = nil
 	return connect.NewResponse(&v1.CreateTaskResponse{
-		Task: dbTaskToProto(task),
+		Task: task,
 	}), nil
 }
 
@@ -366,14 +189,14 @@ func (s *TaskService) UpdateTask(ctx context.Context, req *connect.Request[v1.Up
 		task.Description = *msg.Description
 	}
 	if msg.TaskType != nil {
-		task.TaskType = protoTaskTypeToDB(*msg.TaskType)
+		task.TaskType = *msg.TaskType
 	}
 	if msg.Schedule != nil {
-		task.Schedule = protoScheduleTypeToDB(*msg.Schedule)
+		task.Schedule = *msg.Schedule
 	}
 	if msg.CronExpr != nil {
 		// Validate cron expression
-		if task.Schedule == storage.ScheduleTypeCron && *msg.CronExpr != "" {
+		if task.Schedule == v1.ScheduleType_SCHEDULE_TYPE_CRON && *msg.CronExpr != "" {
 			if err := s.scheduler.ValidateCronExpr(*msg.CronExpr); err != nil {
 				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid cron expression: %v", err))
 			}
@@ -381,26 +204,34 @@ func (s *TaskService) UpdateTask(ctx context.Context, req *connect.Request[v1.Up
 		task.CronExpr = *msg.CronExpr
 	}
 	if msg.IntervalSecs != nil {
-		task.IntervalSecs = int(*msg.IntervalSecs)
+		task.IntervalSecs = *msg.IntervalSecs
 	}
 	if msg.RunAt != nil {
-		runAt := msg.RunAt.AsTime()
-		task.RunAt = &runAt
+		task.RunAt = msg.RunAt
 	}
 	if msg.Timezone != nil {
 		task.Timezone = *msg.Timezone
 	}
-	if msg.Config != nil {
-		task.Config = *msg.Config
+	if msg.CommandConfig != nil {
+		task.CommandConfig = msg.CommandConfig
+	}
+	if msg.BackupConfig != nil {
+		task.BackupConfig = msg.BackupConfig
+	}
+	if msg.ScriptConfig != nil {
+		task.ScriptConfig = msg.ScriptConfig
+	}
+	if msg.WebhookConfig != nil {
+		task.WebhookConfig = msg.WebhookConfig
 	}
 	if msg.Timeout != nil {
-		task.Timeout = int(*msg.Timeout)
+		task.Timeout = *msg.Timeout
 	}
 	if msg.RetryCount != nil {
-		task.RetryCount = int(*msg.RetryCount)
+		task.RetryCount = *msg.RetryCount
 	}
 	if msg.RetryDelay != nil {
-		task.RetryDelay = int(*msg.RetryDelay)
+		task.RetryDelay = *msg.RetryDelay
 	}
 	if msg.RequireOnline != nil {
 		task.RequireOnline = *msg.RequireOnline
@@ -413,20 +244,23 @@ func (s *TaskService) UpdateTask(ctx context.Context, req *connect.Request[v1.Up
 	}
 
 	// Validate event-triggered tasks
-	if task.Schedule == storage.ScheduleTypeEvent && len(task.EventTriggers) == 0 {
+	if task.Schedule == v1.ScheduleType_SCHEDULE_TYPE_EVENT && len(task.EventTriggers) == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("at least one event_trigger is required for event-scheduled tasks"))
 	}
 
 	// Validate webhook task config
-	if task.TaskType == storage.TaskTypeWebhook {
-		if err := validateWebhookConfig(task.Config); err != nil {
+	if task.TaskType == v1.TaskType_TASK_TYPE_WEBHOOK {
+		if err := validateWebhookConfig(task.WebhookConfig); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 	}
 
-	// Recalculate next run
-	nextRun, _ := s.scheduler.CalculateNextRun(task)
-	task.NextRun = nextRun
+	// Bad schedules reject instead of never running
+	nextRun, err := s.scheduler.CalculateNextRun(task)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid schedule: %w", err))
+	}
+	task.NextRun = nextRunPb(nextRun)
 
 	// Save changes
 	if err := s.store.UpdateScheduledTask(ctx, task); err != nil {
@@ -435,9 +269,11 @@ func (s *TaskService) UpdateTask(ctx context.Context, req *connect.Request[v1.Up
 	}
 
 	s.log.Info("Updated scheduled task: %s", task.Name)
+	s.rec.Record(ctx, task.ServerId, v1.ServerActionKind_SERVER_ACTION_KIND_TASK_UPDATE, metrics.Attrs{"task": task.Name}, "updated task %q", task.Name)
 
+	task.Server = nil
 	return connect.NewResponse(&v1.UpdateTaskResponse{
-		Task: dbTaskToProto(task),
+		Task: task,
 	}), nil
 }
 
@@ -454,6 +290,7 @@ func (s *TaskService) DeleteTask(ctx context.Context, req *connect.Request[v1.De
 	}
 
 	s.log.Info("Deleted scheduled task: %s", task.Name)
+	s.rec.Record(ctx, task.ServerId, v1.ServerActionKind_SERVER_ACTION_KIND_TASK_DELETE, metrics.Attrs{"task": task.Name}, "deleted task %q", task.Name)
 
 	return connect.NewResponse(&v1.DeleteTaskResponse{}), nil
 }
@@ -465,12 +302,15 @@ func (s *TaskService) ToggleTask(ctx context.Context, req *connect.Request[v1.To
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("task not found"))
 	}
 
-	task.Status = protoTaskStatusToDB(req.Msg.Status)
+	task.Status = req.Msg.Status
 
 	// Recalculate next run if enabling
-	if task.Status == storage.TaskStatusEnabled {
-		nextRun, _ := s.scheduler.CalculateNextRun(task)
-		task.NextRun = nextRun
+	if task.Status == v1.TaskStatus_TASK_STATUS_ENABLED {
+		nextRun, err := s.scheduler.CalculateNextRun(task)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid schedule: %w", err))
+		}
+		task.NextRun = nextRunPb(nextRun)
 	}
 
 	if err := s.store.UpdateScheduledTask(ctx, task); err != nil {
@@ -479,9 +319,11 @@ func (s *TaskService) ToggleTask(ctx context.Context, req *connect.Request[v1.To
 	}
 
 	s.log.Info("Toggled task %s to status %s", task.Name, task.Status)
+	s.rec.Record(ctx, task.ServerId, v1.ServerActionKind_SERVER_ACTION_KIND_TASK_TOGGLE, metrics.Attrs{"task": task.Name, "status": protometa.Name(task.Status)}, "set task %q to %s", task.Name, protometa.Name(task.Status))
 
+	task.Server = nil
 	return connect.NewResponse(&v1.ToggleTaskResponse{
-		Task: dbTaskToProto(task),
+		Task: task,
 	}), nil
 }
 
@@ -493,8 +335,10 @@ func (s *TaskService) TriggerTask(ctx context.Context, req *connect.Request[v1.T
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to trigger task: %v", err))
 	}
 
+	execution.Task = nil
+	execution.Server = nil
 	return connect.NewResponse(&v1.TriggerTaskResponse{
-		Execution: dbExecutionToProto(execution),
+		Execution: execution,
 	}), nil
 }
 
@@ -513,7 +357,9 @@ func (s *TaskService) ListTaskExecutions(ctx context.Context, req *connect.Reque
 
 	protoExecs := make([]*v1.TaskExecution, len(executions))
 	for i, exec := range executions {
-		protoExecs[i] = dbExecutionToProto(exec)
+		exec.Task = nil
+		exec.Server = nil
+		protoExecs[i] = exec
 	}
 
 	return connect.NewResponse(&v1.ListTaskExecutionsResponse{
@@ -536,7 +382,9 @@ func (s *TaskService) ListServerExecutions(ctx context.Context, req *connect.Req
 
 	protoExecs := make([]*v1.TaskExecution, len(executions))
 	for i, exec := range executions {
-		protoExecs[i] = dbExecutionToProto(exec)
+		exec.Task = nil
+		exec.Server = nil
+		protoExecs[i] = exec
 	}
 
 	return connect.NewResponse(&v1.ListServerExecutionsResponse{
@@ -551,8 +399,10 @@ func (s *TaskService) GetTaskExecution(ctx context.Context, req *connect.Request
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("execution not found"))
 	}
 
+	execution.Task = nil
+	execution.Server = nil
 	return connect.NewResponse(&v1.GetTaskExecutionResponse{
-		Execution: dbExecutionToProto(execution),
+		Execution: execution,
 	}), nil
 }
 
@@ -568,21 +418,16 @@ func (s *TaskService) CancelExecution(ctx context.Context, req *connect.Request[
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("execution not found"))
 	}
 
+	execution.Task = nil
+	execution.Server = nil
 	return connect.NewResponse(&v1.CancelExecutionResponse{
-		Execution: dbExecutionToProto(execution),
+		Execution: execution,
 	}), nil
 }
 
-// validateWebhookConfig parses a webhook task config JSON and validates required fields.
-func validateWebhookConfig(cfg string) error {
-	if cfg == "" {
-		return fmt.Errorf("webhook config is required")
-	}
-	var wcfg webhook.Config
-	if err := json.Unmarshal([]byte(cfg), &wcfg); err != nil {
-		return fmt.Errorf("invalid webhook config JSON: %v", err)
-	}
-	if wcfg.URL == "" {
+// Parses webhook task config and validates required fields
+func validateWebhookConfig(wcfg *v1.WebhookTaskConfig) error {
+	if wcfg.GetUrl() == "" {
 		return fmt.Errorf("webhook URL is required")
 	}
 	if wcfg.PayloadTemplate != "" {
@@ -595,20 +440,13 @@ func validateWebhookConfig(cfg string) error {
 
 // GetSchedulerStatus gets the scheduler status
 func (s *TaskService) GetSchedulerStatus(ctx context.Context, req *connect.Request[v1.GetSchedulerStatusRequest]) (*connect.Response[v1.GetSchedulerStatusResponse], error) {
-	status := s.scheduler.GetStatus()
+	return connect.NewResponse(s.scheduler.GetStatus()), nil
+}
 
-	response := &v1.GetSchedulerStatusResponse{
-		Running:           status.Running,
-		ActiveTasks:       int32(status.ActiveTasks),
-		RunningExecutions: int32(status.RunningExecutions),
+// Optional next run as a proto timestamp
+func nextRunPb(t *time.Time) *timestamppb.Timestamp {
+	if t == nil {
+		return nil
 	}
-
-	if !status.LastCheck.IsZero() {
-		response.LastCheck = timestamppb.New(status.LastCheck)
-	}
-	if !status.NextCheck.IsZero() {
-		response.NextCheck = timestamppb.New(status.NextCheck)
-	}
-
-	return connect.NewResponse(response), nil
+	return timestamppb.New(*t)
 }

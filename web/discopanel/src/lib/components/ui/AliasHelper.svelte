@@ -2,10 +2,15 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Popover, PopoverContent, PopoverTrigger } from '$lib/components/ui/popover';
 	import { rpcClient } from '$lib/api/rpc-client';
-	import { AliasCategory, type AliasInfo } from '$lib/proto/discopanel/v1/module_pb';
+	import {
+		AliasCategory,
+		AliasCategorySchema,
+		type AliasInfo
+	} from '$lib/proto/discopanel/v1/module_pb';
+	import { enumLabel } from '$lib/proto-meta';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { Braces, Server, Box, Sparkles, Loader2, Check, Copy } from '@lucide/svelte';
-	import { toast } from 'svelte-sonner';
+	import { notify } from '$lib/stores/activity.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 
 	interface Props {
@@ -49,12 +54,12 @@
 		const success = await copyToClipboard(alias);
 		if (success) {
 			copiedAlias = alias;
-			toast.success('Copied to clipboard', { description: alias });
+			notify.success('Copied to clipboard', { description: alias });
 			setTimeout(() => {
 				copiedAlias = null;
 			}, 2000);
 		} else {
-			toast.error('Failed to copy to clipboard');
+			notify.error('Failed to copy to clipboard');
 		}
 	}
 
@@ -72,16 +77,10 @@
 	}
 
 	function getCategoryLabel(category: AliasCategory): string {
-		switch (category) {
-			case AliasCategory.SERVER:
-				return 'Server';
-			case AliasCategory.MODULE:
-				return 'Module';
-			case AliasCategory.SPECIAL:
-				return 'Special';
-			default:
-				return 'Other';
-		}
+		return (
+			enumLabel(AliasCategorySchema, category) ||
+			enumLabel(AliasCategorySchema, AliasCategory.UNSPECIFIED)
+		);
 	}
 
 	function getCategoryColor(category: AliasCategory): string {
@@ -123,7 +122,7 @@
 			</Button>
 		{/if}
 	</PopoverTrigger>
-	<PopoverContent class="max-h-96 w-96 overflow-y-auto p-0" align="end">
+	<PopoverContent class="max-h-96 w-[min(24rem,calc(100vw-2rem))] overflow-y-auto p-0" align="end">
 		<div class="border-b p-3">
 			<h4 class="text-sm font-medium">Available Aliases</h4>
 			<p class="mt-1 text-xs text-muted-foreground">Click to copy an alias to clipboard</p>

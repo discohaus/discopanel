@@ -2,80 +2,104 @@ syntax = "proto3";
 
 package discopanel.v1;
 
+import "discopanel/options/v1/options.proto";
+import "discopanel/v1/storage.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
 // Modpack indexing and management
 service ModpackService {
   // Query indexed modpacks
-  rpc SearchModpacks(SearchModpacksRequest) returns (SearchModpacksResponse);
+  rpc SearchModpacks(SearchModpacksRequest) returns (SearchModpacksResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODPACKS
+      action: ACTION_TYPE_READ
+    };
+  }
   // Get modpack details
-  rpc GetModpack(GetModpackRequest) returns (GetModpackResponse);
-  // Get modpack by slug
-  rpc GetModpackBySlug(GetModpackBySlugRequest) returns (GetModpackBySlugResponse);
+  rpc GetModpack(GetModpackRequest) returns (GetModpackResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODPACKS
+      action: ACTION_TYPE_READ
+      object_id_field: "id"
+    };
+  }
   // Get modpack by website URL
-  rpc GetModpackByURL(GetModpackByURLRequest) returns (GetModpackByURLResponse);
+  rpc GetModpackByURL(GetModpackByURLRequest) returns (GetModpackByURLResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODPACKS
+      action: ACTION_TYPE_READ
+    };
+  }
   // Fetch modpacks from external sources
-  rpc SyncModpacks(SyncModpacksRequest) returns (SyncModpacksResponse);
+  rpc SyncModpacks(SyncModpacksRequest) returns (SyncModpacksResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODPACKS
+      action: ACTION_TYPE_CREATE
+    };
+  }
   // Import modpack from chunked upload session
-  rpc ImportUploadedModpack(ImportUploadedModpackRequest) returns (ImportUploadedModpackResponse);
+  rpc ImportUploadedModpack(ImportUploadedModpackRequest) returns (ImportUploadedModpackResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODPACKS
+      action: ACTION_TYPE_CREATE
+    };
+  }
   // Remove indexed modpack
-  rpc DeleteModpack(DeleteModpackRequest) returns (DeleteModpackResponse);
+  rpc DeleteModpack(DeleteModpackRequest) returns (DeleteModpackResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODPACKS
+      action: ACTION_TYPE_DELETE
+      object_id_field: "id"
+    };
+  }
   // Mark modpack as favorite
-  rpc ToggleFavorite(ToggleFavoriteRequest) returns (ToggleFavoriteResponse);
+  rpc ToggleFavorite(ToggleFavoriteRequest) returns (ToggleFavoriteResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODPACKS
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "id"
+    };
+  }
   // Get favorited modpacks
-  rpc ListFavorites(ListFavoritesRequest) returns (ListFavoritesResponse);
+  rpc ListFavorites(ListFavoritesRequest) returns (ListFavoritesResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODPACKS
+      action: ACTION_TYPE_READ
+    };
+  }
   // Check indexer availability
-  rpc GetIndexerStatus(GetIndexerStatusRequest) returns (GetIndexerStatusResponse);
+  rpc GetIndexerStatus(GetIndexerStatusRequest) returns (GetIndexerStatusResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODPACKS
+      action: ACTION_TYPE_READ
+    };
+  }
   // Get modpack configuration
-  rpc GetModpackConfig(GetModpackConfigRequest) returns (GetModpackConfigResponse);
-  // List modpack file versions
-  rpc GetModpackFiles(GetModpackFilesRequest) returns (GetModpackFilesResponse);
+  rpc GetModpackConfig(GetModpackConfigRequest) returns (GetModpackConfigResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODPACKS
+      action: ACTION_TYPE_READ
+      object_id_field: "id"
+    };
+  }
   // List available versions
-  rpc GetModpackVersions(GetModpackVersionsRequest) returns (GetModpackVersionsResponse);
+  rpc GetModpackVersions(GetModpackVersionsRequest) returns (GetModpackVersionsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODPACKS
+      action: ACTION_TYPE_READ
+      object_id_field: "id"
+    };
+  }
   // Sync version files from source
-  rpc SyncModpackFiles(SyncModpackFilesRequest) returns (SyncModpackFilesResponse);
-}
-
-// Indexed modpack metadata
-message IndexedModpack {
-  string id = 1;
-  string indexer_id = 2;
-  string indexer = 3;
-  string name = 4;
-  string slug = 5;
-  string summary = 6;
-  string description = 7;
-  string logo_url = 8;
-  string website_url = 9;
-  int32 download_count = 10;
-  string categories = 11; // JSON array
-  string game_versions = 12; // JSON array
-  string mod_loaders = 13; // JSON array
-  string latest_file_id = 14;
-  google.protobuf.Timestamp date_created = 15;
-  google.protobuf.Timestamp date_modified = 16;
-  google.protobuf.Timestamp date_released = 17;
-  string mc_version = 18;
-  int32 java_version = 19;
-  string docker_image = 20;
-  int32 recommended_ram = 21;
-  bool is_favorited = 22;
-}
-
-// Modpack version file
-message ModpackFile {
-  string id = 1;
-  string modpack_id = 2;
-  string display_name = 3;
-  string file_name = 4;
-  google.protobuf.Timestamp file_date = 5;
-  int64 file_length = 6;
-  string release_type = 7;
-  string download_url = 8;
-  repeated string game_versions = 9;
-  int32 sort_index = 10;
+  rpc SyncModpackFiles(SyncModpackFilesRequest) returns (SyncModpackFilesResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODPACKS
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "id"
+    };
+  }
 }
 
 // Modpack search filters
@@ -103,16 +127,6 @@ message GetModpackRequest {
 
 // Single modpack details
 message GetModpackResponse {
-  IndexedModpack modpack = 1;
-}
-
-// Slug lookup
-message GetModpackBySlugRequest {
-  string slug = 1;
-}
-
-// Slug lookup response (modpack may be null if not found)
-message GetModpackBySlugResponse {
   IndexedModpack modpack = 1;
 }
 
@@ -202,21 +216,11 @@ message GetModpackConfigResponse {
   map<string, string> config = 1;
 }
 
-// Files lookup
-message GetModpackFilesRequest {
-  string id = 1;
-}
-
-// Available files list
-message GetModpackFilesResponse {
-  repeated ModpackFile files = 1;
-}
-
 // Modpack version info
 message Version {
   string id = 1;
   string display_name = 2;
-  string release_type = 3;
+  ReleaseType release_type = 3;
   google.protobuf.Timestamp file_date = 4;
   int32 sort_index = 5;
   string version_number = 6;

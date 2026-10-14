@@ -5,11 +5,11 @@ import (
 	"errors"
 
 	"connectrpc.com/connect"
-	"github.com/nickheyer/discopanel/internal/config"
-	"github.com/nickheyer/discopanel/pkg/logger"
-	v1 "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1"
-	"github.com/nickheyer/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
-	"github.com/nickheyer/discopanel/pkg/upload"
+	"github.com/discohaus/discopanel/pkg/config"
+	"github.com/discohaus/discopanel/pkg/logger"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
+	"github.com/discohaus/discopanel/pkg/transfer"
 )
 
 // Compile-time check that UploadService implements the interface
@@ -17,13 +17,13 @@ var _ discopanelv1connect.UploadServiceHandler = (*UploadService)(nil)
 
 // UploadService implements the Upload service
 type UploadService struct {
-	manager *upload.Manager
+	manager *transfer.UploadManager
 	cfg     *config.Config
 	log     *logger.Logger
 }
 
 // NewUploadService creates a new upload service
-func NewUploadService(manager *upload.Manager, cfg *config.Config, log *logger.Logger) *UploadService {
+func NewUploadService(manager *transfer.UploadManager, cfg *config.Config, log *logger.Logger) *UploadService {
 	return &UploadService{
 		manager: manager,
 		cfg:     cfg,
@@ -54,7 +54,7 @@ func (s *UploadService) InitUpload(ctx context.Context, req *connect.Request[v1.
 
 	session, err := s.manager.InitSession(msg.Filename, msg.TotalSize, chunkSize)
 	if err != nil {
-		if errors.Is(err, upload.ErrFileTooLarge) {
+		if errors.Is(err, transfer.ErrFileTooLarge) {
 			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("file exceeds maximum allowed size"))
 		}
 		s.log.Error("Failed to init upload session: %v", err)
@@ -75,12 +75,12 @@ func (s *UploadService) GetUploadStatus(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("session_id is required"))
 	}
 
-	bytesReceived, totalBytes, chunksReceived, totalChunks, completed, tempPath, err := s.manager.GetSessionStatus(msg.SessionId)
+	bytesReceived, totalBytes, chunksReceived, totalChunks, completed, _, err := s.manager.GetSessionStatus(msg.SessionId)
 	if err != nil {
-		if errors.Is(err, upload.ErrSessionNotFound) {
+		if errors.Is(err, transfer.ErrSessionNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("upload session not found"))
 		}
-		if errors.Is(err, upload.ErrSessionExpired) {
+		if errors.Is(err, transfer.ErrSessionExpired) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("upload session expired"))
 		}
 		s.log.Error("Failed to get upload status: %v", err)
@@ -100,7 +100,6 @@ func (s *UploadService) GetUploadStatus(ctx context.Context, req *connect.Reques
 		TotalChunks:    totalChunks,
 		MissingChunks:  missing,
 		Completed:      completed,
-		TempPath:       tempPath,
 	}), nil
 }
 
@@ -118,16 +117,16 @@ func (s *UploadService) UploadChunk(ctx context.Context, req *connect.Request[v1
 
 	completed, err := s.manager.WriteChunk(msg.SessionId, msg.ChunkIndex, msg.Data)
 	if err != nil {
-		if errors.Is(err, upload.ErrSessionNotFound) {
+		if errors.Is(err, transfer.ErrSessionNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("upload session not found"))
 		}
-		if errors.Is(err, upload.ErrSessionExpired) {
+		if errors.Is(err, transfer.ErrSessionExpired) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("upload session expired"))
 		}
-		if errors.Is(err, upload.ErrSessionCompleted) {
+		if errors.Is(err, transfer.ErrSessionCompleted) {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("upload already completed"))
 		}
-		if errors.Is(err, upload.ErrInvalidChunk) {
+		if errors.Is(err, transfer.ErrInvalidChunk) {
 			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid chunk index"))
 		}
 		s.log.Error("Failed to write chunk: %v", err)
@@ -135,14 +134,13 @@ func (s *UploadService) UploadChunk(ctx context.Context, req *connect.Request[v1
 	}
 
 	// Get updated session status
-	bytesReceived, _, chunksReceived, _, _, tempPath, _ := s.manager.GetSessionStatus(msg.SessionId)
+	bytesReceived, _, chunksReceived, _, _, _, _ := s.manager.GetSessionStatus(msg.SessionId)
 
 	return connect.NewResponse(&v1.UploadChunkResponse{
 		SessionId:      msg.SessionId,
 		BytesReceived:  bytesReceived,
 		ChunksReceived: chunksReceived,
 		Completed:      completed,
-		TempPath:       tempPath,
 	}), nil
 }
 
@@ -156,7 +154,7 @@ func (s *UploadService) CancelUpload(ctx context.Context, req *connect.Request[v
 
 	err := s.manager.Cancel(msg.SessionId)
 	if err != nil {
-		if errors.Is(err, upload.ErrSessionNotFound) {
+		if errors.Is(err, transfer.ErrSessionNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("upload session not found"))
 		}
 		s.log.Error("Failed to cancel upload: %v", err)
@@ -164,9 +162,4 @@ func (s *UploadService) CancelUpload(ctx context.Context, req *connect.Request[v
 	}
 
 	return connect.NewResponse(&v1.CancelUploadResponse{}), nil
-}
-
-// GetManager returns the upload manager (for use by other services)
-func (s *UploadService) GetManager() *upload.Manager {
-	return s.manager
 }

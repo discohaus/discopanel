@@ -6,15 +6,13 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nickheyer/discopanel/internal/rbac"
-	"github.com/nickheyer/discopanel/pkg/logger"
-	web "github.com/nickheyer/discopanel/web/discopanel"
+	"github.com/discohaus/discopanel/pkg/logger"
+	"github.com/discohaus/discopanel/pkg/protometa"
+	web "github.com/discohaus/discopanel/web/discopanel"
 	"gopkg.in/yaml.v3"
 )
 
-// NewOpenAPIHandler returns an http.HandlerFunc that serves the OpenAPI spec.
-// Strips Connect protocol noise and injects per-operation security overrides.
-// When isAuthEnabled returns false, security schemes are removed entirely.
+// Serves the openapi spec, strips connect noise, patches security
 func NewOpenAPIHandler(log *logger.Logger, isAuthEnabled func() bool) http.HandlerFunc {
 	var (
 		once         sync.Once
@@ -79,7 +77,7 @@ func NewOpenAPIHandler(log *logger.Logger, isAuthEnabled func() bool) http.Handl
 						}
 						// Mark public operations as no-auth
 						procedure := "/" + strings.TrimPrefix(path, "/")
-						if rbac.PublicProcedures[procedure] {
+						if perm := protometa.Perm(procedure); perm.GetPublic() {
 							op["security"] = []any{}
 						}
 					}
@@ -102,7 +100,7 @@ func NewOpenAPIHandler(log *logger.Logger, isAuthEnabled func() bool) http.Handl
 				authEnabled = enabled
 			}
 
-			// Build auth-disabled variant: strip all security fields
+			// Build auth-disabled variant without security fields
 			delete(doc, "security")
 
 			if components, ok := doc["components"].(map[string]any); ok {

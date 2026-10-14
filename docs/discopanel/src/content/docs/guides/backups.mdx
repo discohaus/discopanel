@@ -12,8 +12,10 @@ DiscoPanel has built-in server backups via the **Backup** task type. Backups run
 1. Open your server and go to the **Tasks** tab.
 2. Click **New Task** and select the **Backup** task type.
 3. Configure what to back up and how long to keep backups (see below).
-4. Pick a schedule — a cron expression (e.g. `0 0 * * *` for daily at midnight), a fixed interval, or a one-time run.
+4. Pick a schedule - a cron expression (e.g. `0 0 * * *` for daily at midnight), a fixed interval, or a one-time run.
 5. Create the task. You can also trigger it immediately with the **Run Now** button.
+
+![A backup task](../../../assets/screenshots/task-backup.png)
 
 Every run is recorded in the task's execution history, including the archive name, file count, size, duration, and how many old backups were pruned.
 
@@ -21,16 +23,20 @@ Every run is recorded in the task's execution history, including the archive nam
 
 By default (with **Paths to Include** left empty), DiscoPanel backs up the server's **world directory**. On Paper, Spigot, and other Bukkit-based servers, the separate `world_nether` and `world_the_end` dimension folders are included automatically. On vanilla and Forge/Fabric servers, the nether and end already live inside the world folder, so they're covered either way.
 
-To back up more than the world — or a custom layout — list paths explicitly, comma-separated and relative to the server directory:
+To back up more than the world - or a custom layout - list paths explicitly, comma-separated and relative to the server directory:
 
 ```
 world, world_nether, world_the_end, server.properties, config
 ```
 
+The folder button next to the field browses the server's files and appends whatever you pick:
+
+![Picking backup paths](../../../assets/screenshots/path-picker.png)
+
 Paths that don't exist yet (for example, a dimension that hasn't generated) are skipped and noted in the task output rather than failing the backup.
 
 <Aside type="note">
-If the server is running, DiscoPanel pauses world saving (`save-off`), flushes pending writes to disk (`save-all flush`), creates the archive, and then re-enables saving (`save-on`) — so the backup is consistent and your server keeps running. Servers that are offline can be backed up too; just disable **Require Server Online** in the task's Advanced section.
+If the server is running, DiscoPanel pauses world saving (`save-off`), flushes pending writes to disk (`save-all flush`), creates the archive, and then re-enables saving (`save-on`) - so the backup is consistent and your server keeps running. Servers that are offline can be backed up too. Just disable **Require Server Online** in the task's Advanced section.
 </Aside>
 
 ## Backup options
@@ -64,7 +70,7 @@ volumes:
 ```
 
 <Aside type="caution">
-Keep your backup directory on different storage than your server data if you can — a backup on the same failing disk isn't much of a backup.
+Keep your backup directory on different storage than your server data if you can - a backup on the same failing disk isn't much of a backup.
 </Aside>
 
 ## Restoring a backup

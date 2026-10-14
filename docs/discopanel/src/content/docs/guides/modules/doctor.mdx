@@ -1,0 +1,16 @@
+---
+title: Doctor
+description: Automatic crash diagnosis and repair for modded servers, panel-wide.
+---
+
+import chip from '../../../../../../../identity/assets/doctor/chip.svg';
+
+<img class="module-mark" src={chip.src} alt="" />
+
+Doctor is a panel-wide module: DiscoPanel starts it automatically and it watches every server on the panel. When a modded server crashes during startup, Doctor reads the crash, works out which mod is responsible - a missing dependency, a duplicate jar, a mod built for the wrong Java or loader version - and applies a fix: disabling the offending mod, or installing the dependency it needs. Then it restarts the server and checks whether the fix took.
+
+Every incident is recorded with the evidence, the actions taken, and the outcome, and every action is reversible. You can follow along in the server's console. If a crash can't be pinned on a specific mod, Doctor gives up and says so rather than guessing forever.
+
+## Turning it off
+
+It's on by default. Configure it from the Doctor category in Settings, with per-server overrides on each server's properties page. To turn it off entirely, set `module.doctor_enabled: false` in the panel [configuration](/configuration/).

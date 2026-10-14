@@ -1,0 +1,62 @@
+---
+title: HTTPS & Certificates
+description: Serve the panel and module pages over HTTPS with your own certificates, or let a proxy in front handle it.
+---
+
+Minecraft itself never uses HTTPS - Java Edition speaks its own protocol, so game traffic needs no certificates. HTTPS matters for the parts you open in a browser: the panel and module pages like maps and status screens.
+
+There are two ways to get it, and they combine fine:
+
+- **Certificates in the config file** - DiscoPanel terminates HTTPS itself.
+- **A proxy in front** - Cloudflare, nginx, or Caddy terminates HTTPS and forwards plain HTTP to DiscoPanel.
+
+## Certificates in the config file
+
+Point DiscoPanel at PEM pairs on disk:
+
+```yaml
+proxy:
+  tls:
+    certificates:
+      - cert_file: /etc/discopanel/certs/example.com.crt
+        key_file: /etc/discopanel/certs/example.com.key
+```
+
+The cert file should contain the full chain. List as many pairs as you need - DiscoPanel picks the right one per request by the requested hostname. Exact names beat wildcards, a wildcard like `*.mc.example.com` covers exactly one label, and expired entries are skipped.
+
+Every port DiscoPanel listens on serves these certificates. Browsers get HTTPS, Minecraft clients on the same port are untouched.
+
+### Rotating certificates
+
+Certificates load once at startup. To rotate, replace the files on disk and restart DiscoPanel.
+
+DiscoPanel does not issue certificates itself - bring your own. Common sources are your DNS provider, a [Cloudflare origin certificate](https://developers.cloudflare.com/ssl/origin-configuration/origin-ca/), or certbot run on the side.
+
+## A proxy in front
+
+If Cloudflare, nginx, or another proxy you control terminates HTTPS before traffic reaches DiscoPanel, keep the panel on plain HTTP and tell DiscoPanel to trust that edge:
+
+```yaml
+proxy:
+  trusted_edge: true
+```
+
+This keeps the `X-Forwarded-Proto` and `X-Forwarded-For` headers your edge sets instead of stripping them, so DiscoPanel and anything behind it (like an OIDC provider) see the real client address and scheme.
+
+:::caution
+Only enable `trusted_edge` when a machine you control sits in front. With it on, anyone who can reach the port directly can forge those headers.
+:::
+
+:::note
+Cloudflare's proxied "Flexible" HTTPS only works if the panel listens on port 443. On any other port, install a Cloudflare origin certificate via the config file above and set the Cloudflare TLS mode to Full.
+:::
+
+## Module certificates
+
+Some modules serve HTTPS themselves and mount a certificate into their container. When a module's template supports this, its settings show certificate and key fields - paste the PEM contents there. DiscoPanel writes them as `tls.crt` and `tls.key` and mounts them read-only where the module expects them.
+
+Saving new certificate contents recreates the module's container automatically, so rotation is just pasting the new pair.
+
+## What the browser shows
+
+Links in the panel mirror how your browser reached it: open the panel over HTTPS and every link it offers is HTTPS too. What the address bar reports is your connection to the panel, not the state of any Minecraft server.

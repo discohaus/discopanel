@@ -9,7 +9,7 @@ description: Deploy DiscoPanel in a Proxmox LXC container using the community he
 
 ## Installation
 
-The [Proxmox VE Community Scripts](https://community-scripts.github.io/ProxmoxVE/) project maintains a [DiscoPanel helper script](https://community-scripts.github.io/ProxmoxVE/scripts?id=discopanel) that creates a Debian 13 LXC container with everything pre-installed (Docker, Go, Node.js, DiscoPanel built from source) and managed as a systemd service.
+The [Proxmox VE Community Scripts](https://community-scripts.org/) project maintains a [DiscoPanel helper script](https://community-scripts.org/scripts?id=discopanel) that creates a Debian 13 LXC container with Docker pre-installed and the latest DiscoPanel release binary running as a systemd service from `/opt/discopanel`.
 
 From your **Proxmox host shell**:
 
@@ -21,15 +21,15 @@ The interactive wizard lets you adjust the default container resources. Set thes
 
 ## Sizing guidance
 
-**CPU** — A single Minecraft server (vanilla or modded) rarely exceeds 400% (4 cores). While up to 4 cores per server is recommended for optimal performance, you can start with the default of `4` and increase as needed.
+**CPU** - A single Minecraft server (vanilla or modded) rarely exceeds 400% (4 cores). While up to 4 cores per server is recommended for optimal performance, you can start with the default of `4` and increase as needed.
 
-**RAM** — Vanilla servers may only need a few GB, but heavily modded servers average 10 GB+ per instance, especially with multiple players. You can safely allocate most of your available RAM — Proxmox doesn't strictly reserve it, so other LXCs and the host OS can still use whatever DiscoPanel isn't actively consuming.
+**RAM** - Vanilla servers may only need a few GB, but heavily modded servers average 10 GB+ per instance, especially with multiple players. You can safely allocate most of your available RAM - Proxmox doesn't strictly reserve it, so other LXCs and the host OS can still use whatever DiscoPanel isn't actively consuming.
 
-**Disk** — Entirely depends on what you plan to run and for how long. 40–80 GB is a reasonable starting point and can be expanded later.
+**Disk** - Entirely depends on what you plan to run and for how long. The default of 15 GB fills up fast once modpacks are involved - 40-80 GB is a more comfortable starting point, and it can be expanded later.
 
 ## Paths
 
-Since DiscoPanel runs directly on the host here (not inside a Docker container), file paths are straightforward — `DISCOPANEL_DATA_DIR` and `DISCOPANEL_HOST_DATA_PATH` should be the same value. The default `./data` relative to `/opt/discopanel` works out of the box.
+Since DiscoPanel runs directly on the host here (not inside a Docker container), file paths are straightforward - `DISCOPANEL_DATA_DIR` and `DISCOPANEL_HOST_DATA_PATH` should be the same value. The default `./data` relative to `/opt/discopanel` works out of the box.
 
 Once complete, DiscoPanel is accessible at **http://\<container-ip\>:8080**.
 

@@ -27,17 +27,17 @@
 	let active = $derived(selectedCount > 0);
 </script>
 
-<!-- Always rendered at fixed height to prevent layout shift -->
+<!-- Fixed height bar prevents layout shift -->
 <div
-	class="flex h-[32px] items-center justify-between border-b px-3 transition-colors {active
+	class="flex h-8 items-center justify-between border-b px-3 transition-colors {active
 		? 'bg-primary/5'
 		: 'bg-transparent'}"
 >
 	{#if active}
 		<div class="flex items-center gap-2">
-			<span class="text-xs font-medium">{selectedCount} selected</span>
+			<span class="tabular text-xs font-medium">{selectedCount} selected</span>
 			<Button size="sm" variant="ghost" class="h-6 px-2 text-xs" onclick={onClear}>
-				<X class="mr-1 h-3 w-3" />
+				<X class="size-3" />
 				Clear
 			</Button>
 		</div>
@@ -45,47 +45,47 @@
 			<Button
 				size="icon"
 				variant="ghost"
-				class="h-7 w-7"
+				class="size-7"
 				onclick={onDownload}
 				title="Download selected"
 			>
-				<Download class="h-3.5 w-3.5" />
+				<Download class="size-3.5" />
 			</Button>
-			<Button size="icon" variant="ghost" class="h-7 w-7" onclick={onMove} title="Move selected">
-				<FolderInput class="h-3.5 w-3.5" />
+			<Button size="icon" variant="ghost" class="size-7" onclick={onMove} title="Move selected">
+				<FolderInput class="size-3.5" />
 			</Button>
 			<Button
 				size="icon"
 				variant="ghost"
-				class="h-7 w-7"
+				class="size-7"
 				onclick={onCompress}
 				title="Compress selected"
 			>
-				<Archive class="h-3.5 w-3.5" />
+				<Archive class="size-3.5" />
 			</Button>
 			{#if canExtract}
 				<Button
 					size="icon"
 					variant="ghost"
-					class="h-7 w-7"
+					class="size-7"
 					onclick={onExtract}
 					title="Extract archive"
 				>
-					<Package class="h-3.5 w-3.5" />
+					<Package class="size-3.5" />
 				</Button>
 			{/if}
 			<Button
 				size="icon"
 				variant="ghost"
-				class="h-7 w-7 text-destructive hover:text-destructive"
+				class="size-7 text-destructive hover:text-destructive"
 				onclick={onDelete}
 				title="Delete selected"
 			>
-				<Trash2 class="h-3.5 w-3.5" />
+				<Trash2 class="size-3.5" />
 			</Button>
 		</div>
 	{:else}
-		<span class="text-[10px] text-muted-foreground/50"
+		<span class="text-[11px] text-muted-foreground"
 			>Ctrl+Click to select &middot; Right-click for options</span
 		>
 	{/if}

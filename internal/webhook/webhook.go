@@ -14,23 +14,15 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/discohaus/discopanel/internal/alias"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/protometa"
 	"github.com/google/uuid"
-	storage "github.com/nickheyer/discopanel/internal/db"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Builds, signs, and delivers HTTP webhooks for server events
-// NOTE: Concurrency is a scheduler concern, this is sync!
-
-// Controls a single webhook delivery - built from json config blob on webhook task
-type Config struct {
-	URL             string            `json:"url"`
-	Secret          string            `json:"secret"`
-	PayloadTemplate string            `json:"payload_template"`
-	Headers         map[string]string `json:"headers"`
-	MaxRetries      int               `json:"max_retries"`
-	RetryDelayMs    int               `json:"retry_delay_ms"`
-	TimeoutMs       int               `json:"timeout_ms"`
-}
+// Builds and delivers webhooks sync, schedulers own concurrency
 
 // A single delivery attempt outcome
 type Result struct {
@@ -44,34 +36,36 @@ type Result struct {
 
 // Canonical event data fed into payload templates
 type Payload struct {
-	Event     string         `json:"event"`
-	Timestamp time.Time      `json:"timestamp"`
-	Server    *ServerPayload `json:"server,omitempty"`
-	Data      map[string]any `json:"data,omitempty"`
+	Msg  *v1.WebhookPayload
+	vars map[string]any
 }
 
-// Server snapshot embedded in a webhook payload
-type ServerPayload struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Status     string `json:"status"`
-	MCVersion  string `json:"mc_version"`
-	ModLoader  string `json:"mod_loader"`
-	Players    int    `json:"players_online"`
-	MaxPlayers int    `json:"max_players"`
-	Port       int    `json:"port"`
+// Canonical event name, manual when no event fired
+func eventName(t v1.TriggeredEventType) string {
+	if t == v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_UNSPECIFIED {
+		return "manual"
+	}
+	return protometa.Name(t)
 }
 
-// Renders the payload, signs it, POSTs it, and retries on failure - returned res reflects final attempt made
-func Deliver(ctx context.Context, cfg Config, payload *Payload) Result {
+// Readable event title for templates
+func eventTitle(t v1.TriggeredEventType) string {
+	if t == v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_UNSPECIFIED {
+		return "Manual"
+	}
+	return protometa.Label(t)
+}
+
+// Renders, signs, POSTs, and retries one delivery
+func Deliver(ctx context.Context, cfg *v1.WebhookTaskConfig, payload *Payload) Result {
 	start := time.Now()
-	maxAttempts := cfg.MaxRetries
+	maxAttempts := int(cfg.MaxRetries)
 	if maxAttempts < 1 {
 		maxAttempts = 1
 	} else {
 		maxAttempts++ // initial attempt + retries
 	}
-	retryBaseMs := cfg.RetryDelayMs
+	retryBaseMs := int(cfg.RetryDelayMs)
 	if retryBaseMs <= 0 {
 		retryBaseMs = 1000
 	}
@@ -86,7 +80,7 @@ func Deliver(ctx context.Context, cfg Config, payload *Payload) Result {
 		if attempt == maxAttempts {
 			break
 		}
-		// Exponential backoff: base * 2^(attempt-1)
+		// Exponential backoff doubles the base per attempt
 		delay := time.Duration(retryBaseMs) * time.Millisecond * time.Duration(1<<(attempt-1))
 		select {
 		case <-ctx.Done():
@@ -100,7 +94,7 @@ func Deliver(ctx context.Context, cfg Config, payload *Payload) Result {
 	return last
 }
 
-func deliverOnce(ctx context.Context, cfg Config, payload *Payload) Result {
+func deliverOnce(ctx context.Context, cfg *v1.WebhookTaskConfig, payload *Payload) Result {
 	start := time.Now()
 	result := Result{}
 
@@ -118,7 +112,7 @@ func deliverOnce(ctx context.Context, cfg Config, payload *Payload) Result {
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, "POST", cfg.URL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(reqCtx, "POST", cfg.Url, bytes.NewReader(body))
 	if err != nil {
 		result.ErrorMessage = fmt.Sprintf("request error: %v", err)
 		result.DurationMs = time.Since(start).Milliseconds()
@@ -127,7 +121,7 @@ func deliverOnce(ctx context.Context, cfg Config, payload *Payload) Result {
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "DiscoPanel-Webhook/1.0")
-	req.Header.Set("X-DiscoPanel-Event", payload.Event)
+	req.Header.Set("X-DiscoPanel-Event", eventName(payload.Msg.Event))
 	req.Header.Set("X-DiscoPanel-Delivery", uuid.New().String())
 
 	if cfg.Secret != "" {
@@ -156,11 +150,11 @@ func deliverOnce(ctx context.Context, cfg Config, payload *Payload) Result {
 	return result
 }
 
-func renderBody(cfg Config, payload *Payload) ([]byte, error) {
+func renderBody(cfg *v1.WebhookTaskConfig, payload *Payload) ([]byte, error) {
 	if cfg.PayloadTemplate != "" {
 		return renderTemplate(cfg.PayloadTemplate, payload)
 	}
-	return json.Marshal(payload)
+	return protojson.Marshal(payload.Msg)
 }
 
 func sign(body []byte, secret string) string {
@@ -169,61 +163,31 @@ func sign(body []byte, secret string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// Builds a flat map of variables available to payload templates
-// TODO: Use the alias package!!!
-func templateData(p *Payload) map[string]any {
-	titles := map[string]string{
-		"test":           "Webhook Test",
-		"server_start":   "Server Started",
-		"server_stop":    "Server Stopped",
-		"server_restart": "Server Restarted",
+// Flattens alias paths into template vars, one shared vocabulary
+func templateVars(event v1.TriggeredEventType, timestamp time.Time, server *v1.Server, data map[string]string) map[string]any {
+	name := eventName(event)
+	vars := map[string]any{
+		"event":      name,
+		"is_" + name: true,
+		"timestamp":  timestamp.Format(time.RFC3339),
+		"title":      eventTitle(event),
+		"player":     "",
 	}
-	colors := map[string]int{
-		"test":           0x5865F2,
-		"server_start":   0x57F287,
-		"server_stop":    0xED4245,
-		"server_restart": 0xFEE75C,
+	rctx := alias.NewContext()
+	rctx.Server = server
+	for k, v := range alias.GetResolvedAliases(rctx) {
+		path := strings.TrimSuffix(strings.TrimPrefix(k, "{{"), "}}")
+		if strings.HasPrefix(path, "server.config.") {
+			continue
+		}
+		if strings.HasPrefix(path, "server.") || strings.HasPrefix(path, "host.") {
+			vars[strings.ReplaceAll(path, ".", "_")] = v
+		}
 	}
-
-	title := titles[p.Event]
-	if title == "" {
-		title = p.Event
+	for k, v := range data {
+		vars[k] = v
 	}
-	color := colors[p.Event]
-	if color == 0 {
-		color = 0x5865F2
-	}
-
-	data := map[string]any{
-		"event":     p.Event,
-		"timestamp": p.Timestamp.Format(time.RFC3339),
-		"title":     title,
-		"color":     color,
-		"player":    "",
-	}
-	if p.Server != nil {
-		data["server_id"] = p.Server.ID
-		data["server_name"] = p.Server.Name
-		data["server_status"] = p.Server.Status
-		data["server_mc_version"] = p.Server.MCVersion
-		data["server_mod_loader"] = p.Server.ModLoader
-		data["server_players"] = p.Server.Players
-		data["server_max_players"] = p.Server.MaxPlayers
-		data["server_port"] = p.Server.Port
-	} else {
-		data["server_id"] = ""
-		data["server_name"] = ""
-		data["server_status"] = ""
-		data["server_mc_version"] = ""
-		data["server_mod_loader"] = ""
-		data["server_players"] = 0
-		data["server_max_players"] = 0
-		data["server_port"] = 0
-	}
-	for k, v := range p.Data {
-		data[k] = v
-	}
-	return data
+	return vars
 }
 
 func renderTemplate(tmplStr string, p *Payload) ([]byte, error) {
@@ -232,7 +196,7 @@ func renderTemplate(tmplStr string, p *Payload) ([]byte, error) {
 		return nil, fmt.Errorf("invalid template: %w", err)
 	}
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, templateData(p)); err != nil {
+	if err := tmpl.Execute(&buf, p.vars); err != nil {
 		return nil, fmt.Errorf("template execution failed: %w", err)
 	}
 	out := buf.Bytes()
@@ -242,43 +206,32 @@ func renderTemplate(tmplStr string, p *Payload) ([]byte, error) {
 	return out, nil
 }
 
-// Verifies a template string parses and produces valid JSON when rendered with sample data
+// Verifies a template renders valid JSON from samples
 func ValidateTemplate(tmplStr string) error {
 	if strings.TrimSpace(tmplStr) == "" {
 		return nil
 	}
-	sample := &Payload{
-		Event:     "test",
-		Timestamp: time.Now().UTC(),
-		Server: &ServerPayload{
-			ID: "test-id", Name: "Test Server", Status: "running",
-			MCVersion: "1.21", ModLoader: "vanilla",
-			Players: 0, MaxPlayers: 20, Port: 25565,
-		},
-	}
+	sample := BuildPayload(v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_SERVER_START, &v1.Server{
+		Id: "test-id", Name: "Test Server", Status: v1.ServerStatus_SERVER_STATUS_RUNNING,
+		McVersion: "1.21", ModLoader: v1.ModLoader_MOD_LOADER_VANILLA,
+		MaxPlayers: 20, Port: 25565,
+	}, nil)
 	_, err := renderTemplate(tmplStr, sample)
 	return err
 }
 
 // Assembles a Payload for the given event and server
-func BuildPayload(event string, server *storage.Server, data map[string]any) *Payload {
-	var sp *ServerPayload
-	if server != nil {
-		sp = &ServerPayload{
-			ID:         server.ID,
-			Name:       server.Name,
-			Status:     string(server.Status),
-			MCVersion:  server.MCVersion,
-			ModLoader:  string(server.ModLoader),
-			Players:    server.PlayersOnline,
-			MaxPlayers: server.MaxPlayers,
-			Port:       server.Port,
-		}
+func BuildPayload(event v1.TriggeredEventType, server *v1.Server, data map[string]string) *Payload {
+	redacted := server.Redact()
+	now := time.Now().UTC()
+	p := &Payload{
+		Msg: &v1.WebhookPayload{
+			Event:     event,
+			Timestamp: timestamppb.New(now),
+			Server:    redacted,
+			Data:      data,
+		},
 	}
-	return &Payload{
-		Event:     event,
-		Timestamp: time.Now().UTC(),
-		Server:    sp,
-		Data:      data,
-	}
+	p.vars = templateVars(event, now, redacted, data)
+	return p
 }

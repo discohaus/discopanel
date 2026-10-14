@@ -10,87 +10,166 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/pkg/config"
+	"github.com/discohaus/discopanel/pkg/logger"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/google/uuid"
-	"github.com/nickheyer/discopanel/internal/config"
-	"github.com/nickheyer/discopanel/internal/db"
-	"github.com/nickheyer/discopanel/pkg/logger"
 	"github.com/tidwall/gjson"
 	"golang.org/x/oauth2"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+// Bounds every request the panel makes to the identity provider
+const oidcHTTPTimeout = 15 * time.Second
+
+// Backoff bounds for background provider discovery retries
+const (
+	oidcRetryInitialDelay = 5 * time.Second
+	oidcRetryMaxDelay     = 5 * time.Minute
 )
 
 type OIDCHandler struct {
-	manager      *Manager
-	store        *db.Store
-	config       *config.OIDCConfig
+	manager    *Manager
+	store      *db.Store
+	config     *config.OIDCConfig
+	httpClient *http.Client
+	log        *logger.Logger
+
+	// Serializes discovery so one attempt runs at a time
+	discoverMu sync.Mutex
+
+	// Guards the provider pieces swapped in once discovery succeeds
+	mu           sync.RWMutex
 	provider     *oidc.Provider
 	verifier     *oidc.IDTokenVerifier
 	oauth2Config *oauth2.Config
-	httpClient   *http.Client
-	log          *logger.Logger
+
+	stop     chan struct{}
+	stopOnce sync.Once
 }
 
-func NewOIDCHandler(manager *Manager, store *db.Store, cfg *config.OIDCConfig, log *logger.Logger) (*OIDCHandler, error) {
+// Builds the handler and starts provider discovery with retries
+func NewOIDCHandler(manager *Manager, store *db.Store, cfg *config.OIDCConfig, log *logger.Logger) *OIDCHandler {
+	h := &OIDCHandler{
+		manager:    manager,
+		store:      store,
+		config:     cfg,
+		httpClient: &http.Client{Timeout: oidcHTTPTimeout},
+		log:        log,
+		stop:       make(chan struct{}),
+	}
 	if !cfg.Enabled {
-		return &OIDCHandler{
-			manager: manager,
-			store:   store,
-			config:  cfg,
-			log:     log,
-		}, nil
+		return h
 	}
 
-	var httpClient *http.Client
 	if cfg.SkipTLSVerify {
-		httpClient = &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
+		h.httpClient.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		}
 		log.Warn("OIDC: TLS verification disabled")
 	}
 
-	ctx := context.Background()
-	if httpClient != nil {
-		ctx = oidc.ClientContext(ctx, httpClient)
+	if err := h.EnsureProvider(context.Background()); err != nil {
+		log.Warn("OIDC: provider discovery failed, retrying in background: %v", err)
+		go h.retryLoop()
 	}
-	provider, err := oidc.NewProvider(ctx, cfg.IssuerURI)
+	return h
+}
+
+// True when OIDC login is turned on in configuration
+func (h *OIDCHandler) IsEnabled() bool {
+	return h.config.Enabled
+}
+
+// True once provider discovery has completed
+func (h *OIDCHandler) Ready() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.provider != nil
+}
+
+// Reuses the ready provider or runs discovery now
+func (h *OIDCHandler) EnsureProvider(ctx context.Context) error {
+	if h.Ready() {
+		return nil
+	}
+	h.discoverMu.Lock()
+	defer h.discoverMu.Unlock()
+	if h.Ready() {
+		return nil
+	}
+	return h.discover(ctx)
+}
+
+// Runs discovery and builds the verifier and oauth2 config
+func (h *OIDCHandler) discover(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(h.clientCtx(ctx), oidcHTTPTimeout)
+	defer cancel()
+	provider, err := oidc.NewProvider(ctx, h.config.IssuerURI)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create OIDC provider: %w", err)
+		return err
 	}
 
-	verifier := provider.Verifier(&oidc.Config{ClientID: cfg.ClientID})
-
-	scopes := cfg.Scopes
+	scopes := h.config.Scopes
 	if len(scopes) == 0 {
 		scopes = []string{oidc.ScopeOpenID, "profile", "email"}
 	}
 
-	oauth2Config := &oauth2.Config{
-		ClientID:     cfg.ClientID,
-		ClientSecret: cfg.ClientSecret,
-		RedirectURL:  cfg.RedirectURL,
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.provider = provider
+	h.verifier = provider.Verifier(&oidc.Config{ClientID: h.config.ClientID})
+	h.oauth2Config = &oauth2.Config{
+		ClientID:     h.config.ClientID,
+		ClientSecret: h.config.ClientSecret,
+		RedirectURL:  h.config.RedirectURL,
 		Endpoint:     provider.Endpoint(),
 		Scopes:       scopes,
 	}
-
-	return &OIDCHandler{
-		manager:      manager,
-		store:        store,
-		config:       cfg,
-		provider:     provider,
-		verifier:     verifier,
-		oauth2Config: oauth2Config,
-		httpClient:   httpClient,
-		log:          log,
-	}, nil
+	h.log.Info("OIDC: provider %s ready", h.config.IssuerURI)
+	return nil
 }
 
-func (h *OIDCHandler) IsEnabled() bool {
-	return h.config.Enabled && h.provider != nil
+// Retries discovery with capped backoff until success or stop
+func (h *OIDCHandler) retryLoop() {
+	delay := oidcRetryInitialDelay
+	for {
+		select {
+		case <-h.stop:
+			return
+		case <-time.After(delay):
+		}
+		err := h.EnsureProvider(context.Background())
+		if err == nil {
+			return
+		}
+		delay = min(delay*2, oidcRetryMaxDelay)
+		h.log.Warn("OIDC: provider discovery failed, next retry in %s: %v", delay, err)
+	}
+}
+
+// Stops the background discovery retries
+func (h *OIDCHandler) Stop() {
+	h.stopOnce.Do(func() { close(h.stop) })
+}
+
+// Attaches the panel's http client to provider calls
+func (h *OIDCHandler) clientCtx(ctx context.Context) context.Context {
+	return oidc.ClientContext(ctx, h.httpClient)
+}
+
+// Snapshot of the ready provider pieces
+func (h *OIDCHandler) client() (*oidc.Provider, *oidc.IDTokenVerifier, *oauth2.Config) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.provider, h.verifier, h.oauth2Config
 }
 
 func (h *OIDCHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
@@ -98,6 +177,12 @@ func (h *OIDCHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "OIDC is not enabled", http.StatusBadRequest)
 		return
 	}
+	if err := h.EnsureProvider(r.Context()); err != nil {
+		h.log.Error("OIDC: identity provider %s unavailable: %v", h.config.IssuerURI, err)
+		http.Redirect(w, r, "/login?error=provider_unavailable", http.StatusFound)
+		return
+	}
+	_, _, oauth2Config := h.client()
 
 	state, err := generateState()
 	if err != nil {
@@ -115,7 +200,7 @@ func (h *OIDCHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	http.Redirect(w, r, h.oauth2Config.AuthCodeURL(state), http.StatusFound)
+	http.Redirect(w, r, oauth2Config.AuthCodeURL(state), http.StatusFound)
 }
 
 func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +208,12 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "OIDC is not enabled", http.StatusBadRequest)
 		return
 	}
+	if err := h.EnsureProvider(r.Context()); err != nil {
+		h.log.Error("OIDC: identity provider %s unavailable: %v", h.config.IssuerURI, err)
+		http.Redirect(w, r, "/login?error=provider_unavailable", http.StatusFound)
+		return
+	}
+	provider, verifier, oauth2Config := h.client()
 
 	// Verify state
 	stateCookie, err := r.Cookie("oidc_state")
@@ -141,11 +232,8 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Exchange code for token
-	ctx := r.Context()
-	if h.httpClient != nil {
-		ctx = oidc.ClientContext(ctx, h.httpClient)
-	}
-	oauth2Token, err := h.oauth2Config.Exchange(ctx, r.URL.Query().Get("code"))
+	ctx := h.clientCtx(r.Context())
+	oauth2Token, err := oauth2Config.Exchange(ctx, r.URL.Query().Get("code"))
 	if err != nil {
 		h.log.Error("OIDC: failed to exchange code for token: %v", err)
 		http.Error(w, "Failed to exchange code for token", http.StatusInternalServerError)
@@ -161,7 +249,7 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify ID token
-	idToken, err := h.verifier.Verify(ctx, rawIDToken)
+	idToken, err := verifier.Verify(ctx, rawIDToken)
 	if err != nil {
 		h.log.Error("OIDC: failed to verify ID token: %v", err)
 		http.Error(w, "Failed to verify ID token", http.StatusInternalServerError)
@@ -177,8 +265,8 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch UserInfo - some oidc sets role/groups here
-	tokenSource := h.oauth2Config.TokenSource(ctx, oauth2Token)
-	userInfo, err := h.provider.UserInfo(ctx, tokenSource)
+	tokenSource := oauth2Config.TokenSource(ctx, oauth2Token)
+	userInfo, err := provider.UserInfo(ctx, tokenSource)
 	if err == nil {
 		var uiClaims map[string]any
 		if err := userInfo.Claims(&uiClaims); err == nil {
@@ -204,7 +292,7 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// Enforce required claim if configured
 	if h.config.RequiredClaim != "" && len(h.config.RequiredValues) > 0 {
 		if !h.checkRequiredClaim(claims) {
-			h.log.Warn("OIDC: login rejected — required claim %q not satisfied", h.config.RequiredClaim)
+			h.log.Warn("OIDC: login rejected - required claim %q not satisfied", h.config.RequiredClaim)
 			http.Redirect(w, r, "/login?error=access_denied", http.StatusFound)
 			return
 		}
@@ -224,10 +312,10 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		username = sub
 	}
 
-	// Resolve roles before creating user to avoid orphaned records on rejection
+	// Resolves roles before creating user to avoid orphans
 	resolvedRoles := h.resolveClaimRoles(claims)
 	if len(resolvedRoles) == 0 && h.config.RejectUnmapped {
-		h.log.Warn("OIDC: login rejected — no mapped roles for user %s", username)
+		h.log.Warn("OIDC: login rejected - no mapped roles for user %s", username)
 		http.Redirect(w, r, "/login?error=no_mapped_roles", http.StatusFound)
 		return
 	}
@@ -239,20 +327,30 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Assign resolved roles to user
+	// Drops oidc roles the IdP no longer grants
+	claimRoles := make(map[string]bool, len(resolvedRoles))
 	for _, roleName := range resolvedRoles {
-		_ = h.store.AssignRole(ctx, user.ID, roleName, "oidc")
+		claimRoles[roleName] = true
+		_ = h.store.AssignRole(ctx, user.Id, roleName, v1.RoleSource_ROLE_SOURCE_OIDC)
+	}
+	var oidcAssigned []*v1.UserRole
+	if err := h.store.DB().WithContext(ctx).Where("user_id = ? AND source = ?", user.Id, v1.RoleSource_ROLE_SOURCE_OIDC).Find(&oidcAssigned).Error; err == nil {
+		for _, ur := range oidcAssigned {
+			if !claimRoles[ur.RoleName] {
+				_ = h.store.UnassignRole(ctx, user.Id, ur.RoleName)
+			}
+		}
 	}
 
 	// Get user roles
-	roleNames, err := h.store.GetUserRoleNames(ctx, user.ID)
+	roleNames, err := h.store.GetUserRoleNames(ctx, user.Id)
 	if err != nil {
 		roleNames = []string{}
 	}
 
 	// Generate session token
-	expiresAt := time.Now().Add(time.Duration(h.manager.config.SessionTimeout) * time.Second)
-	token, err := h.manager.generateJWT(user.ID, user.Username, roleNames, expiresAt)
+	expiresAt := time.Now().Add(h.manager.SessionTTL())
+	token, err := h.manager.generateJWT(user.Id, user.Username, roleNames, expiresAt)
 	if err != nil {
 		h.log.Error("OIDC: failed to generate JWT: %v", err)
 		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
@@ -260,11 +358,11 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create session
-	session := &db.Session{
-		ID:        uuid.New().String(),
-		UserID:    user.ID,
+	session := &v1.Session{
+		Id:        uuid.New().String(),
+		UserId:    user.Id,
 		Token:     token,
-		ExpiresAt: expiresAt,
+		ExpiresAt: timestamppb.New(expiresAt),
 	}
 	if err := h.store.CreateSession(ctx, session); err != nil {
 		h.log.Error("OIDC: failed to create session: %v", err)
@@ -274,16 +372,13 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	h.log.Info("OIDC: user %s authenticated successfully", user.Username)
 
-	// Redirect to frontend with token in query param
-	http.Redirect(w, r, fmt.Sprintf("/login?token=%s", token), http.StatusFound)
+	// Fragment delivery keeps the token out of logs and Referer
+	http.Redirect(w, r, fmt.Sprintf("/login#token=%s", url.QueryEscape(token)), http.StatusFound)
 }
 
-// findOrCreateOIDCUser looks up a user by OIDC subject (returning user),
-// or creates a new OIDC user. Local users with the same username are not
-// affected — the composite unique constraint (username, auth_provider)
-// allows both to coexist.
-func (h *OIDCHandler) findOrCreateOIDCUser(ctx context.Context, sub, username, email string) (*db.User, error) {
-	// Step 1: try to find by OIDC subject (returning user)
+// Finds or creates OIDC user, same username can coexist
+func (h *OIDCHandler) findOrCreateOIDCUser(ctx context.Context, sub, username, email string) (*v1.User, error) {
+	// Tries to find by OIDC subject, for returning users
 	if user, err := h.store.GetUserByOIDCSubject(ctx, sub); err == nil {
 		if !user.IsActive {
 			return nil, ErrUserNotActive
@@ -292,34 +387,33 @@ func (h *OIDCHandler) findOrCreateOIDCUser(ctx context.Context, sub, username, e
 		if email != "" {
 			user.Email = &email
 		}
-		now := time.Now()
-		user.LastLogin = &now
+		user.LastLogin = timestamppb.Now()
 		_ = h.store.UpdateUser(ctx, user)
 		return user, nil
 	}
 
-	// Step 2: create a new OIDC user
+	// Creates a new OIDC user
 	var emailPtr *string
 	if email != "" {
 		emailPtr = &email
 	}
-	user := &db.User{
-		ID:           uuid.New().String(),
+	user := &v1.User{
+		Id:           uuid.New().String(),
 		Username:     username,
 		Email:        emailPtr,
-		AuthProvider: "oidc",
-		OIDCSubject:  sub,
-		OIDCIssuer:   h.config.IssuerURI,
+		AuthProvider: v1.AuthProvider_AUTH_PROVIDER_OIDC,
 		IsActive:     true,
+		OidcSubject:  sub,
+		OidcIssuer:   h.config.IssuerURI,
 	}
 	if err := h.store.CreateUser(ctx, user); err != nil {
 		return nil, fmt.Errorf("failed to create OIDC user: %w", err)
 	}
 
-	// Assign default roles to new user
+	// Default roles keep local source so claim sync spares them
 	defaultRoles, _ := h.store.GetDefaultRoles(ctx)
 	for _, role := range defaultRoles {
-		_ = h.store.AssignRole(ctx, user.ID, role.Name, "oidc")
+		_ = h.store.AssignRole(ctx, user.Id, role.Name, v1.RoleSource_ROLE_SOURCE_LOCAL)
 	}
 
 	h.log.Info("OIDC: created new user %s", user.Username)
@@ -367,29 +461,22 @@ func (h *OIDCHandler) resolveClaimRoles(claims map[string]any) []string {
 			}
 		}
 	} else if !h.config.RejectUnmapped {
-		// No mapping configured and not rejecting unmapped — use claim values directly
+		// Uses claim values directly when no mapping and not rejecting
 		resolvedRoles = claimValues
 	}
 
 	return resolvedRoles
 }
 
-// Calls the configured extra claims URL with the access token.
-// Uses ExtraClaimsKey (gjson path) to extract a value from the response,
-// and stores it under ExtraClaimsName in the claims map.
+// Fetches extra claim from configured URL using gjson path
 func (h *OIDCHandler) fetchExtraClaims(ctx context.Context, accessToken string) (map[string]any, error) {
-	client := http.DefaultClient
-	if h.httpClient != nil {
-		client = h.httpClient
-	}
-
 	req, err := http.NewRequestWithContext(ctx, "GET", h.config.ExtraClaimsURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
-	resp, err := client.Do(req)
+	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -414,7 +501,7 @@ func (h *OIDCHandler) fetchExtraClaims(ctx context.Context, accessToken string) 
 		name = "extra"
 	}
 
-	// If no key path configured, parse the whole response as the claim value
+	// Parses whole response as claim value if no key path
 	if h.config.ExtraClaimsKey == "" {
 		var parsed any
 		if err := json.Unmarshal(body, &parsed); err != nil {
@@ -431,7 +518,7 @@ func (h *OIDCHandler) fetchExtraClaims(ctx context.Context, accessToken string) 
 	return map[string]any{name: gjsonToAny(result)}, nil
 }
 
-// gjsonToAny converts a gjson.Result to a native Go type for use in claims.
+// Converts gjson.Result to native Go type for claims
 func gjsonToAny(r gjson.Result) any {
 	if r.IsArray() {
 		var out []any
@@ -452,7 +539,7 @@ func gjsonToAny(r gjson.Result) any {
 	return r.Value()
 }
 
-// Returns true if the claims contain the required claim == value match
+// True if claims satisfy required claim value match
 func (h *OIDCHandler) checkRequiredClaim(claims map[string]any) bool {
 	value, ok := claims[h.config.RequiredClaim]
 	if !ok {

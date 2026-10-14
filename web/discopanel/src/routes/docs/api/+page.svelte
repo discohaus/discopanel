@@ -1,26 +1,32 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { mode } from 'mode-watcher';
 
 	import { asset } from '$app/paths';
 	import { Progress } from '$lib/components/ui/progress';
 	import type { Asset } from '$app/types';
-	import { FileText } from '@lucide/svelte';
+	import { PageHeader } from '$lib/components/app';
 
 	let isLoading = $state(true);
 	let loadingProgress = $state(10);
 	let iframeElement: HTMLIFrameElement | null = $state(null);
-	const scalarFrame =
-		`
+
+	const isDark = $derived(mode.current !== 'light');
+
+	function getScalarFrame(dark: boolean) {
+		const modeState = dark ? 'dark' : 'light';
+		return (
+			`
 			<!DOCTYPE html>
 			<html>
 			<head>
 				<meta charset="utf-8">
 				<meta name="viewport" content="width=device-width, initial-scale=1">
 				<script src="` +
-		asset('/scalar.js' as Asset) +
-		`">${'<'}/script>
+			asset('/scalar.js' as Asset) +
+			`">${'<'}/script>
         <style>
-          /* Hide "Powered by Scalar" link... */
+          /* Hides the powered by scalar link */
           a[href="https://www.scalar.com"] {
             display: none !important;
           }
@@ -40,13 +46,15 @@
           }
         </style>
 			</head>
-			<body style="margin: 0; padding: 0;">
+			<body class="${dark ? 'dark-mode' : 'light-mode'}" style="margin: 0; padding: 0;">
 				<div id="api-reference"></div>
 				<script>
 					window.addEventListener('load', () => {
 						window.parent.postMessage({ type: 'scalar-progress', value: 50 }, '*');
 						window.Scalar.createApiReference('#api-reference', {
 							url: '/api/v1/openapi.yaml',
+							darkMode: ${dark},
+							forceDarkModeState: '${modeState}',
 							hideClientButton: true,
               showDeveloperTools: 'never',
               showToolbar: 'never'
@@ -56,18 +64,11 @@
 				${'<'}/script>
 			</body>
 			</html>
-		`;
+		`
+		);
+	}
 
 	onMount(() => {
-		// Write to iframe on ready
-		if (iframeElement?.contentWindow) {
-			const doc = iframeElement.contentDocument;
-			if (doc) {
-				doc.open();
-				doc.write(scalarFrame);
-				doc.close();
-			}
-		}
 		// Simulate progress, but gets overridden by actual load state.
 		const progressInterval = setInterval(() => {
 			if (loadingProgress < 90) {
@@ -100,22 +101,18 @@
 	});
 </script>
 
-<div class="flex h-full w-full flex-col overflow-hidden">
-	<div class="flex shrink-0 items-center justify-between border-b-2 border-border/50 p-6">
-		<div class="flex items-center gap-4">
-			<div
-				class="flex h-16 w-16 items-center justify-center rounded-2xl bg-linear-to-br from-primary/20 to-primary/10 shadow-lg"
-			>
-				<FileText class="h-8 w-8 text-primary" />
-			</div>
-			<div class="space-y-1">
-				<h2
-					class="bg-linear-to-r from-foreground to-foreground/70 bg-clip-text text-4xl font-bold tracking-tight text-transparent"
-				>
-					API
-				</h2>
-				<p class="text-base text-muted-foreground">Explore the Discopanel API</p>
-			</div>
+<svelte:head>
+	<title>API reference · DiscoPanel</title>
+</svelte:head>
+
+<div class="flex min-h-0 w-full flex-1 flex-col">
+	<div class="shrink-0 border-b bg-card/40">
+		<div class="mx-auto w-full px-4 pt-5 sm:px-6">
+			<PageHeader
+				title="API reference"
+				description="Every panel feature is available over the API"
+				class="pb-4"
+			/>
 		</div>
 	</div>
 
@@ -124,7 +121,7 @@
 			<div class="absolute inset-0 z-10 flex items-center justify-center bg-background/80">
 				<div class="w-full max-w-md px-8">
 					<div class="mb-4 text-center">
-						<p class="text-sm text-muted-foreground">Loading API Documentation...</p>
+						<p class="text-sm text-muted-foreground">Loading API reference...</p>
 					</div>
 					<Progress value={loadingProgress} max={100} class="h-2" />
 				</div>
@@ -136,7 +133,8 @@
 			title="API Documentation"
 			class="h-full w-full border-0 {isLoading ? 'hidden' : ''}"
 			referrerpolicy="same-origin"
-			sandbox="allow-scripts allow-same-origin"
+			sandbox="allow-scripts allow-same-origin allow-downloads"
+			srcdoc={getScalarFrame(isDark)}
 		></iframe>
 	</div>
 </div>
