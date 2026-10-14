@@ -7,11 +7,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	models "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/pkg/config"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/protometa"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -183,7 +185,7 @@ func generateAliasesFromValue(val reflect.Value, prefix string, category v1.Alia
 			if !field.IsExported() {
 				continue
 			}
-			if isSecretField(field) {
+			if isSecretField(t, field) {
 				continue
 			}
 			if strings.Contains(field.Tag.Get("gorm"), "-") {
@@ -242,8 +244,30 @@ func generateAliasesFromValue(val reflect.Value, prefix string, category v1.Alia
 }
 
 // Marks fields whose values must never resolve
-func isSecretField(field reflect.StructField) bool {
-	return field.Tag.Get("alias") == "secret"
+func isSecretField(owner reflect.Type, field reflect.StructField) bool {
+	if field.Tag.Get("alias") == "secret" {
+		return true
+	}
+	return protoSecretNames(owner)[strings.Split(field.Tag.Get("json"), ",")[0]]
+}
+
+var protoSecretCache sync.Map
+
+// Json names of password inputs declared on a proto message
+func protoSecretNames(t reflect.Type) map[string]bool {
+	if cached, ok := protoSecretCache.Load(t); ok {
+		return cached.(map[string]bool)
+	}
+	names := map[string]bool{}
+	if msg, ok := reflect.New(t).Interface().(proto.Message); ok {
+		for _, p := range protometa.Props(msg.ProtoReflect().Descriptor()) {
+			if p.Meta.Input == "password" {
+				names[string(p.Field.Name())] = true
+			}
+		}
+	}
+	protoSecretCache.Store(t, names)
+	return names
 }
 
 // Finds field by json tag, returns string value
@@ -260,7 +284,7 @@ func getFieldValueByJSONName(val reflect.Value, jsonName string) string {
 	t := val.Type()
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
-		if isSecretField(field) {
+		if isSecretField(t, field) {
 			continue
 		}
 		jsonTag := field.Tag.Get("json")
@@ -492,7 +516,7 @@ func getFieldByJSONTag(val reflect.Value, jsonName string) reflect.Value {
 	t := val.Type()
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
-		if isSecretField(field) {
+		if isSecretField(t, field) {
 			continue
 		}
 		jsonTag := field.Tag.Get("json")

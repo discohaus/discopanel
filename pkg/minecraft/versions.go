@@ -2,6 +2,7 @@ package minecraft
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -114,25 +115,28 @@ func fetchVersionManifest() (*VersionManifestV2, error) {
 	return &manifest, nil
 }
 
+// Reported when the manifest loaded but lacks the version
+var ErrVersionUnknown = errors.New("not in the mojang version manifest")
+
 // Returns the latest Minecraft release version
-func GetLatestVersion() string {
+func GetLatestVersion() (string, error) {
 	manifest, err := fetchVersionManifest()
 	if err != nil {
-		return "0"
+		return "", err
 	}
 
 	if manifest.Latest.Release != "" {
-		return manifest.Latest.Release
+		return manifest.Latest.Release, nil
 	}
 
 	// Fallback to first release in the list
 	for _, version := range manifest.Versions {
 		if version.Type == "release" {
-			return version.ID
+			return version.ID, nil
 		}
 	}
 
-	return "0"
+	return "", errors.New("version manifest lists no release")
 }
 
 // Returns all versions including snapshots
@@ -163,14 +167,14 @@ func GetVersionInfo(version string) (*Version, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("version %s not found", version)
+	return nil, fmt.Errorf("version %s: %w", version, ErrVersionUnknown)
 }
 
 // Fetches the full metadata document for a specific Minecraft version
 func GetVersionMetadata(mcVersion string) (*VersionMetadata, error) {
 	versionInfo, err := GetVersionInfo(mcVersion)
 	if err != nil {
-		return nil, fmt.Errorf("version %s not found in manifest", mcVersion)
+		return nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), pistonFetchTimeout)
@@ -200,7 +204,7 @@ func GetJavaVersion(mcVersion string) (string, error) {
 
 	metadata, err := GetVersionMetadata(mcVersion)
 	if err != nil {
-		return "0", err
+		return "", err
 	}
 
 	return strconv.Itoa(metadata.JavaVersion.MajorVersion), nil

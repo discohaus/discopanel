@@ -371,7 +371,10 @@ func (m *Manager) start(ctx context.Context, serverID string) error {
 
 // Creates container if missing, recreates when image or config drifts
 func (m *Manager) ensureContainer(ctx context.Context, server *v1.Server, serverCfg *v1.ServerProperties) error {
-	desired := m.docker.DesiredImage(server)
+	desired, err := m.docker.DesiredImage(server)
+	if err != nil {
+		return err
+	}
 	progress := func(line string) { m.console(server.Id, "%s", line) }
 
 	if server.ContainerId != "" {

@@ -752,6 +752,18 @@ func (s *ProxyService) CreateProxyListener(ctx context.Context, req *connect.Req
 	}
 	netClaim.Confirm()
 
+	// Reconcile starts the socket when the proxy is on
+	syncRoutes(ctx, s.proxyManager, s.log, "after listener create")
+
+	// Unbound rows are removed and the caller hears why
+	if err := s.listenerBound(listener); err != nil {
+		if derr := s.store.DeleteProxyListener(ctx, listener.Id); derr != nil {
+			s.log.Error("Failed to remove unbound listener %s: %v", listener.Id, derr)
+		}
+		syncRoutes(ctx, s.proxyManager, s.log, "after listener bind failure")
+		return nil, err
+	}
+
 	// A new default demotes every other default
 	if listener.IsDefault {
 		if listeners, lerr := s.store.ListProxyListeners(ctx); lerr == nil {
@@ -762,12 +774,22 @@ func (s *ProxyService) CreateProxyListener(ctx context.Context, req *connect.Req
 				}
 			}
 		}
+		syncRoutes(ctx, s.proxyManager, s.log, "after default change")
 	}
 
-	// Reconcile starts the socket when the proxy is on
-	syncRoutes(ctx, s.proxyManager, s.log, "after listener create")
-
 	return connect.NewResponse(&v1.CreateProxyListenerResponse{Listener: listener}), nil
+}
+
+// Unavailable error when an enabled listener has no bound socket
+func (s *ProxyService) listenerBound(listener *v1.ProxyListener) error {
+	if !listener.Enabled {
+		return nil
+	}
+	if berr := s.proxyManager.BindError(int(listener.Port)); berr != nil {
+		return connect.NewError(connect.CodeUnavailable,
+			fmt.Errorf("listener %s could not bind port %d: %w", listener.Name, listener.Port, berr))
+	}
+	return nil
 }
 
 // Reconciles proxy sockets and routes, logging any failure
@@ -790,6 +812,17 @@ func checkoutNetwork(ctx context.Context, pm *proxy.Manager, log *logger.Logger,
 		// Reconcile retires any listener row made just above
 		syncRoutes(ctx, pm, log, "after checkout failure")
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	// Listener sockets must bind before a workload commits to them
+	if ports := proxy.ListenerPortsNeeded(netReqs); len(ports) > 0 {
+		syncRoutes(ctx, pm, log, "after listener ensure")
+		for _, port := range ports {
+			if berr := pm.BindError(port); berr != nil {
+				claim.Release()
+				syncRoutes(ctx, pm, log, "after listener bind failure")
+				return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("listener port %d could not bind: %w", port, berr))
+			}
+		}
 	}
 	return claim, nil
 }
@@ -861,6 +894,9 @@ func (s *ProxyService) UpdateProxyListener(ctx context.Context, req *connect.Req
 		}
 	}
 
+	// Stored settings return when the new ones cannot bind
+	prev := proto.Clone(listener).(*v1.ProxyListener)
+
 	// Update fields
 	listener.Name = msg.Name
 	listener.Description = msg.Description
@@ -887,6 +923,14 @@ func (s *ProxyService) UpdateProxyListener(ctx context.Context, req *connect.Req
 
 	// Reconcile moves sockets and keeps routes registered
 	syncRoutes(ctx, s.proxyManager, s.log, "after listener update")
+
+	if err := s.listenerBound(listener); err != nil {
+		if rerr := s.store.UpdateProxyListener(ctx, prev); rerr != nil {
+			s.log.Error("Failed to restore listener %s after bind failure: %v", prev.Id, rerr)
+		}
+		syncRoutes(ctx, s.proxyManager, s.log, "after listener bind failure")
+		return nil, err
+	}
 
 	return connect.NewResponse(&v1.UpdateProxyListenerResponse{Listener: listener}), nil
 }

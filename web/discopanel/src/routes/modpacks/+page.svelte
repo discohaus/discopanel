@@ -309,9 +309,10 @@
 				throw new Error('Upload completed but no session ID returned');
 			}
 
+			// Archive metadata names the pack, filename is the fallback
 			const result = await rpcClient.modpack.importUploadedModpack({
 				uploadSessionId: uploadResult.sessionId,
-				name: file.name.replace(/\.(zip|mrpack)$/i, ''),
+				name: '',
 				description: ''
 			});
 

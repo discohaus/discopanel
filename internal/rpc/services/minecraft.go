@@ -54,8 +54,10 @@ func (s *MinecraftService) GetMinecraftVersions(ctx context.Context, req *connec
 		})
 	}
 
-	// Get latest version
-	latest := minecraft.GetLatestVersion()
+	latest, err := minecraft.GetLatestVersion()
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable, err)
+	}
 
 	return connect.NewResponse(&v1.GetMinecraftVersionsResponse{
 		Versions: versions,

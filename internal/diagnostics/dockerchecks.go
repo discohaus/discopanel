@@ -321,9 +321,16 @@ func (r *Runner) checkImages(ctx context.Context, c *check) {
 		owners[ref] = append(owners[ref], owner)
 	}
 	add(r.docker.RuntimeImage(docker.SupportedJavaVersions[len(docker.SupportedJavaVersions)-1]), "default runtime")
+	var unresolved []string
 	if servers, err := r.store.ListServers(ctx); err == nil {
 		for _, s := range servers {
-			add(r.docker.DesiredImage(s), "server "+s.Name)
+			ref, err := r.docker.DesiredImage(s)
+			if err != nil {
+				unresolved = append(unresolved, s.Name)
+				c.note("server %s: runtime image unresolved, %v", s.Name, err)
+				continue
+			}
+			add(ref, "server "+s.Name)
 		}
 	}
 	if modules, err := r.store.ListModules(ctx); err == nil {
@@ -410,6 +417,8 @@ func (r *Runner) checkImages(ctx context.Context, c *check) {
 		c.skip("Registry unreachable for every image, see docker.registry")
 	case len(unknown) > 0:
 		c.warn("Could not compare %s against the registry", plural(len(unknown), "image", "images"))
+	case len(unresolved) > 0:
+		c.warn("Could not resolve the runtime image for %s: %s", plural(len(unresolved), "server", "servers"), abbreviate(unresolved, 3))
 	default:
 		c.pass("%s current, %d not pulled yet", plural(counts["current"], "image", "images"), counts["absent"])
 	}

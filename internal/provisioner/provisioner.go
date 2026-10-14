@@ -390,7 +390,9 @@ func (p *Provisioner) install(ctx context.Context, server *v1.Server, cfg *v1.Se
 	// User staged server files can still testify a launch
 	if spec := detectPackLaunch(server.DataPath, server.ModLoader); spec != nil {
 		p.progress(server, "found launchable server files for %s", protometa.Name(server.ModLoader))
-		p.adoptServerPackVersion(ctx, server, spec)
+		if err := p.adoptServerPackVersion(ctx, server, spec); err != nil {
+			return nil, err
+		}
 		return p.finishLaunch(server, spec, server.ModLoader, "", server.McVersion)
 	}
 	return nil, fmt.Errorf(
@@ -400,7 +402,10 @@ func (p *Provisioner) install(ctx context.Context, server *v1.Server, cfg *v1.Se
 
 // Computes java requirement, writes launch spec, builds Result
 func (p *Provisioner) finishLaunch(server *v1.Server, spec *v1.LaunchSpec, loader v1.ModLoader, loaderVersion, mcVersion string) (*Result, error) {
-	javaMajor := docker.RequiredJavaMajor(mcVersion)
+	javaMajor, err := docker.RequiredJavaMajor(mcVersion)
+	if err != nil {
+		return nil, err
+	}
 	spec.Version = 1
 	spec.Loader = loader
 	spec.McVersion = mcVersion
@@ -497,7 +502,10 @@ func (p *Provisioner) userModChoices(ctx context.Context, serverID string) map[s
 }
 
 func (p *Provisioner) runInstallerContainer(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, cmd []string) error {
-	javaMajor := docker.RequiredJavaMajor(server.McVersion)
+	javaMajor, err := docker.RequiredJavaMajor(server.McVersion)
+	if err != nil {
+		return err
+	}
 	image := p.docker.RuntimeImage(javaMajor)
 
 	uid := 1000

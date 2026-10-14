@@ -66,7 +66,9 @@ func (r *Runner) probeImage(ctx context.Context, st *runState) (string, error) {
 		var candidates []string
 		if servers, err := r.store.ListServers(ctx); err == nil {
 			for _, s := range servers {
-				candidates = append(candidates, r.docker.DesiredImage(s))
+				if ref, err := r.docker.DesiredImage(s); err == nil {
+					candidates = append(candidates, ref)
+				}
 			}
 		}
 		for i := len(docker.SupportedJavaVersions) - 1; i >= 0; i-- {

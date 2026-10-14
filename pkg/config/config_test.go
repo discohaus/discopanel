@@ -233,3 +233,27 @@ func TestLoadMemoryLimit(t *testing.T) {
 		t.Fatal("invalid memory limit must fail to load")
 	}
 }
+
+// Keys without defaults must still load from the environment
+func TestEnvOnlyKeysLoad(t *testing.T) {
+	t.Setenv("DISCOPANEL_PROXY_TRUSTED_EDGE", "true")
+	t.Setenv("DISCOPANEL_PROXY_INGRESS_PROXY_PROTOCOL", "true")
+	t.Setenv("DISCOPANEL_PROXY_TRUSTED_PROXIES", "10.0.0.0/8,192.168.0.0/16")
+	t.Setenv("DISCOPANEL_MINECRAFT_GLOBAL_CONFIG", `{"motd":"hello"}`)
+	cfg, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.Proxy.TrustedEdge {
+		t.Error("proxy.trusted_edge must load from env")
+	}
+	if !cfg.Proxy.IngressProxyProtocol {
+		t.Error("proxy.ingress_proxy_protocol must load from env")
+	}
+	if want := []string{"10.0.0.0/8", "192.168.0.0/16"}; !reflect.DeepEqual(cfg.Proxy.TrustedProxies, want) {
+		t.Errorf("proxy.trusted_proxies = %v, want %v", cfg.Proxy.TrustedProxies, want)
+	}
+	if got := cfg.Minecraft.GlobalConfig["motd"]; got != "hello" {
+		t.Errorf("minecraft.global_config motd = %v, want hello", got)
+	}
+}

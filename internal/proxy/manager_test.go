@@ -405,3 +405,46 @@ func TestSyncListenersPortMove(t *testing.T) {
 		t.Fatal("listener id must follow the port")
 	}
 }
+
+// Occupied ports surface as bind errors instead of silent success
+func TestSyncListenersReportsBindFailure(t *testing.T) {
+	m, store := testManager(t)
+	ctx := context.Background()
+	mustSync(t, m)
+
+	port := freePort(t)
+	blocker, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+	if err != nil {
+		t.Fatalf("blocker listen failed %v", err)
+	}
+	defer blocker.Close()
+	row := &v1.ProxyListener{Id: "busy", Name: "Busy", Port: int32(port), Enabled: true}
+	if err := store.CreateProxyListener(ctx, row); err != nil {
+		t.Fatalf("create listener failed %v", err)
+	}
+	mustSync(t, m)
+	if m.BindError(port) == nil {
+		t.Fatal("occupied port must report a bind error")
+	}
+	if lockedTCPSock(m, port) != nil {
+		t.Fatal("unbound port must own no socket")
+	}
+
+	blocker.Close()
+	mustSync(t, m)
+	if err := m.BindError(port); err != nil {
+		t.Fatalf("freed port must bind, got %v", err)
+	}
+	if sock := lockedTCPSock(m, port); sock == nil || !sock.IsRunning() {
+		t.Fatal("freed port must get its socket")
+	}
+
+	row.Enabled = false
+	if err := store.UpdateProxyListener(ctx, row); err != nil {
+		t.Fatalf("disable failed %v", err)
+	}
+	mustSync(t, m)
+	if m.BindError(port) != nil {
+		t.Fatal("disabled listener must not keep a bind error")
+	}
+}

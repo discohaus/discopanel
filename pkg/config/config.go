@@ -222,6 +222,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetEnvPrefix("DISCOPANEL")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
+	bindEnvKeys(v, reflect.TypeOf(Config{}), "")
 
 	// Read config file
 	if err := v.ReadInConfig(); err != nil {
@@ -480,6 +481,26 @@ func jsonStringToMapHook() mapstructure.DecodeHookFuncType {
 			return data, nil
 		}
 		return m, nil
+	}
+}
+
+// Binds every mapstructure key so env only settings reach Unmarshal
+func bindEnvKeys(v *viper.Viper, t reflect.Type, prefix string) {
+	for field := range t.Fields() {
+		field := field
+		tag := field.Tag.Get("mapstructure")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		key, _, _ := strings.Cut(tag, ",")
+		if prefix != "" {
+			key = prefix + "." + key
+		}
+		if field.Type.Kind() == reflect.Struct {
+			bindEnvKeys(v, field.Type, key)
+			continue
+		}
+		_ = v.BindEnv(key)
 	}
 }
 

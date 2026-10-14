@@ -343,7 +343,10 @@ func ApplyOverrides(overrides *v1.DockerOverrides, config *container.Config, hos
 
 // Creates server container and reports setup progress via callback
 func (c *Client) CreateContainer(ctx context.Context, server *v1.Server, serverConfig *v1.ServerProperties, progress func(string)) (string, error) {
-	imageName := c.DesiredImage(server)
+	imageName, err := c.DesiredImage(server)
+	if err != nil {
+		return "", err
+	}
 
 	if err := c.ensureImage(ctx, imageName, progress); err != nil {
 		return "", err

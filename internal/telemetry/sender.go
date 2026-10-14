@@ -253,7 +253,9 @@ func (s *Sender) Facts(ctx context.Context) (Facts, error) {
 	}
 	images := make([]string, 0, len(servers))
 	for _, server := range servers {
-		images = append(images, s.docker.DesiredImage(server))
+		if ref, err := s.docker.DesiredImage(server); err == nil {
+			images = append(images, ref)
+		}
 	}
 	report, _ := s.diag.Last()
 	return Facts{

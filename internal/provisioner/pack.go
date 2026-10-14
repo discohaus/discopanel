@@ -349,7 +349,9 @@ func resolveZipPayload(p *Provisioner, ctx context.Context, server *v1.Server, c
 // Provisions the runtime, declared loader first then disk evidence
 func (p *Provisioner) installPackRuntime(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, ev packEvidence) (*Result, error) {
 	// Pack MC evidence beats the configured guess from here on
-	p.adoptMCVersion(ctx, server, ev.mcVersion)
+	if err := p.adoptMCVersion(ctx, server, ev.mcVersion); err != nil {
+		return nil, err
+	}
 
 	// Declared loader installs natively when supported
 	if ev.loader != v1.ModLoader_MOD_LOADER_UNSPECIFIED {
@@ -367,7 +369,9 @@ func (p *Provisioner) installPackRuntime(ctx context.Context, server *v1.Server,
 
 	// Pack may ship its runtime ready to launch
 	if spec := detectPackLaunch(server.DataPath, server.ModLoader); spec != nil {
-		p.adoptServerPackVersion(ctx, server, spec)
+		if err := p.adoptServerPackVersion(ctx, server, spec); err != nil {
+			return nil, err
+		}
 		return p.finishLaunch(server, spec, server.ModLoader, ev.loaderVersion, server.McVersion)
 	}
 
@@ -379,7 +383,9 @@ func (p *Provisioner) installPackRuntime(ctx context.Context, server *v1.Server,
 			return nil, fmt.Errorf("bundled installer failed: %w", err)
 		}
 		if spec := detectPackLaunch(server.DataPath, server.ModLoader); spec != nil {
-			p.adoptServerPackVersion(ctx, server, spec)
+			if err := p.adoptServerPackVersion(ctx, server, spec); err != nil {
+				return nil, err
+			}
 			return p.finishLaunch(server, spec, server.ModLoader, ev.loaderVersion, server.McVersion)
 		}
 	}
@@ -387,7 +393,9 @@ func (p *Provisioner) installPackRuntime(ctx context.Context, server *v1.Server,
 	// Start scripts and vars files often pin a loader
 	if sev := scriptPackEvidence(server.DataPath, server.McVersion); sev.loader != v1.ModLoader_MOD_LOADER_UNSPECIFIED {
 		if _, ok := packLoaderInstallers[sev.loader]; ok {
-			p.adoptMCVersion(ctx, server, sev.mcVersion)
+			if err := p.adoptMCVersion(ctx, server, sev.mcVersion); err != nil {
+				return nil, err
+			}
 			p.progress(server, "pack scripts pin %s %s, installing...", protometa.Name(sev.loader), sev.loaderVersion)
 			return p.installLoaderForPack(ctx, server, cfg, sev.loader, sev.loaderVersion)
 		}
@@ -603,16 +611,20 @@ func (p *Provisioner) extractZipFiltered(reader *zip.ReadCloser, prefix, destDir
 }
 
 // Adopts launch spec MC evidence over the user guess
-func (p *Provisioner) adoptServerPackVersion(ctx context.Context, server *v1.Server, spec *v1.LaunchSpec) {
-	p.adoptMCVersion(ctx, server, serverPackMCVersion(server.DataPath, spec))
+func (p *Provisioner) adoptServerPackVersion(ctx context.Context, server *v1.Server, spec *v1.LaunchSpec) error {
+	return p.adoptMCVersion(ctx, server, serverPackMCVersion(server.DataPath, spec))
 }
 
 // Persists an evidenced MC version onto the server
-func (p *Provisioner) adoptMCVersion(ctx context.Context, server *v1.Server, evidence string) {
+func (p *Provisioner) adoptMCVersion(ctx context.Context, server *v1.Server, evidence string) error {
 	if evidence == "" || evidence == server.McVersion {
-		return
+		return nil
 	}
-	javaVersion := int32(docker.RequiredJavaMajor(evidence))
+	javaMajor, err := docker.RequiredJavaMajor(evidence)
+	if err != nil {
+		return err
+	}
+	javaVersion := int32(javaMajor)
 	p.action(ctx, server, "provisioner", v1.ServerActionKind_SERVER_ACTION_KIND_PROVISION_MC_VERSION,
 		metrics.Attrs{"from": server.McVersion, "to": evidence},
 		"pack ships MC %s, replacing configured %s", evidence, server.McVersion)
@@ -626,6 +638,7 @@ func (p *Provisioner) adoptMCVersion(ctx context.Context, server *v1.Server, evi
 	}
 	server.McVersion = evidence
 	server.JavaVersion = javaVersion
+	return nil
 }
 
 // Local MC version evidence inside an extracted server pack

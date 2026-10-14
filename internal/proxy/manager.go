@@ -26,6 +26,7 @@ type Manager struct {
 	tcpSockets  map[int]*ListenerSocket
 	udpSockets  map[int]*UDPProxy
 	listenerIDs map[int]string
+	bindErrors  map[int]error // Last reconcile's failed socket binds by port
 	statsBase   map[string]*v1.ProxyRoute
 	statsLast   map[string]*v1.ProxyRoute
 	store       *db.Store
@@ -117,6 +118,7 @@ func NewManager(store *db.Store, dockerClient *docker.Client, cfg *config.Config
 		tcpSockets:    make(map[int]*ListenerSocket),
 		udpSockets:    make(map[int]*UDPProxy),
 		listenerIDs:   make(map[int]string),
+		bindErrors:    make(map[int]error),
 		statsBase:     make(map[string]*v1.ProxyRoute),
 		statsLast:     make(map[string]*v1.ProxyRoute),
 		store:         store,
@@ -402,6 +404,13 @@ func (m *Manager) ensurePanelSocketLocked() error {
 }
 
 // Reports the runtime proxy toggle
+// Why the last reconcile left a port without a socket
+func (m *Manager) BindError(port int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.bindErrors[port]
+}
+
 func (m *Manager) Enabled() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -626,6 +635,11 @@ func (m *Manager) syncListenersLocked(ctx context.Context) error {
 
 	// Sockets for removed or disabled listeners stop first
 	m.reapSocketsLocked(func(port int) bool { return desired[port] != nil })
+	for port := range m.bindErrors {
+		if desired[port] == nil {
+			delete(m.bindErrors, port)
+		}
+	}
 
 	// Missing or updated sockets start, running matching ones stay untouched
 	for port, listener := range desired {
@@ -647,9 +661,11 @@ func (m *Manager) syncListenersLocked(ctx context.Context) error {
 		if !ok {
 			sock = m.newSocketForListenerLocked(fmt.Sprintf(":%d", port), listener)
 			if err := sock.Start(); err != nil {
+				m.bindErrors[port] = err
 				m.logger.Error("Failed to start listener %s on port %d: %v", listener.Name, port, err)
 				continue
 			}
+			delete(m.bindErrors, port)
 			m.tcpSockets[port] = sock
 			m.logger.Info("Started listener %s on port %d", listener.Name, port)
 		}
@@ -694,6 +710,7 @@ func (m *Manager) syncListenersLocked(ctx context.Context) error {
 
 // Disabled proxy keeps only the panel socket serving itself
 func (m *Manager) syncDisabledLocked(ctx context.Context) error {
+	clear(m.bindErrors)
 	panelPort := m.panelWebPort()
 	m.reapSocketsLocked(func(port int) bool { return port == panelPort })
 	if sock := m.tcpSockets[panelPort]; sock != nil {

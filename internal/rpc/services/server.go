@@ -484,6 +484,15 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 		dockerImage = ""
 	}
 
+	// Mojang metadata decides the Java major, never a guess
+	javaVersion, err := docker.RequiredJavaMajor(msg.McVersion)
+	if err != nil {
+		if errors.Is(err, minecraft.ErrVersionUnknown) {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		return nil, connect.NewError(connect.CodeUnavailable, err)
+	}
+
 	if err := s.allocateAdditionalPorts(ctx, msg.AdditionalPorts); err != nil {
 		return nil, connect.NewError(connect.CodeResourceExhausted, err)
 	}
@@ -531,7 +540,7 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 		MemoryMin:       msg.MemoryMin,
 		MemoryMax:       msg.MemoryMax,
 		DataPath:        serverDataPath,
-		JavaVersion:     docker.GetRequiredJavaVersion(msg.McVersion, modLoader),
+		JavaVersion:     int32(javaVersion),
 		DockerImage:     dockerImage,
 		AutoStart:       msg.AutoStart,
 		Detached:        msg.Detached,

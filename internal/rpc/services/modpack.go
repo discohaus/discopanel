@@ -288,9 +288,21 @@ func (s *ModpackService) SyncModpacks(ctx context.Context, req *connect.Request[
 
 		// Computed fields
 		modpack.McVersion = mcVersion
-		modpack.JavaVersion = int32(docker.RequiredJavaMajor(mcVersion))
-		modpack.DockerImage = docker.OptimalRuntimeTag(mcVersion)
+		modpack.JavaVersion = 0
+		modpack.DockerImage = ""
 		modpack.RecommendedRam = 6144 // 6GB for modpacks
+		if mcVersion != "" {
+			major, err := docker.RequiredJavaMajor(mcVersion)
+			switch {
+			case err == nil:
+				modpack.JavaVersion = int32(major)
+				modpack.DockerImage = docker.RuntimeImageTag(major)
+			case errors.Is(err, minecraft.ErrVersionUnknown):
+				// Names absent from the manifest carry no Java requirement
+			default:
+				return nil, connect.NewError(connect.CodeUnavailable, err)
+			}
+		}
 
 		if err := s.store.UpsertIndexedModpack(ctx, modpack); err != nil {
 			s.log.Error("Failed to store modpack %s: %v", modpack.Id, err)
@@ -357,9 +369,17 @@ func (s *ModpackService) ImportUploadedModpack(ctx context.Context, req *connect
 	// Generate ID for the uploaded modpack
 	modpackID = uuid.New().String()
 
-	name := inspection.Name
+	// Caller supplied name and description win over archive metadata
+	name := strings.TrimSpace(msg.Name)
+	if name == "" {
+		name = inspection.Name
+	}
 	if name == "" {
 		name = strings.TrimSuffix(originalFilename, filepath.Ext(originalFilename))
+	}
+	description := strings.TrimSpace(msg.Description)
+	if description == "" {
+		description = inspection.Summary
 	}
 
 	loaderName := inspection.LoaderID
@@ -386,8 +406,17 @@ func (s *ModpackService) ImportUploadedModpack(ctx context.Context, req *connect
 	javaVersion := 0
 	dockerImage := ""
 	if inspection.McVersion != "" {
-		javaVersion = docker.RequiredJavaMajor(inspection.McVersion)
-		dockerImage = docker.OptimalRuntimeTag(inspection.McVersion)
+		major, err := docker.RequiredJavaMajor(inspection.McVersion)
+		switch {
+		case err == nil:
+			javaVersion = major
+			dockerImage = docker.RuntimeImageTag(major)
+		case errors.Is(err, minecraft.ErrVersionUnknown):
+			// Names absent from the manifest carry no Java requirement
+		default:
+			cleanupOnError()
+			return nil, connect.NewError(connect.CodeUnavailable, err)
+		}
 	}
 
 	dbModpack := &v1.IndexedModpack{
@@ -397,7 +426,7 @@ func (s *ModpackService) ImportUploadedModpack(ctx context.Context, req *connect
 		Name:           name,
 		Slug:           strings.ToLower(strings.ReplaceAll(name, " ", "-")),
 		Summary:        summary,
-		Description:    inspection.Summary,
+		Description:    description,
 		LogoUrl:        "", // No logo for manual uploads
 		WebsiteUrl:     "",
 		DownloadCount:  0,
@@ -466,9 +495,14 @@ func (s *ModpackService) ImportUploadedModpack(ctx context.Context, req *connect
 		ServerPackFileId: nil,
 	}
 
+	// Archive row failure must fail the import too
 	if err := s.store.UpsertIndexedModpackFile(ctx, dbFile); err != nil {
 		s.log.Error("Failed to store modpack file entry: %v", err)
-		// Don't fail the upload, just log the error
+		if rerr := os.Remove(destPath); rerr != nil && !os.IsNotExist(rerr) {
+			s.log.Error("Failed to remove stored modpack file %s: %v", destPath, rerr)
+		}
+		cleanupOnError()
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to store modpack file entry"))
 	}
 
 	s.log.Info("Successfully imported uploaded %s modpack '%s' (id: %s) from session %s", inspection.Format, name, modpackID, msg.UploadSessionId)

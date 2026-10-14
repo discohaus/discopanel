@@ -52,7 +52,7 @@ func (s *AuthService) GetAuthStatus(ctx context.Context, req *connect.Request[v1
 	userCount, err := s.store.CountUsers(ctx)
 	if err != nil {
 		s.log.Error("Failed to count users: %v", err)
-		userCount = 0
+		return nil, connect.NewError(connect.CodeInternal, errors.New("user store unavailable"))
 	}
 
 	oidcEnabled := s.oidcHandler != nil && s.oidcHandler.IsEnabled()
@@ -118,14 +118,18 @@ func (s *AuthService) Register(ctx context.Context, req *connect.Request[v1.Regi
 	s.registerMu.Lock()
 	defer s.registerMu.Unlock()
 
-	userCount, _ := s.store.CountUsers(ctx)
+	// Failed counts never pass as an empty user table
+	userCount, err := s.store.CountUsers(ctx)
+	if err != nil {
+		s.log.Error("Failed to count users: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("user store unavailable"))
+	}
 	isFirstUser := userCount == 0
 
 	var invite *v1.RegistrationInvite
 
 	if msg.InviteCode != nil && *msg.InviteCode != "" {
 		// Validate invite
-		var err error
 		invite, err = s.store.GetRegistrationInviteByCode(ctx, *msg.InviteCode)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("invalid invite code"))
@@ -289,7 +293,7 @@ func (s *AuthService) GetAuthConfig(ctx context.Context, req *connect.Request[v1
 	userCount, err := s.store.CountUsers(ctx)
 	if err != nil {
 		s.log.Error("Failed to count users: %v", err)
-		userCount = 0
+		return nil, connect.NewError(connect.CodeInternal, errors.New("user store unavailable"))
 	}
 
 	resp := &v1.GetAuthConfigResponse{
