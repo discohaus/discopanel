@@ -40,9 +40,9 @@ Extract the archive and run it:
 All config options can also be set via environment variables with the `DISCOPANEL_` prefix. For example, `server.port` becomes `DISCOPANEL_SERVER_PORT`. Environment variables take precedence over the config file.
 
 :::tip[Host path mapping]
-When running the binary directly on a host (not in a Docker container), do **not** set `DISCOPANEL_DATA_DIR` or `DISCOPANEL_HOST_DATA_PATH` - those are only for container path translation.
+When running the binary directly on a host (not in a Docker container), do **not** set `DISCOPANEL_HOST_DATA_PATH` - it only tells a containerised panel where its data directory lives on the Docker host.
 
-To change where DiscoPanel stores its database and server data, set `DISCOPANEL_STORAGE_DATA_DIR` or configure it in your config file:
+To change where DiscoPanel stores its database and server data, set `DISCOPANEL_DATA_DIR` (or its long form `DISCOPANEL_STORAGE_DATA_DIR`) or configure it in your config file:
 
 ```yaml
 storage:

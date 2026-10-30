@@ -222,7 +222,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetEnvPrefix("DISCOPANEL")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
-	bindEnvKeys(v, reflect.TypeOf(Config{}), "")
+	bindEnvKeys(v, reflect.TypeFor[Config](), "")
+	_ = v.BindEnv("storage.data_dir", "DISCOPANEL_STORAGE_DATA_DIR", "DISCOPANEL_DATA_DIR")
 
 	// Read config file
 	if err := v.ReadInConfig(); err != nil {

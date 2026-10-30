@@ -27,7 +27,7 @@ Public image contracts:
 
 ## Toolchain
 
-- Go 1.25+
+- Go 1.26+
 - Node.js 22+
 - Docker for [buf](https://buf.build/), Atlas, and container tests
 - Make

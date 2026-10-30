@@ -36,7 +36,7 @@ The folder button next to the field browses the server's files and appends whate
 Paths that don't exist yet (for example, a dimension that hasn't generated) are skipped and noted in the task output rather than failing the backup.
 
 <Aside type="note">
-If the server is running, DiscoPanel pauses world saving (`save-off`), flushes pending writes to disk (`save-all flush`), creates the archive, and then re-enables saving (`save-on`) - so the backup is consistent and your server keeps running. Servers that are offline can be backed up too. Just disable **Require Server Online** in the task's Advanced section.
+If the server is running, DiscoPanel pauses world saving (`save-off`), flushes pending writes to disk (`save-all flush`), creates the archive, and then re-enables saving (`save-on`) - so the backup is consistent and your server keeps running. Servers that are offline can be backed up too. Just disable **Require server online** in the task's Advanced section.
 </Aside>
 
 ## Backup options
@@ -75,11 +75,10 @@ Keep your backup directory on different storage than your server data if you can
 
 ## Restoring a backup
 
-1. **Stop the server.**
-2. Locate the backup `.zip` in your backup directory on the host.
-3. In the server's **Files** tab, delete (or rename) the world folder(s) you're restoring, then upload the backup archive and extract it. Alternatively, extract it directly into the server's data directory on the host.
-4. Start the server.
+1. Stop the server. The restore button stays disabled while it runs.
+2. Open the server's **Files** tab and expand **World backups** at the bottom. Every archive in the server's backup directory is listed with its size and age.
+3. Click **Restore** on the archive you want and confirm.
 
-<Aside type="note">
-Backups created with default settings contain the world folder(s) at the archive root, so extracting into the server directory puts everything back where it belongs.
-</Aside>
+Before the archive is unpacked, the current world folders are zipped to `pre-restore_<timestamp>.zip` in the same backup directory, so a restore can itself be undone by restoring that snapshot.
+
+Only archives in the server's backup directory are listed. To restore one kept elsewhere, copy it there first.

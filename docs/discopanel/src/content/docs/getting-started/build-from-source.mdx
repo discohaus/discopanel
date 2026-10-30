@@ -7,7 +7,7 @@ description: Build DiscoPanel from source code.
 
 DiscoPanel manages Minecraft servers as Docker containers, so Docker is required both at build time and runtime.
 
-- **Go** 1.25+
+- **Go** 1.26+
 - **Node.js** 22+
 - **Docker** (also used to run [buf](https://buf.build/) for protobuf code generation)
 - **Make**
@@ -46,9 +46,9 @@ All config options can also be set via environment variables with the `DISCOPANE
 Building to hack on DiscoPanel rather than just run it? The [Contributing](/contributing/) page covers the development workflow - live-reload dev servers, the protobuf pipeline, and tests.
 
 :::tip[Host path mapping]
-When running the binary directly on a host (not in a Docker container), do **not** set `DISCOPANEL_DATA_DIR` or `DISCOPANEL_HOST_DATA_PATH` - those are only for container path translation.
+When running the binary directly on a host (not in a Docker container), do **not** set `DISCOPANEL_HOST_DATA_PATH` - it only tells a containerised panel where its data directory lives on the Docker host.
 
-To change where DiscoPanel stores its database and server data, set `DISCOPANEL_STORAGE_DATA_DIR` or configure it in your config file:
+To change where DiscoPanel stores its database and server data, set `DISCOPANEL_DATA_DIR` (or its long form `DISCOPANEL_STORAGE_DATA_DIR`) or configure it in your config file:
 
 ```yaml
 storage:

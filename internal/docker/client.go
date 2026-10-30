@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/containerd/errdefs"
@@ -61,22 +62,34 @@ type ContainerStats struct {
 	MemoryLimit float64 `json:"memory_limit"` // In MB
 }
 
-// Converts a container-internal path to a host path
+// Converts a panel data path to the path the docker host sees
 func TranslateToHostPath(path string) string {
 	hostDataPath := os.Getenv("DISCOPANEL_HOST_DATA_PATH")
 	if hostDataPath == "" {
 		return path
 	}
-	containerDataDir := os.Getenv("DISCOPANEL_DATA_DIR")
-	if containerDataDir == "" {
-		containerDataDir = "/app/data"
-	}
-	relPath, err := filepath.Rel(containerDataDir, path)
+	relPath, err := filepath.Rel(panelDataDir(), path)
 	if err != nil || strings.HasPrefix(relPath, "..") {
-		// Path is not under the container data dir, return as-is
+		// Path is not under the panel data dir, return as-is
 		return path
 	}
 	return filepath.Join(hostDataPath, relPath)
+}
+
+// Data dir recorded by NewClient, empty until the client exists
+var configuredDataDir atomic.Pointer[string]
+
+// Data dir the panel writes, same env keys config.Load reads
+func panelDataDir() string {
+	if dir := configuredDataDir.Load(); dir != nil && *dir != "" {
+		return *dir
+	}
+	for _, key := range []string{"DISCOPANEL_STORAGE_DATA_DIR", "DISCOPANEL_DATA_DIR"} {
+		if dir := os.Getenv(key); dir != "" {
+			return dir
+		}
+	}
+	return "/app/data"
 }
 
 // Reports panel-side health for running containers
@@ -88,6 +101,7 @@ type ClientConfig struct {
 	APIVersion   string
 	NetworkName  string
 	RuntimeImage string
+	DataDir      string
 	DNS          string
 	Labels       map[string]string
 	LogDriver    string
@@ -136,6 +150,9 @@ func NewClient(host string, log *logger.Logger, config ...ClientConfig) (*Client
 	c := &Client{docker: docker, log: log, imageRefreshed: make(map[string]time.Time)}
 	if len(config) > 0 {
 		c.config = config[0]
+		if dir := config[0].DataDir; dir != "" {
+			configuredDataDir.Store(&dir)
+		}
 	} else {
 		// Set defaults
 		c.config = ClientConfig{

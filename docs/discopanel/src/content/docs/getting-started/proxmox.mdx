@@ -29,7 +29,7 @@ The interactive wizard lets you adjust the default container resources. Set thes
 
 ## Paths
 
-Since DiscoPanel runs directly on the host here (not inside a Docker container), file paths are straightforward - `DISCOPANEL_DATA_DIR` and `DISCOPANEL_HOST_DATA_PATH` should be the same value. The default `./data` relative to `/opt/discopanel` works out of the box.
+Since DiscoPanel runs directly on the host here (not inside a Docker container), file paths are straightforward - leave `DISCOPANEL_HOST_DATA_PATH` unset. The default data directory, `/opt/discopanel/data`, works out of the box; `DISCOPANEL_DATA_DIR` moves it.
 
 Once complete, DiscoPanel is accessible at **http://\<container-ip\>:8080**.
 

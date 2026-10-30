@@ -111,6 +111,7 @@ func main() {
 		APIVersion:   cfg.Docker.Version,
 		NetworkName:  cfg.Docker.NetworkName,
 		RuntimeImage: cfg.Docker.RuntimeImage,
+		DataDir:      cfg.Storage.DataDir,
 		DNS:          cfg.Docker.DNS,
 		Labels:       cfg.Docker.Labels,
 		LogDriver:    cfg.Docker.LogDriver,

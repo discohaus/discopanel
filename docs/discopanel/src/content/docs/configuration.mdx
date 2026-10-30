@@ -52,7 +52,7 @@ Most installs only ever touch a few of these:
 | `diagnostics` | Startup checks and release check. |
 | `telemetry` | Hourly hub heartbeat. See [Hub](#hub). |
 | `support` | Support service origin. See [Hub](#hub). |
-| `index` | Upstream cache, disabled by default. |
+| `index` | Upstream cache, enabled by default. |
 
 ## Hub
 
@@ -62,7 +62,7 @@ Most installs only ever touch a few of these:
 | `diagnostics.version_check` | `true` | `DISCOPANEL_DIAGNOSTICS_VERSION_CHECK` | New release alert. |
 | `telemetry.enabled` | `true` | `DISCOPANEL_TELEMETRY_ENABLED` | `false`: heartbeat locked off. `true`: UI toggle controls heartbeat. |
 | `support.base_url` | `https://support.discohaus.app` | `SUPPORT_BASE_URL` takes precedence over `DISCOPANEL_SUPPORT_BASE_URL` | Bundle uploads, heartbeat, and port reachability relay. |
-| `index.enabled` | `false` | `DISCOPANEL_INDEX_ENABLED` | `false`: direct requests to Modrinth, CurseForge, Mojang, Fabric, Quilt, Paper, Purpur, Forge, NeoForge, and FTB. CurseForge packs require an API key. `true`: requests through `index.base_url`. |
+| `index.enabled` | `true` | `DISCOPANEL_INDEX_ENABLED` | `false`: direct requests to Modrinth, CurseForge, Mojang, Fabric, Quilt, Paper, Purpur, Forge, NeoForge, and FTB. CurseForge packs require an API key. `true`: requests through `index.base_url`. |
 | `index.base_url` | `https://index.discohaus.app` | `DISCOHAUS_INDEX_BASE_URL` takes precedence over `DISCOPANEL_INDEX_BASE_URL` and enables the index | Index origin. |
 
 | Heartbeat | Details |

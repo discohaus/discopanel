@@ -7,8 +7,8 @@ The upgrade is automatic. Stop the panel, swap the binary or image for the v3 on
 
 Three things to know before you do it:
 
-1. **Be on v2.0.15 first.** The migration starts from there. Coming from anything older, boot v2.0.15 once so its own migrations run, then move to v3. Older databases are refused with a message saying exactly this.
-2. **A backup is taken automatically.** Before anything changes, your database is copied to `discopanel.db.pre-migrate.bak` next to the original and left there. To roll back: stop the panel, copy the backup over `discopanel.db`, and run your v2 binary again.
+1. **Any v2 database works.** A database older than v2.0.15 is first brought up to the v2.0.15 schema, then migrated like any other. You do not need to run an intermediate version.
+2. **A backup is taken automatically.** Before anything changes, your database is copied to `discopanel.db.pre-migrate.<timestamp>.bak` next to the original and left there. To roll back: stop the panel, copy the backup over `discopanel.db`, and run your v2 binary again.
 3. **The first start of each server takes longer.** v3 runs servers on its own runtime image, so each server reinstalls its server software on first start. Your world is zipped into the backup directory first (`pre-provision_<timestamp>.zip`), and worlds, configs, and mods you added are left in place.
 
 ## What carries over

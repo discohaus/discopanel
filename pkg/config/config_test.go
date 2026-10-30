@@ -257,3 +257,22 @@ func TestEnvOnlyKeysLoad(t *testing.T) {
 		t.Errorf("minecraft.global_config motd = %v, want hello", got)
 	}
 }
+
+func TestDataDirEnvAlias(t *testing.T) {
+	t.Setenv("DISCOPANEL_DATA_DIR", "/srv/alias")
+	cfg, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Storage.DataDir != "/srv/alias" {
+		t.Fatalf("DISCOPANEL_DATA_DIR should set storage.data_dir, got %s", cfg.Storage.DataDir)
+	}
+	t.Setenv("DISCOPANEL_STORAGE_DATA_DIR", "/srv/storage")
+	cfg, err = Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Storage.DataDir != "/srv/storage" {
+		t.Fatalf("DISCOPANEL_STORAGE_DATA_DIR should win over the alias, got %s", cfg.Storage.DataDir)
+	}
+}
