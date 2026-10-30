@@ -1,0 +1,36 @@
+---
+title: Auto-Pause & Auto-Stop
+description: Stop wasting resources on empty servers. Freeze them and wake on join, or shut them down.
+---
+
+Empty Minecraft servers burn CPU doing nothing. DiscoPanel can handle idle servers two ways. Both are per-server settings in the properties tab.
+
+## Auto-Stop
+
+Turn on **Enable Auto-Stop** and the server shuts down cleanly (world saved) after nobody has been online for a while. Two timers control it:
+
+- **Auto-Stop Timeout (Established)**: how long after the last player leaves. Default is one hour.
+- **Auto-Stop Timeout (Initial)**: how long after a start if nobody ever joins. Default is 30 minutes.
+
+A stopped server has to be started from the panel again. Joining doesn't start it.
+
+## Auto-Pause
+
+Auto-pause freezes the server instead of stopping it. A frozen server uses no CPU at all but keeps its memory, so waking it up takes under a second.
+
+The nice part is how waking works:
+
+- Refreshing the server list does **not** wake it. DiscoPanel answers the ping itself, so the server still shows up as online with a "sleeping, join to wake" message.
+- Actually joining wakes it. The player connects normally and usually doesn't notice a thing.
+
+Auto-pause needs the server to be behind the [DiscoPanel proxy](/guides/proxy/), because the proxy is what catches the join while the server is frozen. Servers with a directly exposed port should use Auto-Stop instead.
+
+The timers work like Auto-Stop's: **Auto-Pause Timeout (Established)** (default one hour after the last player leaves) and **Auto-Pause Timeout (Initial)** (default 10 minutes if nobody joins after a start).
+
+Sleeping servers show a blue **Sleeping** badge in the panel, and you can still stop them normally from the UI.
+
+:::caution
+A sleeping server does nothing at all. No autosaves, no scheduled in-game tasks, and farms don't run. That's the point, but keep it in mind.
+:::
+
+You can enable both. The server pauses first, and if nobody comes back it eventually stops completely.

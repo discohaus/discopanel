@@ -2,22 +2,31 @@ syntax = "proto3";
 
 package discopanel.v1;
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+import "discopanel/options/v1/options.proto";
+import "discopanel/v1/storage.proto";
+
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
 // Minecraft version and runtime information
 service MinecraftService {
   // List all Minecraft versions
-  rpc GetMinecraftVersions(GetMinecraftVersionsRequest) returns (GetMinecraftVersionsResponse);
+  rpc GetMinecraftVersions(GetMinecraftVersionsRequest) returns (GetMinecraftVersionsResponse) {
+    option (discopanel.options.v1.perm) = {session: true};
+  }
   // List supported mod loaders
-  rpc GetModLoaders(GetModLoadersRequest) returns (GetModLoadersResponse);
+  rpc GetModLoaders(GetModLoadersRequest) returns (GetModLoadersResponse) {
+    option (discopanel.options.v1.perm) = {session: true};
+  }
   // List available Docker images
-  rpc GetDockerImages(GetDockerImagesRequest) returns (GetDockerImagesResponse);
+  rpc GetDockerImages(GetDockerImagesRequest) returns (GetDockerImagesResponse) {
+    option (discopanel.options.v1.perm) = {session: true};
+  }
 }
 
 // Minecraft version metadata
 message MinecraftVersion {
   string id = 1;
-  string type = 2; // release, snapshot, old_beta, old_alpha
+  string type = 2; // Release, snapshot, old_beta, or old_alpha
   string release_time = 3;
   string url = 4;
 }
@@ -38,7 +47,12 @@ message ModLoaderInfo {
   string description = 3;
   bool supports_mods = 4;
   bool supports_plugins = 5;
-  string category = 6;
+  discopanel.options.v1.ModLoaderCategory category = 6;
+  // True when the provisioner installs this loader itself
+  bool provisionable = 7;
+  ModLoader loader = 8;
+  // Directory jars install into, mods or plugins, empty when none
+  string mods_directory = 9;
 }
 
 // Empty loaders request
@@ -63,60 +77,4 @@ message GetDockerImagesRequest {}
 // Docker image catalog
 message GetDockerImagesResponse {
   repeated DockerImage images = 1;
-}
-
-// SLP Handshake packet
-message SLPHandshake {
-  int32 protocol_version = 1;
-  string server_address = 2;
-  int32 server_port = 3;
-  int32 next_state = 4; // 1 = status, 2 = login
-}
-
-// Status Request empty payload, packet ID 0x00
-message SLPStatusRequest {}
-
-// Status Response packet ID 0x00, JSON payload
-message SLPStatusResponse {
-  string json_payload = 1;
-}
-
-// Ping packet ID 0x01, 8-byte timestamp
-message SLPPing {
-  int64 payload = 1;
-}
-
-// Pong packet ID 0x01, echoed payload
-message SLPPong {
-  int64 payload = 1;
-}
-
-// Complete status from SLP
-message SLPServerStatus {
-  SLPVersion version = 1;
-  SLPPlayers players = 2;
-  string description = 3; // Parsed MOTD text
-  optional string description_json = 4; // Raw JSON for rich formatting
-  optional string favicon = 5; // Base64 PNG (data:image/png;base64,...)
-  bool enforces_secure_chat = 6;
-  int64 latency_ms = 7;
-}
-
-// Server version information
-message SLPVersion {
-  string name = 1; // ie: "1.21.4"
-  int32 protocol = 2; // Protocol version number
-}
-
-// Player count and sample
-message SLPPlayers {
-  int32 max = 1;
-  int32 online = 2;
-  repeated SLPPlayerSample sample = 3;
-}
-
-// Individual player sample entry
-message SLPPlayerSample {
-  string name = 1;
-  string id = 2; // UUID
 }

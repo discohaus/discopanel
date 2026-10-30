@@ -1,0 +1,30 @@
+---
+title: Discord Bot
+description: Bridge in-game chat with Discord, announce what your servers are doing, and control them with slash commands.
+---
+
+import chip from '../../../../../../../identity/assets/bot/chip.svg';
+
+<img class="module-mark" src={chip.src} alt="" />
+
+The Discord Bot is a panel-wide module like Doctor: one bot for every server on the panel. Link a Discord channel to a server and chat flows both ways - players see Discord messages in game as `<name> text`, and Discord sees in-game chat posted under each player's name and head. The same channel can carry joins, leaves, deaths and advancements, server starts and stops, crashes with the crash report attached, and what Doctor did about them. A status board is a message the bot keeps edited with live player counts and TPS.
+
+## Setting it up
+
+1. Create an application at [discord.com/developers](https://discord.com/developers/applications), open its **Bot** page, and reset the token. Under **Privileged Gateway Intents** enable **Message Content Intent**, without it Discord never hands the bot the text to relay.
+2. Invite the bot to your server from **OAuth2 > URL Generator** with the `bot` and `applications.commands` scopes and the Send Messages, Embed Links, Attach Files, Read Message History and Manage Webhooks permissions.
+3. In DiscoPanel open **Modules**, click the settings icon on the **Discord Bot** card, paste the token under **Configuration**, and save. Setting the guild ID there makes slash commands appear immediately, otherwise Discord takes up to an hour to roll them out globally.
+4. Flip the **Enabled** switch. The card turns green once the bot is connected, and the module logs say why if it is not.
+
+## Using it
+
+In Discord, run `/link` in a channel to bind it to a server. Options pick which streams it carries: chat, player events, lifecycle and crash announcements, and the full console (off by default, it is noisy). `/unlink` removes the binding and `/links` lists every binding in the guild.
+
+`/board create` posts a status embed the bot keeps updated, for one server or all of them. `/servers`, `/status`, `/players` and `/health` answer on demand and `/say` speaks into the game. `/start`, `/stop`, `/restart`, `/cmd`, `/backups`, `/prompts` and `/answer` are hidden behind the Manage Server permission, which server admins can hand to other roles under **Server Settings > Integrations** in Discord.
+
+## Good to know
+
+- Player heads come from mc-heads.net and post through a webhook the bot creates in each linked channel. Turn **Player heads** off in the module settings to post plain messages instead, or if the bot cannot manage webhooks.
+- Turn **Presence** off to stop the bot showing the online player count as its Discord status.
+- Nothing is pinged by relayed text, `@everyone` typed in game stays plain.
+- Bindings live in the module's own data directory, so they survive panel and bot restarts.

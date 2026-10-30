@@ -1,34 +1,35 @@
 package handlers
 
 import (
-	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/nickheyer/discopanel/internal/auth"
-	"github.com/nickheyer/discopanel/internal/rbac"
-	"github.com/nickheyer/discopanel/pkg/logger"
-	"github.com/nickheyer/discopanel/pkg/upload"
+	"github.com/discohaus/discopanel/internal/auth"
+	"github.com/discohaus/discopanel/internal/rbac"
+	"github.com/discohaus/discopanel/pkg/logger"
+	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
+	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
+	"github.com/discohaus/discopanel/pkg/transfer"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
-type uploadStreamResponse struct {
-	SessionID     string `json:"session_id"`
-	BytesReceived int64  `json:"bytes_received"`
-	Completed     bool   `json:"completed"`
-	TempPath      string `json:"temp_path,omitempty"`
+// Writes an UploadChunkResponse as protojson
+func writeChunkResponse(w http.ResponseWriter, status int, resp *v1.UploadChunkResponse) {
+	data, err := protojson.Marshal(resp)
+	if err != nil {
+		http.Error(w, "encode failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(data)
 }
 
-// NewUploadStreamHandler creates an HTTP handler for streaming file uploads.
-//
-//	PUT /api/v1/upload/{sessionId}
-//	Headers:
-//	  Authorization: Bearer <token>
-//	  Content-Type: application/octet-stream
-//	  X-Upload-Offset: <byte offset for resume> (optional, default 0)
-//	Body: raw file bytes (or file slice for resume)
-func NewUploadStreamHandler(uploadManager *upload.Manager, authManager *auth.Manager, enforcer *rbac.Enforcer, log *logger.Logger) http.Handler {
+// Handles PUT upload streaming with bearer auth and resume offset
+func NewUploadStreamHandler(uploadManager *transfer.UploadManager, authManager *auth.Manager, enforcer *rbac.Enforcer, log *logger.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -49,13 +50,11 @@ func NewUploadStreamHandler(uploadManager *upload.Manager, authManager *auth.Man
 			return
 		}
 
-		// Check RBAC permission (uploads:create)
-		if enforcer != nil {
-			allowed, rbacErr := enforcer.Enforce(user.Roles, rbac.ResourceUploads, rbac.ActionCreate, "*")
-			if rbacErr != nil || !allowed {
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return
-			}
+		// Check RBAC uploads create permission
+		allowed, rbacErr := enforcer.Enforce(user.Roles, optionsv1.ResourceType_RESOURCE_TYPE_UPLOADS, optionsv1.ActionType_ACTION_TYPE_CREATE, "*")
+		if rbacErr != nil || !allowed {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
 		}
 
 		// Parse resume offset
@@ -81,30 +80,26 @@ func NewUploadStreamHandler(uploadManager *upload.Manager, authManager *auth.Man
 		bytesWritten, completed, err := uploadManager.WriteStream(sessionID, r.Body, offset)
 		if err != nil {
 			log.Error("Stream upload error for session %s: %v", sessionID, err)
-			resp := uploadStreamResponse{
-				SessionID:     sessionID,
-				BytesReceived: offset + bytesWritten,
-				Completed:     false,
+			status := http.StatusInternalServerError
+			switch {
+			case errors.Is(err, transfer.ErrSessionNotFound), errors.Is(err, transfer.ErrSessionExpired):
+				status = http.StatusNotFound
+			case errors.Is(err, transfer.ErrSessionCompleted):
+				status = http.StatusConflict
+			case errors.Is(err, transfer.ErrInvalidOffset), errors.Is(err, transfer.ErrFileTooLarge):
+				status = http.StatusBadRequest
 			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(resp)
+			writeChunkResponse(w, status, &v1.UploadChunkResponse{
+				SessionId:     sessionID,
+				BytesReceived: offset + bytesWritten,
+			})
 			return
 		}
 
-		resp := uploadStreamResponse{
-			SessionID:     sessionID,
+		writeChunkResponse(w, http.StatusOK, &v1.UploadChunkResponse{
+			SessionId:     sessionID,
 			BytesReceived: offset + bytesWritten,
 			Completed:     completed,
-		}
-
-		if completed {
-			if tempPath, _, tempErr := uploadManager.GetTempPath(sessionID); tempErr == nil {
-				resp.TempPath = tempPath
-			}
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		})
 	})
 }

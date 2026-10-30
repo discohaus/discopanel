@@ -1,0 +1,35 @@
+---
+title: The Lobby
+description: A tiny hub world hosted by the panel itself - walk through a portal to pick your server.
+---
+
+The lobby is a small hub world that DiscoPanel hosts itself - no container, no extra server, no mods. Players who join through the proxy on an address that doesn't match any server land on a little plaza with a portal gate for every server on the panel. Walk through a gate to join that server.
+
+Each gate has a sign with the server's name, its player count, and its state, and a beacon beam that tells you the same thing from across the plaza:
+
+- **Portal lit, blue beam** - running, walk through to join.
+- **Purple** - asleep. Walk in and the panel starts it; you wait on the plaza and hop over when it's ready.
+- **Magenta** - starting right now.
+- **Orange** - runs a different Minecraft version than yours. The sign says which.
+- **Gray** - offline, and joining won't start it. Ask whoever runs the panel.
+
+You can also type in chat: a server's name or its number joins it, and `menu` reprints the list. Everyone in the lobby sees each other and can chat while they wait.
+
+## Turning it on
+
+The lobby is off by default. Enable it in **Settings > Network** under **The lobby**. Two related settings live next to it:
+
+- **Verified accounts** (on by default) - lobby visitors must be signed in to a real Minecraft account, same as an online-mode server. Turn it off only if your servers run in offline mode.
+- **Catch all** on a server's Network tab - sends unmatched addresses to that server instead of the lobby. A catch-all wins over the lobby.
+
+While the panel has exactly one proxied server, unknown addresses skip the lobby and go straight to that server - a lobby with one door isn't worth the stop.
+
+## Waiting rooms
+
+The lobby doubles as the waiting room for servers that start on demand. When someone joins a stopped server that has **Wake on Connect** enabled, or one that's still booting, they wait on the plaza instead of staring at a disconnect screen, and get moved over automatically the moment the server answers.
+
+## What players need
+
+- **Minecraft 1.16.4 or newer** (Java Edition) to enter the lobby at all. Older clients get a kick screen saying so.
+- On **1.20.5 or newer**, hopping through a gate is seamless - the game reconnects itself. Older versions get a "your world is ready, join again" message instead, and their next join lands on the right server.
+- Vanilla and lightly modded clients are fine. Clients whose mod loader insists on a matching server (NeoForge packs, for example) can't stand in a vanilla lobby - they get a screen listing every server's direct address so they can connect straight in.

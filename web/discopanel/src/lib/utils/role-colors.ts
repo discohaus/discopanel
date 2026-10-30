@@ -1,12 +1,9 @@
-/** Badge variant type matching the UI component's expected variants. */
+// Badge variant type the UI component expects
 type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'outline';
 
 const BADGE_VARIANTS: BadgeVariant[] = ['default', 'secondary', 'destructive', 'outline'];
 
-/**
- * Deterministically maps a role name to a badge variant using a simple hash.
- * Works for any dynamic role name without hardcoding specific names.
- */
+// Hashes any role name onto a badge variant
 export function getRoleBadgeVariant(roleName: string): BadgeVariant {
 	let hash = 0;
 	for (let i = 0; i < roleName.length; i++) {

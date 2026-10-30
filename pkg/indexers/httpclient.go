@@ -1,0 +1,235 @@
+package indexers
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"maps"
+	"net/http"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/discohaus/discopanel/pkg/hub"
+	"github.com/discohaus/discopanel/pkg/logger"
+)
+
+var clientLog = logger.New()
+
+func SetLogger(l *logger.Logger) { clientLog = l }
+
+// Wraps http.Client with common indexer request logic
+type HTTPClient struct {
+	client       *http.Client
+	userAgent    string
+	indexer      string
+	extraHeaders map[string]string
+	state        *sharedState
+}
+
+// Creates a shared HTTP client for an indexer
+func NewHTTPClient(indexer string, userAgent string, extraHeaders map[string]string) *HTTPClient {
+	var cred strings.Builder
+	for _, k := range slices.Sorted(maps.Keys(extraHeaders)) {
+		cred.WriteString(k)
+		cred.WriteByte('=')
+		cred.WriteString(extraHeaders[k])
+		cred.WriteByte(';')
+	}
+	return &HTTPClient{
+		client: &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: hub.Transport(nil),
+		},
+		userAgent:    userAgent,
+		indexer:      indexer,
+		extraHeaders: extraHeaders,
+		state:        stateFor(indexer, cred.String()),
+	}
+}
+
+// Does GET request and returns the raw body
+func (h *HTTPClient) DoBytes(ctx context.Context, url string) ([]byte, error) {
+	return h.sharedGet(ctx, url, maxResponseBytes)
+}
+
+// Does GET request, bodies over maxBytes fail instead of buffering
+func (h *HTTPClient) DoBytesLimit(ctx context.Context, url string, maxBytes int64) ([]byte, error) {
+	return h.sharedGet(ctx, url, maxBytes)
+}
+
+// Does GET request and JSON-decodes into dest
+func (h *HTTPClient) DoJSON(ctx context.Context, url string, dest any) error {
+	data, err := h.sharedGet(ctx, url, maxResponseBytes)
+	if err != nil {
+		return err
+	}
+	return h.decode(url, data, dest)
+}
+
+// Posts JSON body and decodes response into dest
+func (h *HTTPClient) PostJSON(ctx context.Context, url string, body any, dest any) error {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return &IndexerError{Kind: ErrNetwork, Indexer: h.indexer, URL: url, Err: err}
+	}
+	data, err := h.fetch(ctx, http.MethodPost, url, payload, maxResponseBytes)
+	if err != nil {
+		return err
+	}
+	return h.decode(url, data, dest)
+}
+
+// Collapses identical concurrent GETs into one upstream request
+func (h *HTTPClient) sharedGet(ctx context.Context, url string, maxBytes int64) ([]byte, error) {
+	// Callers with different caps never share one body
+	key := url + "|" + strconv.FormatInt(maxBytes, 10)
+	ch := h.state.flights.DoChan(key, func() (any, error) {
+		return h.fetch(ctx, http.MethodGet, url, nil, maxBytes)
+	})
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			// Retry alone when another callers cancellation poisoned the flight
+			if ctx.Err() == nil && (errors.Is(res.Err, context.Canceled) || errors.Is(res.Err, context.DeadlineExceeded)) {
+				return h.fetch(ctx, http.MethodGet, url, nil, maxBytes)
+			}
+			return nil, res.Err
+		}
+		return res.Val.([]byte), nil
+	}
+}
+
+// Runs paced request, retrying on 429, 5xx, network errors
+func (h *HTTPClient) fetch(ctx context.Context, method, url string, payload []byte, maxBytes int64) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if err := h.state.waitCooldown(ctx); err != nil {
+			return nil, err
+		}
+		if err := h.state.limiter.Wait(ctx); err != nil {
+			return nil, err
+		}
+
+		data, retry, err := h.once(ctx, method, url, payload, attempt, maxBytes)
+		if err == nil {
+			return data, nil
+		}
+		if origin := indexOriginOf(err); origin != "" {
+			clientLog.Warn("%s: index could not serve %s (%v), requesting %s directly", h.indexer, url, err, origin)
+			return h.fetch(ctx, method, origin, payload, maxBytes)
+		}
+		lastErr = err
+		if !retry || ctx.Err() != nil {
+			return nil, lastErr
+		}
+		// 429 waits via the shared cooldown instead
+		var ie *IndexerError
+		if !(errors.As(err, &ie) && ie.Kind == ErrRateLimit) {
+			if err := sleepCtx(ctx, backoffDelay(attempt)); err != nil {
+				return nil, lastErr
+			}
+		}
+	}
+	return nil, lastErr
+}
+
+// Performs a single attempt, reporting whether a retry makes sense
+func (h *HTTPClient) once(ctx context.Context, method, url string, payload []byte, attempt int, maxBytes int64) ([]byte, bool, error) {
+	var reader io.Reader
+	if payload != nil {
+		reader = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, reader)
+	if err != nil {
+		return nil, false, &IndexerError{Kind: ErrNetwork, Indexer: h.indexer, URL: url, Err: err}
+	}
+
+	req.Header.Set("Accept", "application/json")
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if h.userAgent != "" {
+		req.Header.Set("User-Agent", h.userAgent)
+	}
+	for k, v := range h.extraHeaders {
+		req.Header.Set(k, v)
+	}
+
+	var cachedBody []byte
+	var haveCached bool
+	if method == http.MethodGet {
+		var etag string
+		if etag, cachedBody, haveCached = h.state.cachedETag(url); haveCached {
+			req.Header.Set("If-None-Match", etag)
+		}
+	}
+
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return nil, true, NewNetworkError(h.indexer, url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotModified && haveCached {
+		return cachedBody, false, nil
+	}
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		// Oversized bodies fail instead of filling memory
+		if resp.ContentLength > maxBytes {
+			return nil, false, NewTooLargeError(h.indexer, url, maxBytes)
+		}
+		data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+		if err != nil {
+			return nil, true, NewNetworkError(h.indexer, url, err)
+		}
+		if int64(len(data)) > maxBytes {
+			return nil, false, NewTooLargeError(h.indexer, url, maxBytes)
+		}
+		if method == http.MethodGet {
+			h.state.storeETag(url, resp.Header.Get("ETag"), data)
+		}
+		return data, false, nil
+	}
+
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	apiErr := NewAPIError(h.indexer, resp.StatusCode, url, string(bodyBytes))
+	if ie := hub.ParseIndexError(resp.Request.URL, bodyBytes); ie != nil {
+		apiErr.Origin = ie.Origin
+		return nil, false, apiErr
+	}
+	switch {
+	case resp.StatusCode == http.StatusTooManyRequests:
+		d := retryAfter(resp.Header)
+		if d <= 0 {
+			d = max(backoffDelay(attempt), minRateCooldown)
+		}
+		h.state.startCooldown(d)
+		return nil, true, apiErr
+	case resp.StatusCode >= 500:
+		return nil, true, apiErr
+	}
+	return nil, false, apiErr
+}
+
+func indexOriginOf(err error) string {
+	var ie *IndexerError
+	if errors.As(err, &ie) {
+		return ie.Origin
+	}
+	return ""
+}
+
+// Unmarshals a response body into dest with error classification
+func (h *HTTPClient) decode(url string, data []byte, dest any) error {
+	if err := json.Unmarshal(data, dest); err != nil {
+		return NewDecodeError(h.indexer, url, err)
+	}
+	return nil
+}

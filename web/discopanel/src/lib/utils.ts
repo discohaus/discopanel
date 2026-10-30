@@ -48,18 +48,31 @@ export function getDockerImageDisplayName(
 	return image.displayName || image.tag;
 }
 
-export function getStringForEnum(map: Record<string, unknown>, val: unknown) {
-	return Object.keys(map).find((key) => map[key] === val);
+// Keeps the clicked tab centered while the rail scrolls sideways
+export function centerInRail(rail: HTMLElement | null, tab: EventTarget | null | undefined) {
+	if (!rail || !(tab instanceof HTMLElement) || rail.scrollWidth <= rail.clientWidth) return;
+	const railRect = rail.getBoundingClientRect();
+	const tabRect = tab.getBoundingClientRect();
+	rail.scrollBy({
+		left: tabRect.left - railRect.left - (railRect.width - tabRect.width) / 2,
+		behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
+	});
 }
 
-// Convert proto enum value to the lowercase string name used by backend
-// NOTE: ModLoader.MOD_LOADER_VANILLA (1) -> "vanilla"
-export function enumToString(map: Record<string, unknown>, val: unknown): string {
-	const enumKey = getStringForEnum(map, val);
-	if (!enumKey) return '';
-	const parts = enumKey.split('_');
-	if (parts.length > 2) {
-		return parts.slice(2).join('_').toLowerCase();
-	}
-	return enumKey.toLowerCase();
+const MAX_ICON_SOURCE_PX = 512;
+
+// Bakes the EXIF rotation into pixels
+export async function encodeIconUpload(file: File): Promise<Uint8Array<ArrayBuffer>> {
+	const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+	const scale = Math.min(1, MAX_ICON_SOURCE_PX / Math.max(bitmap.width, bitmap.height));
+	const canvas = document.createElement('canvas');
+	canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+	canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+	const ctx = canvas.getContext('2d');
+	if (!ctx) throw new Error('Canvas is unavailable');
+	ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+	bitmap.close();
+	const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+	if (!blob) throw new Error('Could not encode the icon');
+	return new Uint8Array(await blob.arrayBuffer());
 }

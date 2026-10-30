@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+package discopanel.v1;
+
+import "discopanel/options/v1/options.proto";
+
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+
+// Server properties management
+service PropertiesService {
+  // Fetch server properties
+  rpc GetServerProperties(GetServerPropertiesRequest) returns (GetServerPropertiesResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVER_PROPERTIES
+      action: ACTION_TYPE_READ
+      object_id_field: "server_id"
+    };
+  }
+  // Update server properties
+  rpc UpdateServerProperties(UpdateServerPropertiesRequest) returns (UpdateServerPropertiesResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVER_PROPERTIES
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "server_id"
+    };
+  }
+  // Fetch system-wide defaults
+  rpc GetGlobalSettings(GetGlobalSettingsRequest) returns (GetGlobalSettingsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SETTINGS
+      action: ACTION_TYPE_READ
+    };
+  }
+  // Update system-wide defaults
+  rpc UpdateGlobalSettings(UpdateGlobalSettingsRequest) returns (UpdateGlobalSettingsResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SETTINGS
+      action: ACTION_TYPE_UPDATE
+    };
+  }
+}
+
+// Single server property
+message ServerProperty {
+  string key = 1;
+  string label = 2;
+  string value = 3;
+  optional string default_value = 4;
+  string type = 5; // One of text, number, checkbox, select, password
+  string description = 6;
+  bool required = 7;
+  bool system = 8; // If true, field is auto-populated and read-only
+  bool ephemeral = 9; // If true, field is cleared after server start
+  string env_var = 10;
+  repeated string options = 11; // For select type
+}
+
+// Group of related properties
+message PropertyCategory {
+  string name = 1;
+  repeated ServerProperty properties = 2;
+}
+
+// Server properties request
+message GetServerPropertiesRequest {
+  string server_id = 1;
+}
+
+// Categorized server properties
+message GetServerPropertiesResponse {
+  repeated PropertyCategory categories = 1;
+}
+
+// Properties to update
+message UpdateServerPropertiesRequest {
+  string server_id = 1;
+  map<string, string> updates = 2;
+}
+
+// Updated server properties
+message UpdateServerPropertiesResponse {
+  repeated PropertyCategory categories = 1;
+}
+
+// Empty global settings request
+message GetGlobalSettingsRequest {}
+
+// Categorized global defaults
+message GetGlobalSettingsResponse {
+  repeated PropertyCategory categories = 1;
+}
+
+// Global fields to update
+message UpdateGlobalSettingsRequest {
+  map<string, string> updates = 1;
+}
+
+// Updated global defaults
+message UpdateGlobalSettingsResponse {
+  repeated PropertyCategory categories = 1;
+}

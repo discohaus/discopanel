@@ -7,16 +7,16 @@ import (
 	"syscall"
 )
 
-// GetDiskSpace returns the total disk space available in bytes for the given path
-func GetDiskSpace(path string) (int64, error) {
+// Returns total and used bytes for the volume at path
+func GetDiskSpace(path string) (int64, int64, error) {
 	var stat syscall.Statfs_t
 
 	if err := syscall.Statfs(path, &stat); err != nil {
-		return 0, fmt.Errorf("failed to get disk stats for %s: %w", path, err)
+		return 0, 0, fmt.Errorf("failed to get disk stats for %s: %w", path, err)
 	}
 
-	// Total space = block size * total blocks
-	totalSpace := int64(stat.Blocks) * int64(stat.Bsize)
+	total := int64(stat.Blocks) * int64(stat.Bsize)
+	used := total - int64(stat.Bfree)*int64(stat.Bsize)
 
-	return totalSpace, nil
+	return total, used, nil
 }

@@ -2,21 +2,43 @@ syntax = "proto3";
 
 package discopanel.v1;
 
-option go_package = "github.com/nickheyer/discopanel/pkg/proto/discopanel/v1;discopanelv1";
+import "discopanel/options/v1/options.proto";
+
+option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
 // Generic chunked file upload service
 service UploadService {
   // Initialize a new upload session
-  rpc InitUpload(InitUploadRequest) returns (InitUploadResponse);
+  rpc InitUpload(InitUploadRequest) returns (InitUploadResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_UPLOADS
+      action: ACTION_TYPE_CREATE
+    };
+  }
 
   // Get upload session status (for resume)
-  rpc GetUploadStatus(GetUploadStatusRequest) returns (GetUploadStatusResponse);
+  rpc GetUploadStatus(GetUploadStatusRequest) returns (GetUploadStatusResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_UPLOADS
+      action: ACTION_TYPE_READ
+    };
+  }
 
   // Upload a single chunk
-  rpc UploadChunk(UploadChunkRequest) returns (UploadChunkResponse);
+  rpc UploadChunk(UploadChunkRequest) returns (UploadChunkResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_UPLOADS
+      action: ACTION_TYPE_CREATE
+    };
+  }
 
   // Cancel upload and cleanup
-  rpc CancelUpload(CancelUploadRequest) returns (CancelUploadResponse);
+  rpc CancelUpload(CancelUploadRequest) returns (CancelUploadResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_UPLOADS
+      action: ACTION_TYPE_DELETE
+    };
+  }
 }
 
 // Initialize upload session
@@ -39,6 +61,8 @@ message GetUploadStatusRequest {
 
 // Upload progress and status
 message GetUploadStatusResponse {
+  reserved 8;
+  reserved "temp_path";
   string session_id = 1;
   int64 bytes_received = 2;
   int64 total_bytes = 3;
@@ -46,7 +70,6 @@ message GetUploadStatusResponse {
   int32 total_chunks = 5;
   repeated int32 missing_chunks = 6;
   bool completed = 7;
-  string temp_path = 8;  // Only set when completed
 }
 
 // Single chunk upload
@@ -58,11 +81,12 @@ message UploadChunkRequest {
 
 // Chunk upload result
 message UploadChunkResponse {
+  reserved 5;
+  reserved "temp_path";
   string session_id = 1;
   int64 bytes_received = 2;
   int32 chunks_received = 3;
   bool completed = 4;
-  string temp_path = 5;  // Only set when completed
 }
 
 // Cancel upload request
