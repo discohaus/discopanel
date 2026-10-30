@@ -37,12 +37,13 @@ COPY --from=proto-builder /app/web/discopanel/static/schemav1.yaml ./static/
 
 RUN npm run build
 
-FROM golang:alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS backend-builder
+# Pure Go build cross compiles natively for the target platform
+FROM --platform=$BUILDPLATFORM golang:alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS backend-builder
 
 ARG APP_VERSION
+ARG TARGETOS
+ARG TARGETARCH
 ENV APP_VERSION=${APP_VERSION}
-
-RUN apk add --no-cache gcc musl-dev sqlite-dev
 
 WORKDIR /app
 
@@ -55,14 +56,16 @@ COPY --from=proto-builder /app/internal/db/store.gen.go ./internal/db/store.gen.
 COPY --from=proto-builder /app/internal/db/schema.sql ./internal/db/schema.sql
 COPY --from=frontend-builder /app/web/discopanel/build ./web/discopanel/build
 
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o discopanel ./cmd/discopanel
+# TARGETARCH comes from BuildKit; without it the binary would silently match the builder
+RUN test -n "${TARGETARCH}" || { echo "TARGETARCH is empty: build with BuildKit (docker buildx build)" >&2; exit 1; }
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -o discopanel ./cmd/discopanel
 
 FROM alpine:latest
 
 ARG APP_VERSION
 ENV APP_VERSION=${APP_VERSION}
 
-RUN apk --no-cache add ca-certificates sqlite-libs
+RUN apk --no-cache add ca-certificates
 
 WORKDIR /app
 

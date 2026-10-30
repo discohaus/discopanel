@@ -28,11 +28,11 @@ import (
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
 	"github.com/discohaus/discopanel/pkg/transfer"
+	"github.com/glebarez/sqlite"
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 )

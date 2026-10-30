@@ -31,6 +31,8 @@ go build -o discopanel cmd/discopanel/main.go
 
 The `//go:embed` directives bake the frontend build into the binary so it serves the UI without a separate web server.
 
+No C toolchain is needed. The SQLite driver is pure Go, so the binary builds with `CGO_ENABLED=0` and cross compiles with plain `GOOS`/`GOARCH`, for example `GOOS=linux GOARCH=arm64 go build -o discopanel ./cmd/discopanel`.
+
 ## Running
 
 ```bash

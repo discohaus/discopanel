@@ -17,9 +17,9 @@ import (
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/protometa"
 	"github.com/discohaus/discopanel/pkg/runtimespec"
+	"github.com/glebarez/sqlite"
 	"github.com/go-viper/mapstructure/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
@@ -118,15 +118,17 @@ func createBatchSize() (int, error) {
 	return sqliteMaxVariables / widest, nil
 }
 
+// Per connection pragmas in the pure Go driver's DSN syntax
+const sqlitePragmas = "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)"
+
 func NewSQLiteStore(cfg *config.Config) (*Store, error) {
 	dsn := cfg.Database.Path
 	// Pragmas reduce locked database errors under load
 	if dsn != ":memory:" {
-		pragmas := "_busy_timeout=5000&_journal_mode=WAL&_synchronous=NORMAL&_foreign_keys=on"
 		if strings.Contains(dsn, "?") {
-			dsn += "&" + pragmas
+			dsn += "&" + sqlitePragmas
 		} else {
-			dsn += "?" + pragmas
+			dsn += "?" + sqlitePragmas
 		}
 	}
 	batch, err := createBatchSize()

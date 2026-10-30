@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -52,7 +53,27 @@ type Manager struct {
 	cfgMu       sync.RWMutex
 	jwtSecret   []byte
 	recoveryKey string
+
+	// Guards recoveryKey and the per-client failed-attempt throttle below
+	recoveryMu       sync.Mutex
+	recoveryAttempts map[string]*recoveryAttempt
 }
+
+type recoveryAttempt struct {
+	fails    int
+	lockedTo time.Time
+	lastSeen time.Time
+}
+
+// UseRecoveryKey is public and resets every account, so repeated wrong
+// guesses lock it out for a while.
+const (
+	recoveryMaxFails = 5
+	recoveryLockout  = 5 * time.Minute
+)
+
+// ErrRecoveryLocked is returned while recovery is throttled.
+var ErrRecoveryLocked = errors.New("too many invalid recovery attempts, try again later")
 
 const jwtSecretSettingKey = "jwt_secret"
 
@@ -531,17 +552,49 @@ func (m *Manager) ValidateApiToken(ctx context.Context, rawToken string) (*v1.Us
 }
 
 func (m *Manager) GetRecoveryKey() string {
+	m.recoveryMu.Lock()
+	defer m.recoveryMu.Unlock()
 	return m.recoveryKey
 }
 
-func (m *Manager) UseRecoveryKey(ctx context.Context, key string) error {
-	if m.recoveryKey == "" || key != m.recoveryKey {
+// UseRecoveryKey resets the panel to first-user setup when key matches.
+// client identifies the caller (its remote address) so wrong guesses lock
+// out only that caller rather than recovery for everyone.
+func (m *Manager) UseRecoveryKey(ctx context.Context, key, client string) error {
+	m.recoveryMu.Lock()
+	defer m.recoveryMu.Unlock()
+	now := time.Now()
+	if m.recoveryAttempts == nil {
+		m.recoveryAttempts = make(map[string]*recoveryAttempt)
+	}
+	// Forget callers idle for a full lockout period
+	for c, a := range m.recoveryAttempts {
+		if now.After(a.lockedTo) && now.Sub(a.lastSeen) > recoveryLockout {
+			delete(m.recoveryAttempts, c)
+		}
+	}
+	att := m.recoveryAttempts[client]
+	if att == nil {
+		att = &recoveryAttempt{}
+		m.recoveryAttempts[client] = att
+	}
+	att.lastSeen = now
+	if now.Before(att.lockedTo) {
+		return ErrRecoveryLocked
+	}
+	if m.recoveryKey == "" || subtle.ConstantTimeCompare([]byte(key), []byte(m.recoveryKey)) != 1 {
+		att.fails++
+		if att.fails >= recoveryMaxFails {
+			att.fails = 0
+			att.lockedTo = now.Add(recoveryLockout)
+		}
 		return ErrInvalidRecoveryKey
 	}
 	if err := m.store.ResetAllUsers(ctx); err != nil {
 		return fmt.Errorf("failed to reset users: %w", err)
 	}
 	m.recoveryKey = ""
+	m.recoveryAttempts = nil
 	return nil
 }
 

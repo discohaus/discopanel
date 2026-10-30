@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { guardUnsavedChanges } from '$lib/utils/unsaved-guard.svelte';
 	import { centerInRail } from '$lib/utils';
 	import { onMount, untrack } from 'svelte';
 	import { SvelteURL } from 'svelte/reactivity';
@@ -23,6 +24,7 @@
 	let { server, onUpdate }: Props = $props();
 
 	const form = new PropertiesForm(true);
+	guardUnsavedChanges(() => form.modifiedKeys.size > 0);
 
 	let loading = $state(true);
 	let saving = $state(false);

@@ -162,21 +162,18 @@ jobs:
             goarch: arm64
             suffix: linux-arm64
             runner: ubuntu-latest
-            cc: aarch64-linux-gnu-gcc
           - goos: darwin
             goarch: amd64
             suffix: darwin-amd64
-            runner: macOS-15
+            runner: ubuntu-latest
           - goos: darwin
             goarch: arm64
             suffix: darwin-arm64
-            runner: macos-latest
+            runner: ubuntu-latest
           - goos: windows
             goarch: amd64
             suffix: windows-amd64.exe
             runner: ubuntu-latest
-            cc: x86_64-w64-mingw32-gcc
-            cxx: x86_64-w64-mingw32-g++
 
     steps:
       - name: Checkout code
@@ -201,18 +198,6 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install cross-compiler (Linux ARM64)
-        if: matrix.goos == 'linux' && matrix.goarch == 'arm64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      - name: Install cross-compiler (Windows)
-        if: matrix.goos == 'windows'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
-
       - name: Download frontend build
         uses: actions/download-artifact@v4
         with:
@@ -223,10 +208,8 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          # SQLite requires CGO, including cross builds.
-          CGO_ENABLED: 1
-          CC: ${{ matrix.cc || '' }}
-          CXX: ${{ matrix.cxx || '' }}
+          # Pure Go SQLite driver, every target cross compiles without a C toolchain
+          CGO_ENABLED: 0
         run: |
           go build -ldflags "-X github.com/discohaus/discopanel/pkg/config.Version=${{ needs.classify.outputs.version }}" -o discopanel-${{ matrix.suffix }} ./cmd/discopanel
 
@@ -289,6 +272,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ needs.classify.outputs.stable == 'true' }}
+            type=raw,value=beta,enable=${{ needs.classify.outputs.stable == 'false' }}
 
       - name: Extract metadata (dev)
         id: meta-dev

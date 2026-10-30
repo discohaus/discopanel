@@ -17,7 +17,7 @@ import (
 	"ariga.io/atlas/sql/sqlclient"
 	"ariga.io/atlas/sql/sqlite"
 	"github.com/discohaus/discopanel/pkg/config"
-	gormsqlite "gorm.io/driver/sqlite"
+	gormsqlite "github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -347,7 +347,7 @@ func adopt(ctx context.Context, drv migrate.Driver, dir migrate.Dir, conn *sql.C
 
 // Builds a throwaway memory database from DDL and inspects it
 func inspectStatements(ctx context.Context, stmts []string) (*schema.Realm, error) {
-	mem, err := sql.Open("sqlite3", ":memory:")
+	mem, err := sql.Open(gormsqlite.DriverName, ":memory:")
 	if err != nil {
 		return nil, err
 	}

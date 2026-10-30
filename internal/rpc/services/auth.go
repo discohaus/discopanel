@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -542,9 +543,16 @@ func (s *AuthService) UseRecoveryKey(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("recovery key is required"))
 	}
 
-	if err := s.authManager.UseRecoveryKey(ctx, req.Msg.RecoveryKey); err != nil {
+	client := req.Peer().Addr
+	if host, _, err := net.SplitHostPort(client); err == nil {
+		client = host
+	}
+	if err := s.authManager.UseRecoveryKey(ctx, req.Msg.RecoveryKey, client); err != nil {
 		if errors.Is(err, auth.ErrInvalidRecoveryKey) {
 			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("invalid recovery key"))
+		}
+		if errors.Is(err, auth.ErrRecoveryLocked) {
+			return nil, connect.NewError(connect.CodeResourceExhausted, err)
 		}
 		s.log.Error("Recovery key reset failed: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("recovery reset failed"))
