@@ -364,10 +364,12 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				// Update status for all servers with containers
-				ctx := context.Background()
+				// Update status for all servers with containers. A hung docker
+				// call must not stall the monitor forever.
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				servers, err := store.ListServers(ctx)
 				if err != nil {
+					cancel()
 					continue
 				}
 
@@ -377,14 +379,27 @@ func main() {
 					if server.ContainerId == "" {
 						continue
 					}
+					// The lifecycle manager owns status while it is mid
+					// transition: an existing container reads "exited" during
+					// provisioning, which used to flip PROVISIONING to STOPPED.
+					if lifecycleManager.Busy(server.Id) {
+						continue
+					}
 					status, err := dockerClient.GetContainerStatus(ctx, server.ContainerId)
 					if err != nil || server.Status == status {
 						continue
 					}
-					server.Status = status
-					if err := store.UpdateServerFields(ctx, server.Id, map[string]any{"status": status}); err != nil {
-						log.Error("Failed to update server status: %v", err)
+					// Write under the transition slot so a start/stop that
+					// begins right now cannot be overwritten (busy: skip)
+					if err := lifecycleManager.Exclusive(ctx, server.Id, "status-sync", false, func() error {
+						return store.UpdateServerFields(ctx, server.Id, map[string]any{"status": status})
+					}); err != nil {
+						if !lifecycleManager.Busy(server.Id) {
+							log.Error("Failed to update server status: %v", err)
+						}
+						continue
 					}
+					server.Status = status
 					// Updates proxy route on status change when proxied
 					if len(server.ProxyHostnames) > 0 {
 						if err := proxyManager.UpdateServerRoute(server); err != nil {
@@ -422,6 +437,7 @@ func main() {
 						log.Error("Failed to sync proxy routes: %v", err)
 					}
 				}
+				cancel()
 			case <-stopMonitor:
 				return
 			}

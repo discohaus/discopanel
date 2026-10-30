@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -423,6 +424,12 @@ func (s *ModService) InstallMod(ctx context.Context, req *connect.Request[v1.Ins
 
 // Places a jar in the mods dir with full bookkeeping
 func (s *ModService) placeMod(ctx context.Context, server *v1.Server, srcPath, name string, keptWins bool, attrs metrics.Attrs) (*v1.Mod, []string, error) {
+	// The name comes from the uploader (or an upstream index). A name with
+	// path segments such as "../../other/plugins/x.jar" would otherwise be
+	// joined onto the mods dir and write a jar anywhere the panel can.
+	if !isPlainFileName(name) {
+		return nil, nil, connect.NewError(connect.CodeInvalidArgument, errors.New("mod file name must be a plain file name"))
+	}
 	if !minecraft.IsValidModFile(name, server.ModLoader) {
 		return nil, nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid file type for this mod loader"))
 	}
@@ -609,4 +616,21 @@ func (s *ModService) DeleteMod(ctx context.Context, req *connect.Request[v1.Dele
 	return connect.NewResponse(&v1.DeleteModResponse{
 		Message: "Mod deleted successfully",
 	}), nil
+}
+
+// Reports whether name is a single, ordinary file name: no directory
+// parts, not "." or "..", not hidden, no NUL or control characters.
+func isPlainFileName(name string) bool {
+	if name == "" || name != filepath.Base(name) || strings.ContainsAny(name, "/\\") {
+		return false
+	}
+	if name == "." || name == ".." || strings.HasPrefix(name, ".") {
+		return false
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }

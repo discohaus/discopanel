@@ -291,7 +291,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("docker.agent_url", "")
 	v.SetDefault("docker.dns", "")
 	v.SetDefault("docker.labels", map[string]string{})
-	v.SetDefault("docker.log_driver", "local")
+	v.SetDefault("docker.log_driver", "") // empty: "local", or "json-file" on Podman
 
 	// Storage defaults
 	dataDir, err := filepath.Abs("./data")

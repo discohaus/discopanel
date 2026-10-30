@@ -554,7 +554,11 @@ func (s *ModpackService) DeleteModpack(ctx context.Context, req *connect.Request
 	// Delete the physical ZIP file
 	if len(files) > 0 && files[0].DownloadUrl != "" {
 		filePath := files[0].DownloadUrl
-		if err := os.Remove(filePath); err != nil {
+		// Only archives the panel stored itself; indexed packs hold remote
+		// URLs here, and nothing outside panel storage is ever deleted
+		if !s.insideModpackStorage(filePath) {
+			s.log.Debug("Not deleting modpack file outside panel storage: %s", filePath)
+		} else if err := os.Remove(filePath); err != nil {
 			s.log.Error("Failed to delete modpack file %s: %v", filePath, err)
 			// Continue with database deletion even if file deletion fails
 		} else {
@@ -698,4 +702,20 @@ func (s *ModpackService) SyncModpackFiles(ctx context.Context, req *connect.Requ
 		SyncedCount: int32(synced),
 		Message:     fmt.Sprintf("Synced %d of %d files", synced, len(files)),
 	}), nil
+}
+
+// Reports whether path is a local file inside {DataDir}/modpacks
+func (s *ModpackService) insideModpackStorage(path string) bool {
+	if s.config == nil || strings.Contains(path, "://") {
+		return false
+	}
+	root, err := filepath.Abs(filepath.Join(s.config.Storage.DataDir, "modpacks"))
+	if err != nil {
+		return false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil || abs == root {
+		return false
+	}
+	return files.Within(root, abs)
 }

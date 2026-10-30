@@ -40,6 +40,7 @@
 	import { wsClient } from '$lib/stores/websocket.svelte';
 	import { registerRefresh } from '$lib/stores/refresh';
 	import { copyToClipboard } from '$lib/utils/clipboard';
+	import { ConfirmDialog } from '$lib/components/app';
 
 	let ansiConverter = $derived(themedAnsiConverter(mode.current));
 
@@ -212,7 +213,19 @@
 
 	$effect(() => {
 		if (!active) return;
-		return registerRefresh(fetchLogs);
+		return registerRefresh(() => fetchLogs());
+	});
+
+	// Polls logs over RPC while the live stream is down. The banner always
+	// claimed "polling instead" but nothing polled, so the console froze.
+	const FALLBACK_POLL_MS = 3000;
+	$effect(() => {
+		if (!active || streamLive || !canSend) return;
+		untrack(() => fetchLogs(true));
+		const timer = setInterval(() => {
+			if (document.visibilityState === 'visible') fetchLogs(true);
+		}, FALLBACK_POLL_MS);
+		return () => clearInterval(timer);
 	});
 
 	// Swap subscriptions when viewing a different server
@@ -317,17 +330,22 @@
 		unseenLines = 0;
 	}
 
-	async function fetchLogs() {
+	async function fetchLogs(background = false) {
 		if (loading || commandInFlight) return;
 		if (server.status === ServerStatus.STOPPED) return;
 
-		loading = true;
+		loading = !background;
 		try {
 			const request = create(GetServerLogsRequestSchema, {
 				id: server.id,
 				tail: tailLines
 			});
-			const response = await rpcClient.server.getServerLogs(request);
+			// Background polls stay silent: no global spinner and no error
+			// toast every few seconds while the panel is unreachable
+			const response = await rpcClient.server.getServerLogs(
+				request,
+				background ? silentCallOptions : undefined
+			);
 			const logs = response.logs || [];
 			logEntries = logs.length > MAX_LOG_ENTRIES ? logs.slice(-MAX_LOG_ENTRIES) : logs;
 		} catch (error) {
@@ -537,28 +555,33 @@
 		historyIndex = -1;
 		draftCommand = '';
 
-		// Prefer the socket and fall back to rpc
-		if (wsClient.isReady) {
-			wsClient.sendCommand(server.id, cmdToSend);
-		} else {
-			try {
-				const request = create(SendCommandRequestSchema, {
-					id: server.id,
-					command: cmdToSend
-				});
-				const response = await rpcClient.server.sendCommand(request);
-				if (!response.success) {
-					notify.error(response.error || 'Failed to execute command');
-				}
-			} catch (error) {
-				console.error(
-					'Failed to send command: ' + (error instanceof Error ? error.message : 'Unknown error')
-				);
-			} finally {
-				clearCommandInFlight();
-			}
+		// Prefer the socket; fall back to rpc when it is down or the send
+		// fails (socket closing), instead of silently dropping the command
+		if (wsClient.isReady && wsClient.sendCommand(server.id, cmdToSend)) {
+			return;
 		}
+		try {
+			const request = create(SendCommandRequestSchema, {
+				id: server.id,
+				command: cmdToSend
+			});
+			const response = await rpcClient.server.sendCommand(request, silentCallOptions);
+			if (!response.success) {
+				notify.error(response.error || 'Failed to execute command');
+			}
+		} catch (error) {
+			notify.error(
+				'Failed to send command: ' + (error instanceof Error ? error.message : 'Unknown error')
+			);
+			// Give the command back so it is not lost
+			if (!command) command = cmdToSend;
+		} finally {
+			clearCommandInFlight();
+		}
+		if (!streamLive) fetchLogs(true);
 	}
+
+	let clearConfirmOpen = $state(false);
 
 	async function clearLogs() {
 		try {
@@ -622,7 +645,7 @@
 			wsClient.unsubscribe(server.id);
 			wsClient.subscribe(server.id, tailLines);
 		} else {
-			fetchLogs();
+			fetchLogs(true);
 		}
 	}
 
@@ -634,7 +657,9 @@
 				? 'Connecting to stream...'
 				: wsConnectionState === 'connected'
 					? 'Authenticating stream...'
-					: 'Stream offline, polling instead'
+					: wsConnectionState === 'unauthorized'
+						? 'Session expired, sign in again for live logs'
+						: 'Stream offline, refreshing every few seconds'
 	);
 </script>
 
@@ -779,8 +804,9 @@
 								<Button
 									size="icon"
 									variant="ghost"
-									onclick={clearLogs}
+									onclick={() => (clearConfirmOpen = true)}
 									disabled={logEntries.length === 0}
+									aria-label="Clear console"
 									class="size-6.5 text-terminal-foreground/45 hover:bg-terminal-foreground/10 hover:text-terminal-foreground"
 								>
 									<Trash2 class="size-3.5" />
@@ -990,6 +1016,15 @@
 		</Button>
 	</div>
 </div>
+
+<ConfirmDialog
+	bind:open={clearConfirmOpen}
+	title="Clear the console?"
+	description="This wipes the stored console history for {server.name} on the panel, for everyone viewing it. Log files on disk are not affected."
+	confirmLabel="Clear console"
+	destructive
+	onConfirm={clearLogs}
+/>
 
 <style>
 	.log-line {
