@@ -15,7 +15,7 @@ const maxSourceHits = 3
 
 // Finds candidate jars for a mod id, best first
 func (f *FuegoIndexer) SourceMod(ctx context.Context, q indexers.ModQuery) ([]indexers.ModCandidate, error) {
-	lt := queryLoaderType(q.Loaders)
+	lt := LoaderTypeOf(q.Loaders)
 	if lt == ModLoaderAny {
 		return nil, fmt.Errorf("no curseforge loader filter matches %v", q.Loaders)
 	}
@@ -68,8 +68,8 @@ func (f *FuegoIndexer) SourceMod(ctx context.Context, q indexers.ModQuery) ([]in
 	return out, nil
 }
 
-// First mappable loader facet wins
-func queryLoaderType(loaders []string) ModLoaderType {
+// First mappable loader facet wins, plugin facets map to any
+func LoaderTypeOf(loaders []string) ModLoaderType {
 	for _, l := range loaders {
 		if lt := loaderType(l); lt != ModLoaderAny {
 			return lt

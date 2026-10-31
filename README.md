@@ -59,6 +59,8 @@ go build -o discopanel cmd/discopanel/main.go
 
 ## Docker Run
 
+v3 is in beta, so there is no `:latest` image until the first stable v3 release. Use a release tag such as `v3.0.0-beta.8`; releases after beta.8 also publish `:beta`, which follows the newest beta.
+
 ```bash
 
 docker run -d \
@@ -73,7 +75,7 @@ docker run -d \
   -e DISCOPANEL_DATA_DIR=/app/data \
   -e DISCOPANEL_HOST_DATA_PATH="$(pwd)/data" \
   -e TZ=UTC \
-  ghcr.io/discohaus/discopanel:latest
+  ghcr.io/discohaus/discopanel:v3.0.0-beta.8
 ```
 
 ## Docker Compose (Recommended)
@@ -82,7 +84,7 @@ docker run -d \
 
 services:
   discopanel:
-    image: ghcr.io/discohaus/discopanel:latest
+    image: ghcr.io/discohaus/discopanel:v3.0.0-beta.8
     container_name: discopanel
     restart: unless-stopped
 

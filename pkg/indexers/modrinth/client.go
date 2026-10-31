@@ -252,3 +252,66 @@ func (c *Client) GetVersion(ctx context.Context, versionID string) (*Version, er
 	}
 	return &version, nil
 }
+
+// Ids sent per bulk call, keeps bodies and urls small
+const maxHashesPerCall = 100
+
+// Body of the version_files lookups
+type hashQuery struct {
+	Hashes       []string `json:"hashes"`
+	Algorithm    string   `json:"algorithm"`
+	Loaders      []string `json:"loaders,omitempty"`
+	GameVersions []string `json:"game_versions,omitempty"`
+	VersionTypes []string `json:"version_types,omitempty"`
+}
+
+// Identifies files by hash, unknown hashes drop out
+func (c *Client) VersionsFromHashes(ctx context.Context, algo string, hashes []string) (map[string]Version, error) {
+	return c.postHashes(ctx, BaseURL()+"/version_files", hashQuery{Algorithm: algo}, hashes)
+}
+
+// Newest version per hashed file matching the filters
+func (c *Client) LatestVersionsFromHashes(ctx context.Context, algo string, hashes, loaders, gameVersions, versionTypes []string) (map[string]Version, error) {
+	q := hashQuery{Algorithm: algo, Loaders: loaders, GameVersions: gameVersions, VersionTypes: versionTypes}
+	// The update endpoint requires both filter arrays
+	if q.Loaders == nil {
+		q.Loaders = []string{}
+	}
+	if q.GameVersions == nil {
+		q.GameVersions = []string{}
+	}
+	return c.postHashes(ctx, BaseURL()+"/version_files/update", q, hashes)
+}
+
+// Posts hashes in chunks and merges the hash keyed answers
+func (c *Client) postHashes(ctx context.Context, endpoint string, q hashQuery, hashes []string) (map[string]Version, error) {
+	out := make(map[string]Version, len(hashes))
+	for start := 0; start < len(hashes); start += maxHashesPerCall {
+		q.Hashes = hashes[start:min(start+maxHashesPerCall, len(hashes))]
+		var page map[string]Version
+		if err := c.http.PostJSON(ctx, endpoint, q, &page); err != nil {
+			return nil, err
+		}
+		for k, v := range page {
+			out[strings.ToLower(k)] = v
+		}
+	}
+	return out, nil
+}
+
+// Fetches several projects in one call
+func (c *Client) GetProjects(ctx context.Context, ids []string) ([]ProjectDetails, error) {
+	var projects []ProjectDetails
+	for start := 0; start < len(ids); start += maxHashesPerCall {
+		f, err := json.Marshal(ids[start:min(start+maxHashesPerCall, len(ids))])
+		if err != nil {
+			return nil, err
+		}
+		var page []ProjectDetails
+		if err := c.http.DoJSON(ctx, fmt.Sprintf("%s/projects?ids=%s", BaseURL(), url.QueryEscape(string(f))), &page); err != nil {
+			return nil, err
+		}
+		projects = append(projects, page...)
+	}
+	return projects, nil
+}

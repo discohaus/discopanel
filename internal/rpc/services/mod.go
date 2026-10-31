@@ -15,6 +15,7 @@ import (
 	storage "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/docker"
 	"github.com/discohaus/discopanel/internal/metrics"
+	"github.com/discohaus/discopanel/internal/modupdates"
 	"github.com/discohaus/discopanel/internal/provisioner"
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/files"
@@ -48,6 +49,10 @@ type ModService struct {
 	cfPrints  map[string]uint32
 	cfSweeps  map[string]bool
 	cfRetryAt map[string]time.Time
+
+	updates     *modupdates.Checker
+	downloader  *modupdates.Downloader
+	updateLocks serverLocks
 }
 
 // Failed sweeps wait this long before asking the api again
@@ -73,6 +78,8 @@ func NewModService(store *storage.Store, docker *docker.Client, cfg *config.Conf
 		cfPrints:      map[string]uint32{},
 		cfSweeps:      map[string]bool{},
 		cfRetryAt:     map[string]time.Time{},
+		updates:       modupdates.NewChecker(),
+		downloader:    modupdates.NewDownloader(cfg.Server.UserAgent),
 	}
 }
 
@@ -423,6 +430,12 @@ func (s *ModService) InstallMod(ctx context.Context, req *connect.Request[v1.Ins
 
 // Places a jar in the mods dir with full bookkeeping
 func (s *ModService) placeMod(ctx context.Context, server *v1.Server, srcPath, name string, keptWins bool, attrs metrics.Attrs) (*v1.Mod, []string, error) {
+	// The name comes from the uploader (or an upstream index). A name with
+	// path segments such as "../../other/plugins/x.jar" would otherwise be
+	// joined onto the mods dir and write a jar anywhere the panel can.
+	if !files.IsPlainFileName(name) {
+		return nil, nil, connect.NewError(connect.CodeInvalidArgument, errors.New("mod file name must be a plain file name"))
+	}
 	if !minecraft.IsValidModFile(name, server.ModLoader) {
 		return nil, nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid file type for this mod loader"))
 	}

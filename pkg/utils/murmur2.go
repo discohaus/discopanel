@@ -126,7 +126,14 @@ func CFFingerprintFile(path string) (uint32, error) {
 		return 0, err
 	}
 	defer file.Close()
+	return CFFingerprintReader(file)
+}
 
+// CurseForge fingerprint read from the start of an open file
+func CFFingerprintReader(file io.ReadSeeker) (uint32, error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return 0, err
+	}
 	buf := make([]byte, cfReadChunk)
 	var count uint64
 	for {

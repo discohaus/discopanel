@@ -13,6 +13,11 @@ func Owner(path string) (int, int, bool) {
 	if err != nil {
 		return 0, 0, false
 	}
+	return InfoOwner(info)
+}
+
+// Owner ids carried by a stat result, ok false when unknown
+func InfoOwner(info os.FileInfo) (int, int, bool) {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
 		return 0, 0, false

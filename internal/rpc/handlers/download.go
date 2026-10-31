@@ -1,9 +1,10 @@
 package handlers
 
 import (
-	"fmt"
+	"mime"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -56,7 +57,14 @@ func NewDownloadStreamHandler(downloadManager *transfer.DownloadManager, log *lo
 		}
 
 		// Set download headers
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, session.Filename))
+		// mime.FormatMediaType quotes/escapes the name (and RFC 2231-encodes
+		// non-ASCII), so a filename with quotes or CR/LF cannot break or
+		// inject response headers.
+		disposition := mime.FormatMediaType("attachment", map[string]string{"filename": filepath.Base(session.Filename)})
+		if disposition == "" {
+			disposition = "attachment"
+		}
+		w.Header().Set("Content-Disposition", disposition)
 
 		// Handles range headers, conditional requests, and Content-Length
 		http.ServeContent(w, r, session.Filename, stat.ModTime(), file)

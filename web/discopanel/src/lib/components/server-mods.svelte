@@ -5,8 +5,20 @@
 	import { Switch } from '$lib/components/ui/switch';
 	import { Progress } from '$lib/components/ui/progress';
 	import { EmptyState, ConfirmDialog } from '$lib/components/app';
-	import { Loader2, Upload, Download, Trash2, Package, Search, X } from '@lucide/svelte';
-	import { rpcClient } from '$lib/api/rpc-client';
+	import ModUpdatesDialog from '$lib/components/mod-updates-dialog.svelte';
+	import {
+		Loader2,
+		Upload,
+		Download,
+		Trash2,
+		Package,
+		Search,
+		X,
+		RefreshCw,
+		ArrowUpCircle
+	} from '@lucide/svelte';
+	import { rpcClient, rpcErrorMessage } from '$lib/api/rpc-client';
+	import { ModUpdateStatus, type ModUpdate } from '$lib/proto/discopanel/v1/mod_pb';
 	import { modsDirectoryFor } from '$lib/stores/loaders';
 	import { notify } from '$lib/stores/activity.svelte';
 	import type { Server, Mod } from '$lib/proto/discopanel/v1/storage_pb';
@@ -33,6 +45,18 @@
 	let filterText = $state('');
 	let dragActive = $state(false);
 
+	// Update check results, empty until the first check
+	let updates = $state<ModUpdate[]>([]);
+	let updatesChecked = $state(false);
+	let checkingUpdates = $state(false);
+	let checkError = $state('');
+	let includeBeta = $state(false);
+	let updatesOpen = $state(false);
+	let updateTarget = $state('');
+	let updatesModpack = $state(false);
+	// Responses of superseded checks, or for another server, are dropped
+	let checkSeq = 0;
+
 	let hasLoaded = false;
 	let previousServerId = $state(server.id);
 
@@ -51,6 +75,13 @@
 			uploading = false;
 			filterText = '';
 			hasLoaded = false;
+			checkSeq++;
+			updates = [];
+			updatesChecked = false;
+			checkingUpdates = false;
+			updatesModpack = false;
+			checkError = '';
+			updatesOpen = false;
 		}
 	});
 
@@ -73,6 +104,35 @@
 		} finally {
 			loading = false;
 		}
+	}
+
+	async function checkUpdates(openDialog: boolean, beta = includeBeta) {
+		const seq = ++checkSeq;
+		const serverId = server.id;
+		const current = () => seq === checkSeq && serverId === server.id;
+		includeBeta = beta;
+		checkingUpdates = true;
+		checkError = '';
+		if (openDialog) updatesOpen = true;
+		try {
+			const res = await rpcClient.mod.checkModUpdates({ serverId, includeBeta: beta });
+			if (!current()) return;
+			updates = res.updates;
+			updatesModpack = res.modpack;
+			updateTarget = [res.mcVersion, res.loaders.join('/')].filter(Boolean).join(' ');
+			updatesChecked = true;
+		} catch (error) {
+			if (!current()) return;
+			checkError = rpcErrorMessage(error, 'Failed to check for updates');
+			if (!updatesOpen) notify.error('Failed to check for updates', { description: checkError });
+		} finally {
+			if (current()) checkingUpdates = false;
+		}
+	}
+
+	async function afterUpdateChange() {
+		await loadMods();
+		await checkUpdates(false);
 	}
 
 	async function uploadFiles(fileList: FileList | File[]) {
@@ -212,6 +272,15 @@
 
 	let dirLabel = $derived(modsDirectory === 'plugins' ? 'Plugins' : 'Mods');
 	let enabledCount = $derived(mods.filter((m) => m.enabled).length);
+	let updateById = $derived(new Map(updates.map((u) => [u.modId, u])));
+	let availableCount = $derived(
+		updates.filter((u) => u.status === ModUpdateStatus.UPDATE_AVAILABLE && !u.managedBy).length
+	);
+
+	function availableUpdate(mod: Mod): ModUpdate | undefined {
+		const u = updateById.get(mod.id);
+		return u?.status === ModUpdateStatus.UPDATE_AVAILABLE && !u.managedBy ? u : undefined;
+	}
 
 	let visibleMods = $derived.by(() => {
 		if (!filterText.trim()) return mods;
@@ -267,6 +336,23 @@
 						<span class="tabular text-xs text-muted-foreground">
 							{enabledCount}/{mods.length} enabled
 						</span>
+					{/if}
+					{#if mods.length > 0}
+						<Button
+							variant="outline"
+							size="sm"
+							onclick={() => checkUpdates(true)}
+							disabled={checkingUpdates}
+							title="Look up newer compatible builds by file hash"
+						>
+							<RefreshCw class="size-4 {checkingUpdates ? 'animate-spin' : ''}" />
+							{#if updatesChecked && availableCount > 0}
+								{availableCount}
+								{availableCount === 1 ? 'update' : 'updates'}
+							{:else}
+								Check for updates
+							{/if}
+						</Button>
 					{/if}
 					<Button onclick={() => fileInput?.click()} disabled={uploading} size="sm">
 						{#if uploading}
@@ -365,6 +451,7 @@
 				<div class="min-h-0 flex-1 overflow-y-auto">
 					<div class="divide-y">
 						{#each visibleMods as mod (mod.id)}
+							{@const update = availableUpdate(mod)}
 							<div
 								class="group flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-accent/40 {mod.enabled
 									? ''
@@ -385,6 +472,18 @@
 										{/if}
 										{#if !mod.enabled}
 											<Badge variant="outline" class="text-xs">Disabled</Badge>
+										{/if}
+										{#if update}
+											<button
+												type="button"
+												onclick={() => (updatesOpen = true)}
+												title="Update to {update.latest?.version}"
+											>
+												<Badge class="text-xs">
+													<ArrowUpCircle />
+													{update.latest?.version}
+												</Badge>
+											</button>
 										{/if}
 									</div>
 									<div
@@ -433,6 +532,20 @@
 		{/if}
 	</section>
 </div>
+
+<ModUpdatesDialog
+	bind:open={updatesOpen}
+	bind:includeBeta
+	serverId={server.id}
+	label={dirLabel}
+	{updates}
+	checking={checkingUpdates}
+	{checkError}
+	modpack={updatesModpack}
+	target={updateTarget}
+	onRecheck={(beta) => checkUpdates(true, beta)}
+	onChanged={afterUpdateChange}
+/>
 
 <ConfirmDialog
 	bind:open={deleteOpen}

@@ -276,6 +276,29 @@ func (c *Client) GetModpackFiles(ctx context.Context, modID int, gameVersion str
 	return files, nil
 }
 
+// Newest files of a project, a single page
+func (c *Client) GetRecentModFiles(ctx context.Context, modID int, gameVersion string, modLoader ModLoaderType) ([]File, error) {
+	if c.missingKey() {
+		return nil, indexers.NewAuthConfigError("fuego", "API key not configured")
+	}
+	params := url.Values{}
+	params.Set("index", "0")
+	params.Set("pageSize", strconv.Itoa(filesPageSize))
+	if gameVersion != "" {
+		params.Set("gameVersion", gameVersion)
+	}
+	if modLoader != ModLoaderAny {
+		params.Set("modLoaderType", strconv.Itoa(int(modLoader)))
+	}
+	var result struct {
+		Data []File `json:"data"`
+	}
+	if err := c.http.DoJSON(ctx, fmt.Sprintf("%s/mods/%d/files?%s", BaseURL(), modID, params.Encode()), &result); err != nil {
+		return nil, err
+	}
+	return result.Data, nil
+}
+
 func (c *Client) GetModpack(ctx context.Context, modID int) (*Modpack, error) {
 	if c.missingKey() {
 		return nil, indexers.NewAuthConfigError("fuego", "API key not configured")

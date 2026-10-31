@@ -4,6 +4,7 @@ package discopanel.v1;
 
 import "discopanel/options/v1/options.proto";
 import "discopanel/v1/storage.proto";
+import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
@@ -54,6 +55,30 @@ service ModService {
     option (discopanel.options.v1.perm) = {
       resource: RESOURCE_TYPE_MODS
       action: ACTION_TYPE_DELETE
+      object_id_field: "server_id"
+    };
+  }
+  // Check installed jars for newer compatible builds
+  rpc CheckModUpdates(CheckModUpdatesRequest) returns (CheckModUpdatesResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODS
+      action: ACTION_TYPE_READ
+      object_id_field: "server_id"
+    };
+  }
+  // Replace jars with their newest compatible builds
+  rpc ApplyModUpdates(ApplyModUpdatesRequest) returns (ApplyModUpdatesResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODS
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "server_id"
+    };
+  }
+  // Restore the jar an update replaced
+  rpc RollbackModUpdate(RollbackModUpdateRequest) returns (RollbackModUpdateResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODS
+      action: ACTION_TYPE_UPDATE
       object_id_field: "server_id"
     };
   }
@@ -135,4 +160,106 @@ message DeleteModRequest {
 // Deletion confirmation
 message DeleteModResponse {
   string message = 1;
+}
+
+// Upstream that identified a jar
+enum ModUpdateSource {
+  MOD_UPDATE_SOURCE_UNSPECIFIED = 0;
+  MOD_UPDATE_SOURCE_MODRINTH = 1;
+  MOD_UPDATE_SOURCE_CURSEFORGE = 2;
+}
+
+// Update verdict for one jar
+enum ModUpdateStatus {
+  MOD_UPDATE_STATUS_UNSPECIFIED = 0;
+  // No upstream knows the file by its hash
+  MOD_UPDATE_STATUS_UNKNOWN_SOURCE = 1;
+  MOD_UPDATE_STATUS_UP_TO_DATE = 2;
+  MOD_UPDATE_STATUS_UPDATE_AVAILABLE = 3;
+  // Known, but nothing matches this server's version, loader and channel
+  MOD_UPDATE_STATUS_NO_COMPATIBLE_VERSION = 4;
+  MOD_UPDATE_STATUS_ERROR = 5;
+}
+
+// One build of an upstream project
+message ModRelease {
+  string version_id = 1;
+  string version = 2;
+  string file_name = 3;
+  ReleaseType release_type = 4;
+  google.protobuf.Timestamp published_at = 5;
+  string changelog_url = 6;
+}
+
+// Update state of one installed jar
+message ModUpdate {
+  // Mod entry id as ListMods reports it
+  string mod_id = 1;
+  string file_name = 2;
+  bool enabled = 3;
+  ModUpdateStatus status = 4;
+  ModUpdateSource source = 5;
+  string project_id = 6;
+  string project_name = 7;
+  string project_url = 8;
+  ModRelease current = 9;
+  ModRelease latest = 10;
+  string error = 11;
+  // File the last update replaced, set while a rollback is possible
+  string rollback_file_name = 12;
+  string rollback_version = 13;
+  // Set when a pack or setting reinstalls this jar, no update is offered
+  string managed_by = 14;
+}
+
+// Jars to check
+message CheckModUpdatesRequest {
+  string server_id = 1;
+  // Offer beta builds as well as releases
+  bool include_beta = 2;
+}
+
+// Verdict per jar and the target it was graded against
+message CheckModUpdatesResponse {
+  repeated ModUpdate updates = 1;
+  string mc_version = 2;
+  repeated string loaders = 3;
+  // Server runs a modpack, pack installs may replace updated jars
+  bool modpack = 4;
+}
+
+// Jars to update, each is rechecked on the server
+message ApplyModUpdatesRequest {
+  string server_id = 1;
+  repeated string mod_ids = 2;
+  bool include_beta = 3;
+}
+
+// Outcome for one requested jar
+message ModUpdateOutcome {
+  string mod_id = 1;
+  string file_name = 2;
+  bool updated = 3;
+  string new_file_name = 4;
+  string new_version = 5;
+  string error = 6;
+}
+
+// Per jar outcomes
+message ApplyModUpdatesResponse {
+  repeated ModUpdateOutcome outcomes = 1;
+  // Server is running, the new jars load on its next start
+  bool restart_required = 2;
+}
+
+// Jar whose last update to undo
+message RollbackModUpdateRequest {
+  string server_id = 1;
+  string mod_id = 2;
+}
+
+// Restored jar
+message RollbackModUpdateResponse {
+  string file_name = 1;
+  bool restart_required = 2;
 }

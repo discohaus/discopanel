@@ -120,6 +120,10 @@ type Client struct {
 	// Cached module-facing panel URL, stable per process
 	panelURLOnce sync.Once
 	panelURL     string
+
+	// Default log driver detected from the engine, see DefaultLogDriver
+	logDriverMu   sync.Mutex
+	autoLogDriver string
 }
 
 // Registers panel-side health source for container status
@@ -443,11 +447,8 @@ func (c *Client) CreateContainer(ctx context.Context, server *v1.Server, serverC
 		},
 	}
 
-	// Log driver via config
-	logDriver := c.config.LogDriver
-	if logDriver == "" {
-		logDriver = "local"
-	}
+	// Log driver via config, or the engine's default
+	logDriver := c.DefaultLogDriver()
 
 	hostConfig := &container.HostConfig{
 		PortBindings: portBindings,
