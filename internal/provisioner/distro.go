@@ -46,26 +46,12 @@ func (p *Provisioner) installFabric(ctx context.Context, server *v1.Server, load
 	mc := server.McVersion
 
 	if loaderVersion == "" {
-		var loaders []struct {
-			Loader struct {
-				Version string `json:"version"`
-				Stable  bool   `json:"stable"`
-			} `json:"loader"`
+		builds, err := p.LoaderBuilds(ctx, v1.ModLoader_MOD_LOADER_FABRIC, mc)
+		if err != nil {
+			return nil, err
 		}
-		if err := p.getJSON(ctx, fmt.Sprintf("%s/versions/loader/%s", fabricMetaURL(), mc), &loaders); err != nil {
-			return nil, fmt.Errorf("failed to resolve Fabric loader versions: %w", err)
-		}
-		if len(loaders) == 0 {
+		if loaderVersion = recommendedBuild(builds); loaderVersion == "" {
 			return nil, fmt.Errorf("Fabric has no loader builds for MC %s", mc)
-		}
-		for _, l := range loaders {
-			if l.Loader.Stable {
-				loaderVersion = l.Loader.Version
-				break
-			}
-		}
-		if loaderVersion == "" {
-			loaderVersion = loaders[0].Loader.Version
 		}
 	}
 
@@ -114,26 +100,12 @@ func (p *Provisioner) installQuilt(ctx context.Context, server *v1.Server, cfg *
 	mc := server.McVersion
 
 	if loaderVersion == "" {
-		var loaders []struct {
-			Loader struct {
-				Version string `json:"version"`
-			} `json:"loader"`
+		builds, err := p.LoaderBuilds(ctx, v1.ModLoader_MOD_LOADER_QUILT, mc)
+		if err != nil {
+			return nil, err
 		}
-		if err := p.getJSON(ctx, fmt.Sprintf("%s/versions/loader/%s", quiltMetaURL(), mc), &loaders); err != nil {
-			return nil, fmt.Errorf("failed to resolve Quilt loader versions: %w", err)
-		}
-		if len(loaders) == 0 {
+		if loaderVersion = recommendedBuild(builds); loaderVersion == "" {
 			return nil, fmt.Errorf("Quilt has no loader builds for MC %s", mc)
-		}
-		// Newest first, prefer newest non-prerelease version
-		for _, l := range loaders {
-			if !strings.Contains(l.Loader.Version, "-") {
-				loaderVersion = l.Loader.Version
-				break
-			}
-		}
-		if loaderVersion == "" {
-			loaderVersion = loaders[0].Loader.Version
 		}
 	}
 

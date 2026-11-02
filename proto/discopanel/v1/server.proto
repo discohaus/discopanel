@@ -321,6 +321,7 @@ message CreateServerRequest {
   repeated NetworkPort additional_ports = 17;
   DockerOverrides docker_overrides = 18;
   string world_upload_session_id = 21; // Uploaded world zip to import at create
+  string loader_version = 23; // Pinned loader build, empty installs the recommended one
 }
 
 // Created server instance

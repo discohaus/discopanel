@@ -145,12 +145,12 @@ func (p *Provisioner) resolveForgeMavenVersion(ctx context.Context, mc, forgeVer
 func (p *Provisioner) installNeoForge(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, neoVersion string) (*Result, error) {
 	mc := server.McVersion
 
-	mavenBase := neoforgeMavenURL()
-	artifact := "neoforge"
+	// Pins resolve against the same artifact as the listing
+	src := neoforgeSourceFor(mc)
+	mavenBase, artifact := src.maven, src.artifact
 	if neoVersion == "" {
 		var err error
-		neoVersion, mavenBase, artifact, err = p.resolveNeoForgeVersion(ctx, mc)
-		if err != nil {
+		if neoVersion, err = p.resolveNeoForgeVersion(ctx, mc); err != nil {
 			return nil, err
 		}
 	}
@@ -186,44 +186,17 @@ func (p *Provisioner) installNeoForge(ctx context.Context, server *v1.Server, cf
 }
 
 // Picks the newest NeoForge version for an MC version
-func (p *Provisioner) resolveNeoForgeVersion(ctx context.Context, mc string) (string, string, string, error) {
-	api, maven, artifact := neoforgeVersionAPI(), neoforgeMavenURL(), "neoforge"
-
-	prefix := neoforgePrefix(mc)
-	if mc == "1.20.1" {
-		api, maven, artifact = neoforgeLegacyAPI(), neoforgeLegacyURL(), "forge"
-		prefix = "1.20.1-"
+func (p *Provisioner) resolveNeoForgeVersion(ctx context.Context, mc string) (string, error) {
+	builds, err := p.LoaderBuilds(ctx, v1.ModLoader_MOD_LOADER_NEOFORGE, mc)
+	if err != nil {
+		return "", err
 	}
-
-	var listing struct {
-		Versions []string `json:"versions"`
-	}
-	if err := p.getJSON(ctx, api, &listing); err != nil {
-		return "", "", "", fmt.Errorf("failed to list NeoForge versions: %w", err)
-	}
-
-	var matches []string
-	for _, v := range listing.Versions {
-		if strings.HasPrefix(v, prefix) {
-			matches = append(matches, v)
-		}
-	}
-	if len(matches) == 0 {
-		return "", "", "", fmt.Errorf("NeoForge has no builds for MC %s", mc)
-	}
-
-	// Listing is ascending, prefer newest stable then newest beta
-	pick := ""
-	for i := len(matches) - 1; i >= 0; i-- {
-		if !strings.Contains(matches[i], "-beta") {
-			pick = matches[i]
-			break
-		}
-	}
+	// Newest stable, else newest beta
+	pick := recommendedBuild(builds)
 	if pick == "" {
-		pick = matches[len(matches)-1]
+		return "", fmt.Errorf("NeoForge has no builds for MC %s", mc)
 	}
-	return pick, maven, artifact, nil
+	return pick, nil
 }
 
 // Maps an MC version to its NeoForge prefix

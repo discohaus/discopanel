@@ -2924,12 +2924,13 @@ message ServerProperties {
     label: "Preserve Client Hostname"
     category: "proxy"
   }];
+  // Pins the loader build, name predates Fabric and Quilt support
   optional string forge_version = 117 [(discopanel.options.v1.prop) = {
     default_value: ""
-    desc: "Specific Forge/NeoForge version to install"
+    desc: "Exact Forge, NeoForge, Fabric or Quilt build to install (e.g. 21.1.143), empty installs the recommended build for the Minecraft version"
     input: "text"
-    label: "Forge Version"
-    category: "curseforge"
+    label: "Loader Build"
+    category: "server"
   }];
   optional string forge_installer = 118 [(discopanel.options.v1.prop) = {
     default_value: ""

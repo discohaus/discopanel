@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
+	import { guardUnsavedChanges } from '$lib/utils/unsaved-guard.svelte';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { Button } from '$lib/components/ui/button';
@@ -8,8 +9,8 @@
 	import { Select, SelectContent, SelectItem, SelectTrigger } from '$lib/components/ui/select';
 	import { Switch } from '$lib/components/ui/switch';
 	import { ServerAvatar } from '$lib/components/app';
-	import { rpcClient } from '$lib/api/rpc-client';
-	import { create } from '@bufbuild/protobuf';
+	import { rpcClient, silentCallOptions } from '$lib/api/rpc-client';
+	import { clone, create } from '@bufbuild/protobuf';
 	import { notify } from '$lib/stores/activity.svelte';
 	import { Loader2, Save, RotateCcw, Lock, Camera, CircleArrowUp } from '@lucide/svelte';
 	import type { Server, IndexedModpack } from '$lib/proto/discopanel/v1/storage_pb';
@@ -34,6 +35,7 @@
 	import DockerOverridesEditor from '$lib/components/docker-overrides-editor.svelte';
 	import { containerRoot, volumeSourceRoots } from '$lib/components/files/picker-roots';
 	import MemorySlider from '$lib/components/memory-slider.svelte';
+	import LoaderBuildSelect from '$lib/components/loader-build-select.svelte';
 	import { getUniqueDockerImages, encodeIconUpload } from '$lib/utils';
 
 	interface Props {
@@ -196,50 +198,85 @@
 		});
 	}
 
+	type FieldKey = (typeof FIELD_KEYS)[number];
+
+	// The form is diffed against the server values it was last synced with,
+	// not against the live `server` prop. The page polls every few seconds;
+	// diffing against the live prop turned any outside change (another user,
+	// a task, autostart flipping) into a phantom "unsaved change", and Save
+	// then wrote the stale values back over it.
 	let formData = $state<UpdateServerRequest>(buildFormData());
+	let baseline = $state.raw<UpdateServerRequest>(clone(UpdateServerRequestSchema, buildFormData()));
+
+	function sameValue(a: unknown, b: unknown): boolean {
+		if (typeof a !== 'object' || a === null || typeof b !== 'object' || b === null) {
+			return a === b;
+		}
+		return safeToString(a) === safeToString(b);
+	}
 
 	function fieldDirty(key: string): boolean {
-		switch (key) {
-			case 'name':
-				return formData.name !== server.name;
-			case 'description':
-				return formData.description !== (server.description || '');
-			case 'mcVersion':
-				return formData.mcVersion !== server.mcVersion;
-			case 'modLoader':
-				return formData.modLoader !== server.modLoader;
-			case 'memory':
-				return formData.memory !== server.memory;
-			case 'memoryMin':
-				return formData.memoryMin !== server.memoryMin;
-			case 'memoryMax':
-				return formData.memoryMax !== server.memoryMax;
-			case 'maxPlayers':
-				return formData.maxPlayers !== server.maxPlayers;
-			case 'dockerImage':
-				return formData.dockerImage !== server.dockerImage;
-			case 'port':
-				return formData.port !== server.port;
-			case 'additionalPorts':
-				return (
-					safeToString(formData.additionalPorts) !== safeToString(server.additionalPorts || [])
-				);
-			case 'detached':
-				return formData.detached !== server.detached;
-			case 'autoStart':
-				return formData.autoStart !== server.autoStart;
-			case 'dockerOverrides':
-				return (
-					safeToString($state.snapshot(formData.dockerOverrides)) !==
-					safeToString(server.dockerOverrides)
-				);
-			default:
-				return false;
+		if (!(FIELD_KEYS as readonly string[]).includes(key)) return false;
+		const k = key as FieldKey;
+		return !sameValue($state.snapshot(formData[k]), baseline[k]);
+	}
+
+	// Pull outside changes into fields the user has not touched, keep edits
+	function rebaseOnServer() {
+		const fresh = buildFormData();
+		for (const k of FIELD_KEYS) {
+			if (sameValue($state.snapshot(formData[k]), baseline[k])) {
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any -- keyed copy across one message type
+				(formData as any)[k] = clone(UpdateServerRequestSchema, fresh)[k];
+			}
+		}
+		baseline = clone(UpdateServerRequestSchema, fresh);
+	}
+
+	// Pinned loader build lives in the server properties
+	const BUILD_KEY = 'forgeVersion';
+	let buildPin = $state<string | null>(null); // Null when properties are unreadable
+	// Changing loader or MC version drops the pin server side
+	let runtimeChanged = $derived(
+		formData.modLoader !== baseline.modLoader || formData.mcVersion !== baseline.mcVersion
+	);
+	let expectedBuild = $derived(runtimeChanged ? '' : (buildPin ?? ''));
+	// Follows the expected pin until the user picks another build
+	let loaderBuild = $derived(expectedBuild);
+	let buildDirty = $derived(buildPin !== null && loaderBuild !== expectedBuild);
+	let showLoaderBuild = $derived(
+		buildPin !== null &&
+			!!formData.mcVersion &&
+			!!modLoaders.find((l) => l.loader === formData.modLoader)?.pinnableBuilds
+	);
+
+	async function loadBuildPin() {
+		try {
+			const res = await rpcClient.properties.getServerProperties(
+				{ serverId: server.id },
+				silentCallOptions
+			);
+			buildPin = findBuildPin(res.categories);
+		} catch {
+			// Without property access the picker stays hidden
+			buildPin = null;
 		}
 	}
 
-	let dirtyCount = $derived(FIELD_KEYS.filter((key) => fieldDirty(key)).length);
+	function findBuildPin(categories: { properties: { key: string; value: string }[] }[]): string {
+		for (const cat of categories) {
+			const prop = cat.properties.find((p) => p.key === BUILD_KEY);
+			if (prop) return prop.value;
+		}
+		return '';
+	}
+
+	let dirtyCount = $derived(
+		FIELD_KEYS.filter((key) => fieldDirty(key)).length + (buildDirty ? 1 : 0)
+	);
 	let dirty = $derived(dirtyCount > 0);
+
+	guardUnsavedChanges(() => dirty && !saving);
 
 	let hostTotalMb = $state(0);
 	let memoryAllocations = $state<{ serverId: string; memory: number }[]>([]);
@@ -254,22 +291,30 @@
 		modLoaders.find((l) => l.loader === formData.modLoader)?.displayName || 'Select a mod loader'
 	);
 
-	// Rebuild the form when viewing a different server
+	// Rebuild the form when viewing a different server, rebase it when the
+	// same server's values change underneath (poll, save, other users)
 	let previousServerId = $state(server.id);
 	$effect(() => {
-		if (server.id !== previousServerId) {
-			previousServerId = server.id;
-			untrack(() => {
+		void server;
+		untrack(() => {
+			if (server.id !== previousServerId) {
+				previousServerId = server.id;
 				formData = buildFormData();
+				baseline = clone(UpdateServerRequestSchema, buildFormData());
 				saving = false;
 				uploadedFavicon = '';
+				buildPin = null;
 				loadOptions();
-			});
-		}
+				loadBuildPin();
+				return;
+			}
+			rebaseOnServer();
+		});
 	});
 
 	onMount(() => {
 		loadOptions();
+		loadBuildPin();
 		checkUrlHash();
 		window.addEventListener('hashchange', checkUrlHash);
 		return () => window.removeEventListener('hashchange', checkUrlHash);
@@ -309,12 +354,27 @@
 		if (!dirty || saving) return;
 		saving = true;
 		try {
-			await rpcClient.server.updateServer(
-				create(UpdateServerRequestSchema, {
-					...formData,
-					clearAdditionalPorts: (formData.additionalPorts?.length ?? 0) === 0
-				})
-			);
+			const fieldsDirty = FIELD_KEYS.some((key) => fieldDirty(key));
+			const pinAfterUpdate = expectedBuild;
+			const build = loaderBuild;
+			if (fieldsDirty) {
+				await rpcClient.server.updateServer(
+					create(UpdateServerRequestSchema, {
+						...formData,
+						clearAdditionalPorts: (formData.additionalPorts?.length ?? 0) === 0
+					})
+				);
+			}
+			// Runs after the server update, which may have cleared the pin
+			if (buildPin !== null && build !== pinAfterUpdate) {
+				const res = await rpcClient.properties.updateServerProperties({
+					serverId: server.id,
+					updates: { [BUILD_KEY]: build }
+				});
+				buildPin = findBuildPin(res.categories);
+			} else if (fieldsDirty && runtimeChanged) {
+				buildPin = '';
+			}
 			notify.success(
 				stopped ? 'Settings saved' : 'Settings saved. Restart the server to apply changes.'
 			);
@@ -329,6 +389,8 @@
 
 	function reset() {
 		formData = buildFormData();
+		baseline = clone(UpdateServerRequestSchema, buildFormData());
+		loaderBuild = expectedBuild;
 	}
 
 	async function handleIconSelect(e: Event) {
@@ -588,6 +650,31 @@
 							</SelectContent>
 						</Select>
 					</div>
+
+					{#if showLoaderBuild}
+						<div id="panel-loaderBuild" class={ring('panel-loaderBuild')}>
+							<div class="mb-1.5 flex items-center gap-1.5">
+								<Label for="loader_build" class="text-xs font-medium text-muted-foreground">
+									Loader build
+								</Label>
+								{#if !stopped}
+									<span title="Stop the server to change">
+										<Lock class="size-3 text-muted-foreground/50" />
+									</span>
+								{/if}
+								{#if buildDirty}
+									<span class="size-1.5 rounded-full bg-status-busy" title="Unsaved change"></span>
+								{/if}
+							</div>
+							<LoaderBuildSelect
+								id="loader_build"
+								modLoader={formData.modLoader}
+								mcVersion={formData.mcVersion}
+								bind:value={loaderBuild}
+								disabled={loadingOptions || !stopped || saving}
+							/>
+						</div>
+					{/if}
 
 					<div id="panel-maxPlayers" class={ring('panel-maxPlayers')}>
 						{@render fieldLabel('maxPlayers', 'max_players', 'Max players')}

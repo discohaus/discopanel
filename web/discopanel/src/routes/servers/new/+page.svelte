@@ -45,6 +45,7 @@
 	import { volumeSourceRoots } from '$lib/components/files/picker-roots';
 	import { NetworkPortRowsEditor } from '$lib/components/app';
 	import MemorySlider from '$lib/components/memory-slider.svelte';
+	import LoaderBuildSelect from '$lib/components/loader-build-select.svelte';
 	import { getUniqueDockerImages, getDockerImageDisplayName, encodeIconUpload } from '$lib/utils';
 	import { fallbackAddresses, playerAddress } from '$lib/hostname';
 	import type { GetProxyStatusResponse } from '$lib/proto/discopanel/v1/proxy_pb';
@@ -267,7 +268,11 @@
 			formData.mcVersion = config['mc_version'] || modpack.mcVersion || '';
 			// Backend floors modpack memory at 4 GB
 			formData.memory = Math.max(Number(config['memory']) || modpack.recommendedRam || 0, 4096);
-			formData.dockerImage = config['docker_image'] || '';
+			// The listing's image is derived from the newest MC version the
+			// pack lists, not the version installed. Pinning it ran packs on a
+			// newer Java than they support; leave it empty so the resolved
+			// Java version picks the runtime.
+			formData.dockerImage = '';
 			await loadModpackVersions(modpack.id);
 		} catch (error) {
 			notify.error('Failed to load modpack configuration');
@@ -364,6 +369,18 @@
 	let installableLoaders = $derived(modLoaders.filter((l) => l.provisionable));
 	let selectedLoaderInfo = $derived(modLoaders.find((l) => l.loader === formData.modLoader));
 	let selectedLoaderName = $derived(selectedLoaderInfo?.name ?? '');
+
+	// Empty installs the recommended build, packs pick their own
+	let loaderBuild = $state('');
+	let showLoaderBuild = $derived(
+		!selectedModpack && !!selectedLoaderInfo?.pinnableBuilds && !!formData.mcVersion
+	);
+	// Builds belong to one loader and MC version
+	$effect(() => {
+		void formData.modLoader;
+		void formData.mcVersion;
+		loaderBuild = '';
+	});
 	let selectedListener = $derived(proxyListeners.find((l) => l.id === formData.proxyListenerId));
 
 	// Address preview mirrored in the summary rail
@@ -425,6 +442,7 @@
 				modpackId: selectedModpack?.id || '',
 				modpackVersionId: versionToSend || '',
 				worldUploadSessionId: worldSessionId,
+				loaderVersion: showLoaderBuild ? loaderBuild : '',
 				// Port zero routes through the proxy hostnames
 				port: useProxyMode ? 0 : formData.port,
 				// Direct mode keeps any typed hostnames out of the request
@@ -802,6 +820,24 @@
 						<p class="text-xs text-muted-foreground">This loader supports mods</p>
 					{/if}
 				</div>
+
+				{#if showLoaderBuild}
+					<div class="space-y-2">
+						<Label for="loaderBuild">Loader build</Label>
+						<div>
+							<LoaderBuildSelect
+								id="loaderBuild"
+								modLoader={formData.modLoader}
+								mcVersion={formData.mcVersion}
+								bind:value={loaderBuild}
+								disabled={loading}
+							/>
+						</div>
+						<p class="text-xs text-muted-foreground">
+							Pin an exact {selectedLoaderInfo?.displayName} build, or keep the recommended one
+						</p>
+					</div>
+				{/if}
 			</SectionCard>
 
 			<SectionCard

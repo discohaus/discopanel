@@ -475,7 +475,9 @@ func (s *Store) CreateDefaultServerProperties(serverID string) *v1.ServerPropert
 			if field.Name == "Id" || field.Name == "ServerId" || field.Name == "UpdatedAt" ||
 				field.Name == "RconPassword" ||
 				field.Name == "InitMemory" || field.Name == "MaxMemory" || field.Name == "ServerPort" ||
-				field.Name == "MaxPlayers" {
+				field.Name == "MaxPlayers" ||
+				// Loader builds belong to one loader and MC version
+				field.Name == "ForgeVersion" {
 				continue
 			}
 

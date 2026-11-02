@@ -21,6 +21,10 @@ service MinecraftService {
   rpc GetDockerImages(GetDockerImagesRequest) returns (GetDockerImagesResponse) {
     option (discopanel.options.v1.perm) = {session: true};
   }
+  // List installable builds of a loader for one MC version
+  rpc GetLoaderVersions(GetLoaderVersionsRequest) returns (GetLoaderVersionsResponse) {
+    option (discopanel.options.v1.perm) = {session: true};
+  }
 }
 
 // Minecraft version metadata
@@ -53,6 +57,8 @@ message ModLoaderInfo {
   ModLoader loader = 8;
   // Directory jars install into, mods or plugins, empty when none
   string mods_directory = 9;
+  // True when an exact loader build can be pinned
+  bool pinnable_builds = 10;
 }
 
 // Empty loaders request
@@ -77,4 +83,22 @@ message GetDockerImagesRequest {}
 // Docker image catalog
 message GetDockerImagesResponse {
   repeated DockerImage images = 1;
+}
+
+// One installable loader build
+message LoaderBuild {
+  string version = 1;
+  bool stable = 2; // False for betas and prereleases
+  bool recommended = 3; // Build installed when none is pinned
+}
+
+// Loader and MC version to list builds for
+message GetLoaderVersionsRequest {
+  ModLoader mod_loader = 1;
+  string mc_version = 2;
+}
+
+// Builds newest first
+message GetLoaderVersionsResponse {
+  repeated LoaderBuild builds = 1;
 }

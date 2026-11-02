@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { guardUnsavedChanges } from '$lib/utils/unsaved-guard.svelte';
 	import { centerInRail } from '$lib/utils';
 	import { onMount, untrack } from 'svelte';
 	import { SvelteURL } from 'svelte/reactivity';
@@ -21,6 +22,7 @@
 	let { categories, onSave, saving = false }: Props = $props();
 
 	const form = new PropertiesForm(false);
+	guardUnsavedChanges(() => form.modifiedKeys.size > 0);
 
 	let activeCategory = $state<string>('');
 	let highlighted = $state<string | null>(null);

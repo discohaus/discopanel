@@ -39,6 +39,8 @@ type Provisioner struct {
 
 	mu     sync.Mutex
 	active map[string]*sync.Mutex // Per-server provisioning locks
+
+	metaDocs metaDocCache // Loader build listings
 }
 
 // Reports what a successful provision resolved
@@ -123,6 +125,7 @@ func (p *Provisioner) Ensure(ctx context.Context, server *v1.Server, cfg *v1.Ser
 		manifest = nil
 	}
 
+	p.dropForeignPin(ctx, server, cfg)
 	desired := p.desiredModpackFor(server, cfg)
 
 	var result *Result
@@ -191,11 +194,15 @@ func (p *Provisioner) Ensure(ctx context.Context, server *v1.Server, cfg *v1.Ser
 
 // Pinned loader version for loaders that honor pins
 func pinnedLoaderVersion(server *v1.Server, cfg *v1.ServerProperties) string {
-	switch server.ModLoader {
-	case v1.ModLoader_MOD_LOADER_FORGE, v1.ModLoader_MOD_LOADER_NEOFORGE:
-		return strVal(cfg.ForgeVersion)
+	if !SupportsLoaderBuilds(server.ModLoader) {
+		return ""
 	}
-	return ""
+	// Field name predates Fabric and Quilt pins
+	pin := strVal(cfg.ForgeVersion)
+	if foreignLoaderBuild(server.ModLoader, pin) {
+		return ""
+	}
+	return pin
 }
 
 func (p *Provisioner) needsInstall(server *v1.Server, manifest *v1.Manifest, desired *desiredModpack, force bool, pinned string) bool {
@@ -294,16 +301,32 @@ var loaderInstallers = map[v1.ModLoader]installFunc{
 		return p.installVanilla(ctx, server)
 	},
 	v1.ModLoader_MOD_LOADER_FABRIC: func(p *Provisioner, ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, desired *desiredModpack, force bool) (*Result, error) {
-		return p.installFabric(ctx, server, "")
+		version, err := p.pinnedBuild(ctx, server, cfg)
+		if err != nil {
+			return nil, err
+		}
+		return p.installFabric(ctx, server, version)
 	},
 	v1.ModLoader_MOD_LOADER_QUILT: func(p *Provisioner, ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, desired *desiredModpack, force bool) (*Result, error) {
-		return p.installQuilt(ctx, server, cfg, "")
+		version, err := p.pinnedBuild(ctx, server, cfg)
+		if err != nil {
+			return nil, err
+		}
+		return p.installQuilt(ctx, server, cfg, version)
 	},
 	v1.ModLoader_MOD_LOADER_FORGE: func(p *Provisioner, ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, desired *desiredModpack, force bool) (*Result, error) {
-		return p.installForge(ctx, server, cfg, strVal(cfg.ForgeVersion))
+		version, err := p.pinnedBuild(ctx, server, cfg)
+		if err != nil {
+			return nil, err
+		}
+		return p.installForge(ctx, server, cfg, version)
 	},
 	v1.ModLoader_MOD_LOADER_NEOFORGE: func(p *Provisioner, ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, desired *desiredModpack, force bool) (*Result, error) {
-		return p.installNeoForge(ctx, server, cfg, strVal(cfg.ForgeVersion))
+		version, err := p.pinnedBuild(ctx, server, cfg)
+		if err != nil {
+			return nil, err
+		}
+		return p.installNeoForge(ctx, server, cfg, version)
 	},
 	v1.ModLoader_MOD_LOADER_PAPER: func(p *Provisioner, ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, desired *desiredModpack, force bool) (*Result, error) {
 		return p.installPaperMC(ctx, server, "paper")
