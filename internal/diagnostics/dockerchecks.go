@@ -53,6 +53,13 @@ func (r *Runner) explainDockerErr(c *check, err error) {
 			detail = fmt.Sprintf(" The socket is owned by uid %d gid %d, DiscoPanel runs as uid %d with groups %v.", uid, gid, os.Getuid(), groupsOrEmpty())
 		}
 		c.fail("Docker socket %s refused access (permission denied)", sock)
+		// Root being refused is not a file permission problem: an SELinux
+		// policy is blocking the container from the daemon socket, and
+		// relabelling the mount with :z does not grant that (issue #33)
+		if os.Getuid() == 0 || selinuxConfined() {
+			c.fix("This looks like SELinux blocking the panel container from the Docker socket (common on Fedora, RHEL, CentOS and Rocky). Adding :z to the socket mount does not help here. In compose add `security_opt: [\"label=disable\"]` to the discopanel service (docker run: --security-opt label=disable) and recreate the container; keep :z on the data volumes."+detail, docsTroubleshooting)
+			return
+		}
 		c.fix("Add the DiscoPanel user to the socket's group (usually docker) and log in again, or run the panel as root."+detail+" In compose, run the container as root or add group_add with the socket's gid.", docsTroubleshooting)
 	case strings.Contains(lower, "no such file"), strings.Contains(lower, "cannot find the file"):
 		c.fail("Docker socket %s does not exist", sock)
@@ -422,4 +429,16 @@ func (r *Runner) checkImages(ctx context.Context, c *check) {
 	default:
 		c.pass("%s current, %d not pulled yet", plural(counts["current"], "image", "images"), counts["absent"])
 	}
+}
+
+// Reports whether this process runs under an enforcing SELinux policy or a
+// container SELinux label
+func selinuxConfined() bool {
+	if b, err := os.ReadFile("/sys/fs/selinux/enforce"); err == nil && strings.TrimSpace(string(b)) == "1" {
+		return true
+	}
+	if b, err := os.ReadFile("/proc/self/attr/current"); err == nil && strings.Contains(string(b), "container_t") {
+		return true
+	}
+	return false
 }

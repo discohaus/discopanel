@@ -91,6 +91,9 @@ type Manager struct {
 
 	// Traffic shape counters diagnostics read
 	edge *EdgeObserver
+
+	// Limits bedrock wake attempts per server
+	bedrockWakes *wakeLimiter
 }
 
 // One cached container address with its inspect time
@@ -133,6 +136,7 @@ func NewManager(store *db.Store, dockerClient *docker.Client, cfg *config.Config
 		ipCache:       make(map[string]ipEntry),
 		intents:       NewIntentTable(),
 		edge:          NewEdgeObserver(),
+		bedrockWakes:  newWakeLimiter(bedrockWakeCooldown),
 	}
 	hubRT, err := NewHubRuntime(true, logger, m.intents)
 	if err != nil {
@@ -688,7 +692,7 @@ func (m *Manager) syncListenersLocked(ctx context.Context) error {
 		}
 		up, ok := m.udpSockets[port]
 		if !ok {
-			up = NewUDPProxy(&Config{ListenAddr: fmt.Sprintf(":%d", port), Logger: m.logger})
+			up = NewUDPProxy(&Config{ListenAddr: fmt.Sprintf(":%d", port), Logger: m.logger, Wake: m.bedrockWake})
 			if err := up.Start(); err != nil {
 				m.logger.Error("Failed to start udp relay on port %d: %v", port, err)
 				continue
@@ -792,6 +796,17 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 	}
 	m.syncHubTargets(ctx, servers, listenersByID)
 
+	// Wake flags read once per pass, only for servers with relays
+	wakeCfg := make(map[string]*v1.ServerProperties)
+	wake := func(server *v1.Server) bool {
+		cfg, read := wakeCfg[server.Id]
+		if !read {
+			cfg, _ = m.store.GetServerProperties(ctx, server.Id)
+			wakeCfg[server.Id] = cfg
+		}
+		return propEnabled(cfg, func(c *v1.ServerProperties) *bool { return c.EnableWakeOnConnect })
+	}
+
 	for _, server := range servers {
 		// Game routes register even for stopped wakeable servers
 		if len(server.ProxyHostnames) > 0 {
@@ -811,8 +826,28 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 			}
 		}
 
+		if !HasProxyPorts(server.AdditionalPorts) {
+			continue
+		}
+		serverPort := func(p *v1.NetworkPort) int { return int(p.ContainerPort) }
+		// Only ports marked Bedrock speak RakNet, voice chat and the like relay untouched
+		wakeable := wake(server)
+		serverWake := func(p *v1.NetworkPort) string {
+			if wakeable && isBedrockRelay("", p) {
+				return server.Id
+			}
+			return ""
+		}
+		motd := bedrockOfflineMOTD(server, wakeCfg[server.Id])
+		// Bedrock plugins keep their udp port so a join can wake the server
+		if wakeable && serverOffline(server.Status) && HasBedrockRelay("", server.AdditionalPorts) {
+			appendWakeRelays(udpRoutes, bedrockRelayPorts("", server.AdditionalPorts), OwnerServer, server.Id, server.Id, serverPort,
+				motd, int(server.MaxPlayers))
+			continue
+		}
+
 		// Extra proxied ports need a live container backend
-		if !HasProxyPorts(server.AdditionalPorts) || server.ContainerId == "" {
+		if server.ContainerId == "" {
 			continue
 		}
 		switch server.Status {
@@ -826,17 +861,47 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 			continue
 		}
 		appendPortRoutes(tcpRoutes, udpRoutes, server.AdditionalPorts, server.ProxyHostnames,
-			OwnerServer, server.Id, ip, func(p *v1.NetworkPort) int { return int(p.ContainerPort) })
+			OwnerServer, server.Id, ip, serverWake, serverPort)
+		// Frozen plugins can't pong, the relay answers until the wake
+		if wakeable && server.Status == v1.ServerStatus_SERVER_STATUS_PAUSED {
+			for _, p := range bedrockRelayPorts("", server.AdditionalPorts) {
+				if route, ok := udpRoutes[int(p.HostPort)]; ok && route.OwnerID == server.Id {
+					route.Sleeping = true
+					route.Motd = motd
+					route.MaxPlayers = int(server.MaxPlayers)
+					udpRoutes[int(p.HostPort)] = route
+				}
+			}
+		}
 	}
 
 	if modErr != nil {
 		return tcpRoutes, udpRoutes
 	}
 	for _, mod := range modules {
-		if mod.ContainerId == "" || mod.Status != v1.ModuleStatus_MODULE_STATUS_RUNNING {
+		if !HasProxyPorts(mod.Ports) {
 			continue
 		}
-		if !HasProxyPorts(mod.Ports) {
+		module := mod
+		modulePort := func(p *v1.NetworkPort) int { return m.moduleContainerPort(module, p) }
+		srv := serversByID[mod.ServerId]
+		// Joins through a gateway like geyser wake its parent
+		var wakeID string
+		if srv != nil && wake(srv) {
+			wakeID = srv.Id
+		}
+		moduleWake := func(p *v1.NetworkPort) string {
+			if isBedrockRelay(module.TemplateId, p) {
+				return wakeID
+			}
+			return ""
+		}
+		if mod.ContainerId == "" || mod.Status != v1.ModuleStatus_MODULE_STATUS_RUNNING {
+			// Stopped gateways that start with their server still take the join
+			if wakeID != "" && mod.AutoStart && !mod.Detached && serverOffline(srv.Status) && HasBedrockRelay(mod.TemplateId, mod.Ports) {
+				appendWakeRelays(udpRoutes, bedrockRelayPorts(mod.TemplateId, mod.Ports), OwnerModule, mod.Id, wakeID, modulePort,
+					bedrockOfflineMOTD(srv, wakeCfg[srv.Id]), int(srv.MaxPlayers))
+			}
 			continue
 		}
 		ip, err := m.containerIP(ctx, mod.ContainerId)
@@ -845,14 +910,13 @@ func (m *Manager) desiredRoutesLocked(ctx context.Context, listenersByID map[str
 			continue
 		}
 		var hostnames []string
-		if srv := serversByID[mod.ServerId]; srv != nil {
+		if srv != nil {
 			hostnames = srv.ProxyHostnames
 		}
 		// Global modules use panel names
 		hostnames = m.moduleFallbackLocked(ctx, hostnames)
-		module := mod
 		appendPortRoutes(tcpRoutes, udpRoutes, mod.Ports, hostnames,
-			OwnerModule, mod.Id, ip, func(p *v1.NetworkPort) int { return m.moduleContainerPort(module, p) })
+			OwnerModule, mod.Id, ip, moduleWake, modulePort)
 	}
 
 	m.pruneStatsLocked(servers, modules, tcpRoutes, udpRoutes)
@@ -898,7 +962,7 @@ func (m *Manager) dropStatsLocked(drop func(string) bool) {
 }
 
 // Adds one port list's routes onto the desired tables
-func appendPortRoutes(tcpRoutes map[int][]Route, udpRoutes map[int]Route, ports []*v1.NetworkPort, fallbackHostnames []string, ownerKind, ownerID, backendHost string, containerPort func(*v1.NetworkPort) int) {
+func appendPortRoutes(tcpRoutes map[int][]Route, udpRoutes map[int]Route, ports []*v1.NetworkPort, fallbackHostnames []string, ownerKind, ownerID, backendHost string, wake func(*v1.NetworkPort) string, containerPort func(*v1.NetworkPort) int) {
 	for _, port := range ports {
 		if port == nil || !port.ProxyEnabled || port.HostPort <= 0 {
 			continue
@@ -927,12 +991,38 @@ func appendPortRoutes(tcpRoutes map[int][]Route, udpRoutes map[int]Route, ports 
 		case v1.ModuleProtocol_MODULE_PROTOCOL_UDP:
 			// Udp counters never share a tcp stream id
 			route.ServerID += "-udp"
+			if wake != nil {
+				route.WakeServerID = wake(port)
+			}
 			udpRoutes[hostPort] = route
 		default:
 			route.Protocol = v1.ModuleProtocol_MODULE_PROTOCOL_TCP
 			tcpRoutes[hostPort] = append(tcpRoutes[hostPort], route)
 		}
 	}
+}
+
+// Backendless bedrock relays that only answer pings and wake the server
+func appendWakeRelays(udpRoutes map[int]Route, ports []*v1.NetworkPort, ownerKind, ownerID, wakeID string, containerPort func(*v1.NetworkPort) int, motd string, maxPlayers int) {
+	relays := make(map[int]Route)
+	all := func(*v1.NetworkPort) string { return wakeID }
+	appendPortRoutes(nil, relays, ports, nil, ownerKind, ownerID, "", all, containerPort)
+	for port, route := range relays {
+		route.State = v1.ProxyRouteState_PROXY_ROUTE_STATE_OFFLINE
+		route.Wakeable = true
+		route.Motd = motd
+		route.MaxPlayers = maxPlayers
+		udpRoutes[port] = route
+	}
+}
+
+// Stopped states a wake on connect join starts from, as on java routes
+func serverOffline(status v1.ServerStatus) bool {
+	switch status {
+	case v1.ServerStatus_SERVER_STATUS_STOPPED, v1.ServerStatus_SERVER_STATUS_STOPPING, v1.ServerStatus_SERVER_STATUS_ERROR:
+		return true
+	}
+	return false
 }
 
 // True when any port wants proxy routing
@@ -1194,13 +1284,28 @@ func (m *Manager) SyncServerRoutes(ctx context.Context, server *v1.Server) error
 	if len(server.ProxyHostnames) > 0 {
 		firstErr = m.UpdateServerRoute(server)
 	}
-	// Extra proxied ports only reconcile in a full pass
-	if HasProxyPorts(server.AdditionalPorts) {
+	// Extra proxied ports and module gateways only reconcile in a full pass,
+	// gateway relays follow the parent's status and wake flag
+	if HasProxyPorts(server.AdditionalPorts) || m.serverHasProxiedModules(ctx, server.Id) {
 		if err := m.SyncListeners(ctx); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
+}
+
+// True when one of the server's modules routes a port through the proxy
+func (m *Manager) serverHasProxiedModules(ctx context.Context, serverID string) bool {
+	modules, err := m.store.ListServerModules(ctx, serverID)
+	if err != nil {
+		return false
+	}
+	for _, mod := range modules {
+		if HasProxyPorts(mod.Ports) {
+			return true
+		}
+	}
+	return false
 }
 
 // Hostname free route template, callers stamp each name on
@@ -1295,7 +1400,8 @@ func offlineMOTD(cfg *v1.ServerProperties, wakeable bool) string {
 	if wakeable {
 		return SyntheticMOTD(cfg, "§7offline", "§ajoin to press play")
 	}
-	return SyntheticMOTD(cfg, "§7offline", "§7the server is paused")
+	// Paused reads as sleeping elsewhere, stopped servers say so plainly
+	return SyntheticMOTD(cfg, "§7offline", "§7the server is stopped")
 }
 
 // Builds the status lines shown while a server boots

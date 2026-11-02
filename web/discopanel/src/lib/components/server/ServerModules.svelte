@@ -12,7 +12,8 @@
 	import {
 		ModuleStatus,
 		ModuleProtocol,
-		ModuleProtocolSchema
+		ModuleProtocolSchema,
+		ServerStatus
 	} from '$lib/proto/discopanel/v1/storage_pb';
 	import { enumLabel } from '$lib/proto-meta';
 	import { TONE_BADGE, TONE_BG } from '$lib/server-status';
@@ -52,6 +53,17 @@
 	}
 
 	let { server, active = false, prompts = [], onPromptAnswered, onModuleCount }: Props = $props();
+
+	// Matches the panel's bedrock gateway rule, older geyser rows lack the port flag
+	function bedrockGateway(m: Module): boolean {
+		return m.ports.some(
+			(p) =>
+				p.protocol === ModuleProtocol.UDP &&
+				p.proxyEnabled &&
+				p.hostPort > 0 &&
+				(p.bedrock || m.templateId === 'builtin-geyser')
+		);
+	}
 
 	let modules = $state<Module[]>([]);
 	let templates = $state<ModuleTemplate[]>([]);
@@ -543,6 +555,14 @@
 							{/if}
 							{#if module.detached}
 								<Badge variant="secondary">Detached</Badge>
+							{/if}
+							{#if module.status === ModuleStatus.RUNNING && server.status === ServerStatus.STOPPED && bedrockGateway(module)}
+								<Badge
+									variant="secondary"
+									title="Kept running while the server sleeps so Bedrock joins can wake it"
+								>
+									Wakes on Bedrock join
+								</Badge>
 							{/if}
 						</div>
 						<div

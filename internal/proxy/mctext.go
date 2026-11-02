@@ -243,6 +243,15 @@ func kickStartFailed() minecraft.Text {
 	return poster(spans...)
 }
 
+// Kick screen while a stop or other change holds the server
+func kickBusy() minecraft.Text {
+	return poster(
+		headline("the server is busy right now", inkEmber),
+		minecraft.Plain("\n"),
+		minecraft.Solid("it's stopping or being changed, try again in a moment", inkGray),
+	)
+}
+
 // Kick screen while the container still boots
 func kickStillStarting() minecraft.Text {
 	return poster(

@@ -31,6 +31,11 @@ type UDPProxy struct {
 	route       Route
 	stats       *RouteStats
 
+	// Asks the manager to wake a sleeping server
+	wake func(serverID string, stats *RouteStats)
+	// Caps synthetic bedrock pongs
+	pongs *pongLimiter
+
 	conn    *net.UDPConn
 	running bool
 	mu      sync.RWMutex
@@ -63,6 +68,8 @@ func NewUDPProxy(cfg *Config) *UDPProxy {
 		listenAddr: cfg.ListenAddr,
 		logger:     cfg.Logger,
 		stats:      &RouteStats{},
+		wake:       cfg.Wake,
+		pongs:      newPongLimiter(),
 		ctx:        ctx,
 		cancel:     cancel,
 		sessions:   make(map[string]*udpSession),
@@ -160,7 +167,8 @@ func (p *UDPProxy) SetRoute(route Route) {
 func (p *UDPProxy) Route() (Route, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	if p.backendHost == "" {
+	// Wake relays have an owner but no backend
+	if p.route.ServerID == "" {
 		return Route{}, false
 	}
 	return p.route, true
@@ -189,6 +197,10 @@ func (p *UDPProxy) proxyLoop(conn *net.UDPConn) {
 			}
 		}
 
+		if !p.screen(conn, clientAddr, buf[:n]) {
+			continue
+		}
+
 		session, err := p.getOrCreateSession(clientAddr)
 		if err != nil {
 			if errors.Is(err, errUDPSessionsFull) {
@@ -208,6 +220,35 @@ func (p *UDPProxy) proxyLoop(conn *net.UDPConn) {
 		}
 		p.statsRef().BytesToBackend.Add(int64(n))
 	}
+}
+
+// Runs the bedrock wake hook, false when the datagram stops here
+func (p *UDPProxy) screen(conn *net.UDPConn, clientAddr *net.UDPAddr, b []byte) bool {
+	p.mu.RLock()
+	route := p.route
+	backend := p.backendHost
+	stats := p.stats
+	p.mu.RUnlock()
+	if route.WakeServerID == "" {
+		return true
+	}
+
+	kind := classifyRakNet(b)
+	if kind == raknetJoin && p.wake != nil {
+		p.wake(route.WakeServerID, stats)
+	}
+	// Stopped and paused backends can't answer, the relay speaks for them
+	answer := backend == "" || route.Sleeping
+	if kind == raknetPing && answer {
+		if p.pongs.allow(clientAddr.IP) {
+			pong := bedrockPong(b, bedrockGUID(route.ServerID), route.Motd, route.MaxPlayers, conn.LocalAddr().(*net.UDPAddr).Port)
+			if _, err := conn.WriteToUDP(pong, clientAddr); err == nil {
+				stats.StatusPings.Add(1)
+			}
+		}
+		return false
+	}
+	return backend != ""
 }
 
 // Gets or creates a session, avoids lock order with Stop

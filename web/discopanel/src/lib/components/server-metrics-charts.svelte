@@ -164,7 +164,13 @@
 	let tpsPoints = $derived(samples.map((s) => ({ ts: sampleTs(s), value: s.tps })));
 	let msptPoints = $derived(samples.map((s) => ({ ts: sampleTs(s), value: s.mspt })));
 	let playerPoints = $derived(samples.map((s) => ({ ts: sampleTs(s), value: s.players })));
-	let cpuPoints = $derived(samples.map((s) => ({ ts: sampleTs(s), value: s.cpuPercent })));
+	// Samples are docker-style (100% per core, so 455% on a busy 8-core
+	// host). Scale to share of the host like the live resources panel,
+	// otherwise the chart disagrees with the number right above it.
+	let cpuCores = $derived(server.cpuCores > 0 ? server.cpuCores : 1);
+	let cpuPoints = $derived(
+		samples.map((s) => ({ ts: sampleTs(s), value: s.cpuPercent / cpuCores }))
+	);
 	let memoryPoints = $derived(samples.map((s) => ({ ts: sampleTs(s), value: s.memoryMb })));
 	let heapPoints = $derived(samples.map((s) => ({ ts: sampleTs(s), value: s.heapUsedMb })));
 </script>
@@ -246,7 +252,7 @@
 					format={(v) => Math.round(v).toString()}
 				/>
 				<MetricsChart
-					title="CPU"
+					title={server.cpuCores > 0 ? `CPU (of ${server.cpuCores} cores)` : 'CPU'}
 					color="var(--metric-cpu)"
 					points={cpuPoints}
 					format={(v) => v.toFixed(0)}

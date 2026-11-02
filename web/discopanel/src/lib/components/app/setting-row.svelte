@@ -10,6 +10,7 @@
 		description = '',
 		envVar = '',
 		hint = '',
+		warning = '',
 		required = false,
 		system = false,
 		modified = false,
@@ -25,6 +26,7 @@
 		description?: string;
 		envVar?: string;
 		hint?: string;
+		warning?: string;
 		required?: boolean;
 		system?: boolean;
 		modified?: boolean;
@@ -90,6 +92,9 @@
 		</div>
 		{#if hint}
 			<p class="mt-1.5 text-[11px] text-muted-foreground">{hint}</p>
+		{/if}
+		{#if warning}
+			<p class="mt-1.5 text-[11px] text-status-busy">{warning}</p>
 		{/if}
 	</div>
 </div>

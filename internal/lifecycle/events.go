@@ -2,6 +2,8 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -136,10 +138,36 @@ func (m *Manager) WakeServer(ctx context.Context, serverID string) error {
 
 // Cold-starts a stopped server asynchronously for wake-on-connect login
 func (m *Manager) StartServer(serverID string) error {
-	// Busy servers need no second start
 	if err := m.BeginStart(serverID); err != nil {
-		return nil
+		// A start already in flight serves this login too
+		var busy *BusyError
+		if errors.As(err, &busy) && busy.Kind == "start" {
+			return nil
+		}
+		// Stops, deletes and restores must not look like a boot
+		return fmt.Errorf("%w: %v", proxy.ErrServerBusy, err)
 	}
 	m.RunStartAsync(metrics.WithTrace(metrics.WithSource(context.Background(), "wake-on-connect")), serverID)
 	return nil
+}
+
+// Transition counter a status reader captures before asking docker
+func (m *Manager) StatusEpoch(serverID string) uint64 {
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+	return m.epochs[serverID]
+}
+
+// Mirrors docker's paused state into the wake gate. The paused set lives in
+// memory, so without this a panel restart leaves paused servers relaying to
+// a frozen backend instead of answering as sleeping and waking on join.
+// Reads taken before a transition began, or during one, are dropped so a
+// wake or pause that raced the docker read always wins.
+func (m *Manager) ObserveContainerStatus(serverID string, status v1.ServerStatus, epoch uint64) {
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+	if m.transitions[serverID] != nil || m.epochs[serverID] != epoch {
+		return
+	}
+	m.setPaused(serverID, status == v1.ServerStatus_SERVER_STATUS_PAUSED)
 }

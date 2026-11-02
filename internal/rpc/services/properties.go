@@ -29,8 +29,19 @@ type PropertiesService struct {
 	config    *config.Config
 	docker    *docker.Client
 	lifecycle *lifecycle.Manager
+	modules   SparedModuleReconciler
 	rec       *metrics.Recorder
 	log       *logger.Logger
+}
+
+// Stops bedrock gateways kept up for a wake that can no longer happen
+type SparedModuleReconciler interface {
+	ReconcileSparedModules(ctx context.Context, serverID string)
+}
+
+// Lets property saves retire gateways spared for Wake on Connect
+func (s *PropertiesService) SetModules(modules SparedModuleReconciler) {
+	s.modules = modules
 }
 
 // Creates new config service
@@ -124,6 +135,10 @@ func (s *PropertiesService) UpdateServerProperties(ctx context.Context, req *con
 	// Reconciles proxy route right away without server start
 	if s.lifecycle != nil {
 		s.lifecycle.SyncProxyRoute(ctx, msg.ServerId)
+	}
+	// Turning Wake on Connect off retires a sleeping server's gateways
+	if changed && s.modules != nil {
+		go s.modules.ReconcileSparedModules(context.WithoutCancel(ctx), msg.ServerId)
 	}
 
 	// Return updated config

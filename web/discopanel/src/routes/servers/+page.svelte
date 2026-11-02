@@ -53,6 +53,7 @@
 		ArrowUpDown
 	} from '@lucide/svelte';
 	import { type Server, ServerStatus, ModLoader } from '$lib/proto/discopanel/v1/storage_pb';
+	import { ProxyRouteState } from '$lib/proto/discopanel/v1/proxy_pb';
 
 	const DELETE_WARNING =
 		'This permanently removes the container, all server files, the world, and every mod and configuration.\nThis cannot be undone.';
@@ -82,14 +83,22 @@
 	let deleteOpen = $state(false);
 	let now = $state(new Date());
 	let lobbyWaiting = $state<Record<string, number>>({});
+	let wakeable = $state<Set<string>>(new Set());
 
-	// Lobby holds per server show while worlds wake
+	// Lobby holds and join to wake routes show per server
 	async function pollLobbyWaiting() {
-		try {
-			const status = await rpcClient.proxy.getProxyStatus({}, silentCallOptions);
-			lobbyWaiting = status.lobbyWaiting;
-		} catch {
-			// Silent polls swallow transient failures
+		const [status, routes] = await Promise.allSettled([
+			rpcClient.proxy.getProxyStatus({}, silentCallOptions),
+			rpcClient.proxy.getProxyRoutes({}, silentCallOptions)
+		]);
+		// Silent polls swallow transient failures
+		if (status.status === 'fulfilled') lobbyWaiting = status.value.lobbyWaiting;
+		if (routes.status === 'fulfilled') {
+			wakeable = new Set(
+				routes.value.routes
+					.filter((r) => r.wakeable && r.state === ProxyRouteState.OFFLINE && r.serverId)
+					.map((r) => r.serverId)
+			);
 		}
 	}
 
@@ -319,6 +328,12 @@
 										{#if server.status === ServerStatus.RUNNING && server.lastStarted}
 											<span>·</span>
 											<span>up {formatUptime(server.lastStarted, now)}</span>
+										{/if}
+										{#if server.status !== ServerStatus.RUNNING && wakeable.has(server.id)}
+											<span>·</span>
+											<span class="text-status-sleep" title="Starts when a player joins"
+												>wakes on join</span
+											>
 										{/if}
 										{#if (lobbyWaiting[server.id] ?? 0) > 0}
 											<span>·</span>

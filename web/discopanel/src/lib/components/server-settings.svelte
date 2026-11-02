@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
+	import { guardUnsavedChanges } from '$lib/utils/unsaved-guard.svelte';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { Button } from '$lib/components/ui/button';
@@ -9,7 +10,7 @@
 	import { Switch } from '$lib/components/ui/switch';
 	import { ServerAvatar } from '$lib/components/app';
 	import { rpcClient } from '$lib/api/rpc-client';
-	import { create } from '@bufbuild/protobuf';
+	import { clone, create } from '@bufbuild/protobuf';
 	import { notify } from '$lib/stores/activity.svelte';
 	import { Loader2, Save, RotateCcw, Lock, Camera, CircleArrowUp } from '@lucide/svelte';
 	import type { Server, IndexedModpack } from '$lib/proto/discopanel/v1/storage_pb';
@@ -196,50 +197,45 @@
 		});
 	}
 
+	type FieldKey = (typeof FIELD_KEYS)[number];
+
+	// The form is diffed against the server values it was last synced with,
+	// not against the live `server` prop. The page polls every few seconds;
+	// diffing against the live prop turned any outside change (another user,
+	// a task, autostart flipping) into a phantom "unsaved change", and Save
+	// then wrote the stale values back over it.
 	let formData = $state<UpdateServerRequest>(buildFormData());
+	let baseline = $state.raw<UpdateServerRequest>(clone(UpdateServerRequestSchema, buildFormData()));
+
+	function sameValue(a: unknown, b: unknown): boolean {
+		if (typeof a !== 'object' || a === null || typeof b !== 'object' || b === null) {
+			return a === b;
+		}
+		return safeToString(a) === safeToString(b);
+	}
 
 	function fieldDirty(key: string): boolean {
-		switch (key) {
-			case 'name':
-				return formData.name !== server.name;
-			case 'description':
-				return formData.description !== (server.description || '');
-			case 'mcVersion':
-				return formData.mcVersion !== server.mcVersion;
-			case 'modLoader':
-				return formData.modLoader !== server.modLoader;
-			case 'memory':
-				return formData.memory !== server.memory;
-			case 'memoryMin':
-				return formData.memoryMin !== server.memoryMin;
-			case 'memoryMax':
-				return formData.memoryMax !== server.memoryMax;
-			case 'maxPlayers':
-				return formData.maxPlayers !== server.maxPlayers;
-			case 'dockerImage':
-				return formData.dockerImage !== server.dockerImage;
-			case 'port':
-				return formData.port !== server.port;
-			case 'additionalPorts':
-				return (
-					safeToString(formData.additionalPorts) !== safeToString(server.additionalPorts || [])
-				);
-			case 'detached':
-				return formData.detached !== server.detached;
-			case 'autoStart':
-				return formData.autoStart !== server.autoStart;
-			case 'dockerOverrides':
-				return (
-					safeToString($state.snapshot(formData.dockerOverrides)) !==
-					safeToString(server.dockerOverrides)
-				);
-			default:
-				return false;
+		if (!(FIELD_KEYS as readonly string[]).includes(key)) return false;
+		const k = key as FieldKey;
+		return !sameValue($state.snapshot(formData[k]), baseline[k]);
+	}
+
+	// Pull outside changes into fields the user has not touched, keep edits
+	function rebaseOnServer() {
+		const fresh = buildFormData();
+		for (const k of FIELD_KEYS) {
+			if (sameValue($state.snapshot(formData[k]), baseline[k])) {
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any -- keyed copy across one message type
+				(formData as any)[k] = clone(UpdateServerRequestSchema, fresh)[k];
+			}
 		}
+		baseline = clone(UpdateServerRequestSchema, fresh);
 	}
 
 	let dirtyCount = $derived(FIELD_KEYS.filter((key) => fieldDirty(key)).length);
 	let dirty = $derived(dirtyCount > 0);
+
+	guardUnsavedChanges(() => dirty && !saving);
 
 	let hostTotalMb = $state(0);
 	let memoryAllocations = $state<{ serverId: string; memory: number }[]>([]);
@@ -254,18 +250,23 @@
 		modLoaders.find((l) => l.loader === formData.modLoader)?.displayName || 'Select a mod loader'
 	);
 
-	// Rebuild the form when viewing a different server
+	// Rebuild the form when viewing a different server, rebase it when the
+	// same server's values change underneath (poll, save, other users)
 	let previousServerId = $state(server.id);
 	$effect(() => {
-		if (server.id !== previousServerId) {
-			previousServerId = server.id;
-			untrack(() => {
+		void server;
+		untrack(() => {
+			if (server.id !== previousServerId) {
+				previousServerId = server.id;
 				formData = buildFormData();
+				baseline = clone(UpdateServerRequestSchema, buildFormData());
 				saving = false;
 				uploadedFavicon = '';
 				loadOptions();
-			});
-		}
+				return;
+			}
+			rebaseOnServer();
+		});
 	});
 
 	onMount(() => {
@@ -329,6 +330,7 @@
 
 	function reset() {
 		formData = buildFormData();
+		baseline = clone(UpdateServerRequestSchema, buildFormData());
 	}
 
 	async function handleIconSelect(e: Event) {

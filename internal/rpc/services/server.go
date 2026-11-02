@@ -121,6 +121,8 @@ func normalizeAdditionalPorts(ports []*v1.NetworkPort, serverHostnames []string,
 			ProxyEnabled:  p.ProxyEnabled,
 			Hostnames:     hostnames,
 			CatchAll:      p.CatchAll,
+			// Only relayed udp can carry RakNet joins
+			Bedrock: p.Bedrock && protocol == v1.ModuleProtocol_MODULE_PROTOCOL_UDP,
 		}
 		if err := proxy.ValidatePortRouting(normalized, serverHostnames); err != nil {
 			return nil, err
@@ -207,14 +209,19 @@ func getServer(ctx context.Context, store *storage.Store, id string) (*v1.Server
 }
 
 // Runs one lifecycle op in the background with a deadline
-func (s *ServerService) runLifecycleAsync(ctx context.Context, server *v1.Server, timeout time.Duration, verb string, fn func(context.Context, string) error) {
-	go func() {
-		bgCtx, cancel := context.WithTimeout(detach(ctx), timeout)
-		defer cancel()
-		if err := fn(bgCtx, server.Id); err != nil {
-			s.log.Error("Failed to %s server %s: %v", verb, server.Name, err)
-		}
-	}()
+// Claims the server's transition slot now and runs kind in the background.
+// A busy server is reported to the caller instead of failing silently in a
+// goroutine (which used to leave e.g. STOPPING stamped forever).
+func (s *ServerService) runLifecycleAsync(ctx context.Context, server *v1.Server, timeout time.Duration, kind string) error {
+	err := s.lifecycle.RunAsync(detach(ctx), server.Id, kind, timeout)
+	var busy *lifecycle.BusyError
+	if errors.As(err, &busy) {
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	return nil
 }
 
 // Loads properties or falls back to defaults on error
@@ -501,7 +508,7 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	if err := validateBindSources(ctx, s.authManager, s.config.Storage.DataDir, msg.DockerOverrides.GetVolumes()); err != nil {
+	if err := validateDockerOverrides(ctx, s.authManager, s.config.Storage.DataDir, msg.DockerOverrides, nil); err != nil {
 		return nil, err
 	}
 
@@ -629,7 +636,9 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 		if err := s.store.UpdateServer(ctx, server); err != nil {
 			s.log.Error("Failed to update server status: %v", err)
 		}
-		s.runLifecycleAsync(ctx, server, 2*time.Hour, "start newly created", s.lifecycle.Start)
+		if err := s.runLifecycleAsync(ctx, server, 2*time.Hour, "start"); err != nil {
+			s.log.Error("Failed to start newly created server %s: %v", server.Name, err)
+		}
 	} else {
 		server.Status = v1.ServerStatus_SERVER_STATUS_STOPPED
 		if err := s.store.UpdateServer(ctx, server); err != nil {
@@ -752,14 +761,7 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 
 	// Handle docker overrides update
 	if msg.DockerOverrides != nil {
-		// Check that labels do not start with "discopanel."
-		for key := range msg.DockerOverrides.Labels {
-			if strings.HasPrefix(key, "discopanel.") {
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("docker label keys cannot start with 'discopanel.', namespace reserved for internal management"))
-			}
-		}
-
-		if err := validateBindSources(ctx, s.authManager, s.config.Storage.DataDir, msg.DockerOverrides.GetVolumes()); err != nil {
+		if err := validateDockerOverrides(ctx, s.authManager, s.config.Storage.DataDir, msg.DockerOverrides, server.DockerOverrides); err != nil {
 			return nil, err
 		}
 
@@ -959,17 +961,29 @@ func (s *ServerService) recreateAfterConfigChange(ctx context.Context, server *v
 
 	// Running servers come back through the full lifecycle
 	if wasRunning {
-		s.runLifecycleAsync(ctx, server, 2*time.Hour, "recreate", s.lifecycle.Recreate)
+		if err := s.runLifecycleAsync(ctx, server, 2*time.Hour, "recreate"); err != nil {
+			// Busy: the in-flight transition rebuilds from current config
+			// (config drift is detected on start), so nothing is lost.
+			s.log.Warn("Deferred container rebuild for %s: %v", server.Name, err)
+		}
 		return
 	}
 
-	if err := s.docker.RemoveContainer(ctx, server.ContainerId); err != nil {
-		s.log.Debug("Failed to remove container after update (may not exist): %v", err)
-	}
-	server.ContainerId = ""
-	server.Status = v1.ServerStatus_SERVER_STATUS_STOPPED
-	if err := s.store.UpdateServer(ctx, server); err != nil {
-		s.log.Error("Failed to update server after container removal: %v", err)
+	// Removing the container must not race a start that is creating it
+	err := s.lifecycle.Exclusive(ctx, server.Id, "update", false, func() error {
+		if err := s.docker.RemoveContainer(ctx, server.ContainerId); err != nil {
+			s.log.Debug("Failed to remove container after update (may not exist): %v", err)
+		}
+		server.ContainerId = ""
+		server.Status = v1.ServerStatus_SERVER_STATUS_STOPPED
+		if err := s.store.UpdateServer(ctx, server); err != nil {
+			s.log.Error("Failed to update server after container removal: %v", err)
+		}
+		return nil
+	})
+	if err != nil {
+		s.log.Warn("Deferred container removal for %s: %v", server.Name, err)
+		return
 	}
 	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_CONTAINER_REMOVE, nil, "removed the container so new settings apply on next start")
 }
@@ -1047,6 +1061,37 @@ func (s *ServerService) DeleteServer(ctx context.Context, req *connect.Request[v
 		return nil, err
 	}
 
+	// Hold the transition slot for the whole delete so an in-flight start
+	// (cancelled here) cannot recreate the container or rewrite files of a
+	// server that no longer exists. Stop/restart/restore get "busy".
+	err = s.lifecycle.Exclusive(ctx, server.Id, "delete", true, func() error {
+		// Re-read: the cancelled start may have created a container
+		if fresh, err := s.store.GetServer(ctx, server.Id); err == nil {
+			server = fresh
+		}
+		return s.deleteServerLocked(ctx, server)
+	})
+	var busy *lifecycle.BusyError
+	if errors.As(err, &busy) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// Reconcile drops the server's routes and counters
+	syncRoutes(ctx, s.proxy, s.log, "after server delete")
+	if s.proxy != nil {
+		s.proxy.DropOwnerStats(server.Id)
+	}
+	if s.logStreamer != nil {
+		s.logStreamer.RemoveStream(server.Id)
+	}
+
+	return connect.NewResponse(&v1.DeleteServerResponse{}), nil
+}
+
+func (s *ServerService) deleteServerLocked(ctx context.Context, server *v1.Server) error {
 	// Delete every module row with its container and token
 	if s.moduleManager != nil {
 		modules, err := s.store.ListServerModules(ctx, server.Id)
@@ -1070,23 +1115,35 @@ func (s *ServerService) DeleteServer(ctx context.Context, req *connect.Request[v
 	}
 
 	// Delete from database
-	if err := s.store.DeleteServer(ctx, req.Msg.Id); err != nil {
+	if err := s.store.DeleteServer(ctx, server.Id); err != nil {
 		s.log.Error("Failed to delete server: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete server"))
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete server"))
 	}
 
-	// Delete data directory
-	if err := os.RemoveAll(server.DataPath); err != nil {
+	// Delete data directory, but never anything outside panel storage (a
+	// bad or empty data_path must not turn into rm -rf of the wrong tree)
+	if err := s.removeServerData(server.DataPath); err != nil {
 		s.log.Error("Failed to delete server data: %v", err)
 	}
+	return nil
+}
 
-	// Reconcile drops the server's routes and counters
-	syncRoutes(ctx, s.proxy, s.log, "after server delete")
-	if s.proxy != nil {
-		s.proxy.DropOwnerStats(server.Id)
+func (s *ServerService) removeServerData(dataPath string) error {
+	if strings.TrimSpace(dataPath) == "" {
+		return nil
 	}
-
-	return connect.NewResponse(&v1.DeleteServerResponse{}), nil
+	root, err := filepath.Abs(s.config.Storage.DataDir)
+	if err != nil {
+		return err
+	}
+	target, err := filepath.Abs(dataPath)
+	if err != nil {
+		return err
+	}
+	if target == root || !files.Within(root, target) {
+		return fmt.Errorf("refusing to delete %q: not inside panel storage %q", target, root)
+	}
+	return os.RemoveAll(target)
 }
 
 // StartServer starts a server (provisioning + container start run async)
@@ -1125,20 +1182,14 @@ func (s *ServerService) StopServer(ctx context.Context, req *connect.Request[v1.
 		return nil, err
 	}
 
-	if server.ContainerId == "" {
-		if err := s.store.UpdateServerFields(ctx, server.Id, map[string]any{"status": v1.ServerStatus_SERVER_STATUS_STOPPED}); err != nil {
-			s.log.Error("Failed to update server status: %v", err)
-		}
-		return connect.NewResponse(&v1.StopServerResponse{
-			Status: v1.ServerStatus_SERVER_STATUS_STOPPED,
-		}), nil
+	// Always go through the lifecycle: a server with no container yet may
+	// be provisioning, and the stop has to cancel that start (marking it
+	// STOPPED here let provisioning carry on and overwrite the status).
+	// The lifecycle stamps STOPPING/STOPPED itself, so a fast stop cannot
+	// be overwritten by a late stamp from this handler.
+	if err := s.runLifecycleAsync(ctx, server, 15*time.Minute, "stop"); err != nil {
+		return nil, err
 	}
-
-	if err := s.store.UpdateServerFields(ctx, server.Id, map[string]any{"status": v1.ServerStatus_SERVER_STATUS_STOPPING}); err != nil {
-		s.log.Error("Failed to update server status: %v", err)
-	}
-
-	s.runLifecycleAsync(ctx, server, 15*time.Minute, "stop", s.lifecycle.Stop)
 
 	return connect.NewResponse(&v1.StopServerResponse{
 		Status: v1.ServerStatus_SERVER_STATUS_STOPPING,
@@ -1152,7 +1203,9 @@ func (s *ServerService) RestartServer(ctx context.Context, req *connect.Request[
 		return nil, err
 	}
 
-	s.runLifecycleAsync(ctx, server, 2*time.Hour, "restart", s.lifecycle.Restart)
+	if err := s.runLifecycleAsync(ctx, server, 2*time.Hour, "restart"); err != nil {
+		return nil, err
+	}
 
 	return connect.NewResponse(&v1.RestartServerResponse{
 		Status: v1.ServerStatus_SERVER_STATUS_STARTING,
@@ -1166,7 +1219,9 @@ func (s *ServerService) RecreateServer(ctx context.Context, req *connect.Request
 		return nil, err
 	}
 
-	s.runLifecycleAsync(ctx, server, 2*time.Hour, "recreate", s.lifecycle.Recreate)
+	if err := s.runLifecycleAsync(ctx, server, 2*time.Hour, "recreate"); err != nil {
+		return nil, err
+	}
 
 	return connect.NewResponse(&v1.RecreateServerResponse{
 		Status: v1.ServerStatus_SERVER_STATUS_CREATING,

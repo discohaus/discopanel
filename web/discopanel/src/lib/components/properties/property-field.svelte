@@ -13,12 +13,14 @@
 		prop,
 		locked = false,
 		highlighted = false,
+		warning = '',
 		onCopyLink
 	}: {
 		form: PropertiesForm;
 		prop: ServerProperty;
 		locked?: boolean;
 		highlighted?: boolean;
+		warning?: string;
 		onCopyLink?: (key: string) => void;
 	} = $props();
 
@@ -41,6 +43,7 @@
 	description={prop.description}
 	envVar={prop.envVar}
 	{hint}
+	{warning}
 	required={prop.required}
 	system={prop.system}
 	modified={isModified}

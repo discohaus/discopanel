@@ -38,6 +38,16 @@ const hubTickEvery = 5 * time.Second
 // One backend probe budget per waking world
 const hubReadyDial = 1500 * time.Millisecond
 
+// How long a wait may see its world neither booting nor up
+// Covers the gap before a fresh start reports provisioning
+const hubWakeGrace = 30 * time.Second
+
+// Chat line when a waited world stops booting
+const hubWakeFailed = "§cthat world had trouble starting §7check discopanel to see why"
+
+// Chat line when a stop or change holds the world
+const hubWakeBusy = "§6that world is busy §7it's stopping or being changed, try again in a moment"
+
 // Depth under bedrock that rescues a faller
 const hubVoidDepth = 16
 
@@ -104,6 +114,7 @@ type hubMember struct {
 	inGate      int
 	pending     string
 	pendingName string
+	pendingAt   time.Time
 	signals     chan memberSignal
 	fate        chan memberSignal
 }
@@ -448,6 +459,9 @@ func (h *HubRuntime) approach(m *hubMember, t *family.Target) {
 	}
 	h.mu.Lock()
 	held := m.pending == t.ID
+	if !held {
+		m.pendingAt = time.Now()
+	}
 	m.pending, m.pendingName = t.ID, t.Name
 	h.mu.Unlock()
 	if held || t.Waking {
@@ -462,7 +476,7 @@ func (h *HubRuntime) approach(m *hubMember, t *family.Target) {
 func (h *HubRuntime) wakeTarget(id string) {
 	gate := h.getGate()
 	if gate == nil {
-		h.failPending(id)
+		h.failPending(id, hubWakeFailed)
 		return
 	}
 	if _, sleeping := gate.SleepingInfo(id); sleeping {
@@ -471,25 +485,31 @@ func (h *HubRuntime) wakeTarget(id string) {
 		cancel()
 		if err != nil {
 			h.logger.Error("Hub wake failed for server %s: %v", id, err)
-			h.failPending(id)
+			h.failPending(id, hubWakeFailed)
 		}
 		return
 	}
 	if err := gate.StartServer(id); err != nil {
+		// Busy is a stop or change in flight, not a failure
+		if errors.Is(err, ErrServerBusy) {
+			h.logger.Info("Hub not starting server %s: %v", id, err)
+			h.failPending(id, hubWakeBusy)
+			return
+		}
 		h.logger.Error("Hub start failed for server %s: %v", id, err)
-		h.failPending(id)
+		h.failPending(id, hubWakeFailed)
 	}
 }
 
 // Clears one world's waiters after a failed wake
-func (h *HubRuntime) failPending(id string) {
+func (h *HubRuntime) failPending(id, line string) {
 	h.mu.Lock()
 	for _, m := range h.members {
 		if m.pending != id {
 			continue
 		}
 		m.pending, m.pendingName = "", ""
-		h.tell(m, "§cthat world had trouble starting §7check discopanel to see why")
+		h.tell(m, line)
 	}
 	h.mu.Unlock()
 }
@@ -521,15 +541,24 @@ func (h *HubRuntime) tick() {
 		targets := slices.Clone(h.targets)
 		h.applyTargetsLocked(targets)
 	}
+	// Async starts that die, get cancelled, or lose their row
+	// never call back, so waits expire off the fleet state
+	now := time.Now()
 	waiting := make(map[string]family.Target)
 	for _, m := range h.members {
 		if m.pending == "" {
 			continue
 		}
-		for _, t := range h.targets {
-			if t.ID == m.pending && t.Running {
-				waiting[t.ID] = t
-			}
+		t := h.targetByIDLocked(m.pending)
+		switch {
+		case t == nil:
+			m.pending, m.pendingName = "", ""
+			h.tell(m, "§cthat world is gone §7pick another one")
+		case t.Running:
+			waiting[t.ID] = *t
+		case !t.Waking && now.Sub(m.pendingAt) > hubWakeGrace:
+			m.pending, m.pendingName = "", ""
+			h.tell(m, hubWakeFailed)
 		}
 	}
 	h.mu.Unlock()
@@ -781,7 +810,7 @@ func (h *HubRuntime) serve(s *ListenerSocket, clientConn net.Conn, br *bufio.Rea
 	}
 
 	if hold != nil {
-		m.pending, m.pendingName = hold.ID, hold.Name
+		m.pending, m.pendingName, m.pendingAt = hold.ID, hold.Name, time.Now()
 	}
 
 	clientConn.SetDeadline(time.Time{})
@@ -975,6 +1004,10 @@ func (h *HubRuntime) deliver(sess family.Session, m *hubMember, sig memberSignal
 func (h *HubRuntime) targetByID(id string) *family.Target {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	return h.targetByIDLocked(id)
+}
+
+func (h *HubRuntime) targetByIDLocked(id string) *family.Target {
 	for _, t := range h.targets {
 		if t.ID == id {
 			picked := t

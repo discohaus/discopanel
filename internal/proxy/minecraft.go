@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/discohaus/discopanel/pkg/mcproto"
+	"github.com/discohaus/discopanel/pkg/mcproto/family"
 	"github.com/discohaus/discopanel/pkg/minecraft"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/protometa"
@@ -287,6 +289,7 @@ func (s *ListenerSocket) serveRoute(clientConn net.Conn, br *bufio.Reader, hands
 	}
 
 	// Stopped and booting servers answer synthetically instead of dialing
+	var early net.Conn
 	switch route.State {
 	case v1.ProxyRouteState_PROXY_ROUTE_STATE_OFFLINE:
 		if handshake.NextState == mcproto.NextStateStatus {
@@ -305,6 +308,11 @@ func (s *ListenerSocket) serveRoute(clientConn net.Conn, br *bufio.Reader, hands
 		s.logger.Info("Starting stopped server %s for incoming login", route.ServerID)
 		stats.Wakes.Add(1)
 		if err := gate.StartServer(route.ServerID); err != nil {
+			if errors.Is(err, ErrServerBusy) {
+				s.logger.Info("Not starting server %s for login: %v", route.ServerID, err)
+				s.kick(clientConn, handshake, kickBusy())
+				return
+			}
 			s.logger.Error("Failed to start server %s for login: %v", route.ServerID, err)
 			s.kick(clientConn, handshake, kickStartFailed())
 			return
@@ -322,7 +330,17 @@ func (s *ListenerSocket) serveRoute(clientConn net.Conn, br *bufio.Reader, hands
 			s.holdInHub(clientConn, br, handshake, route, login, kickStillStarting())
 			return
 		}
-		// Backend exists, let dial retry ride out the boot
+		// Lobby holds joins it can host until the booting backend answers,
+		// versions it can't speak keep the dial retry below
+		if hubRT := s.hub; hubRT != nil && hubRT.Enabled() && family.Lookup(int32(handshake.ProtocolVersion)) != nil {
+			conn, err := net.DialTimeout("tcp", route.BackendAddr(), hubReadyDial)
+			if err != nil {
+				s.holdInHub(clientConn, br, handshake, route, login, kickStillStarting())
+				return
+			}
+			early = conn
+		}
+		// Otherwise let dial retry ride out the boot
 	}
 
 	if route.BackendHost == "" {
@@ -334,13 +352,17 @@ func (s *ListenerSocket) serveRoute(clientConn net.Conn, br *bufio.Reader, hands
 	}
 
 	backendAddr := route.BackendAddr()
-	backendConn, err := dialBackendWithRetry(s.ctx, backendAddr, 10*time.Second)
-	if err != nil {
-		s.logger.Error("Failed to connect to backend %s for %s: %v", backendAddr, hostname, err)
-		if handshake.NextState != mcproto.NextStateStatus {
-			s.kick(clientConn, handshake, kickNotAccepting())
+	backendConn := early
+	if backendConn == nil {
+		conn, err := dialBackendWithRetry(s.ctx, backendAddr, 10*time.Second)
+		if err != nil {
+			s.logger.Error("Failed to connect to backend %s for %s: %v", backendAddr, hostname, err)
+			if handshake.NextState != mcproto.NextStateStatus {
+				s.kick(clientConn, handshake, kickNotAccepting())
+			}
+			return
 		}
-		return
+		backendConn = conn
 	}
 	defer backendConn.Close()
 

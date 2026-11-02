@@ -230,6 +230,16 @@
 					</p>
 				{/if}
 
+				{#if port.proxyEnabled && port.protocol === ModuleProtocol.UDP}
+					<label class="flex w-fit cursor-pointer items-center gap-2">
+						<Checkbox bind:checked={port.bedrock} {disabled} />
+						<span class="text-sm">Bedrock port</span>
+						<span class="text-xs text-muted-foreground">
+							Geyser joins here wake the server with Wake on Connect
+						</span>
+					</label>
+				{/if}
+
 				{#if showRouting && port.proxyEnabled && isHostnamed(port.protocol)}
 					<div class="space-y-1.5">
 						<Label>Hostnames</Label>

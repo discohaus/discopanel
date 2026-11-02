@@ -15,6 +15,13 @@ import (
 // Structured details attached to one ledger event
 type Attrs map[string]string
 
+// Subsystem sources, anything else is a panel user
+const (
+	SourceAutostop  = "autostop"
+	SourceScheduler = "scheduler"
+	SourceSystem    = "system"
+)
+
 type sourceKey struct{}
 type traceKey struct{}
 

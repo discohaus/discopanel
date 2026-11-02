@@ -364,10 +364,12 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				// Update status for all servers with containers
-				ctx := context.Background()
+				// Update status for all servers with containers. A hung docker
+				// call must not stall the monitor forever.
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				servers, err := store.ListServers(ctx)
 				if err != nil {
+					cancel()
 					continue
 				}
 
@@ -377,14 +379,34 @@ func main() {
 					if server.ContainerId == "" {
 						continue
 					}
+					// The lifecycle manager owns status while it is mid
+					// transition: an existing container reads "exited" during
+					// provisioning, which used to flip PROVISIONING to STOPPED.
+					if lifecycleManager.Busy(server.Id) {
+						continue
+					}
+					// Epoch taken first so a transition racing the read voids it
+					epoch := lifecycleManager.StatusEpoch(server.Id)
 					status, err := dockerClient.GetContainerStatus(ctx, server.ContainerId)
-					if err != nil || server.Status == status {
+					if err != nil {
+						continue
+					}
+					// Paused containers survive panel restarts, the wake gate must too
+					lifecycleManager.ObserveContainerStatus(server.Id, status, epoch)
+					if server.Status == status {
+						continue
+					}
+					// Write under the transition slot so a start/stop that
+					// begins right now cannot be overwritten (busy: skip)
+					if err := lifecycleManager.Exclusive(ctx, server.Id, "status-sync", false, func() error {
+						return store.UpdateServerFields(ctx, server.Id, map[string]any{"status": status})
+					}); err != nil {
+						if !lifecycleManager.Busy(server.Id) {
+							log.Error("Failed to update server status: %v", err)
+						}
 						continue
 					}
 					server.Status = status
-					if err := store.UpdateServerFields(ctx, server.Id, map[string]any{"status": status}); err != nil {
-						log.Error("Failed to update server status: %v", err)
-					}
 					// Updates proxy route on status change when proxied
 					if len(server.ProxyHostnames) > 0 {
 						if err := proxyManager.UpdateServerRoute(server); err != nil {
@@ -422,6 +444,7 @@ func main() {
 						log.Error("Failed to sync proxy routes: %v", err)
 					}
 				}
+				cancel()
 			case <-stopMonitor:
 				return
 			}
@@ -497,7 +520,7 @@ func main() {
 		}
 		stopWG.Go(func() {
 			log.Info("Stopping managed server: %s", server.Name)
-			stopCtx, stopCancel := context.WithTimeout(metrics.WithTrace(metrics.WithSource(ctx, "system")), 90*time.Second)
+			stopCtx, stopCancel := context.WithTimeout(metrics.WithTrace(metrics.WithSource(ctx, metrics.SourceSystem)), 90*time.Second)
 			defer stopCancel()
 			if err := lifecycleManager.Stop(stopCtx, server.Id); err != nil {
 				log.Error("Failed to stop server %s: %v", server.Name, err)
@@ -505,6 +528,11 @@ func main() {
 		})
 	}
 	stopWG.Wait()
+
+	// Gateways kept up for Bedrock wake have no server stop to follow
+	modCtx, modCancel := context.WithTimeout(ctx, 60*time.Second)
+	moduleManager.StopModulesOfStoppedServers(modCtx)
+	modCancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Error("Server forced to shutdown: %v", err)

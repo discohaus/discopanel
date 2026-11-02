@@ -276,6 +276,10 @@ func (s *ProxyService) UpdateProxyConfig(ctx context.Context, req *connect.Reque
 				s.log.Error("Failed to recreate module %s after convert: %v", id, err)
 			}
 		}
+		// Bedrock wake needs the proxy, spared gateways have no job left
+		if s.moduleManager != nil {
+			go s.moduleManager.ReconcileSparedModules(context.WithoutCancel(ctx), "")
+		}
 		if convErr != nil {
 			return nil, convErr
 		}
@@ -984,6 +988,34 @@ func (s *ProxyService) DeleteProxyListener(ctx context.Context, req *connect.Req
 	return connect.NewResponse(&v1.DeleteProxyListenerResponse{}), nil
 }
 
+// Server's own game route, never an extra port or bedrock wake relay.
+// Entries come from maps, so ties break on hostname then port.
+func serverGameRoute(entries []proxy.RouteEntry, serverID string) *proxy.RouteEntry {
+	var best *proxy.RouteEntry
+	// Named game route, then catch all, then anything else it owns
+	rank := func(e *proxy.RouteEntry) int {
+		switch {
+		case e.Route.Protocol != v1.ModuleProtocol_MODULE_PROTOCOL_MINECRAFT:
+			return 2
+		case e.Route.Hostname == "":
+			return 1
+		}
+		return 0
+	}
+	for i := range entries {
+		e := &entries[i]
+		if e.Route == nil || e.Route.OwnerKind != proxy.OwnerServer || e.Route.OwnerID != serverID {
+			continue
+		}
+		if best == nil || rank(e) < rank(best) ||
+			(rank(e) == rank(best) && (e.Route.Hostname < best.Route.Hostname ||
+				(e.Route.Hostname == best.Route.Hostname && e.Port < best.Port))) {
+			best = e
+		}
+	}
+	return best
+}
+
 // Gets server routing configuration
 func (s *ProxyService) GetServerRouting(ctx context.Context, req *connect.Request[v1.GetServerRoutingRequest]) (*connect.Response[v1.GetServerRoutingResponse], error) {
 	server, err := getServer(ctx, s.store, req.Msg.ServerId)
@@ -994,12 +1026,9 @@ func (s *ProxyService) GetServerRouting(ctx context.Context, req *connect.Reques
 	// Check if proxy is enabled and get current route
 	var currentRoute *v1.ServerRoute
 	if s.proxyManager != nil {
-		for _, entry := range s.proxyManager.RouteEntries() {
-			if entry.Route.OwnerKind == proxy.OwnerServer && entry.Route.OwnerID == server.Id {
-				currentRoute = &v1.ServerRoute{
-					Hostname: entry.Route.Hostname,
-				}
-				break
+		if entry := serverGameRoute(s.proxyManager.RouteEntries(), server.Id); entry != nil {
+			currentRoute = &v1.ServerRoute{
+				Hostname: entry.Route.Hostname,
 			}
 		}
 	}

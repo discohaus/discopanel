@@ -1322,17 +1322,28 @@
 							/>
 						</div>
 
-						<label
-							class="flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-accent/40"
-						>
-							<Switch bind:checked={requireOnline} class="mt-0.5" />
-							<div class="space-y-0.5">
-								<span class="text-sm font-medium">Require server online</span>
-								<p class="text-xs text-muted-foreground">
-									Skip this task when the server is offline
-								</p>
-							</div>
-						</label>
+						{#if taskType === TaskType.BACKUP}
+							<p class="rounded-lg border p-3 text-xs text-muted-foreground">
+								Backups run whether the server is online or not. A stopped server gives the most
+								consistent snapshot; a running one has world saves paused while the archive is
+								written.
+							</p>
+						{:else}
+							<label
+								class="flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-accent/40"
+							>
+								<Switch bind:checked={requireOnline} class="mt-0.5" />
+								<div class="space-y-0.5">
+									<span class="text-sm font-medium">Require server online</span>
+									<p class="text-xs text-muted-foreground">
+										Skip this task when the server is offline{scheduleType === ScheduleType.EVENT &&
+										eventTriggers.includes(TriggeredEventType.SERVER_STOP)
+											? '. Not applied when it runs on Server Stop, since the server is always offline then.'
+											: ''}
+									</p>
+								</div>
+							</label>
+						{/if}
 					{/if}
 				{/if}
 			</div>

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	storage "github.com/discohaus/discopanel/internal/db"
+	"github.com/discohaus/discopanel/internal/proxy"
 	"github.com/discohaus/discopanel/pkg/config"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"google.golang.org/protobuf/proto"
@@ -114,7 +115,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 
 	templates := []*v1.ModuleTemplate{
 		{
-			Id:             "builtin-geyser",
+			Id:             proxy.GeyserTemplateID,
 			Name:           "Geyser",
 			Description:    "Allows Bedrock Edition players to join Java Edition servers. Requires Floodgate plugin on the server for seamless authentication.",
 			Type:           v1.ModuleTemplateType_MODULE_TEMPLATE_TYPE_BUILTIN,
@@ -124,7 +125,7 @@ func InitBuiltinTemplates(store *storage.Store) error {
 			RequiresServer: true,
 			Icon:           "users",
 			Ports: []*v1.NetworkPort{
-				{Name: "Bedrock", ContainerPort: 19132, HostPort: 0, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_UDP, ProxyEnabled: true},
+				{Name: "Bedrock", ContainerPort: 19132, HostPort: 0, Protocol: v1.ModuleProtocol_MODULE_PROTOCOL_UDP, ProxyEnabled: true, Bedrock: true},
 			},
 			DefaultAccessUrls: []string{"http://{{host.hostname}}:{{module.ports.Bedrock.host_port}}"},
 			DefaultEnv: map[string]string{

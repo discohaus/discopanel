@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/discohaus/discopanel/internal/alias"
+	"github.com/discohaus/discopanel/internal/proxy"
 	"github.com/discohaus/discopanel/pkg/events"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
@@ -16,7 +17,7 @@ func (m *Manager) HandleServerEvent(ctx context.Context, event events.Event) {
 	case v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_SERVER_START:
 		m.autoStartModules(ctx, event.ServerId)
 	case v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_SERVER_STOP:
-		m.stopLifecycleModules(ctx, event.ServerId)
+		m.stopLifecycleModules(ctx, event.ServerId, event.Data[events.DataStopReason])
 	}
 
 	// Execute configured event hooks for every event type
@@ -36,6 +37,14 @@ func (m *Manager) autoStartModules(ctx context.Context, serverID string) {
 			go func(mod *v1.Module) {
 				// Small delay to let the server settle before starting modules
 				time.Sleep(2 * time.Second)
+				// Gateways kept up across an idle stop keep running, but still
+				// pick up config changes made while the server slept
+				if m.moduleLive(context.Background(), mod) {
+					if err := m.refreshRunningModule(context.Background(), mod.Id); err != nil {
+						m.logger.Error("Failed to refresh running module %s on server start: %v", mod.Name, err)
+					}
+					return
+				}
 				if err := m.StartModule(context.Background(), mod.Id); err != nil {
 					m.logger.Error("Failed to start module %s on server start: %v", mod.Name, err)
 				} else {
@@ -46,23 +55,118 @@ func (m *Manager) autoStartModules(ctx context.Context, serverID string) {
 	}
 }
 
+// Reports whether the module's container is up right now
+func (m *Manager) moduleLive(ctx context.Context, module *v1.Module) bool {
+	switch module.Status {
+	case v1.ModuleStatus_MODULE_STATUS_RUNNING, v1.ModuleStatus_MODULE_STATUS_STARTING:
+	default:
+		return false
+	}
+	if module.ContainerId == "" || m.docker == nil {
+		return false
+	}
+	status, err := m.docker.GetContainerStatus(ctx, module.ContainerId)
+	return err == nil && status == v1.ServerStatus_SERVER_STATUS_RUNNING
+}
+
 // Stops modules following server lifecycle when the parent server stops
-func (m *Manager) stopLifecycleModules(ctx context.Context, serverID string) {
+func (m *Manager) stopLifecycleModules(ctx context.Context, serverID, reason string) {
+	proxyOn := m.proxyManager != nil && m.proxyManager.Enabled()
+	for _, module := range m.lifecycleStopModules(ctx, serverID, reason, proxyOn) {
+		if err := m.StopModule(ctx, module.Id); err != nil {
+			m.logger.Error("Failed to stop module %s on server stop: %v", module.Name, err)
+		} else {
+			m.logger.Info("Stopped module %s with server", module.Name)
+		}
+	}
+}
+
+// Running lifecycle modules a stop takes down. An idle stop of a wake on
+// connect server spares bedrock gateways like geyser, a bedrock join
+// reaches the proxy through them and is what wakes the server again.
+func (m *Manager) lifecycleStopModules(ctx context.Context, serverID, reason string, proxyOn bool) []*v1.Module {
 	modules, err := m.store.ListModulesFollowingServerLifecycle(ctx, serverID)
 	if err != nil {
 		m.logger.Error("Failed to list lifecycle modules for stop: %v", err)
-		return
+		return nil
 	}
 
+	spare := false
+	if reason == events.StopReasonAutostop && proxyOn {
+		if cfg, err := m.store.GetServerProperties(ctx, serverID); err == nil {
+			spare = cfg.EnableWakeOnConnect != nil && *cfg.EnableWakeOnConnect
+		}
+	}
+
+	var stop []*v1.Module
 	for _, module := range modules {
-		if module.Status == v1.ModuleStatus_MODULE_STATUS_RUNNING && !module.Detached {
+		if module.Status != v1.ModuleStatus_MODULE_STATUS_RUNNING || module.Detached {
+			continue
+		}
+		if spare && proxy.HasBedrockRelay(module.TemplateId, module.Ports) {
+			m.logger.Info("Keeping module %s up so Bedrock joins can wake its server", module.Name)
+			continue
+		}
+		stop = append(stop, module)
+	}
+	return stop
+}
+
+// Stops bedrock gateways an idle stop spared once Wake on Connect or the
+// proxy goes off. Empty serverID checks every server.
+func (m *Manager) ReconcileSparedModules(ctx context.Context, serverID string) {
+	proxyOn := m.proxyManager != nil && m.proxyManager.Enabled()
+	for _, server := range m.offlineServers(ctx, serverID) {
+		// Still spared under an idle stop means sparing still applies
+		for _, module := range m.lifecycleStopModules(ctx, server.Id, events.StopReasonAutostop, proxyOn) {
+			if !proxy.HasBedrockRelay(module.TemplateId, module.Ports) {
+				continue
+			}
 			if err := m.StopModule(ctx, module.Id); err != nil {
-				m.logger.Error("Failed to stop module %s on server stop: %v", module.Name, err)
+				m.logger.Error("Failed to stop module %s no longer needed for Bedrock wake: %v", module.Name, err)
 			} else {
-				m.logger.Info("Stopped module %s with server", module.Name)
+				m.logger.Info("Stopped module %s, its server no longer wakes on Bedrock joins", module.Name)
 			}
 		}
 	}
+}
+
+// Panel shutdown takes down lifecycle modules of servers already stopped,
+// running servers' modules go with their own stop
+func (m *Manager) StopModulesOfStoppedServers(ctx context.Context) {
+	for _, server := range m.offlineServers(ctx, "") {
+		if server.Detached {
+			continue
+		}
+		m.stopLifecycleModules(ctx, server.Id, events.StopReasonSystem)
+	}
+}
+
+// Stopped servers, or just serverID when it is stopped
+func (m *Manager) offlineServers(ctx context.Context, serverID string) []*v1.Server {
+	var servers []*v1.Server
+	if serverID != "" {
+		server, err := m.store.GetServer(ctx, serverID)
+		if err != nil {
+			return nil
+		}
+		servers = []*v1.Server{server}
+	} else {
+		all, err := m.store.ListServers(ctx)
+		if err != nil {
+			m.logger.Error("Failed to list servers for module reconcile: %v", err)
+			return nil
+		}
+		servers = all
+	}
+	var out []*v1.Server
+	for _, server := range servers {
+		switch server.Status {
+		case v1.ServerStatus_SERVER_STATUS_STOPPED, v1.ServerStatus_SERVER_STATUS_ERROR:
+			out = append(out, server)
+		}
+	}
+	return out
 }
 
 // Runs every module hook subscribed to the event

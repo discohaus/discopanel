@@ -8,6 +8,18 @@ import (
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 )
 
+// Data key carrying why a server stopped, never who asked
+const DataStopReason = "reason"
+
+// Coarse stop reasons, safe to hand to webhooks
+const (
+	StopReasonAutostop  = "autostop"
+	StopReasonManual    = "manual"
+	StopReasonScheduled = "scheduled"
+	StopReasonRestart   = "restart"
+	StopReasonSystem    = "system"
+)
+
 // A single server lifecycle event
 type Event struct {
 	Type     v1.TriggeredEventType

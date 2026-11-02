@@ -374,31 +374,26 @@ func (m *Manager) NeedsRecreate(ctx context.Context, moduleID string) (bool, err
 	return current != desired, nil
 }
 
-// Starts an existing module container
-func (m *Manager) StartModule(ctx context.Context, moduleID string) error {
-	module, err := m.store.GetModule(ctx, moduleID)
-	if err != nil {
-		return fmt.Errorf("failed to get module: %w", err)
-	}
-
+// Recreates and starts a missing or drifted container, reporting
+// whether it did so (err then carries the outcome)
+func (m *Manager) rebuildIfStale(ctx context.Context, module *v1.Module) (bool, error) {
 	if module.ContainerId == "" {
-		return m.CreateAndStartModule(ctx, moduleID, true)
+		return true, m.CreateAndStartModule(ctx, module.Id, true)
 	}
 
 	// Check if container still exists in Docker
-	_, err = m.docker.GetContainerStatus(ctx, module.ContainerId)
-	if err != nil {
+	if _, err := m.docker.GetContainerStatus(ctx, module.ContainerId); err != nil {
 		// Container doesn't exist, recreate it
 		m.logger.Info("Container for module %s no longer exists, recreating", module.Name)
 		module.ContainerId = ""
 		if err := m.store.UpdateModule(ctx, module); err != nil {
-			return fmt.Errorf("failed to clear module container ID: %w", err)
+			return true, fmt.Errorf("failed to clear module container ID: %w", err)
 		}
-		return m.CreateAndStartModule(ctx, moduleID, true)
+		return true, m.CreateAndStartModule(ctx, module.Id, true)
 	}
 
 	// Stale config hash rebuilds the container before start
-	stale, err := m.NeedsRecreate(ctx, moduleID)
+	stale, err := m.NeedsRecreate(ctx, module.Id)
 	if err != nil {
 		m.logger.Warn("Failed to check config drift for module %s: %v", module.Name, err)
 	}
@@ -411,15 +406,45 @@ func (m *Manager) StartModule(ctx context.Context, moduleID string) error {
 		m.logger.Info("Container for module %s has no api token, recreating", module.Name)
 		stale = true
 	}
-	if stale {
-		if err := m.docker.RemoveContainer(ctx, module.ContainerId); err != nil {
-			m.logger.Error("Failed to remove stale module container: %v", err)
-		}
-		module.ContainerId = ""
-		if err := m.store.UpdateModule(ctx, module); err != nil {
-			return fmt.Errorf("failed to clear module container ID: %w", err)
-		}
-		return m.CreateAndStartModule(ctx, moduleID, true)
+	if !stale {
+		return false, nil
+	}
+	if err := m.docker.RemoveContainer(ctx, module.ContainerId); err != nil {
+		m.logger.Error("Failed to remove stale module container: %v", err)
+	}
+	module.ContainerId = ""
+	if err := m.store.UpdateModule(ctx, module); err != nil {
+		return true, fmt.Errorf("failed to clear module container ID: %w", err)
+	}
+	return true, m.CreateAndStartModule(ctx, module.Id, true)
+}
+
+// Brings a module already running with its server up to date: drifted
+// config or a missing token rebuilds it, dependencies still start, an
+// up to date container is left running untouched
+func (m *Manager) refreshRunningModule(ctx context.Context, moduleID string) error {
+	module, err := m.store.GetModule(ctx, moduleID)
+	if err != nil {
+		return fmt.Errorf("failed to get module: %w", err)
+	}
+	if rebuilt, err := m.rebuildIfStale(ctx, module); rebuilt {
+		return err
+	}
+	if err := m.startDependencies(ctx, module); err != nil {
+		return fmt.Errorf("failed to start dependencies: %w", err)
+	}
+	return nil
+}
+
+// Starts an existing module container
+func (m *Manager) StartModule(ctx context.Context, moduleID string) error {
+	module, err := m.store.GetModule(ctx, moduleID)
+	if err != nil {
+		return fmt.Errorf("failed to get module: %w", err)
+	}
+
+	if rebuilt, err := m.rebuildIfStale(ctx, module); rebuilt {
+		return err
 	}
 
 	// Start dependencies first

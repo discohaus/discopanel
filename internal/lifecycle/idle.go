@@ -195,7 +195,7 @@ func (m *Manager) timeoutFor(establishedSecs, initialSecs int, hadPlayers bool) 
 func (m *Manager) stopIdle(serverID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	if err := m.Stop(metrics.WithTrace(metrics.WithSource(ctx, "autostop")), serverID); err != nil {
+	if err := m.Stop(metrics.WithTrace(metrics.WithSource(ctx, metrics.SourceAutostop)), serverID); err != nil {
 		m.log.Error("lifecycle: autostop failed for server %s: %v", serverID, err)
 	}
 }

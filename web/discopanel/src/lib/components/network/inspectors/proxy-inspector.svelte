@@ -195,7 +195,8 @@
 						The lobby
 					</span>
 					<span class="mt-0.5 block text-xs font-normal text-muted-foreground">
-						Game joins on unlisted addresses land in a lobby with a portal for every server
+						Game joins on unlisted addresses land in a lobby with a portal for every server, and
+						players joining a sleeping server wait here until it is up
 					</span>
 				</span>
 				<Switch
