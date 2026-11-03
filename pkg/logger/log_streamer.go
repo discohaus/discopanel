@@ -449,6 +449,28 @@ func (ls *LogStreamer) ClearLogs(key string) {
 	}
 }
 
+// RemoveStream stops the key's container follow and frees its buffer.
+// Call when the owning server or module is deleted, otherwise every deleted
+// server's log history stays in memory for the life of the process.
+func (ls *LogStreamer) RemoveStream(key string) {
+	ls.mu.Lock()
+	stream, exists := ls.streams[key]
+	delete(ls.streams, key)
+	ls.mu.Unlock()
+	if !exists {
+		return
+	}
+	stream.mu.Lock()
+	if stream.cancelFunc != nil {
+		stream.cancelFunc()
+		stream.cancelFunc = nil
+	}
+	stream.active = false
+	stream.gen++
+	stream.logs = nil
+	stream.mu.Unlock()
+}
+
 // Creates a channel receiving new entries for a key
 func (ls *LogStreamer) Subscribe(key string) chan *v1.LogEntry {
 	ls.subMu.Lock()

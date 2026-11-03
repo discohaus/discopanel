@@ -100,3 +100,21 @@ func TestFindWorldDirMissingWorldErrors(t *testing.T) {
 		t.Error("expected error for missing world")
 	}
 }
+
+func TestDatapacksDirs(t *testing.T) {
+	data := t.TempDir()
+	enabled, disabled, err := DatapacksDirs(data)
+	if err != nil || enabled != filepath.Join(data, "world", "datapacks") || disabled != enabled+"_disabled" {
+		t.Fatalf("default world: got (%q, %q, %v)", enabled, disabled, err)
+	}
+
+	os.WriteFile(filepath.Join(data, "server.properties"), []byte("level-name=survival\n"), 0644)
+	if enabled, _, err = DatapacksDirs(data); err != nil || enabled != filepath.Join(data, "survival", "datapacks") {
+		t.Fatalf("level-name world: got (%q, %v)", enabled, err)
+	}
+
+	os.WriteFile(filepath.Join(data, "server.properties"), []byte("level-name=../../etc\n"), 0644)
+	if _, _, err = DatapacksDirs(data); err == nil {
+		t.Fatal("level-name escaping the data dir must be rejected")
+	}
+}

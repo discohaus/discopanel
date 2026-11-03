@@ -267,7 +267,11 @@
 			formData.mcVersion = config['mc_version'] || modpack.mcVersion || '';
 			// Backend floors modpack memory at 4 GB
 			formData.memory = Math.max(Number(config['memory']) || modpack.recommendedRam || 0, 4096);
-			formData.dockerImage = config['docker_image'] || '';
+			// The listing's image is derived from the newest MC version the
+			// pack lists, not the version installed. Pinning it ran packs on a
+			// newer Java than they support; leave it empty so the resolved
+			// Java version picks the runtime.
+			formData.dockerImage = '';
 			await loadModpackVersions(modpack.id);
 		} catch (error) {
 			notify.error('Failed to load modpack configuration');

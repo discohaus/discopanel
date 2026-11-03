@@ -738,6 +738,10 @@ enum ServerActionKind {
   SERVER_ACTION_KIND_PROVISION_MC_VERSION = 43 [(discopanel.options.v1.value) = {label: "Version Pinned"}];
   SERVER_ACTION_KIND_MODPACK_UPDATE_AVAILABLE = 44 [(discopanel.options.v1.value) = {label: "Modpack Update Available"}];
   SERVER_ACTION_KIND_PROVISION_SWEEP = 45 [(discopanel.options.v1.value) = {label: "Stale Pack Files Removed"}];
+  SERVER_ACTION_KIND_DATAPACK_INSTALL = 46 [(discopanel.options.v1.value) = {label: "Datapack Installed"}];
+  SERVER_ACTION_KIND_DATAPACK_ENABLE = 47 [(discopanel.options.v1.value) = {label: "Datapack Enabled"}];
+  SERVER_ACTION_KIND_DATAPACK_DISABLE = 48 [(discopanel.options.v1.value) = {label: "Datapack Disabled"}];
+  SERVER_ACTION_KIND_DATAPACK_DELETE = 49 [(discopanel.options.v1.value) = {label: "Datapack Deleted"}];
 }
 
 // One container port for servers and modules alike

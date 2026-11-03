@@ -4,6 +4,7 @@ package discopanel.v1;
 
 import "discopanel/options/v1/options.proto";
 import "discopanel/v1/storage.proto";
+import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/discohaus/discopanel/pkg/proto/discopanel/v1;discopanelv1";
 
@@ -51,6 +52,38 @@ service ModService {
   }
   // Delete mod file
   rpc DeleteMod(DeleteModRequest) returns (DeleteModResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODS
+      action: ACTION_TYPE_DELETE
+      object_id_field: "server_id"
+    };
+  }
+  // List world datapacks
+  rpc ListDatapacks(ListDatapacksRequest) returns (ListDatapacksResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODS
+      action: ACTION_TYPE_READ
+      object_id_field: "server_id"
+    };
+  }
+  // Import datapack zip from chunked upload session
+  rpc ImportUploadedDatapack(ImportUploadedDatapackRequest) returns (ImportUploadedDatapackResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODS
+      action: ACTION_TYPE_CREATE
+      object_id_field: "server_id"
+    };
+  }
+  // Enable or disable a datapack
+  rpc ToggleDatapack(ToggleDatapackRequest) returns (ToggleDatapackResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODS
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "server_id"
+    };
+  }
+  // Delete a datapack zip or folder
+  rpc DeleteDatapack(DeleteDatapackRequest) returns (DeleteDatapackResponse) {
     option (discopanel.options.v1.perm) = {
       resource: RESOURCE_TYPE_MODS
       action: ACTION_TYPE_DELETE
@@ -136,3 +169,70 @@ message DeleteModRequest {
 message DeleteModResponse {
   string message = 1;
 }
+
+// One datapack in the world datapacks dir
+message Datapack {
+  // File or folder name, unique per server
+  string name = 1;
+  // Folder pack rather than a zip
+  bool is_directory = 2;
+  bool enabled = 3;
+  // Bytes on disk, summed for folders
+  int64 size = 4;
+  google.protobuf.Timestamp modified_at = 5;
+  // Plain text from pack.mcmeta
+  string description = 6;
+  // Zero when pack.mcmeta does not say
+  int32 pack_format = 7;
+}
+
+// Server datapacks request
+message ListDatapacksRequest {
+  string server_id = 1;
+}
+
+// All datapacks in the world
+message ListDatapacksResponse {
+  repeated Datapack datapacks = 1;
+  // Datapacks dir relative to the server data dir
+  string directory = 2;
+  // False until the server first generates the world, packs placed before
+  // then are applied when it does
+  bool world_exists = 3;
+}
+
+// Import datapack from chunked upload session
+message ImportUploadedDatapackRequest {
+  string server_id = 1;
+  string upload_session_id = 2;
+}
+
+// Import result
+message ImportUploadedDatapackResponse {
+  Datapack datapack = 1;
+  // An existing zip of the same name was replaced
+  bool replaced = 2;
+  // False when the world has not been generated yet
+  bool world_exists = 3;
+}
+
+// Datapack to enable or disable
+message ToggleDatapackRequest {
+  string server_id = 1;
+  string name = 2;
+  bool enabled = 3;
+}
+
+// Datapack after the move
+message ToggleDatapackResponse {
+  Datapack datapack = 1;
+}
+
+// Datapack to delete
+message DeleteDatapackRequest {
+  string server_id = 1;
+  string name = 2;
+}
+
+// Deletion confirmation
+message DeleteDatapackResponse {}
