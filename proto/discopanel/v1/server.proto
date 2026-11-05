@@ -63,6 +63,20 @@ service ServerService {
       action: ACTION_TYPE_CREATE
     };
   }
+  // Extract an uploaded server archive and report what it contains
+  rpc AnalyzeServerImport(AnalyzeServerImportRequest) returns (AnalyzeServerImportResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_CREATE
+    };
+  }
+  // Delete a staged server archive that will not be imported
+  rpc DiscardServerImport(DiscardServerImportRequest) returns (DiscardServerImportResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVERS
+      action: ACTION_TYPE_CREATE
+    };
+  }
   // Modify server settings
   rpc UpdateServer(UpdateServerRequest) returns (UpdateServerResponse) {
     option (discopanel.options.v1.perm) = {
@@ -321,12 +335,51 @@ message CreateServerRequest {
   repeated NetworkPort additional_ports = 17;
   DockerOverrides docker_overrides = 18;
   string world_upload_session_id = 21; // Uploaded world zip to import at create
+  string import_upload_session_id = 22; // Uploaded server archive kept as-is
 }
 
 // Created server instance
 message CreateServerResponse {
   Server server = 1;
+  ServerImportAnalysis import_analysis = 2; // Set for imported servers
 }
+
+// Uploaded server archive to analyze
+message AnalyzeServerImportRequest {
+  string upload_session_id = 1;
+}
+
+// Facts detected in an imported server directory
+message ServerImportAnalysis {
+  string suggested_name = 1;
+  ModLoader mod_loader = 2;
+  string loader_version = 3;
+  string mc_version = 4; // Empty when undetected
+  string launch_target = 5; // Data dir relative jar or args file, empty when none
+  string level_name = 6;
+  bool has_world = 7;
+  string motd = 8;
+  int32 max_players = 9; // Zero when server.properties lacks it
+  map<string, string> properties = 10; // server.properties keys adopted into settings
+  int32 file_count = 11;
+  int32 mod_count = 12;
+  int32 plugin_count = 13;
+  repeated string warnings = 14;
+  string archive_name = 15;
+}
+
+// Analysis of a staged server archive
+message AnalyzeServerImportResponse {
+  ServerImportAnalysis analysis = 1;
+}
+
+// Staged server archive to delete
+message DiscardServerImportRequest {
+  string upload_session_id = 1;
+}
+
+// Discard outcome, also empty when nothing was staged
+message DiscardServerImportResponse {}
 
 // Server fields to update
 message UpdateServerRequest {

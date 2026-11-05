@@ -145,14 +145,17 @@ func (p *Provisioner) resolveForgeMavenVersion(ctx context.Context, mc, forgeVer
 func (p *Provisioner) installNeoForge(ctx context.Context, server *v1.Server, cfg *v1.ServerProperties, neoVersion string) (*Result, error) {
 	mc := server.McVersion
 
-	mavenBase := neoforgeMavenURL()
-	artifact := "neoforge"
+	// Results report the pin as given so needsInstall stays satisfied
+	reported := neoVersion
+	var mavenBase, artifact string
 	if neoVersion == "" {
 		var err error
 		neoVersion, mavenBase, artifact, err = p.resolveNeoForgeVersion(ctx, mc)
 		if err != nil {
 			return nil, err
 		}
+	} else {
+		mavenBase, artifact, neoVersion = neoforgePinnedArtifact(mc, neoVersion)
 	}
 
 	installerRel := filepath.Join(".discopanel", "installers", "neoforge-installer.jar")
@@ -182,7 +185,22 @@ func (p *Provisioner) installNeoForge(ctx context.Context, server *v1.Server, cf
 		}
 	}
 	p.saveLibTree(server, treeKey)
-	return p.finishLaunch(server, spec, v1.ModLoader_MOD_LOADER_NEOFORGE, neoVersion, mc)
+	if reported == "" {
+		reported = neoVersion
+	}
+	return p.finishLaunch(server, spec, v1.ModLoader_MOD_LOADER_NEOFORGE, reported, mc)
+}
+
+// Maven base, artifact and version for a pinned NeoForge build
+// 1.20.1 builds live under the legacy forge artifact as 1.20.1-47.x
+func neoforgePinnedArtifact(mc, version string) (string, string, string) {
+	if mc == "1.20.1" || strings.HasPrefix(version, "1.20.1-") {
+		if !strings.HasPrefix(version, "1.20.1-") {
+			version = "1.20.1-" + version
+		}
+		return neoforgeLegacyURL(), "forge", version
+	}
+	return neoforgeMavenURL(), "neoforge", version
 }
 
 // Picks the newest NeoForge version for an MC version

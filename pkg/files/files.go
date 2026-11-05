@@ -144,10 +144,11 @@ func CalculateDirSize(dirPath string) (int64, error) {
 	return totalSize, nil
 }
 
+// Alphanum plus underscore and dash
+var unsafePathChars = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
+
 func SanitizePathName(name string) string {
-	// Alphanum plus underscore and dash
-	re := regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
-	safe := re.ReplaceAllString(strings.ToLower(strings.TrimSpace(name)), "_")
+	safe := unsafePathChars.ReplaceAllString(strings.ToLower(strings.TrimSpace(name)), "_")
 
 	// Empty
 	if safe == "" {
@@ -155,6 +156,17 @@ func SanitizePathName(name string) string {
 	}
 	return safe
 }
+
+// Upper bounds for one archive extraction. Uploaded archives are user
+// controlled, so a zip bomb must not be able to fill the host disk.
+// Generous enough for large modpacks and worlds.
+var (
+	ExtractMaxBytes int64 = 64 << 30 // 64 GiB uncompressed
+	ExtractMaxFiles       = 1_000_000
+)
+
+// ErrArchiveTooLarge is returned when an archive exceeds the limits above.
+var ErrArchiveTooLarge = errors.New("archive exceeds the extraction size limit")
 
 // Extract archive to destPath
 func ExtractArchive(ctx context.Context, archivePath string, destPath string, counter *atomic.Int32) (int, error) {
@@ -183,6 +195,7 @@ func ExtractArchive(ctx context.Context, archivePath string, destPath string, co
 
 	// Extract and walk while recursively extracting
 	filesExtracted := 0
+	var bytesLeft = ExtractMaxBytes
 	err = extractor.Extract(ctx, stream, func(ctx context.Context, f archives.FileInfo) error {
 		// No sneaky traversals
 		targetPath, err := ResolveUnder(destPath, f.NameInArchive)
@@ -192,6 +205,15 @@ func ExtractArchive(ctx context.Context, archivePath string, destPath string, co
 
 		if f.IsDir() {
 			return os.MkdirAll(targetPath, 0755)
+		}
+
+		// Links and device/pipe entries are never materialised: a symlink
+		// would point later entries (or the server) outside destPath.
+		if !f.Mode().IsRegular() {
+			return nil
+		}
+		if filesExtracted >= ExtractMaxFiles {
+			return fmt.Errorf("%w: more than %d files", ErrArchiveTooLarge, ExtractMaxFiles)
 		}
 
 		// Make parent(s)
@@ -213,14 +235,19 @@ func ExtractArchive(ctx context.Context, archivePath string, destPath string, co
 		}
 		defer rc.Close()
 
-		// Copy contents
-		if _, err := io.Copy(outFile, rc); err != nil {
+		// Copy contents, capped by the remaining byte budget
+		n, err := io.Copy(outFile, io.LimitReader(rc, bytesLeft+1))
+		if err != nil {
 			return fmt.Errorf("failed to extract file %s: %w", targetPath, err)
 		}
+		bytesLeft -= n
+		if bytesLeft < 0 {
+			return fmt.Errorf("%w: more than %d bytes", ErrArchiveTooLarge, ExtractMaxBytes)
+		}
 
-		// Set file perms
-		if f.Mode() != 0 {
-			os.Chmod(targetPath, f.Mode())
+		// Set file perms, never setuid/setgid/sticky from an archive
+		if perm := f.Mode().Perm(); perm != 0 {
+			os.Chmod(targetPath, perm)
 		}
 
 		filesExtracted++

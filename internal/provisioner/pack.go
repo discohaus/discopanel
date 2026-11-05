@@ -528,13 +528,15 @@ func (p *Provisioner) extractServerPack(reader *zip.ReadCloser, dataPath string,
 	return p.extractZipPrefix(reader, prefix, dataPath, skipExisting, excludes, files)
 }
 
+// Server tree dirs that are content, never a wrapping dir
+var serverContentDirs = map[string]bool{
+	"mods": true, "config": true, "overrides": true, "world": true,
+	"libraries": true, "plugins": true, "defaultconfigs": true,
+	"kubejs": true, "scripts": true, "resourcepacks": true,
+}
+
 // Returns "dir/" when all entries share one wrapping dir
 func commonZipRoot(reader *zip.Reader) string {
-	contentDirs := map[string]bool{
-		"mods": true, "config": true, "overrides": true, "world": true,
-		"libraries": true, "plugins": true, "defaultconfigs": true,
-		"kubejs": true, "scripts": true, "resourcepacks": true,
-	}
 	root := ""
 	for _, f := range reader.File {
 		name := strings.TrimPrefix(f.Name, "./")
@@ -552,7 +554,7 @@ func commonZipRoot(reader *zip.Reader) string {
 			return ""
 		}
 	}
-	if root == "" || contentDirs[strings.ToLower(root)] {
+	if root == "" || serverContentDirs[strings.ToLower(root)] {
 		return ""
 	}
 	return root + "/"
@@ -692,8 +694,11 @@ func forgeArgsMCVersion(argsFile string) string {
 	if len(segs) < 2 {
 		return ""
 	}
-	mc, _ := splitMCPrefix(segs[len(segs)-2])
-	return mc
+	// NeoForge betas like 21.4.0-beta are no mc prefix
+	if mc, _ := splitMCPrefix(segs[len(segs)-2]); mcEraMajor(mc) {
+		return mc
+	}
+	return ""
 }
 
 // Pack format names inspection reports

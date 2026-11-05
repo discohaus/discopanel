@@ -406,6 +406,11 @@ func (p *Provisioner) finishLaunch(server *v1.Server, spec *v1.LaunchSpec, loade
 	if err != nil {
 		return nil, err
 	}
+	return writeLaunch(server, spec, loader, loaderVersion, mcVersion, javaMajor)
+}
+
+// Stamps and persists a launch spec whose target must exist
+func writeLaunch(server *v1.Server, spec *v1.LaunchSpec, loader v1.ModLoader, loaderVersion, mcVersion string, javaMajor int) (*Result, error) {
 	spec.Version = 1
 	spec.Loader = loader
 	spec.McVersion = mcVersion

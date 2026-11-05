@@ -316,7 +316,7 @@ func (s *Scheduler) executeTask(task *v1.ScheduledTask, trigger v1.TaskTrigger, 
 	s.store.HydrateProxyPorts(ctx, server)
 
 	// Checks if server is online, webhook tasks always fire
-	if task.RequireOnline && task.TaskType != v1.TaskType_TASK_TYPE_WEBHOOK && server.Status != v1.ServerStatus_SERVER_STATUS_RUNNING {
+	if needsOnlineServer(task, eventType) && server.Status != v1.ServerStatus_SERVER_STATUS_RUNNING {
 		s.log.Debug("Task %s: skipped (server offline)", task.Name)
 
 		// Create skipped execution record
@@ -659,4 +659,20 @@ func (s *Scheduler) executeWebhookTask(ctx context.Context, server *v1.Server, t
 		return output, nil
 	}
 	return output, fmt.Errorf("%s", result.ErrorMessage)
+}
+
+// Reports whether a task must be skipped while the server is down. Webhooks
+// and backups always run: a backup of a stopped server is the most
+// consistent snapshot (world saves are only paused when it is running).
+// A task fired by the Server Stop event can never see a running server, so
+// requiring one there meant it was always skipped.
+func needsOnlineServer(task *v1.ScheduledTask, eventType v1.TriggeredEventType) bool {
+	if !task.RequireOnline {
+		return false
+	}
+	switch task.TaskType {
+	case v1.TaskType_TASK_TYPE_WEBHOOK, v1.TaskType_TASK_TYPE_BACKUP:
+		return false
+	}
+	return eventType != v1.TriggeredEventType_TRIGGERED_EVENT_TYPE_SERVER_STOP
 }

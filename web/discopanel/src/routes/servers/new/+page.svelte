@@ -10,7 +10,8 @@
 	import { Switch } from '$lib/components/ui/switch';
 	import { Badge } from '$lib/components/ui/badge';
 	import { CardStack, PageHeader, SectionCard, ServerAvatar } from '$lib/components/app';
-	import { rpcClient, rpcErrorMessage } from '$lib/api/rpc-client';
+	import { rpcClient, rpcErrorMessage, silentCallOptions } from '$lib/api/rpc-client';
+	import { Code, ConnectError } from '@connectrpc/connect';
 	import { notify } from '$lib/stores/activity.svelte';
 	import {
 		Camera,
@@ -24,19 +25,26 @@
 		MemoryStick,
 		Cable,
 		Globe,
-		Rocket
+		Rocket,
+		FolderInput
 	} from '@lucide/svelte';
 	import { create } from '@bufbuild/protobuf';
-	import type { CreateServerRequest } from '$lib/proto/discopanel/v1/server_pb';
+	import type {
+		CreateServerRequest,
+		ServerImportAnalysis
+	} from '$lib/proto/discopanel/v1/server_pb';
 	import { CreateServerRequestSchema } from '$lib/proto/discopanel/v1/server_pb';
 	import {
 		ModLoader,
+		ModLoaderSchema,
 		ReleaseType,
 		ReleaseTypeSchema,
 		type ProxyListener,
 		type IndexedModpack
 	} from '$lib/proto/discopanel/v1/storage_pb';
 	import type { ModLoaderInfo, DockerImage } from '$lib/proto/discopanel/v1/minecraft_pb';
+	import { ModLoaderCategory } from '$lib/proto/discopanel/options/v1/options_pb';
+	import ServerImportPicker from '$lib/components/server-import-picker.svelte';
 	import type { Version } from '$lib/proto/discopanel/v1/modpack_pb';
 	import { enumLabel } from '$lib/proto-meta';
 	import { loadModLoaders } from '$lib/stores/loaders';
@@ -75,11 +83,18 @@
 	let iconPreview = $state('');
 	let iconInput = $state<HTMLInputElement | null>(null);
 
+	// Existing server archive, staged and analyzed before create
+	let importSessionId = $state('');
+	let importAnalysis = $state<ServerImportAnalysis | null>(null);
+	let importPicker = $state<ReturnType<typeof ServerImportPicker> | null>(null);
+
 	// Modpack selection
-	let sourceMode = $state<'blank' | 'modpack'>('blank');
+	type SourceMode = 'blank' | 'modpack' | 'import';
+	let sourceMode = $state<SourceMode>('blank');
 	const modeFlavor = {
 		blank: { name: 'Survival world', desc: 'Weekend survival with friends' },
-		modpack: { name: 'Modded server', desc: 'Notes about the modpack' }
+		modpack: { name: 'Modded server', desc: 'Notes about the modpack' },
+		import: { name: 'Migrated server', desc: 'Moved over from another panel' }
 	};
 	let namePlaceholder = $derived(modeFlavor[sourceMode].name);
 	let serverDescPlaceholder = $derived(modeFlavor[sourceMode].desc);
@@ -267,7 +282,11 @@
 			formData.mcVersion = config['mc_version'] || modpack.mcVersion || '';
 			// Backend floors modpack memory at 4 GB
 			formData.memory = Math.max(Number(config['memory']) || modpack.recommendedRam || 0, 4096);
-			formData.dockerImage = config['docker_image'] || '';
+			// The listing's image is derived from the newest MC version the
+			// pack lists, not the version installed. Pinning it ran packs on a
+			// newer Java than they support; leave it empty so the resolved
+			// Java version picks the runtime.
+			formData.dockerImage = '';
 			await loadModpackVersions(modpack.id);
 		} catch (error) {
 			notify.error('Failed to load modpack configuration');
@@ -288,12 +307,54 @@
 		formData.memory = 2048;
 	}
 
-	function setSourceMode(mode: 'blank' | 'modpack') {
+	function setSourceMode(mode: SourceMode) {
 		if (sourceMode === mode) return;
 		sourceMode = mode;
 		if (mode !== 'modpack' && selectedModpack) {
 			removeModpack();
 		}
+		if (mode !== 'import' && importAnalysis) {
+			importAnalysis = null;
+			importSessionId = '';
+			clearImportPrefill();
+		}
+		if (mode === 'import') {
+			worldFile = null;
+		}
+	}
+
+	// Detected facts prefill the form, user edits stay editable
+	function applyImportAnalysis(analysis: ServerImportAnalysis) {
+		autoName.fill(analysis.suggestedName);
+		formData.modLoader = analysis.modLoader;
+		if (analysis.mcVersion) formData.mcVersion = analysis.mcVersion;
+		if (analysis.maxPlayers > 0 && formData.maxPlayers === 20)
+			formData.maxPlayers = analysis.maxPlayers;
+		// Modded imports want modpack sized memory
+		if (analysis.modCount > 0 && formData.memory < 4096) formData.memory = 4096;
+	}
+
+	// A create that failed after placing the files also removed them
+	async function checkImportAlive() {
+		try {
+			await rpcClient.server.analyzeServerImport(
+				{ uploadSessionId: importSessionId },
+				silentCallOptions
+			);
+		} catch (error) {
+			if (error instanceof ConnectError && error.code === Code.NotFound) {
+				importPicker?.expire(
+					'The import files were cleaned up after the failed create, upload the archive again'
+				);
+			}
+		}
+	}
+
+	function clearImportPrefill() {
+		autoName.clear();
+		formData.modLoader = ModLoader.UNSPECIFIED;
+		formData.mcVersion = latestVersion || '';
+		formData.maxPlayers = 20;
 	}
 
 	async function handleIconSelect(e: Event) {
@@ -361,7 +422,12 @@
 		}
 	}
 
-	let installableLoaders = $derived(modLoaders.filter((l) => l.provisionable));
+	// Imports run shipped files, so any non pack loader fits
+	let installableLoaders = $derived(
+		sourceMode === 'import'
+			? modLoaders.filter((l) => l.category !== ModLoaderCategory.MODPACK)
+			: modLoaders.filter((l) => l.provisionable)
+	);
 	let selectedLoaderInfo = $derived(modLoaders.find((l) => l.loader === formData.modLoader));
 	let selectedLoaderName = $derived(selectedLoaderInfo?.name ?? '');
 	let selectedListener = $derived(proxyListeners.find((l) => l.id === formData.proxyListenerId));
@@ -379,12 +445,22 @@
 		proxyEnabled && useProxyMode && formData.proxyHostnames.length === 0
 	);
 
+	// Imports need a launchable tree and a known version
+	let importBlocker = $derived.by(() => {
+		if (sourceMode !== 'import') return '';
+		if (!importAnalysis) return 'Upload a server archive to import';
+		if (!importAnalysis.launchTarget) return 'The archive has no server jar to start';
+		if (!formData.mcVersion) return 'Choose the Minecraft version the server runs';
+		return '';
+	});
+
 	let canSubmit = $derived(
 		!loading &&
 			!loadingVersions &&
 			formData.name.trim().length > 0 &&
 			!portError &&
-			!hostnameMissing
+			!hostnameMissing &&
+			!importBlocker
 	);
 
 	async function handleSubmit(e: Event) {
@@ -405,6 +481,11 @@
 			return;
 		}
 
+		if (importBlocker) {
+			notify.error(importBlocker);
+			return;
+		}
+
 		loading = true;
 		try {
 			// Modrinth installs want the version number over the id
@@ -415,7 +496,7 @@
 					: selectedVersionId;
 
 			let worldSessionId = '';
-			if (worldFile) {
+			if (worldFile && sourceMode !== 'import') {
 				const uploaded = await uploadFile(worldFile, {});
 				worldSessionId = uploaded.sessionId;
 			}
@@ -425,6 +506,7 @@
 				modpackId: selectedModpack?.id || '',
 				modpackVersionId: versionToSend || '',
 				worldUploadSessionId: worldSessionId,
+				importUploadSessionId: sourceMode === 'import' ? importSessionId : '',
 				// Port zero routes through the proxy hostnames
 				port: useProxyMode ? 0 : formData.port,
 				// Direct mode keeps any typed hostnames out of the request
@@ -447,6 +529,7 @@
 			goto(resolve(`/servers/${created?.id}`));
 		} catch (error) {
 			notify.error(`Failed to create server: ${rpcErrorMessage(error, 'Unknown error')}`);
+			if (sourceMode === 'import' && importSessionId) await checkImportAlive();
 		} finally {
 			loading = false;
 		}
@@ -485,10 +568,10 @@
 		<form id="create-server-form" onsubmit={handleSubmit} class="min-w-0 space-y-4">
 			<SectionCard
 				title="Source"
-				description="Start from scratch or from a favorite modpack"
+				description="Start from scratch, a favorite modpack, or a server you already run"
 				contentClass="space-y-4"
 			>
-				<div class="grid grid-cols-2 gap-3">
+				<div class="grid gap-3 sm:grid-cols-3">
 					<button
 						type="button"
 						class="rounded-lg border p-4 text-left transition-colors {sourceMode === 'blank'
@@ -519,7 +602,34 @@
 							Version, loader, and memory come preset
 						</p>
 					</button>
+					<button
+						type="button"
+						class="rounded-lg border p-4 text-left transition-colors {sourceMode === 'import'
+							? 'border-primary bg-primary/5'
+							: 'hover:bg-accent/40'}"
+						onclick={() => setSourceMode('import')}
+						disabled={loading}
+					>
+						<div class="flex items-center gap-2 text-sm font-medium">
+							<FolderInput class="size-4 text-primary" />
+							Import existing server
+						</div>
+						<p class="mt-1 text-xs text-muted-foreground">
+							Bring a server folder over as-is, files untouched
+						</p>
+					</button>
 				</div>
+
+				{#if sourceMode === 'import'}
+					<ServerImportPicker
+						bind:this={importPicker}
+						bind:sessionId={importSessionId}
+						bind:analysis={importAnalysis}
+						disabled={loading}
+						onanalyzed={applyImportAnalysis}
+						oncleared={clearImportPrefill}
+					/>
+				{/if}
 
 				{#if sourceMode === 'modpack'}
 					{#if selectedModpack}
@@ -738,7 +848,11 @@
 
 			<SectionCard
 				title="Version & loader"
-				description={selectedModpack ? 'Preset by the modpack' : 'Minecraft version and mod loader'}
+				description={selectedModpack
+					? 'Preset by the modpack'
+					: importAnalysis
+						? 'Detected from the imported files, change only if detection is wrong'
+						: 'Minecraft version and mod loader'}
 				contentClass="grid gap-4 sm:grid-cols-2"
 			>
 				<div class="space-y-2">
@@ -796,6 +910,10 @@
 					</Select>
 					{#if selectedModpack}
 						<p class="text-xs text-muted-foreground">Mod loader comes from the modpack</p>
+					{:else if importAnalysis && formData.modLoader !== importAnalysis.modLoader}
+						<p class="text-xs text-status-warn">
+							Differs from the detected {enumLabel(ModLoaderSchema, importAnalysis.modLoader)}
+						</p>
 					{:else if formData.modLoader === ModLoader.VANILLA}
 						<p class="text-xs text-muted-foreground">Plain Minecraft, no mod support</p>
 					{:else if selectedLoaderInfo?.supportsMods}
@@ -929,7 +1047,7 @@
 
 				{#if showAdvanced}
 					<div class="space-y-5 border-t p-4">
-						<div class="space-y-2">
+						<div class="space-y-2" class:hidden={sourceMode === 'import'}>
 							<Label for="world_zip">Import world</Label>
 							<Input
 								id="world_zip"
@@ -1013,7 +1131,11 @@
 								{formData.name.trim() || 'Unnamed server'}
 							</p>
 							<p class="truncate text-xs text-muted-foreground">
-								{selectedModpack ? selectedModpack.name : 'Disco server'}
+								{selectedModpack
+									? selectedModpack.name
+									: importAnalysis
+										? `Imported from ${importAnalysis.archiveName}`
+										: 'Disco server'}
 							</p>
 						</div>
 					</div>
@@ -1071,6 +1193,10 @@
 					{:else if hostnameMissing}
 						<p class="rounded-md bg-muted/50 px-2.5 py-1.5 text-[11px] text-muted-foreground">
 							Add a hostname so players can join through the proxy
+						</p>
+					{:else if importBlocker}
+						<p class="rounded-md bg-muted/50 px-2.5 py-1.5 text-[11px] text-muted-foreground">
+							{importBlocker}
 						</p>
 					{/if}
 

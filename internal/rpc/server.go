@@ -247,6 +247,8 @@ func (s *Server) registerServices(mux *http.ServeMux, opts []connect.HandlerOpti
 	modpackService := services.NewModpackService(s.store, s.config, s.uploadManager, s.log)
 	proxyService := services.NewProxyService(s.store, s.docker, s.proxyManager, s.moduleManager, s.config, s.rec, s.log)
 	serverService := services.NewServerService(s.store, s.docker, s.sender, s.config, s.proxyManager, s.lifecycle, s.authManager, s.enforcer, s.logStreamer, s.metricsCollector, s.moduleManager, s.bus, s.uploadManager, s.completion, s.rec, s.log)
+	// Staged imports can be huge, abandoned ones go at boot
+	go serverService.SweepImportsAtStartup()
 	supportService := services.NewSupportService(s.store, s.docker, s.config, s.diagnostics, s.telemetry, s.downloadManager, s.log)
 	taskService := services.NewTaskService(s.store, s.scheduler, s.rec, s.log)
 	userService := services.NewUserService(s.store, s.authManager, s.log)
