@@ -12,6 +12,7 @@ import (
 	"github.com/discohaus/discopanel/internal/docker"
 	"github.com/discohaus/discopanel/internal/lifecycle"
 	"github.com/discohaus/discopanel/internal/metrics"
+	"github.com/discohaus/discopanel/internal/rbac"
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/logger"
 	"github.com/discohaus/discopanel/pkg/minecraft"
@@ -29,13 +30,15 @@ type PropertiesService struct {
 	config    *config.Config
 	docker    *docker.Client
 	lifecycle *lifecycle.Manager
+	enforcer  syncEnforcer
+	restarter syncLifecycle
 	rec       *metrics.Recorder
 	log       *logger.Logger
 }
 
 // Creates new config service
-func NewPropertiesService(store *storage.Store, cfg *config.Config, docker *docker.Client, lifecycleManager *lifecycle.Manager, rec *metrics.Recorder, log *logger.Logger) *PropertiesService {
-	return &PropertiesService{
+func NewPropertiesService(store *storage.Store, cfg *config.Config, docker *docker.Client, lifecycleManager *lifecycle.Manager, enforcer *rbac.Enforcer, rec *metrics.Recorder, log *logger.Logger) *PropertiesService {
+	s := &PropertiesService{
 		store:     store,
 		config:    cfg,
 		docker:    docker,
@@ -43,6 +46,14 @@ func NewPropertiesService(store *storage.Store, cfg *config.Config, docker *dock
 		rec:       rec,
 		log:       log,
 	}
+	// Nil pointers stay nil interfaces so the guards hold
+	if enforcer != nil {
+		s.enforcer = enforcer
+	}
+	if lifecycleManager != nil {
+		s.restarter = lifecycleManager
+	}
+	return s
 }
 
 // Gets server config
@@ -90,40 +101,9 @@ func (s *PropertiesService) UpdateServerProperties(ctx context.Context, req *con
 		return nil, err
 	}
 
-	// Get existing config
-	config, err := s.store.GetServerProperties(ctx, msg.ServerId)
+	config, _, err := s.saveServerProperties(ctx, server, msg.Updates, true, nil)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			config = s.store.CreateDefaultServerProperties(msg.ServerId)
-		} else {
-			s.log.Error("Failed to get server config: %v", err)
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get server properties"))
-		}
-	}
-
-	// Apply updates w/ reflection
-	before := proto.Clone(config)
-	if err := applyPropertyUpdates(config, msg.Updates); err != nil {
-		s.log.Error("Failed to apply config updates: %v", err)
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	changed := !proto.Equal(before, config)
-
-	// Save updated config
-	if err := s.store.UpdateServerProperties(ctx, config); err != nil {
-		s.log.Error("Failed to save server config: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to save server properties"))
-	}
-	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_PROPERTIES_UPDATE, metrics.Attrs{"changed": strconv.Itoa(len(msg.Updates))}, "updated server properties (%d changed)", len(msg.Updates))
-
-	// Unchanged values must not bounce a running server
-	if changed && server.ContainerId != "" && s.lifecycle != nil {
-		s.applyPropertiesToRunningServer(ctx, server)
-	}
-
-	// Reconciles proxy route right away without server start
-	if s.lifecycle != nil {
-		s.lifecycle.SyncProxyRoute(ctx, msg.ServerId)
+		return nil, err
 	}
 
 	// Return updated config
@@ -136,6 +116,52 @@ func (s *PropertiesService) UpdateServerProperties(ctx context.Context, req *con
 	return connect.NewResponse(&v1.UpdateServerPropertiesResponse{
 		Categories: categories,
 	}), nil
+}
+
+// Validates and saves one server's property edits, reports whether anything changed.
+// With restart set a running server restarts so the change takes effect.
+func (s *PropertiesService) saveServerProperties(ctx context.Context, server *v1.Server, updates map[string]string, restart bool, attrs metrics.Attrs) (*v1.ServerProperties, bool, error) {
+	// Get existing config
+	config, err := s.store.GetServerProperties(ctx, server.Id)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			config = s.store.CreateDefaultServerProperties(server.Id)
+		} else {
+			s.log.Error("Failed to get server config: %v", err)
+			return nil, false, connect.NewError(connect.CodeInternal, errors.New("failed to get server properties"))
+		}
+	}
+
+	// Apply updates w/ reflection
+	before := proto.Clone(config)
+	if err := applyPropertyUpdates(config, updates); err != nil {
+		s.log.Error("Failed to apply config updates: %v", err)
+		return nil, false, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	changed := !proto.Equal(before, config)
+
+	// Save updated config
+	if err := s.store.UpdateServerProperties(ctx, config); err != nil {
+		s.log.Error("Failed to save server config: %v", err)
+		return nil, false, connect.NewError(connect.CodeInternal, errors.New("failed to save server properties"))
+	}
+	recAttrs := metrics.Attrs{"changed": strconv.Itoa(len(updates))}
+	for k, v := range attrs {
+		recAttrs[k] = v
+	}
+	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_PROPERTIES_UPDATE, recAttrs, "updated server properties (%d changed)", len(updates))
+
+	// Unchanged values must not bounce a running server
+	if restart && changed && s.lifecycle != nil && restartsOnSave(server) {
+		s.applyPropertiesToRunningServer(ctx, server)
+	}
+
+	// Reconciles proxy route right away without server start
+	if s.lifecycle != nil {
+		s.lifecycle.SyncProxyRoute(ctx, server.Id)
+	}
+
+	return config, changed, nil
 }
 
 // Gets global settings
@@ -187,18 +213,27 @@ func (s *PropertiesService) UpdateGlobalSettings(ctx context.Context, req *conne
 	}), nil
 }
 
-// Restarts running server so saved properties take effect
-func (s *PropertiesService) applyPropertiesToRunningServer(reqCtx context.Context, server *v1.Server) {
+// Reports whether saving changed properties restarts the server
+func restartsOnSave(server *v1.Server) bool {
+	if server.ContainerId == "" {
+		return false
+	}
 	switch server.Status {
 	case v1.ServerStatus_SERVER_STATUS_RUNNING, v1.ServerStatus_SERVER_STATUS_STARTING, v1.ServerStatus_SERVER_STATUS_UNHEALTHY, v1.ServerStatus_SERVER_STATUS_PAUSED:
-		go func() {
-			ctx, cancel := context.WithTimeout(detach(reqCtx), 30*time.Minute)
-			defer cancel()
-			if err := s.lifecycle.Restart(ctx, server.Id); err != nil {
-				s.log.Error("Failed to restart server %s after config update: %v", server.Name, err)
-			}
-		}()
+		return true
 	}
+	return false
+}
+
+// Restarts running server so saved properties take effect
+func (s *PropertiesService) applyPropertiesToRunningServer(reqCtx context.Context, server *v1.Server) {
+	go func() {
+		ctx, cancel := context.WithTimeout(detach(reqCtx), 30*time.Minute)
+		defer cancel()
+		if err := s.lifecycle.Restart(ctx, server.Id); err != nil {
+			s.log.Error("Failed to restart server %s after config update: %v", server.Name, err)
+		}
+	}()
 }
 
 // Maps updates onto fields by json name

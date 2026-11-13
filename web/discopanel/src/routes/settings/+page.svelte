@@ -28,7 +28,7 @@
 		{
 			key: 'server-defaults',
 			label: 'Server defaults',
-			desc: 'Default properties applied to newly created servers'
+			desc: 'Default properties for new servers, optionally applied to existing ones'
 		},
 		{
 			key: 'network',
@@ -102,7 +102,7 @@
 		}
 	}
 
-	async function saveGlobalSettings(updates: Record<string, string>) {
+	async function saveGlobalSettings(updates: Record<string, string>): Promise<boolean> {
 		saving = true;
 		try {
 			const response = await rpcClient.properties.updateGlobalSettings({
@@ -111,9 +111,11 @@
 
 			globalConfig = response.categories;
 			notify.success('Global settings saved successfully');
+			return true;
 		} catch (error) {
 			notify.error('Failed to save global settings');
 			console.error(error);
+			return false;
 		} finally {
 			saving = false;
 		}

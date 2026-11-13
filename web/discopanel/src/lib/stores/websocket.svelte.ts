@@ -21,7 +21,14 @@ import {
 } from '$lib/proto/discopanel/v1/websocket_pb';
 import { authStore } from '$lib/stores/auth';
 
-export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'authenticated';
+// 'unauthorized': the server rejected our token. We stop reconnecting
+// (retrying the same token just loops) until a new login or token arrives.
+export type ConnectionState =
+	| 'disconnected'
+	| 'connecting'
+	| 'connected'
+	| 'authenticated'
+	| 'unauthorized';
 
 export interface WebSocketState {
 	connectionState: ConnectionState;
@@ -43,6 +50,7 @@ class WebSocketClient {
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	private pingTimer: ReturnType<typeof setInterval> | null = null;
 	private shouldReconnect = false;
+	private authRejected = false;
 
 	constructor() {
 		if (browser) {
@@ -114,7 +122,8 @@ class WebSocketClient {
 			this.socket.onclose = (event) => {
 				console.log('[WS] Disconnected:', event.code, event.reason);
 				this.cleanup();
-				this.state.connectionState = 'disconnected';
+				this.socket = null;
+				this.state.connectionState = this.authRejected ? 'unauthorized' : 'disconnected';
 
 				// Reconnects on any close unless disconnect turned it off
 				this.scheduleReconnect();
@@ -138,6 +147,7 @@ class WebSocketClient {
 
 	disconnect(): void {
 		this.shouldReconnect = false;
+		this.authRejected = false;
 		if (this.socket) {
 			this.socket.close(1000, 'Client disconnect');
 			this.socket = null;
@@ -183,7 +193,7 @@ class WebSocketClient {
 	}
 
 	private scheduleReconnect(): void {
-		if (!this.shouldReconnect || this.reconnectTimer) return;
+		if (!this.shouldReconnect || this.authRejected || this.reconnectTimer) return;
 
 		const delay = Math.min(
 			this.reconnectDelay * Math.pow(2, this.reconnectAttempts),
@@ -199,7 +209,7 @@ class WebSocketClient {
 	}
 
 	private reconnectNow(): void {
-		if (!this.shouldReconnect) return;
+		if (!this.shouldReconnect || this.authRejected) return;
 		if (this.socket?.readyState === WebSocket.OPEN) return;
 		if (this.reconnectTimer) {
 			clearTimeout(this.reconnectTimer);
@@ -233,7 +243,7 @@ class WebSocketClient {
 
 				case WSMessageType.WS_MESSAGE_TYPE_AUTH_FAIL:
 					console.error('[WS] Auth failed:', msg.payload.value);
-					this.state.error = 'Authentication failed';
+					this.handleAuthRejected();
 					break;
 
 				case WSMessageType.WS_MESSAGE_TYPE_SUBSCRIBED:
@@ -317,12 +327,51 @@ class WebSocketClient {
 		return true;
 	}
 
-	// Re-sends auth with the current token after login
+	// Re-sends auth with the current token after login, reopening the
+	// socket if an earlier rejection had parked it.
 	reauthenticate(): void {
+		const wasRejected = this.authRejected;
+		this.authRejected = false;
+		this.state.error = null;
 		if (this.socket?.readyState === WebSocket.OPEN) {
 			const authState = get(authStore);
 			this.authenticate(authState.token || '');
+		} else if (wasRejected || this.shouldReconnect) {
+			this.reconnectNow();
 		}
+	}
+
+	// The server refused our credentials (expired or revoked session, or auth
+	// was just turned on). Previously the socket sat "connected" forever with
+	// no stream. Now it is parked and the auth store decides: an invalid
+	// session logs the user out, a still-valid one retries.
+	// Rejections that a still-valid session keeps hitting (socket and RPC
+	// disagree) back off instead of looping AUTH -> AUTH_FAIL forever.
+	private recentRejections: number[] = [];
+
+	private handleAuthRejected(): void {
+		if (this.authRejected) return;
+		this.authRejected = true;
+		this.state.connectionState = 'unauthorized';
+		this.state.error = 'Session expired, sign in again to resume live updates';
+		const now = Date.now();
+		this.recentRejections = this.recentRejections.filter((t) => now - t < 5 * 60_000);
+		this.recentRejections.push(now);
+		const retryDelay = Math.min(30_000 * 2 ** (this.recentRejections.length - 1), 5 * 60_000);
+		authStore
+			.validateSession()
+			.then((valid) => {
+				if (valid && this.recentRejections.length === 1) {
+					this.reauthenticate();
+				} else if (get(authStore).token) {
+					// Unreachable to check, or rejected again despite a valid
+					// session: retry later with backoff
+					setTimeout(() => this.authRejected && this.reauthenticate(), retryDelay);
+				}
+			})
+			.catch(() => {
+				// The RPC interceptor already logs out on auth errors
+			});
 	}
 
 	private authenticate(token: string): void {
@@ -412,9 +461,12 @@ class WebSocketClient {
 		this.send(toBinary(WebSocketClientMessageSchema, msg));
 	}
 
-	sendCommand(serverId: string, command: string): void {
+	// Returns false when the command could not be handed to the socket, so
+	// callers can fall back to RPC instead of waiting for a reply that
+	// will never come.
+	sendCommand(serverId: string, command: string): boolean {
 		if (this.state.connectionState !== 'authenticated') {
-			return;
+			return false;
 		}
 
 		const msg = create(WebSocketClientMessageSchema, {
@@ -424,7 +476,7 @@ class WebSocketClient {
 				value: create(CommandMessageSchema, { serverId, command })
 			}
 		});
-		this.send(toBinary(WebSocketClientMessageSchema, msg));
+		return this.send(toBinary(WebSocketClientMessageSchema, msg));
 	}
 
 	sendCommandCompletions(serverId: string, command: string): boolean {

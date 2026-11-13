@@ -1,32 +1,40 @@
 <script lang="ts">
+	import { guardUnsavedChanges } from '$lib/utils/unsaved-guard.svelte';
 	import { centerInRail } from '$lib/utils';
 	import { onMount, untrack } from 'svelte';
 	import { SvelteURL } from 'svelte/reactivity';
 	import { Input } from '$lib/components/ui/input';
 	import { Button } from '$lib/components/ui/button';
 	import { notify } from '$lib/stores/activity.svelte';
-	import { Save, RotateCcw, Loader2, Search, X, FileSliders } from '@lucide/svelte';
+	import { Save, RotateCcw, Loader2, Search, X, FileSliders, CopyCheck } from '@lucide/svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import type { PropertyCategory, ServerProperty } from '$lib/proto/discopanel/v1/properties_pb';
 	import PropertyField from '$lib/components/properties/property-field.svelte';
 	import { PropertiesForm, categorySlug } from '$lib/components/properties/properties-form.svelte';
 	import { EmptyState } from '$lib/components/app';
+	import DefaultsSyncDialog from '$lib/components/defaults-sync-dialog.svelte';
+	import { canUpdateSettings } from '$lib/stores/auth';
 
 	interface Props {
 		categories: PropertyCategory[];
-		onSave: (updates: Record<string, string>) => Promise<void>;
+		// Resolves true once the defaults are saved
+		onSave: (updates: Record<string, string>) => Promise<boolean>;
 		saving?: boolean;
 	}
 
 	let { categories, onSave, saving = false }: Props = $props();
 
 	const form = new PropertiesForm(false);
+	guardUnsavedChanges(() => form.modifiedKeys.size > 0);
 
 	let activeCategory = $state<string>('');
 	let highlighted = $state<string | null>(null);
 	let searchQuery = $state('');
 	let searching = $derived(searchQuery.trim().length > 0);
 	let categoryNav = $state<HTMLElement | null>(null);
+	let syncOpen = $state(false);
+	// Keys saved this visit, preselected for syncing
+	let savedKeys = $state<string[]>([]);
 
 	// Reprocess whenever the parent hands new categories down
 	let previousCategories = $state<PropertyCategory[] | undefined>(undefined);
@@ -76,7 +84,21 @@
 
 	async function handleSave() {
 		if (!form.dirty) return;
-		await onSave(form.buildUpdates());
+		const updates = form.buildUpdates();
+		if (await onSave(updates)) {
+			savedKeys = [...new Set([...savedKeys, ...Object.keys(updates)])];
+		}
+	}
+
+	// Syncing reads saved defaults, pending edits would be ignored
+	function openSync() {
+		if (form.dirty) {
+			notify.warning('Save or discard your changes first', {
+				description: 'Only saved defaults can be applied to existing servers.'
+			});
+			return;
+		}
+		syncOpen = true;
 	}
 
 	function selectCategory(slug: string, event: MouseEvent) {
@@ -176,6 +198,19 @@
 					</button>
 				{/each}
 			</nav>
+			{#if $canUpdateSettings}
+				<Button
+					variant="outline"
+					size="sm"
+					class="mt-3 shrink-0"
+					onclick={openSync}
+					disabled={saving}
+					title={form.dirty ? 'Save or discard your changes first' : undefined}
+				>
+					<CopyCheck class="size-4" />
+					Apply to existing servers…
+				</Button>
+			{/if}
 		</aside>
 
 		<div class="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
@@ -240,3 +275,5 @@
 		</div>
 	</div>
 {/if}
+
+<DefaultsSyncDialog bind:open={syncOpen} preselect={savedKeys} />

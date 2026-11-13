@@ -38,6 +38,20 @@ service PropertiesService {
       action: ACTION_TYPE_UPDATE
     };
   }
+  // Diffs defaults against existing servers, handler checks each server's grant
+  rpc PreviewDefaultsSync(PreviewDefaultsSyncRequest) returns (PreviewDefaultsSyncResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SETTINGS
+      action: ACTION_TYPE_UPDATE
+    };
+  }
+  // Writes defaults onto existing servers, handler checks each server's grant
+  rpc ApplyDefaultsSync(ApplyDefaultsSyncRequest) returns (ApplyDefaultsSyncResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SETTINGS
+      action: ACTION_TYPE_UPDATE
+    };
+  }
 }
 
 // Single server property
@@ -98,4 +112,112 @@ message UpdateGlobalSettingsRequest {
 // Updated global defaults
 message UpdateGlobalSettingsResponse {
   repeated PropertyCategory categories = 1;
+}
+
+// How list fields such as the whitelist merge into a server
+enum ListSyncMode {
+  LIST_SYNC_MODE_UNSPECIFIED = 0; // Treated as add
+  LIST_SYNC_MODE_ADD = 1; // Adds missing default entries, keeps the rest
+  LIST_SYNC_MODE_MIRROR = 2; // Replaces with exactly the default entries
+}
+
+// One default field that can sync to existing servers
+message DefaultsSyncField {
+  string key = 1;
+  string label = 2;
+  string category = 3;
+  string default_value = 4;
+  bool list = 5; // Entry list merged per list mode
+  string type = 6; // Input type of the field
+  bool default_set = 7; // False for a linked field the sync clears
+  bool sensitive = 8; // Applying needs an explicit confirmation
+  repeated string linked = 9; // Keys always synced together with this one
+}
+
+// One default field that never syncs
+message DefaultsSyncExclusion {
+  string key = 1;
+  string label = 2;
+  string reason = 3;
+}
+
+// One field that differs on one server
+message DefaultsSyncChange {
+  string key = 1;
+  string old_value = 2;
+  bool old_set = 3; // False when the server has no value
+  string new_value = 4;
+  repeated string added = 5; // List entries the sync adds
+  repeated string removed = 6; // List entries the sync removes
+}
+
+// One server in a defaults sync preview
+message DefaultsSyncServer {
+  string server_id = 1;
+  string server_name = 2;
+  bool selectable = 3;
+  string skip_reason = 4; // Why the server is not selectable
+  bool running = 5; // Changes need a restart to take effect
+  repeated DefaultsSyncChange changes = 6;
+  repeated string notes = 7;
+  bool busy = 8; // Another lifecycle action is in flight
+}
+
+// Fields to diff, empty means every syncable field
+message PreviewDefaultsSyncRequest {
+  repeated string keys = 1;
+  ListSyncMode list_mode = 2;
+}
+
+// Syncable fields and per-server differences
+message PreviewDefaultsSyncResponse {
+  repeated DefaultsSyncField fields = 1;
+  repeated DefaultsSyncExclusion excluded = 2;
+  repeated DefaultsSyncServer servers = 3;
+  string defaults_version = 4; // Echoed by apply to detect edited defaults
+}
+
+// Fields and servers to write defaults onto
+message ApplyDefaultsSyncRequest {
+  repeated string keys = 1;
+  repeated string server_ids = 2;
+  ListSyncMode list_mode = 3;
+  string defaults_version = 4; // From the preview the user reviewed
+  bool restart_running = 5; // Restart running servers now, otherwise next start
+  bool confirm_sensitive = 6; // Required when a sensitive field is chosen
+}
+
+// What happened to one server
+enum DefaultsSyncOutcome {
+  DEFAULTS_SYNC_OUTCOME_UNSPECIFIED = 0;
+  DEFAULTS_SYNC_OUTCOME_APPLIED = 1;
+  DEFAULTS_SYNC_OUTCOME_UNCHANGED = 2; // Already matched the defaults
+  DEFAULTS_SYNC_OUTCOME_SKIPPED = 3;
+  DEFAULTS_SYNC_OUTCOME_FAILED = 4;
+}
+
+// When an applied server picks up its new values
+enum DefaultsSyncRestart {
+  DEFAULTS_SYNC_RESTART_UNSPECIFIED = 0;
+  DEFAULTS_SYNC_RESTART_NEXT_START = 1; // Stopped, applies on next start
+  DEFAULTS_SYNC_RESTART_QUEUED = 2; // Restart queued in the background
+  DEFAULTS_SYNC_RESTART_NEEDED = 3; // Running, restart to apply
+  DEFAULTS_SYNC_RESTART_BUSY = 4; // Another action in flight, restart manually after
+  DEFAULTS_SYNC_RESTART_STALE_START = 5; // A start in flight used the old values
+}
+
+// Result for one requested server
+message DefaultsSyncResult {
+  string server_id = 1;
+  string server_name = 2;
+  DefaultsSyncOutcome outcome = 3;
+  string reason = 4;
+  repeated string keys = 5; // Fields written
+  DefaultsSyncRestart restart = 6;
+  string restart_note = 7; // What the user should do next
+}
+
+// Per-server sync results
+message ApplyDefaultsSyncResponse {
+  repeated DefaultsSyncResult results = 1;
 }
