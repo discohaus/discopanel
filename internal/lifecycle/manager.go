@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/discohaus/discopanel/internal/proxy"
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/events"
+	"github.com/discohaus/discopanel/pkg/javaversions"
 	"github.com/discohaus/discopanel/pkg/logger"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/protometa"
@@ -46,7 +48,7 @@ type Manager struct {
 
 	// Per-server transition gate rejects overlapping operations
 	startMu     sync.Mutex
-	transitions map[string]string
+	transitions map[string]*slot
 
 	// Last requested stop source per server, cleared on start
 	stopIntentMu sync.Mutex
@@ -79,7 +81,7 @@ func NewManager(store *storage.Store, dockerClient *docker.Client, prov *provisi
 		cfg:          cfg,
 		log:          log,
 		rec:          rec,
-		transitions:  make(map[string]string),
+		transitions:  make(map[string]*slot),
 		stopIntents:  make(map[string]string),
 		paused:       make(map[string]bool),
 		roster:       make(map[string]map[string]bool),
@@ -106,23 +108,72 @@ func (m *Manager) console(serverID, format string, args ...any) {
 	m.streamer.AddSystemEntry(serverID, fmt.Sprintf(format, args...))
 }
 
+// One in-flight transition on a server
+type slot struct {
+	kind string
+	// Every slot can be aborted. Runners bind their context to abortCtx so a
+	// stop or delete can cancel a start however it was launched (RPC,
+	// autostart, scheduler, wake-on-connect).
+	abortCtx context.Context
+	abort    context.CancelFunc
+	done     chan struct{} // closed on release
+}
+
+// bind derives the transition's run context: cancelled by the caller's
+// ctx or by an abort of this slot, whichever comes first.
+func (sl *slot) bind(ctx context.Context) (context.Context, context.CancelFunc) {
+	runCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(sl.abortCtx, cancel)
+	return runCtx, func() {
+		stop()
+		cancel()
+	}
+}
+
 // Claims the transition slot for one server
 func (m *Manager) claim(serverID, kind string) error {
+	_, err := m.claimSlot(serverID, kind)
+	return err
+}
+
+func (m *Manager) claimSlot(serverID, kind string) (*slot, error) {
 	m.startMu.Lock()
 	defer m.startMu.Unlock()
-	if current := m.transitions[serverID]; current != "" {
-		return fmt.Errorf("server is busy, %s in progress", current)
+	if current := m.transitions[serverID]; current != nil {
+		return nil, &BusyError{Kind: current.kind}
 	}
-	m.transitions[serverID] = kind
-	return nil
+	abortCtx, abort := context.WithCancel(context.Background())
+	sl := &slot{kind: kind, abortCtx: abortCtx, abort: abort, done: make(chan struct{})}
+	m.transitions[serverID] = sl
+	return sl, nil
 }
 
 // Frees a claimed transition slot
 func (m *Manager) release(serverID string) {
 	m.startMu.Lock()
+	sl := m.transitions[serverID]
 	delete(m.transitions, serverID)
 	m.startMu.Unlock()
+	if sl != nil {
+		sl.abort()
+		close(sl.done)
+	}
 }
+
+// Looks up the slot a caller claimed earlier (BeginStart then RunStartAsync)
+func (m *Manager) heldSlot(serverID, kind string) *slot {
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+	if sl := m.transitions[serverID]; sl != nil && sl.kind == kind {
+		return sl
+	}
+	return nil
+}
+
+// BusyError reports an overlapping transition on the same server.
+type BusyError struct{ Kind string }
+
+func (e *BusyError) Error() string { return fmt.Sprintf("server is busy, %s in progress", e.Kind) }
 
 // Runs one transition, rejects overlap on the same server
 func (m *Manager) transition(serverID, kind string, fn func() error) error {
@@ -133,16 +184,65 @@ func (m *Manager) transition(serverID, kind string, fn func() error) error {
 	return fn()
 }
 
+// Runs fn under a freshly claimed slot with an abortable context
+func (m *Manager) transitionCtx(ctx context.Context, serverID, kind string, fn func(context.Context, string) error) error {
+	sl, err := m.claimSlot(serverID, kind)
+	if err != nil {
+		return err
+	}
+	defer m.release(serverID)
+	runCtx, done := sl.bind(ctx)
+	defer done()
+	return fn(runCtx, serverID)
+}
+
+// How long a stop or delete waits for a cancelled start to unwind
+const preemptWait = 60 * time.Second
+
+// Cancels an in-flight start (the only transition users want to abort) and
+// waits for it to release its slot. Other transitions are left alone.
+// Reports whether a start was cancelled and fully unwound.
+func (m *Manager) preemptStart(ctx context.Context, serverID string) bool {
+	m.startMu.Lock()
+	sl := m.transitions[serverID]
+	var abort context.CancelFunc
+	var done chan struct{}
+	if sl != nil && sl.kind == "start" {
+		abort, done = sl.abort, sl.done
+	}
+	m.startMu.Unlock()
+	if abort == nil {
+		return false
+	}
+	m.console(serverID, "cancelling start...")
+	abort()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+	case <-time.After(preemptWait):
+	}
+	return false
+}
+
 // Claims the start slot ahead of an async run
 func (m *Manager) BeginStart(serverID string) error {
 	return m.claim(serverID, "start")
 }
 
-// Runs a claimed start on a capped background goroutine
+// Runs a claimed start on a capped background goroutine. The start can be
+// cancelled by a stop or delete request (see preemptStart).
 func (m *Manager) RunStartAsync(ctx context.Context, serverID string) {
+	sl := m.heldSlot(serverID, "start")
+	runCtx, cancel := context.WithTimeout(ctx, 2*time.Hour)
+	unbind := cancel
+	if sl != nil {
+		var done context.CancelFunc
+		runCtx, done = sl.bind(runCtx)
+		unbind = func() { done(); cancel() }
+	}
 	go func() {
-		runCtx, cancel := context.WithTimeout(ctx, 2*time.Hour)
-		defer cancel()
+		defer unbind()
 		defer m.release(serverID)
 		if err := m.start(runCtx, serverID); err != nil {
 			m.log.Error("lifecycle: start failed for %s: %v", serverID, err)
@@ -150,22 +250,76 @@ func (m *Manager) RunStartAsync(ctx context.Context, serverID string) {
 	}()
 }
 
+// Runs a lifecycle transition in the background. The slot is claimed
+// synchronously so callers can report "busy" to the user instead of
+// stamping a status the background run then never reaches. A stop issued
+// while a start is running cancels that start, waits for it to unwind and
+// then stops; if the start does not unwind in time the stop is reported
+// as busy rather than silently dropped.
+func (m *Manager) RunAsync(ctx context.Context, serverID, kind string, timeout time.Duration) error {
+	var fn func(context.Context, string) error
+	switch kind {
+	case "start":
+		fn = m.start
+	case "stop":
+		fn = m.stop
+	case "restart":
+		fn = m.restart
+	case "recreate":
+		fn = m.recreate
+	default:
+		return fmt.Errorf("unknown lifecycle transition %q", kind)
+	}
+	if kind == "stop" {
+		m.preemptStart(ctx, serverID)
+	}
+	sl, err := m.claimSlot(serverID, kind)
+	if err != nil {
+		return err
+	}
+	go func() {
+		defer m.release(serverID)
+		runCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		runCtx, done := sl.bind(runCtx)
+		defer done()
+		if err := fn(runCtx, serverID); err != nil {
+			m.log.Error("lifecycle: %s failed for %s: %v", kind, serverID, err)
+		}
+	}()
+	return nil
+}
+
+// Exclusive runs fn while holding the server's transition slot, so no
+// start, stop or restart can overlap it (used by delete and backup
+// restore). An in-flight start is cancelled first when preempt is true.
+func (m *Manager) Exclusive(ctx context.Context, serverID, kind string, preempt bool, fn func() error) error {
+	if preempt {
+		m.preemptStart(ctx, serverID)
+	}
+	return m.transition(serverID, kind, fn)
+}
+
 // Reports whether a start or provision cycle is in flight
 func (m *Manager) IsStarting(serverID string) bool {
 	m.startMu.Lock()
 	defer m.startMu.Unlock()
-	return m.transitions[serverID] == "start"
+	sl := m.transitions[serverID]
+	return sl != nil && sl.kind == "start"
 }
 
 // Reports whether any transition is in flight
 func (m *Manager) Busy(serverID string) bool {
 	m.startMu.Lock()
 	defer m.startMu.Unlock()
-	return m.transitions[serverID] != ""
+	return m.transitions[serverID] != nil
 }
 
 func (m *Manager) setStatus(ctx context.Context, server *v1.Server, status v1.ServerStatus) {
 	server.Status = status
+	// A cancelled or timed-out transition must still record where it ended,
+	// otherwise the row is stuck on PROVISIONING/STOPPING forever.
+	ctx = context.WithoutCancel(ctx)
 	if err := m.store.UpdateServerFields(ctx, server.Id, map[string]any{"status": status}); err != nil {
 		m.log.Error("lifecycle: failed to persist status %s for %s: %v", protometa.Name(status), server.Name, err)
 	}
@@ -214,7 +368,7 @@ func (m *Manager) SyncProxyRoute(ctx context.Context, serverID string) {
 
 // Provisions and starts container, run from a goroutine in handlers
 func (m *Manager) Start(ctx context.Context, serverID string) error {
-	return m.transition(serverID, "start", func() error { return m.start(ctx, serverID) })
+	return m.transitionCtx(ctx, serverID, "start", m.start)
 }
 
 func (m *Manager) start(ctx context.Context, serverID string) error {
@@ -245,6 +399,13 @@ func (m *Manager) start(ctx context.Context, serverID string) error {
 	// Provision server files
 	m.setStatus(ctx, server, v1.ServerStatus_SERVER_STATUS_PROVISIONING)
 	result, err := m.prov.Ensure(ctx, server, serverCfg)
+	if err != nil && errors.Is(ctx.Err(), context.Canceled) {
+		// Cancelled on purpose by a stop or delete, not a failure
+		m.setStatus(ctx, server, v1.ServerStatus_SERVER_STATUS_STOPPED)
+		m.console(server.Id, "start cancelled")
+		m.rec.Announce(context.WithoutCancel(ctx), server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_SERVER_START, nil, "start cancelled during provisioning")
+		return fmt.Errorf("start cancelled: %w", ctx.Err())
+	}
 	if err != nil {
 		m.setStatus(ctx, server, v1.ServerStatus_SERVER_STATUS_ERROR)
 		m.rec.Announce(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_SERVER_START, metrics.Attrs{"error": err.Error()}, "provisioning failed: %v", err)
@@ -261,6 +422,13 @@ func (m *Manager) start(ctx context.Context, serverID string) error {
 	if java := int32(result.JavaMajor); java != server.JavaVersion {
 		server.JavaVersion = java
 		resolved["java_version"] = server.JavaVersion
+	}
+	// A pinned runtime image wins over the resolved Java (DesiredImage), so
+	// say so when they disagree: mods that cap their Java version crash on
+	// a newer runtime while Server info shows the required one
+	if pinned := javaversions.TagMajor(server.DockerImage); pinned > 0 && result.JavaMajor > 0 && pinned != result.JavaMajor {
+		m.console(server.Id, "warning: runtime image is pinned to Java %d but Minecraft %s wants Java %d. Clear the Docker image in Settings to use the recommended runtime.", pinned, server.McVersion, result.JavaMajor)
+		m.log.Warn("lifecycle: %s pinned to Java %d, resolved Java %d", server.Name, pinned, result.JavaMajor)
 	}
 	installed := ""
 	if result.Modpack != nil {
@@ -449,7 +617,8 @@ func shortDigest(digest string) string {
 
 // Gracefully stops server, sends optional announcement before SIGTERM
 func (m *Manager) Stop(ctx context.Context, serverID string) error {
-	return m.transition(serverID, "stop", func() error { return m.stop(ctx, serverID) })
+	m.preemptStart(ctx, serverID)
+	return m.transitionCtx(ctx, serverID, "stop", m.stop)
 }
 
 func (m *Manager) stop(ctx context.Context, serverID string) error {
@@ -464,7 +633,13 @@ func (m *Manager) stop(ctx context.Context, serverID string) error {
 		return nil
 	}
 
-	serverCfg, _ := m.store.GetServerProperties(ctx, serverID)
+	// Visible immediately, including during the shutdown announcement
+	m.setStatus(ctx, server, v1.ServerStatus_SERVER_STATUS_STOPPING)
+
+	serverCfg, err := m.store.GetServerProperties(ctx, serverID)
+	if err != nil {
+		m.log.Warn("lifecycle: using default stop settings for %s: %v", server.Name, err)
+	}
 	stopDuration := docker.StopTimeoutFor(serverCfg)
 	announceDelay := 0
 	if serverCfg != nil && serverCfg.StopServerAnnounceDelay != nil {
@@ -523,7 +698,7 @@ func (m *Manager) stop(ctx context.Context, serverID string) error {
 
 // Stops then fully restarts, reapplying provisioned configuration files
 func (m *Manager) Restart(ctx context.Context, serverID string) error {
-	return m.transition(serverID, "restart", func() error { return m.restart(ctx, serverID) })
+	return m.transitionCtx(ctx, serverID, "restart", m.restart)
 }
 
 func (m *Manager) restart(ctx context.Context, serverID string) error {
@@ -551,7 +726,7 @@ func (m *Manager) restart(ctx context.Context, serverID string) error {
 
 // Destroys container and brings server up from scratch
 func (m *Manager) Recreate(ctx context.Context, serverID string) error {
-	return m.transition(serverID, "recreate", func() error { return m.recreate(ctx, serverID) })
+	return m.transitionCtx(ctx, serverID, "recreate", m.recreate)
 }
 
 func (m *Manager) recreate(ctx context.Context, serverID string) error {
@@ -579,7 +754,7 @@ func (m *Manager) recreate(ctx context.Context, serverID string) error {
 
 // Freezes a running server's container for autopause
 func (m *Manager) Pause(ctx context.Context, serverID string) error {
-	return m.transition(serverID, "pause", func() error { return m.pause(ctx, serverID) })
+	return m.transitionCtx(ctx, serverID, "pause", m.pause)
 }
 
 func (m *Manager) pause(ctx context.Context, serverID string) error {
@@ -603,7 +778,7 @@ func (m *Manager) pause(ctx context.Context, serverID string) error {
 
 // Resumes a paused server's container on wake-on-connect
 func (m *Manager) Wake(ctx context.Context, serverID string) error {
-	return m.transition(serverID, "wake", func() error { return m.wake(ctx, serverID) })
+	return m.transitionCtx(ctx, serverID, "wake", m.wake)
 }
 
 func (m *Manager) wake(ctx context.Context, serverID string) error {

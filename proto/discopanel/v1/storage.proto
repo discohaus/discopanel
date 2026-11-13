@@ -1812,6 +1812,7 @@ message IndexedModpack {
   bool is_favorited = 22 [(protogorm.v1.db) = {skip: true}];
   google.protobuf.Timestamp updated_at = 23 [(protogorm.v1.db) = {tag: "autoUpdateTime"}];
   google.protobuf.Timestamp indexed_at = 24 [(protogorm.v1.db) = {tag: "autoCreateTime"}];
+  bool public_download = 25 [(protogorm.v1.db) = {skip: true}]; // Archive served without auth
 }
 
 // One downloadable modpack file row

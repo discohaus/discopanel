@@ -9,6 +9,14 @@
 	import { Alert, AlertDescription, AlertTitle } from '$lib/components/ui/alert';
 	import { Progress } from '$lib/components/ui/progress';
 	import { Skeleton } from '$lib/components/ui/skeleton';
+	import {
+		DropdownMenu,
+		DropdownMenuCheckboxItem,
+		DropdownMenuContent,
+		DropdownMenuItem,
+		DropdownMenuSeparator,
+		DropdownMenuTrigger
+	} from '$lib/components/ui/dropdown-menu';
 	import { PageHeader, EmptyState, ConfirmDialog, TabRail } from '$lib/components/app';
 	import { registerRefresh } from '$lib/stores/refresh';
 	import ScrollToTop from '$lib/components/scroll-to-top.svelte';
@@ -24,7 +32,10 @@
 		Upload,
 		Package,
 		Trash2,
-		X
+		X,
+		Loader2,
+		MoreHorizontal,
+		Link
 	} from '@lucide/svelte';
 	import { create } from '@bufbuild/protobuf';
 	import type { IndexedModpack } from '$lib/proto/discopanel/v1/storage_pb';
@@ -34,7 +45,8 @@
 		GetIndexerStatusResponse
 	} from '$lib/proto/discopanel/v1/modpack_pb';
 	import { SearchModpacksRequestSchema } from '$lib/proto/discopanel/v1/modpack_pb';
-	import { rpcClient } from '$lib/api/rpc-client';
+	import { rpcClient, rpcErrorMessage } from '$lib/api/rpc-client';
+	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { loadModLoaders } from '$lib/stores/loaders';
 	import { debounce } from 'lodash-es';
 	import { uploadFile, cancelUpload, type UploadProgress } from '$lib/utils/chunked-upload';
@@ -67,6 +79,9 @@
 	let indexerName = $derived(selectedIndexer === 'fuego' ? 'CurseForge' : 'Modrinth');
 	let deleteTarget = $state<IndexedModpack | null>(null);
 	let deleteOpen = $state(false);
+	// Pack ids with a download or share toggle in flight
+	let downloading = $state<Record<string, boolean>>({});
+	let sharing = $state<Record<string, boolean>>({});
 
 	// Dynamic filter options fetched from API
 	let gameVersions = $state<string[]>([]);
@@ -364,6 +379,82 @@
 			}
 		} catch (error) {
 			notify.error(error instanceof Error ? error.message : 'Failed to delete modpack');
+		}
+	}
+
+	// Stored archives stream through a download session, indexed ones open their source URL
+	async function downloadModpack(modpack: IndexedModpack) {
+		if (downloading[modpack.id]) return;
+		downloading[modpack.id] = true;
+		try {
+			const response = await rpcClient.modpack.initModpackDownload({ id: modpack.id });
+			if (response.remote) {
+				window.open(response.downloadUrl, '_blank', 'noopener,noreferrer');
+				return;
+			}
+			const a = document.createElement('a');
+			a.href = response.downloadUrl;
+			a.download = response.filename;
+			a.click();
+			notify.success(`Downloading ${response.filename}`, {
+				description: response.totalSize > 0 ? formatBytes(Number(response.totalSize)) : undefined
+			});
+		} catch (error) {
+			notify.error('Failed to download modpack', {
+				description: rpcErrorMessage(error, 'Unknown error occurred')
+			});
+		} finally {
+			downloading[modpack.id] = false;
+		}
+	}
+
+	function publicDownloadURL(modpack: IndexedModpack): string {
+		return `${window.location.origin}/api/v1/modpacks/${encodeURIComponent(modpack.id)}/download`;
+	}
+
+	// Patches one pack in every list it shows up in
+	function patchModpack(id: string, patch: Partial<IndexedModpack>) {
+		const apply = (m: IndexedModpack) => (m.id === id ? { ...m, ...patch } : m);
+		uploadedPacks = uploadedPacks.map(apply);
+		favorites = favorites.map(apply);
+		if (searchResults) {
+			searchResults.modpacks = searchResults.modpacks.map(apply);
+		}
+	}
+
+	async function setPublicDownload(modpack: IndexedModpack, enabled: boolean) {
+		if (sharing[modpack.id]) return;
+		sharing[modpack.id] = true;
+		try {
+			const response = await rpcClient.modpack.setModpackPublicDownload({
+				id: modpack.id,
+				enabled
+			});
+			patchModpack(modpack.id, { publicDownload: response.publicDownload });
+			if (response.publicDownload) {
+				const copied = await copyToClipboard(publicDownloadURL(modpack));
+				notify.success('Public download link enabled', {
+					description: copied
+						? 'Link copied to clipboard. Anyone with it can download this pack.'
+						: 'Anyone with the link can download this pack.'
+				});
+			} else {
+				notify.success('Public download link disabled');
+			}
+		} catch (error) {
+			notify.error('Failed to update public download link', {
+				description: rpcErrorMessage(error, 'Unknown error occurred')
+			});
+		} finally {
+			sharing[modpack.id] = false;
+		}
+	}
+
+	async function copyPublicLink(modpack: IndexedModpack) {
+		if (await copyToClipboard(publicDownloadURL(modpack))) {
+			notify.success('Link copied to clipboard');
+		} else {
+			notify.error('Failed to copy to clipboard');
 		}
 	}
 
@@ -670,16 +761,69 @@
 										View
 									</Button>
 								{/if}
+								<Button
+									variant="outline"
+									size="sm"
+									onclick={() => downloadModpack(modpack)}
+									disabled={downloading[modpack.id]}
+									title={modpack.indexer === 'manual'
+										? 'Download the stored archive'
+										: `Download from ${indexerLabel(modpack)}`}
+								>
+									{#if downloading[modpack.id]}
+										<Loader2 class="size-3.5 animate-spin" />
+									{:else}
+										<Download class="size-3.5" />
+									{/if}
+									Download
+								</Button>
 								{#if modpack.indexer === 'manual'}
-									<Button
-										variant="outline"
-										size="sm"
-										class="text-status-danger hover:bg-status-danger/10 hover:text-status-danger"
-										onclick={() => requestDelete(modpack)}
-									>
-										<Trash2 class="size-3.5" />
-										Delete
-									</Button>
+									<DropdownMenu>
+										<DropdownMenuTrigger>
+											{#snippet child({ props })}
+												<Button
+													{...props}
+													variant="ghost"
+													size="icon"
+													class="size-8"
+													disabled={sharing[modpack.id]}
+													title="More"
+												>
+													{#if sharing[modpack.id]}
+														<Loader2 class="size-4 animate-spin" />
+													{:else if modpack.publicDownload}
+														<Link class="size-4 text-primary" />
+													{:else}
+														<MoreHorizontal class="size-4" />
+													{/if}
+												</Button>
+											{/snippet}
+										</DropdownMenuTrigger>
+										<DropdownMenuContent align="start">
+											<DropdownMenuCheckboxItem
+												checked={modpack.publicDownload}
+												onCheckedChange={(v) => setPublicDownload(modpack, v)}
+												disabled={sharing[modpack.id]}
+											>
+												Public download link
+											</DropdownMenuCheckboxItem>
+											<DropdownMenuItem
+												onclick={() => copyPublicLink(modpack)}
+												disabled={!modpack.publicDownload}
+											>
+												<Link class="mr-2 size-4" />
+												Copy public link
+											</DropdownMenuItem>
+											<DropdownMenuSeparator />
+											<DropdownMenuItem
+												variant="destructive"
+												onclick={() => requestDelete(modpack)}
+											>
+												<Trash2 class="mr-2 size-4" />
+												Delete modpack
+											</DropdownMenuItem>
+										</DropdownMenuContent>
+									</DropdownMenu>
 								{/if}
 								<Button
 									size="sm"

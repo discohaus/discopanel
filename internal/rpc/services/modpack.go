@@ -48,19 +48,21 @@ var _ discopanelv1connect.ModpackServiceHandler = (*ModpackService)(nil)
 
 // Implements the Modpack service
 type ModpackService struct {
-	store         *storage.Store
-	config        *config.Config
-	log           *logger.Logger
-	uploadManager *transfer.UploadManager
+	store           *storage.Store
+	config          *config.Config
+	log             *logger.Logger
+	uploadManager   *transfer.UploadManager
+	downloadManager *transfer.DownloadManager
 }
 
 // Creates a new modpack service
-func NewModpackService(store *storage.Store, cfg *config.Config, uploadManager *transfer.UploadManager, log *logger.Logger) *ModpackService {
+func NewModpackService(store *storage.Store, cfg *config.Config, uploadManager *transfer.UploadManager, downloadManager *transfer.DownloadManager, log *logger.Logger) *ModpackService {
 	return &ModpackService{
-		store:         store,
-		config:        cfg,
-		log:           log,
-		uploadManager: uploadManager,
+		store:           store,
+		config:          cfg,
+		log:             log,
+		uploadManager:   uploadManager,
+		downloadManager: downloadManager,
 	}
 }
 
@@ -130,6 +132,7 @@ func (s *ModpackService) SearchModpacks(ctx context.Context, req *connect.Reques
 	for _, modpack := range modpacks {
 		modpack.IsFavorited = favorites[modpack.Id]
 	}
+	s.markPublicDownloads(ctx, modpacks)
 
 	return connect.NewResponse(&v1.SearchModpacksResponse{
 		Modpacks: modpacks,
@@ -148,6 +151,7 @@ func (s *ModpackService) GetModpack(ctx context.Context, req *connect.Request[v1
 
 	// Check if favorited
 	modpack.IsFavorited, _ = s.store.IsModpackFavorited(ctx, req.Msg.Id)
+	modpack.PublicDownload, _ = s.store.IsModpackPublicDownload(ctx, req.Msg.Id)
 
 	return connect.NewResponse(&v1.GetModpackResponse{
 		Modpack: modpack,
@@ -554,7 +558,11 @@ func (s *ModpackService) DeleteModpack(ctx context.Context, req *connect.Request
 	// Delete the physical ZIP file
 	if len(files) > 0 && files[0].DownloadUrl != "" {
 		filePath := files[0].DownloadUrl
-		if err := os.Remove(filePath); err != nil {
+		// Only archives the panel stored itself; indexed packs hold remote
+		// URLs here, and nothing outside panel storage is ever deleted
+		if !s.insideModpackStorage(filePath) {
+			s.log.Debug("Not deleting modpack file outside panel storage: %s", filePath)
+		} else if err := os.Remove(filePath); err != nil {
 			s.log.Error("Failed to delete modpack file %s: %v", filePath, err)
 			// Continue with database deletion even if file deletion fails
 		} else {
@@ -566,6 +574,10 @@ func (s *ModpackService) DeleteModpack(ctx context.Context, req *connect.Request
 	if err := s.store.DeleteIndexedModpack(ctx, modpackID); err != nil {
 		s.log.Error("Failed to delete modpack from database: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete modpack"))
+	}
+	// Ids are never reused but a stale flag should not linger
+	if err := s.store.SetModpackPublicDownload(ctx, modpackID, false); err != nil {
+		s.log.Error("Failed to clear public download for %s: %v", modpackID, err)
 	}
 
 	s.log.Info("Successfully deleted modpack %s (%s)", modpack.Name, modpackID)
@@ -618,6 +630,7 @@ func (s *ModpackService) ListFavorites(ctx context.Context, req *connect.Request
 		fav.Modpack.IsFavorited = true
 		modpacks = append(modpacks, fav.Modpack)
 	}
+	s.markPublicDownloads(ctx, modpacks)
 
 	return connect.NewResponse(&v1.ListFavoritesResponse{
 		Modpacks: modpacks,
@@ -698,4 +711,20 @@ func (s *ModpackService) SyncModpackFiles(ctx context.Context, req *connect.Requ
 		SyncedCount: int32(synced),
 		Message:     fmt.Sprintf("Synced %d of %d files", synced, len(files)),
 	}), nil
+}
+
+// Reports whether path is a local file inside {DataDir}/modpacks
+func (s *ModpackService) insideModpackStorage(path string) bool {
+	if s.config == nil || strings.Contains(path, "://") {
+		return false
+	}
+	root, err := filepath.Abs(filepath.Join(s.config.Storage.DataDir, "modpacks"))
+	if err != nil {
+		return false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil || abs == root {
+		return false
+	}
+	return files.Within(root, abs)
 }

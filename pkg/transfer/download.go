@@ -13,6 +13,7 @@ type DownloadSession struct {
 	ID          string
 	FilePath    string // file to serve
 	Filename    string // suggested download filename
+	ContentType string // forced response type, empty derives it from Filename
 	TotalSize   int64
 	DeleteAfter bool // if true, file is deleted on session cleanup
 	ExpiresAt   time.Time
@@ -53,10 +54,16 @@ func (m *DownloadManager) TempDir() string {
 
 // Registers a downloadable file, optionally deleted on cleanup
 func (m *DownloadManager) InitSession(filePath, filename string, totalSize int64, deleteAfter bool) *DownloadSession {
+	return m.InitTypedSession(filePath, filename, "", totalSize, deleteAfter)
+}
+
+// Registers a downloadable file served with a fixed content type
+func (m *DownloadManager) InitTypedSession(filePath, filename, contentType string, totalSize int64, deleteAfter bool) *DownloadSession {
 	session := &DownloadSession{
 		ID:          uuid.New().String(),
 		FilePath:    filePath,
 		Filename:    filename,
+		ContentType: contentType,
 		TotalSize:   totalSize,
 		DeleteAfter: deleteAfter,
 		ExpiresAt:   time.Now().Add(m.sessionTTL),

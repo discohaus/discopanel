@@ -628,6 +628,48 @@ func (s *Store) FavoriteModpackIDs(ctx context.Context) (map[string]bool, error)
 	return set, nil
 }
 
+// System setting key prefix marking a pack archive public
+const modpackPublicDownloadPrefix = "modpack_public_download:"
+
+// Reports whether a pack archive is served without auth
+func (s *Store) IsModpackPublicDownload(ctx context.Context, modpackID string) (bool, error) {
+	row, err := s.GetSystemSetting(ctx, modpackPublicDownloadPrefix+modpackID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return row.Value == "true", nil
+}
+
+// Turns a pack archives public download on or off
+func (s *Store) SetModpackPublicDownload(ctx context.Context, modpackID string, enabled bool) error {
+	key := modpackPublicDownloadPrefix + modpackID
+	if !enabled {
+		return s.DeleteSystemSetting(ctx, key)
+	}
+	return s.UpdateSystemSetting(ctx, &v1.SystemSetting{Key: key, Value: "true"})
+}
+
+// Public download pack ids as a lookup set
+func (s *Store) PublicDownloadModpackIDs(ctx context.Context) (map[string]bool, error) {
+	var rows []*v1.SystemSetting
+	// Prefix bound by length since LIKE treats _ as a wildcard
+	if err := s.db.WithContext(ctx).
+		Where("substr(key, 1, ?) = ?", len(modpackPublicDownloadPrefix), modpackPublicDownloadPrefix).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		if row.Value == "true" {
+			set[strings.TrimPrefix(row.Key, modpackPublicDownloadPrefix)] = true
+		}
+	}
+	return set, nil
+}
+
 // Modpack counts grouped by indexer
 func (s *Store) CountIndexedModpacksByIndexer(ctx context.Context) (map[string]int64, error) {
 	var rows []struct {

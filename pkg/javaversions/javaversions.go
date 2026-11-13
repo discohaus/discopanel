@@ -1,7 +1,11 @@
 // Lists the java majors runtime images publish
 package javaversions
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
 
 // Java majors the runtime image publishes
 var Supported = []int{8, 11, 17, 21, 25}
@@ -32,4 +36,16 @@ func ValidTag(tag string) bool {
 		}
 	}
 	return false
+}
+
+// Returns the java major a runtime tag runs, 0 when the tag is unknown
+func TagMajor(tag string) int {
+	if !ValidTag(tag) {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(tag, "java"), "-graal"))
+	if err != nil {
+		return 0
+	}
+	return n
 }

@@ -187,11 +187,8 @@ func (s *Server) setupHandler() {
 		mux.HandleFunc("/api/v1/auth/oidc/callback", s.oidcHandler.HandleCallback)
 	}
 
-	// Streaming file upload endpoint
-	mux.Handle("/api/v1/upload/", handlers.NewUploadStreamHandler(s.uploadManager, s.authManager, s.enforcer, s.log))
-
-	// Streaming file download endpoint
-	mux.Handle("/api/v1/download/", handlers.NewDownloadStreamHandler(s.downloadManager, s.log))
+	// Streaming upload and download endpoints
+	s.registerTransferRoutes(mux)
 
 	// Admin heap profile for memory spikes, bearer auth only
 	mux.Handle("/api/v1/debug/heap", handlers.NewHeapProfileHandler(s.authManager, s.log))
@@ -207,6 +204,15 @@ func (s *Server) setupHandler() {
 
 	// Serves h2c HTTP/2 cleartext
 	s.handler = h2c.NewHandler(mux, &http2.Server{})
+}
+
+// Registers the streaming upload and download endpoints
+func (s *Server) registerTransferRoutes(mux *http.ServeMux) {
+	// Streaming file upload endpoint
+	mux.Handle("/api/v1/upload/", handlers.NewUploadStreamHandler(s.uploadManager, s.authManager, s.enforcer, s.log))
+
+	// Streaming file download endpoint
+	mux.Handle("/api/v1/download/", handlers.NewDownloadStreamHandler(s.downloadManager, s.log))
 }
 
 // Builds the interceptor chain and body limits every service shares
@@ -244,7 +250,7 @@ func (s *Server) registerServices(mux *http.ServeMux, opts []connect.HandlerOpti
 	fileService := services.NewFileService(s.store, s.docker, s.uploadManager, s.downloadManager, s.rec, s.log)
 	minecraftService := services.NewMinecraftService(s.store, s.docker, s.log)
 	modService := services.NewModService(s.store, s.docker, s.config, s.uploadManager, s.prov, s.rec, s.log)
-	modpackService := services.NewModpackService(s.store, s.config, s.uploadManager, s.log)
+	modpackService := services.NewModpackService(s.store, s.config, s.uploadManager, s.downloadManager, s.log)
 	proxyService := services.NewProxyService(s.store, s.docker, s.proxyManager, s.moduleManager, s.config, s.rec, s.log)
 	serverService := services.NewServerService(s.store, s.docker, s.sender, s.config, s.proxyManager, s.lifecycle, s.authManager, s.enforcer, s.logStreamer, s.metricsCollector, s.moduleManager, s.bus, s.uploadManager, s.completion, s.rec, s.log)
 	supportService := services.NewSupportService(s.store, s.docker, s.config, s.diagnostics, s.telemetry, s.downloadManager, s.log)
@@ -272,6 +278,9 @@ func (s *Server) registerServices(mux *http.ServeMux, opts []connect.HandlerOpti
 
 	modpackPath, modpackHandler := discopanelv1connect.NewModpackServiceHandler(modpackService, opts...)
 	mux.Handle(modpackPath, modpackHandler)
+
+	// Unauthenticated archive link, served only for packs marked public
+	mux.Handle(services.PublicModpackDownloadPattern, handlers.NewPublicModpackDownloadHandler(modpackService, services.ErrModpackNotPublic, s.log))
 
 	proxyPath, proxyHandler := discopanelv1connect.NewProxyServiceHandler(proxyService, opts...)
 	mux.Handle(proxyPath, proxyHandler)

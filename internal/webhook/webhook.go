@@ -112,6 +112,12 @@ func deliverOnce(ctx context.Context, cfg *v1.WebhookTaskConfig, payload *Payloa
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	if err := checkURL(cfg.Url); err != nil {
+		result.ErrorMessage = err.Error()
+		result.DurationMs = time.Since(start).Milliseconds()
+		return result
+	}
+
 	req, err := http.NewRequestWithContext(reqCtx, "POST", cfg.Url, bytes.NewReader(body))
 	if err != nil {
 		result.ErrorMessage = fmt.Sprintf("request error: %v", err)
@@ -131,7 +137,7 @@ func deliverOnce(ctx context.Context, cfg *v1.WebhookTaskConfig, payload *Payloa
 		req.Header.Set(k, v)
 	}
 
-	client := &http.Client{Timeout: timeout}
+	client := &http.Client{Timeout: timeout, Transport: guardedTransport}
 	resp, err := client.Do(req)
 	result.DurationMs = time.Since(start).Milliseconds()
 	if err != nil {

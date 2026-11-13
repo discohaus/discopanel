@@ -100,6 +100,22 @@ service ModpackService {
       object_id_field: "id"
     };
   }
+  // Starts a pack archive download, bytes ride GET download/{session_id}
+  rpc InitModpackDownload(InitModpackDownloadRequest) returns (InitModpackDownloadResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODPACKS
+      action: ACTION_TYPE_READ
+      object_id_field: "id"
+    };
+  }
+  // Opts an uploaded pack in or out of its unauthenticated download link
+  rpc SetModpackPublicDownload(SetModpackPublicDownloadRequest) returns (SetModpackPublicDownloadResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_MODPACKS
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "id"
+    };
+  }
 }
 
 // Modpack search filters
@@ -247,4 +263,31 @@ message SyncModpackFilesRequest {
 message SyncModpackFilesResponse {
   int32 synced_count = 1;
   string message = 2;
+}
+
+// Pack archive download target
+message InitModpackDownloadRequest {
+  string id = 1;
+  string file_id = 2; // Pack file to fetch, empty picks the latest
+}
+
+// Pack archive download
+message InitModpackDownloadResponse {
+  string session_id = 1; // Empty when the archive is remote
+  string download_url = 2; // Panel download path, or the indexer URL when remote
+  string filename = 3;
+  int64 total_size = 4;
+  bool remote = 5; // Archive lives off panel at download_url
+}
+
+// Public download toggle
+message SetModpackPublicDownloadRequest {
+  string id = 1;
+  bool enabled = 2;
+}
+
+// Public download state
+message SetModpackPublicDownloadResponse {
+  bool public_download = 1;
+  string public_path = 2; // Unauthenticated download path, empty when off
 }
