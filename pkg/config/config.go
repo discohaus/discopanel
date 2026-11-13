@@ -176,8 +176,9 @@ type DatabaseConfig struct {
 }
 
 type MinecraftConfig struct {
-	ResetGlobal  bool           `mapstructure:"reset_global" json:"reset_global"`
-	GlobalConfig map[string]any `mapstructure:"global_config" json:"global_config"`
+	ResetGlobal      bool           `mapstructure:"reset_global" json:"reset_global"`
+	GlobalConfig     map[string]any `mapstructure:"global_config" json:"global_config"`
+	MaxTotalMemoryMB int64          `mapstructure:"max_total_memory_mb" json:"max_total_memory_mb"` // Cap on memory across all servers and modules, 0 is unlimited, a panel setting overrides it
 }
 
 type LoggingConfig struct {
@@ -291,7 +292,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("docker.agent_url", "")
 	v.SetDefault("docker.dns", "")
 	v.SetDefault("docker.labels", map[string]string{})
-	v.SetDefault("docker.log_driver", "local")
+	v.SetDefault("docker.log_driver", "") // empty: "local", or "json-file" on Podman
 
 	// Storage defaults
 	dataDir, err := filepath.Abs("./data")
@@ -316,6 +317,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("module.doctor_enabled", true)
 
 	v.SetDefault("minecraft.reset_global", false)
+	v.SetDefault("minecraft.max_total_memory_mb", 0)
 
 	// Logging defaults
 	v.SetDefault("logging.enabled", true)
@@ -394,6 +396,10 @@ func validateConfig(cfg *Config) error {
 	cfg.Server.MemoryLimit = strings.ToLower(strings.TrimSpace(cfg.Server.MemoryLimit))
 	if cfg.Server.MemoryLimit == "" {
 		cfg.Server.MemoryLimit = MemoryLimitAuto
+	}
+
+	if cfg.Minecraft.MaxTotalMemoryMB < 0 {
+		return fmt.Errorf("minecraft.max_total_memory_mb must not be negative")
 	}
 
 	// Validate port ranges

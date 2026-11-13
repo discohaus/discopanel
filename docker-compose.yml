@@ -1,8 +1,15 @@
 services:
   discopanel:
-    image: ghcr.io/discohaus/discopanel:latest
+    # v3 is in beta, so there is no :latest image yet; it returns with the
+    # first stable v3 release. Releases after beta.8 also publish :beta,
+    # which follows the newest beta.
+    image: ghcr.io/discohaus/discopanel:v3.0.0-beta.8
     container_name: discopanel
     restart: unless-stopped
+
+    # SELinux hosts (Fedora/RHEL/CentOS/Rocky): uncomment so the panel can use the Docker socket
+    # security_opt:
+    #   - label=disable
 
     # Option 1 (RECOMENDED FOR SIMPLICITY): Use host network mode
     network_mode: host
@@ -23,7 +30,9 @@ services:
 
     volumes:
       # Docker socket for managing containers
-      # NOTE FOR FEDORA/RHEL/CENTOS/ETC.: SE Linux requires :z to be added as a suffix to volume mounts. EX: - /var/run/docker.sock:/var/run/docker.sock:z
+      # NOTE FOR FEDORA/RHEL/CENTOS/ROCKY (SELinux enforcing): add :z to the data volume mounts below,
+      # and uncomment `security_opt` further down. Relabelling the socket with :z is not enough,
+      # SELinux still blocks the container from talking to the daemon ("permission denied").
       - /var/run/docker.sock:/var/run/docker.sock
   
       # IMPORTANT: This is where your server(s) data will be stored on the host.

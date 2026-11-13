@@ -66,6 +66,8 @@
 	let showAdvanced = $state(false);
 	let hostTotalMb = $state(0);
 	let occupiedMb = $state(0);
+	let memoryCapMb = $state(0);
+	let memoryCapExempt = $state(false);
 
 	// World zip picked now, uploaded on submit
 	let worldFile = $state<File | null>(null);
@@ -189,7 +191,10 @@
 			const memory = settled(hostMemory, 'host memory');
 			if (memory) {
 				hostTotalMb = Number(memory.totalMb);
-				occupiedMb = memory.allocations.reduce((sum, a) => sum + a.memory, 0);
+				occupiedMb =
+					Number(memory.modulesMb) + memory.allocations.reduce((sum, a) => sum + a.memory, 0);
+				memoryCapMb = Number(memory.maxTotalMb);
+				memoryCapExempt = memory.capExempt;
 			}
 
 			if (!formData.mcVersion && latestVersion) {
@@ -267,7 +272,11 @@
 			formData.mcVersion = config['mc_version'] || modpack.mcVersion || '';
 			// Backend floors modpack memory at 4 GB
 			formData.memory = Math.max(Number(config['memory']) || modpack.recommendedRam || 0, 4096);
-			formData.dockerImage = config['docker_image'] || '';
+			// The listing's image is derived from the newest MC version the
+			// pack lists, not the version installed. Pinning it ran packs on a
+			// newer Java than they support; leave it empty so the resolved
+			// Java version picks the runtime.
+			formData.dockerImage = '';
 			await loadModpackVersions(modpack.id);
 		} catch (error) {
 			notify.error('Failed to load modpack configuration');
@@ -837,6 +846,9 @@
 					bind:memoryMax={formData.memoryMax}
 					totalMb={hostTotalMb}
 					{occupiedMb}
+					capMb={memoryCapMb}
+					capExempt={memoryCapExempt}
+					overrideMb={Number(formData.dockerOverrides?.memoryLimit ?? 0)}
 					disabled={loading}
 				/>
 			</SectionCard>

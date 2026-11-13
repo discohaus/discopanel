@@ -41,7 +41,7 @@ docker:
   #   your.label.key: "your_label_value"
   #   other.label.key: "other_label_value"
   labels: '{ }'
-  log_driver: "local" # docker log driver (local, json-file)
+  log_driver: "" # docker log driver (local, json-file); empty picks local, or json-file on Podman
 
 # Storage configuration
 storage:
@@ -131,7 +131,10 @@ proxy:
 # Minecraft server global configuration defaults
 minecraft:
   reset_global: false
-  global_config: # Specifying any of these settings will override the global config default when it is first made, or existing if `reset_global` is `true`
+  max_total_memory_mb: 0 # Cap on memory allocated across all servers and modules in MB, 0 is unlimited. Settings > Resources overrides it
+  # Specifying any of these settings overrides the global config default when it is first made, or the existing one if `reset_global` is `true`.
+  # The values below are the panel's own defaults (kept in sync by internal/db/example_config_test.go): delete a line to keep the default, change it to override.
+  global_config:
     # JVM Configuration
     uid: 1000
     gid: 1000
@@ -141,7 +144,7 @@ minecraft:
     enableJmx: false
     jmxHost: ""
     enableAgent: true  # DiscoPanel telemetry agent attached to server JVM
-    useAikarFlags: false
+    useAikarFlags: true
     useMeowiceFlags: false
     useFlareFlags: false
     useSimdFlags: false
@@ -154,13 +157,13 @@ minecraft:
     # Server Configuration
     eula: "TRUE"
     forceProvision: false  # Forces reprovision on next start then clears
-    motd: ""
+    motd: "A DiscoPanel Server"
     offlineMotd: ""  # MOTD line shown while server is offline
     difficulty: "easy"
     icon: ""
     overrideIcon: false
     maxPlayers: 20
-    maxWorldSize: 0
+    maxWorldSize: 29999984
     allowNether: true
     announcePlayerAchievements: true
     enableCommandBlock: false
@@ -172,28 +175,28 @@ minecraft:
     spawnAnimals: true
     spawnMonsters: true
     spawnNpcs: true
-    spawnProtection: 0
-    viewDistance: 0
+    spawnProtection: 16
+    viewDistance: 10
     seed: ""
     mode: "survival"
     pvp: true
-    levelType: "minecraft:default"
+    levelType: "minecraft:normal"
     generatorSettings: ""
     level: "world"
     onlineMode: true
     allowFlight: false
     serverName: ""
-    serverPort: 0
+    serverPort: 25565
     playerIdleTimeout: 0
-    syncChunkWrites: false
-    enableStatus: false
-    entityBroadcastRangePercentage: 0
-    functionPermissionLevel: 0
-    networkCompressionThreshold: 0
-    opPermissionLevel: 0
+    syncChunkWrites: true
+    enableStatus: true
+    entityBroadcastRangePercentage: 100
+    functionPermissionLevel: 2
+    networkCompressionThreshold: 256
+    opPermissionLevel: 4
     preventProxyConnections: false
-    useNativeTransport: false
-    simulationDistance: 0
+    useNativeTransport: true
+    simulationDistance: 10
     stopServerAnnounceDelay: 0
     stopDuration: 60
 
@@ -211,7 +214,7 @@ minecraft:
     enableRcon: true
     rconPassword: ""  # MUST be changed for security
     rconPort: 25575
-    broadcastRconToOps: false
+    broadcastRconToOps: true
     rconCmdsStartup: ""
     rconCmdsOnConnect: ""
     rconCmdsFirstConnect: ""
@@ -264,12 +267,12 @@ minecraft:
     customJarExec: ""
 
     # Query Protocol Configuration
-    enableQuery: false
+    enableQuery: true
     queryPort: 25565
 
     # Advanced Server Properties
     serverPropertiesEscapeUnicode: false
-    acceptsTransfers: false
+    acceptsTransfers: true
     broadcastConsoleToOps: true
     bugReportLink: ""
     enforceSecureProfile: true

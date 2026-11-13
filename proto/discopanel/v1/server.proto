@@ -56,6 +56,20 @@ service ServerService {
       action: ACTION_TYPE_READ
     };
   }
+  // Get the cap on memory allocated across all servers
+  rpc GetMemoryQuota(GetMemoryQuotaRequest) returns (GetMemoryQuotaResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SETTINGS
+      action: ACTION_TYPE_READ
+    };
+  }
+  // Set or clear the cap on memory allocated across all servers
+  rpc UpdateMemoryQuota(UpdateMemoryQuotaRequest) returns (UpdateMemoryQuotaResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SETTINGS
+      action: ACTION_TYPE_UPDATE
+    };
+  }
   // Create new server instance
   rpc CreateServer(CreateServerRequest) returns (CreateServerResponse) {
     option (discopanel.options.v1.perm) = {
@@ -297,6 +311,34 @@ message ServerMemoryAllocation {
 message GetHostMemoryResponse {
   int64 total_mb = 1; // Physical memory on the Docker host in MB
   repeated ServerMemoryAllocation allocations = 2;
+  int64 max_total_mb = 3; // Cap on memory across all servers in MB, 0 when unlimited
+  bool cap_exempt = 4; // Caller may exceed the cap, it is only a warning
+  int64 modules_mb = 5; // Memory allocated to module containers in MB, counts against the cap
+}
+
+// Empty memory quota request
+message GetMemoryQuotaRequest {}
+
+// Effective memory cap and where it comes from
+message GetMemoryQuotaResponse {
+  int64 max_total_mb = 1; // Effective cap in MB, 0 when unlimited
+  int64 config_max_total_mb = 2; // minecraft.max_total_memory_mb from the config
+  bool overridden = 3; // A panel setting replaces the config value
+  int64 allocated_mb = 4; // Memory allocated across all servers in MB
+  int64 host_total_mb = 5; // Physical memory on the Docker host in MB, 0 when unknown
+  int64 modules_mb = 6; // Part of allocated_mb held by module containers
+  bool auth_disabled = 7; // Auth is off, so the cap binds every caller
+}
+
+// New memory cap
+message UpdateMemoryQuotaRequest {
+  int64 max_total_mb = 1; // Cap in MB, 0 for unlimited
+  bool use_config = 2; // Drop the panel setting and fall back to the config value
+}
+
+// Memory cap after the change
+message UpdateMemoryQuotaResponse {
+  GetMemoryQuotaResponse quota = 1;
 }
 
 // New server settings

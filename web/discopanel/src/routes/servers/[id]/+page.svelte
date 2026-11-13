@@ -35,6 +35,7 @@
 		CircleArrowUp
 	} from '@lucide/svelte';
 	import { create } from '@bufbuild/protobuf';
+	import { ConnectError, Code } from '@connectrpc/connect';
 	import type { Server } from '$lib/proto/discopanel/v1/storage_pb';
 	import { ServerStatus } from '$lib/proto/discopanel/v1/storage_pb';
 	import type { PendingModulePrompt } from '$lib/proto/discopanel/v1/module_pb';
@@ -113,14 +114,9 @@
 		goto(resolve(`/servers/${serverId}`) + suffix, { noScroll: true, keepFocus: true });
 	}
 
-	let interval: ReturnType<typeof setInterval> | undefined;
-
 	onMount(() => {
 		const clock = setInterval(() => (now = new Date()), 30000);
-		return () => {
-			if (interval) clearInterval(interval);
-			clearInterval(clock);
-		};
+		return () => clearInterval(clock);
 	});
 
 	$effect(() => {
@@ -131,25 +127,72 @@
 		});
 	});
 
+	// Status poll: faster while a transition is in flight, paused while the
+	// tab is hidden, and always torn down with the effect (the old interval
+	// lived outside the effect and relied on onMount for cleanup).
+	const POLL_MS = 5000;
+	const POLL_BUSY_MS = 2000;
+	let transitioning = $derived(
+		server !== null &&
+			[
+				ServerStatus.PROVISIONING,
+				ServerStatus.CREATING,
+				ServerStatus.STARTING,
+				ServerStatus.STOPPING
+			].includes(server.status)
+	);
+
 	$effect(() => {
-		if (serverId) {
-			if (interval) clearInterval(interval);
-			const prev = untrack(() => prevServerId);
-			if (prev !== serverId) {
-				untrack(() => {
-					loading = true;
-					server = null;
-					prevServerId = serverId;
-					modulePrompts = [];
-					hasModules = null;
-				});
-			}
-			loadServer(true);
-			interval = setInterval(() => loadServer(true), 5000);
+		if (!serverId) return;
+		const prev = untrack(() => prevServerId);
+		if (prev !== serverId) {
+			untrack(() => {
+				loading = true;
+				server = null;
+				loadError = null;
+				prevServerId = serverId;
+				modulePrompts = [];
+				hasModules = null;
+			});
 		}
+		untrack(() => loadServer(true));
+		const timer = setInterval(pollServer, transitioning ? POLL_BUSY_MS : POLL_MS);
+		const onVisible = () => pollServer();
+		document.addEventListener('visibilitychange', onVisible);
+		return () => {
+			clearInterval(timer);
+			document.removeEventListener('visibilitychange', onVisible);
+		};
 	});
 
-	async function loadServer(skipLoading = false) {
+	let loadError = $state<string | null>(null);
+	let inflight: Promise<void> | null = null;
+	let rerun = false;
+
+	// Explicit refreshes (after a save or an action) must not be swallowed by
+	// a poll already in flight, since that poll may return pre-save data:
+	// they queue one more fetch. Timer polls just skip.
+	function loadServer(skipLoading = false): Promise<void> {
+		if (!serverId) return Promise.resolve();
+		if (inflight) {
+			rerun = true;
+			return inflight;
+		}
+		inflight = fetchServer(skipLoading).finally(() => {
+			inflight = null;
+			if (rerun) {
+				rerun = false;
+				void loadServer(true);
+			}
+		});
+		return inflight;
+	}
+
+	function pollServer() {
+		if (!inflight && document.visibilityState === 'visible') void loadServer(true);
+	}
+
+	async function fetchServer(skipLoading: boolean) {
 		if (!serverId) return;
 		const requestedId = serverId;
 		try {
@@ -158,14 +201,25 @@
 			const response = await rpcClient.server.getServer(request, callOptions);
 			if (response.server && serverId === requestedId) {
 				server = response.server;
+				loadError = null;
 				serversStore.updateServer(server);
 				loading = false;
-				loadModulePrompts();
+				void loadModulePrompts();
 			}
-		} catch {
-			if (serverId === requestedId && !server) {
+		} catch (error) {
+			if (serverId !== requestedId) return;
+			// Deleted elsewhere: drop the stale page instead of showing it forever
+			if (error instanceof ConnectError && error.code === Code.NotFound) {
+				if (server) notify.info(`${server.name} no longer exists`);
+				server = null;
+				loading = false;
+				return;
+			}
+			if (!server) {
 				notify.error('Failed to load server');
 				loading = false;
+			} else {
+				loadError = 'Lost contact with the panel, retrying...';
 			}
 		}
 	}
@@ -201,9 +255,72 @@
 	async function handleServerAction(action: ServerOp) {
 		if (!server) return;
 		actionLoading = true;
-		await runServerAction(action, server, () => loadServer());
-		actionLoading = false;
+		try {
+			await runServerAction(action, server, () => loadServer());
+		} finally {
+			actionLoading = false;
+		}
 	}
+
+	// Disruptive actions ask first: a misclick on Stop used to kick every
+	// player with no warning.
+	let pendingAction = $state<ServerOp | null>(null);
+	let confirmActionOpen = $state(false);
+
+	function requestAction(action: ServerOp) {
+		if (!server) return;
+		const quietlyIdle =
+			(server.playersOnline ?? 0) === 0 &&
+			(action === 'stop' || action === 'restart') &&
+			server.status !== ServerStatus.PROVISIONING;
+		// Starting, or stopping an empty server, needs no ceremony
+		if (action === 'start' || quietlyIdle) {
+			void handleServerAction(action);
+			return;
+		}
+		pendingAction = action;
+		confirmActionOpen = true;
+	}
+
+	let confirmCopy = $derived.by(() => {
+		const name = server?.name ?? 'this server';
+		const players = server?.playersOnline ?? 0;
+		const kicked =
+			players > 0
+				? `${players} player${players === 1 ? ' is' : 's are'} online and will be disconnected.`
+				: '';
+		switch (pendingAction) {
+			case 'stop':
+				return server?.status === ServerStatus.PROVISIONING
+					? {
+							title: `Cancel starting ${name}?`,
+							description:
+								'Installation stops where it is. Files already downloaded are kept, so the next start resumes quickly.',
+							label: 'Cancel start'
+						}
+					: {
+							title: `Stop ${name}?`,
+							description: `${kicked}\nThe world is saved before the server shuts down.`.trim(),
+							label: 'Stop server'
+						};
+			case 'restart':
+				return {
+					title: `Restart ${name}?`,
+					description:
+						`${kicked}\nThe server stops, re-applies its configuration and starts again.`.trim(),
+					label: 'Restart'
+				};
+			case 'recreate':
+				return {
+					title: `Recreate the container for ${name}?`,
+					description:
+						`The container is destroyed and rebuilt from the current settings. World and files are kept. ${kicked}`.trim(),
+					label: 'Recreate container'
+				};
+			default:
+				return { title: '', description: '', label: 'Confirm' };
+		}
+	});
 
 	async function confirmDelete() {
 		if (!server) return;
@@ -236,8 +353,13 @@
 		else notify.error('Failed to copy server ID');
 	}
 
+	// A brand-new server has no container while it provisions; that is not
+	// "stopped" (it used to show Start and hide the way to cancel)
 	let showStart = $derived(
-		server ? server.status === ServerStatus.STOPPED || !server.containerId : false
+		server
+			? server.status === ServerStatus.STOPPED ||
+					(!server.containerId && !transitioning && server.status !== ServerStatus.ERROR)
+			: false
 	);
 	let transitionalLabel = $derived.by(() => {
 		if (!server) return null;
@@ -302,7 +424,17 @@
 								{/if}
 								{#if srv.javaVersion}
 									<span>·</span>
-									<span>Java {srv.javaVersion}</span>
+									{@const pinnedJava = Number(/^java(\d+)/.exec(srv.dockerImage ?? '')?.[1] ?? 0)}
+									{#if pinnedJava && pinnedJava !== srv.javaVersion}
+										<span
+											class="text-status-busy"
+											title="The runtime image is pinned to Java {pinnedJava}, but this Minecraft version wants Java {srv.javaVersion}. Clear the Docker image in Settings to use the recommended runtime."
+										>
+											Java {pinnedJava} (wants {srv.javaVersion})
+										</span>
+									{:else}
+										<span>Java {pinnedJava || srv.javaVersion}</span>
+									{/if}
 								{/if}
 								<span>·</span>
 								<span>created {formatDate(srv.createdAt)}</span>
@@ -326,7 +458,7 @@
 								size="sm"
 								class="bg-status-ok text-white hover:bg-status-ok/90"
 								disabled={actionLoading}
-								onclick={() => handleServerAction('start')}
+								onclick={() => requestAction('start')}
 							>
 								{#if actionLoading}
 									<Loader2 class="size-4 animate-spin" />
@@ -341,14 +473,14 @@
 								variant="destructive"
 								size="sm"
 								disabled={actionLoading}
-								onclick={() => handleServerAction('stop')}
+								onclick={() => requestAction('stop')}
 							>
 								{#if actionLoading}
 									<Loader2 class="size-4 animate-spin" />
 								{:else}
 									<Square class="size-4" />
 								{/if}
-								Stop
+								{srv.status === ServerStatus.PROVISIONING ? 'Cancel' : 'Stop'}
 							</Button>
 						{/if}
 						{#if !transitionalLabel && canRestart(srv.status)}
@@ -357,7 +489,7 @@
 								size="sm"
 								class="hidden sm:inline-flex"
 								disabled={actionLoading}
-								onclick={() => handleServerAction('restart')}
+								onclick={() => requestAction('restart')}
 							>
 								<RotateCw class="size-4" />
 								Restart
@@ -379,7 +511,14 @@
 								{/snippet}
 							</DropdownMenuTrigger>
 							<DropdownMenuContent align="end">
-								<DropdownMenuItem onclick={() => handleServerAction('recreate')}>
+								{#if !transitionalLabel && canRestart(srv.status)}
+									<!-- Restart lives in the header on wider screens -->
+									<DropdownMenuItem class="sm:hidden" onclick={() => requestAction('restart')}>
+										<RotateCw class="mr-2 size-4" />
+										Restart
+									</DropdownMenuItem>
+								{/if}
+								<DropdownMenuItem onclick={() => requestAction('recreate')}>
 									<RefreshCcw class="mr-2 size-4" />
 									Recreate container
 								</DropdownMenuItem>
@@ -399,6 +538,14 @@
 			{/snippet}
 		</TabRail>
 
+		{#if loadError}
+			<div
+				role="status"
+				class="mx-auto mt-3 w-full max-w-6xl rounded-lg border border-status-busy/30 bg-status-busy/10 px-3 py-2 text-xs text-status-busy 2xl:max-w-7xl"
+			>
+				{loadError}
+			</div>
+		{/if}
 		{#if fillTab}
 			<div class="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col p-4 sm:p-6 2xl:max-w-7xl">
 				{#if activeTab === 'console'}
@@ -458,6 +605,20 @@
 		</EmptyState>
 	</div>
 {/if}
+
+<ConfirmDialog
+	bind:open={confirmActionOpen}
+	title={confirmCopy.title}
+	description={confirmCopy.description}
+	confirmLabel={confirmCopy.label}
+	destructive={pendingAction !== 'restart'}
+	onConfirm={async () => {
+		// Keep pendingAction until done so the dialog text stays put while
+		// it shows its working state
+		if (pendingAction) await handleServerAction(pendingAction);
+		pendingAction = null;
+	}}
+/>
 
 <ConfirmDialog
 	bind:open={deleteOpen}

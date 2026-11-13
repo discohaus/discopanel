@@ -78,6 +78,9 @@ type ServerService struct {
 
 	// Encoded server icons cached by file identity
 	favicons minecraft.FaviconCache
+
+	// Cap on memory across servers and modules, shared with modules
+	quota *MemoryQuota
 }
 
 // Normalizes additional ports, proxied ones may route
@@ -171,7 +174,7 @@ func networkPortsEqual(a, b []*v1.NetworkPort) bool {
 }
 
 // NewServerService creates a new server service
-func NewServerService(store *storage.Store, docker *docker.Client, sender *command.Sender, config *config.Config, proxy *proxy.Manager, lifecycleManager *lifecycle.Manager, authManager *auth.Manager, enforcer *rbac.Enforcer, logStreamer *logger.LogStreamer, metricsCollector *metrics.Collector, moduleManager *module.Manager, bus *events.Bus, uploadManager *transfer.UploadManager, completion *command.Completion, rec *metrics.Recorder, log *logger.Logger) *ServerService {
+func NewServerService(store *storage.Store, docker *docker.Client, sender *command.Sender, config *config.Config, proxy *proxy.Manager, lifecycleManager *lifecycle.Manager, authManager *auth.Manager, enforcer *rbac.Enforcer, logStreamer *logger.LogStreamer, metricsCollector *metrics.Collector, moduleManager *module.Manager, bus *events.Bus, uploadManager *transfer.UploadManager, completion *command.Completion, rec *metrics.Recorder, quota *MemoryQuota, log *logger.Logger) *ServerService {
 	return &ServerService{
 		store:            store,
 		docker:           docker,
@@ -189,6 +192,7 @@ func NewServerService(store *storage.Store, docker *docker.Client, sender *comma
 		bus:              bus,
 		uploadManager:    uploadManager,
 		completion:       completion,
+		quota:            quota,
 	}
 }
 
@@ -207,14 +211,19 @@ func getServer(ctx context.Context, store *storage.Store, id string) (*v1.Server
 }
 
 // Runs one lifecycle op in the background with a deadline
-func (s *ServerService) runLifecycleAsync(ctx context.Context, server *v1.Server, timeout time.Duration, verb string, fn func(context.Context, string) error) {
-	go func() {
-		bgCtx, cancel := context.WithTimeout(detach(ctx), timeout)
-		defer cancel()
-		if err := fn(bgCtx, server.Id); err != nil {
-			s.log.Error("Failed to %s server %s: %v", verb, server.Name, err)
-		}
-	}()
+// Claims the server's transition slot now and runs kind in the background.
+// A busy server is reported to the caller instead of failing silently in a
+// goroutine (which used to leave e.g. STOPPING stamped forever).
+func (s *ServerService) runLifecycleAsync(ctx context.Context, server *v1.Server, timeout time.Duration, kind string) error {
+	err := s.lifecycle.RunAsync(detach(ctx), server.Id, kind, timeout)
+	var busy *lifecycle.BusyError
+	if errors.As(err, &busy) {
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	return nil
 }
 
 // Loads properties or falls back to defaults on error
@@ -501,7 +510,7 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	if err := validateBindSources(ctx, s.authManager, s.config.Storage.DataDir, msg.DockerOverrides.GetVolumes()); err != nil {
+	if err := validateDockerOverrides(ctx, s.authManager, s.config.Storage.DataDir, msg.DockerOverrides, nil); err != nil {
 		return nil, err
 	}
 
@@ -562,6 +571,13 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 	if err := runtimespec.NormalizeServerMemory(server); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+
+	// Memory cap holds this server's share until the row persists
+	releaseMemory, err := s.quota.reserveServer(ctx, server, -1)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseMemory()
 
 	// When using proxy, set the ports correctly
 	if len(server.ProxyHostnames) > 0 && proxyListenerID != "" {
@@ -629,7 +645,9 @@ func (s *ServerService) CreateServer(ctx context.Context, req *connect.Request[v
 		if err := s.store.UpdateServer(ctx, server); err != nil {
 			s.log.Error("Failed to update server status: %v", err)
 		}
-		s.runLifecycleAsync(ctx, server, 2*time.Hour, "start newly created", s.lifecycle.Start)
+		if err := s.runLifecycleAsync(ctx, server, 2*time.Hour, "start"); err != nil {
+			s.log.Error("Failed to start newly created server %s: %v", server.Name, err)
+		}
 	} else {
 		server.Status = v1.ServerStatus_SERVER_STATUS_STOPPED
 		if err := s.store.UpdateServer(ctx, server); err != nil {
@@ -654,6 +672,8 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 
 	// Check if container recreation is needed
 	needsRecreation := false
+	memoryChanged := false
+	originalAllocation := allocatedMemoryMB(server)
 	originalMemory := server.Memory
 	originalModLoader := server.ModLoader
 	originalMCVersion := server.McVersion
@@ -700,9 +720,7 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 
 		if server.Memory != originalMemory || server.MemoryMin != originalMemoryMin || server.MemoryMax != originalMemoryMax {
 			needsRecreation = true
-			if err := s.store.SyncServerPropertiesWithServer(ctx, server); err != nil {
-				s.log.Error("Failed to sync server config memory: %v", err)
-			}
+			memoryChanged = true
 		}
 	}
 	if msg.ModLoader != v1.ModLoader_MOD_LOADER_UNSPECIFIED && msg.ModLoader != originalModLoader {
@@ -752,14 +770,7 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 
 	// Handle docker overrides update
 	if msg.DockerOverrides != nil {
-		// Check that labels do not start with "discopanel."
-		for key := range msg.DockerOverrides.Labels {
-			if strings.HasPrefix(key, "discopanel.") {
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("docker label keys cannot start with 'discopanel.', namespace reserved for internal management"))
-			}
-		}
-
-		if err := validateBindSources(ctx, s.authManager, s.config.Storage.DataDir, msg.DockerOverrides.GetVolumes()); err != nil {
+		if err := validateDockerOverrides(ctx, s.authManager, s.config.Storage.DataDir, msg.DockerOverrides, server.DockerOverrides); err != nil {
 			return nil, err
 		}
 
@@ -768,6 +779,13 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 			needsRecreation = true
 		}
 	}
+
+	// Raising the allocation must fit the memory cap
+	releaseMemory, err := s.quota.reserveServer(ctx, server, originalAllocation)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseMemory()
 
 	// Handle modpack version update
 	if msg.ModpackId != "" {
@@ -810,6 +828,13 @@ func (s *ServerService) UpdateServer(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update server"))
 	}
 	netClaim.Confirm()
+
+	// Heap sizing reaches properties only once the change is saved
+	if memoryChanged {
+		if err := s.store.SyncServerPropertiesWithServer(ctx, server); err != nil {
+			s.log.Error("Failed to sync server config memory: %v", err)
+		}
+	}
 
 	// Reconcile keeps routes matching the saved shape
 	syncRoutes(ctx, s.proxy, s.log, "after server update")
@@ -959,17 +984,29 @@ func (s *ServerService) recreateAfterConfigChange(ctx context.Context, server *v
 
 	// Running servers come back through the full lifecycle
 	if wasRunning {
-		s.runLifecycleAsync(ctx, server, 2*time.Hour, "recreate", s.lifecycle.Recreate)
+		if err := s.runLifecycleAsync(ctx, server, 2*time.Hour, "recreate"); err != nil {
+			// Busy: the in-flight transition rebuilds from current config
+			// (config drift is detected on start), so nothing is lost.
+			s.log.Warn("Deferred container rebuild for %s: %v", server.Name, err)
+		}
 		return
 	}
 
-	if err := s.docker.RemoveContainer(ctx, server.ContainerId); err != nil {
-		s.log.Debug("Failed to remove container after update (may not exist): %v", err)
-	}
-	server.ContainerId = ""
-	server.Status = v1.ServerStatus_SERVER_STATUS_STOPPED
-	if err := s.store.UpdateServer(ctx, server); err != nil {
-		s.log.Error("Failed to update server after container removal: %v", err)
+	// Removing the container must not race a start that is creating it
+	err := s.lifecycle.Exclusive(ctx, server.Id, "update", false, func() error {
+		if err := s.docker.RemoveContainer(ctx, server.ContainerId); err != nil {
+			s.log.Debug("Failed to remove container after update (may not exist): %v", err)
+		}
+		server.ContainerId = ""
+		server.Status = v1.ServerStatus_SERVER_STATUS_STOPPED
+		if err := s.store.UpdateServer(ctx, server); err != nil {
+			s.log.Error("Failed to update server after container removal: %v", err)
+		}
+		return nil
+	})
+	if err != nil {
+		s.log.Warn("Deferred container removal for %s: %v", server.Name, err)
+		return
 	}
 	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_CONTAINER_REMOVE, nil, "removed the container so new settings apply on next start")
 }
@@ -1047,6 +1084,37 @@ func (s *ServerService) DeleteServer(ctx context.Context, req *connect.Request[v
 		return nil, err
 	}
 
+	// Hold the transition slot for the whole delete so an in-flight start
+	// (cancelled here) cannot recreate the container or rewrite files of a
+	// server that no longer exists. Stop/restart/restore get "busy".
+	err = s.lifecycle.Exclusive(ctx, server.Id, "delete", true, func() error {
+		// Re-read: the cancelled start may have created a container
+		if fresh, err := s.store.GetServer(ctx, server.Id); err == nil {
+			server = fresh
+		}
+		return s.deleteServerLocked(ctx, server)
+	})
+	var busy *lifecycle.BusyError
+	if errors.As(err, &busy) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// Reconcile drops the server's routes and counters
+	syncRoutes(ctx, s.proxy, s.log, "after server delete")
+	if s.proxy != nil {
+		s.proxy.DropOwnerStats(server.Id)
+	}
+	if s.logStreamer != nil {
+		s.logStreamer.RemoveStream(server.Id)
+	}
+
+	return connect.NewResponse(&v1.DeleteServerResponse{}), nil
+}
+
+func (s *ServerService) deleteServerLocked(ctx context.Context, server *v1.Server) error {
 	// Delete every module row with its container and token
 	if s.moduleManager != nil {
 		modules, err := s.store.ListServerModules(ctx, server.Id)
@@ -1070,23 +1138,35 @@ func (s *ServerService) DeleteServer(ctx context.Context, req *connect.Request[v
 	}
 
 	// Delete from database
-	if err := s.store.DeleteServer(ctx, req.Msg.Id); err != nil {
+	if err := s.store.DeleteServer(ctx, server.Id); err != nil {
 		s.log.Error("Failed to delete server: %v", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete server"))
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete server"))
 	}
 
-	// Delete data directory
-	if err := os.RemoveAll(server.DataPath); err != nil {
+	// Delete data directory, but never anything outside panel storage (a
+	// bad or empty data_path must not turn into rm -rf of the wrong tree)
+	if err := s.removeServerData(server.DataPath); err != nil {
 		s.log.Error("Failed to delete server data: %v", err)
 	}
+	return nil
+}
 
-	// Reconcile drops the server's routes and counters
-	syncRoutes(ctx, s.proxy, s.log, "after server delete")
-	if s.proxy != nil {
-		s.proxy.DropOwnerStats(server.Id)
+func (s *ServerService) removeServerData(dataPath string) error {
+	if strings.TrimSpace(dataPath) == "" {
+		return nil
 	}
-
-	return connect.NewResponse(&v1.DeleteServerResponse{}), nil
+	root, err := filepath.Abs(s.config.Storage.DataDir)
+	if err != nil {
+		return err
+	}
+	target, err := filepath.Abs(dataPath)
+	if err != nil {
+		return err
+	}
+	if target == root || !files.Within(root, target) {
+		return fmt.Errorf("refusing to delete %q: not inside panel storage %q", target, root)
+	}
+	return os.RemoveAll(target)
 }
 
 // StartServer starts a server (provisioning + container start run async)
@@ -1125,20 +1205,14 @@ func (s *ServerService) StopServer(ctx context.Context, req *connect.Request[v1.
 		return nil, err
 	}
 
-	if server.ContainerId == "" {
-		if err := s.store.UpdateServerFields(ctx, server.Id, map[string]any{"status": v1.ServerStatus_SERVER_STATUS_STOPPED}); err != nil {
-			s.log.Error("Failed to update server status: %v", err)
-		}
-		return connect.NewResponse(&v1.StopServerResponse{
-			Status: v1.ServerStatus_SERVER_STATUS_STOPPED,
-		}), nil
+	// Always go through the lifecycle: a server with no container yet may
+	// be provisioning, and the stop has to cancel that start (marking it
+	// STOPPED here let provisioning carry on and overwrite the status).
+	// The lifecycle stamps STOPPING/STOPPED itself, so a fast stop cannot
+	// be overwritten by a late stamp from this handler.
+	if err := s.runLifecycleAsync(ctx, server, 15*time.Minute, "stop"); err != nil {
+		return nil, err
 	}
-
-	if err := s.store.UpdateServerFields(ctx, server.Id, map[string]any{"status": v1.ServerStatus_SERVER_STATUS_STOPPING}); err != nil {
-		s.log.Error("Failed to update server status: %v", err)
-	}
-
-	s.runLifecycleAsync(ctx, server, 15*time.Minute, "stop", s.lifecycle.Stop)
 
 	return connect.NewResponse(&v1.StopServerResponse{
 		Status: v1.ServerStatus_SERVER_STATUS_STOPPING,
@@ -1152,7 +1226,9 @@ func (s *ServerService) RestartServer(ctx context.Context, req *connect.Request[
 		return nil, err
 	}
 
-	s.runLifecycleAsync(ctx, server, 2*time.Hour, "restart", s.lifecycle.Restart)
+	if err := s.runLifecycleAsync(ctx, server, 2*time.Hour, "restart"); err != nil {
+		return nil, err
+	}
 
 	return connect.NewResponse(&v1.RestartServerResponse{
 		Status: v1.ServerStatus_SERVER_STATUS_STARTING,
@@ -1166,7 +1242,9 @@ func (s *ServerService) RecreateServer(ctx context.Context, req *connect.Request
 		return nil, err
 	}
 
-	s.runLifecycleAsync(ctx, server, 2*time.Hour, "recreate", s.lifecycle.Recreate)
+	if err := s.runLifecycleAsync(ctx, server, 2*time.Hour, "recreate"); err != nil {
+		return nil, err
+	}
 
 	return connect.NewResponse(&v1.RecreateServerResponse{
 		Status: v1.ServerStatus_SERVER_STATUS_CREATING,
@@ -1381,22 +1459,39 @@ func (s *ServerService) GetNextAvailablePort(ctx context.Context, req *connect.R
 	}), nil
 }
 
-// Reports host physical memory and per-server reservations
-func (s *ServerService) GetHostMemory(ctx context.Context, req *connect.Request[v1.GetHostMemoryRequest]) (*connect.Response[v1.GetHostMemoryResponse], error) {
-	var totalMB int64
-	if s.docker != nil {
-		if dockerClient := s.docker.GetDockerClient(); dockerClient != nil {
-			if info, err := dockerClient.Info(ctx); err == nil {
-				totalMB = info.MemTotal / 1024 / 1024
-			} else {
-				s.log.Error("Failed to read docker host info: %v", err)
-			}
-		}
+// Physical memory on the docker host in MB, 0 when unknown
+func (s *ServerService) hostTotalMB(ctx context.Context) int64 {
+	if s.docker == nil {
+		return 0
 	}
+	dockerClient := s.docker.GetDockerClient()
+	if dockerClient == nil {
+		return 0
+	}
+	info, err := dockerClient.Info(ctx)
+	if err != nil {
+		s.log.Error("Failed to read docker host info: %v", err)
+		return 0
+	}
+	return info.MemTotal / 1024 / 1024
+}
 
+// Reports host physical memory, per-server reservations and the memory cap
+func (s *ServerService) GetHostMemory(ctx context.Context, req *connect.Request[v1.GetHostMemoryRequest]) (*connect.Response[v1.GetHostMemoryResponse], error) {
 	servers, err := s.store.ListServers(ctx)
 	if err != nil {
 		s.log.Error("Failed to list servers: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get host memory"))
+	}
+
+	capMB, _, err := s.quota.limit(ctx)
+	if err != nil {
+		s.log.Error("Failed to load memory quota: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get host memory"))
+	}
+	modulesMB, err := s.quota.modulesMB(ctx)
+	if err != nil {
+		s.log.Error("Failed to list modules: %v", err)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get host memory"))
 	}
 
@@ -1405,13 +1500,16 @@ func (s *ServerService) GetHostMemory(ctx context.Context, req *connect.Request[
 		allocations = append(allocations, &v1.ServerMemoryAllocation{
 			ServerId:   server.Id,
 			ServerName: server.Name,
-			Memory:     int32(server.Memory),
+			Memory:     int32(allocatedMemoryMB(server)),
 		})
 	}
 
 	return connect.NewResponse(&v1.GetHostMemoryResponse{
-		TotalMb:     totalMB,
+		TotalMb:     s.hostTotalMB(ctx),
 		Allocations: allocations,
+		MaxTotalMb:  capMB,
+		CapExempt:   s.quota.exempt(ctx),
+		ModulesMb:   modulesMB,
 	}), nil
 }
 

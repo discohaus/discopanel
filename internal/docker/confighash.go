@@ -44,11 +44,7 @@ func (c *Client) DesiredConfigHash(server *v1.Server, serverConfig *v1.ServerPro
 	w("data", TranslateToHostPath(server.DataPath))
 	w("memory", strconv.Itoa(int(server.Memory)))
 	w("dns", c.config.DNS)
-	logDriver := c.config.LogDriver
-	if logDriver == "" {
-		logDriver = "local"
-	}
-	w("logdriver", logDriver)
+	w("logdriver", c.DefaultLogDriver())
 
 	if server.DockerOverrides != nil {
 		if raw, err := (proto.MarshalOptions{Deterministic: true}).Marshal(server.DockerOverrides); err == nil {
@@ -124,10 +120,7 @@ func (c *Client) DesiredModuleConfigHash(module *v1.Module, template *v1.ModuleT
 	}
 	logDriver := module.LogDriver
 	if logDriver == "" {
-		logDriver = cfg.Docker.LogDriver
-	}
-	if logDriver == "" {
-		logDriver = "local"
+		logDriver = c.DefaultLogDriver()
 	}
 	w("logdriver", logDriver)
 

@@ -46,6 +46,7 @@ type ModuleService struct {
 	config           *config.Config
 	metricsCollector *metrics.Collector
 	rec              *metrics.Recorder
+	quota            *MemoryQuota
 	log              *logger.Logger
 	logStreamer      *logger.LogStreamer
 }
@@ -60,6 +61,7 @@ func NewModuleService(
 	logStreamer *logger.LogStreamer,
 	metricsCollector *metrics.Collector,
 	rec *metrics.Recorder,
+	quota *MemoryQuota,
 	log *logger.Logger,
 ) *ModuleService {
 	return &ModuleService{
@@ -72,6 +74,7 @@ func NewModuleService(
 		logStreamer:      logStreamer,
 		metricsCollector: metricsCollector,
 		rec:              rec,
+		quota:            quota,
 		log:              log,
 	}
 }
@@ -683,6 +686,13 @@ func (s *ModuleService) CreateModule(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	// Module memory draws from the same cap as servers
+	releaseMemory, err := s.quota.reserveModule(ctx, module, -1)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseMemory()
+
 	if err := s.store.CreateModule(ctx, module); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create module: %w", err))
 	}
@@ -712,6 +722,7 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 	if err != nil {
 		return nil, err
 	}
+	originalMemory := moduleMemoryMB(module)
 
 	// Update fields if provided
 	if msg.Name != nil {
@@ -828,6 +839,13 @@ func (s *ModuleService) UpdateModule(ctx context.Context, req *connect.Request[v
 	if err := s.moduleManager.GateModuleConfig(ctx, module, template); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+
+	// Raising module memory must fit the cap
+	releaseMemory, err := s.quota.reserveModule(ctx, module, originalMemory)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseMemory()
 
 	if err := s.store.UpdateModule(ctx, module); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update module: %w", err))

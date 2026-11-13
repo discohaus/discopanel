@@ -9,6 +9,9 @@
 		memoryMax: number;
 		totalMb?: number;
 		occupiedMb?: number;
+		capMb?: number;
+		capExempt?: boolean;
+		overrideMb?: number;
 		disabled?: boolean;
 		label?: string;
 		dirty?: boolean;
@@ -20,6 +23,9 @@
 		memoryMax = $bindable(),
 		totalMb = 0,
 		occupiedMb = 0,
+		capMb = 0,
+		capExempt = false,
+		overrideMb = 0,
 		disabled = false,
 		label = 'Memory',
 		dirty = false
@@ -59,11 +65,26 @@
 
 	// Falls back to sane range when memory unknown
 	let rangeMax = $derived(
-		totalMb > 0 ? totalMb : Math.max(32768, Math.ceil((memory * 2) / 1024) * 1024)
+		totalMb > 0 ? totalMb : Math.max(32768, Math.ceil((memory * 2) / 1024) * 1024, capMb)
 	);
 
 	let occupiedPct = $derived(Math.min((occupiedMb / rangeMax) * 100, 100));
-	let overCommitted = $derived(totalMb > 0 && occupiedMb + memory > totalMb);
+	let overCommitted = $derived(totalMb > 0 && occupiedMb + Math.max(memory, overrideMb) > totalMb);
+
+	// Admin cap on memory across all servers, hard for everyone but admins
+	let capped = $derived(capMb > 0);
+	let capBlocks = $derived(capped && !capExempt);
+	let capRoom = $derived(Math.max(capMb - occupiedMb, 0));
+	let capFull = $derived(capBlocks && capRoom < MIN_CONTAINER);
+	// Larger docker override is the real container limit, the backend counts it
+	let effectiveMb = $derived(Math.max(memory, overrideMb));
+	let overrideWins = $derived(overrideMb > memory);
+	let overCap = $derived(capped && occupiedMb + effectiveMb > capMb);
+	let ceiling = $derived(
+		capBlocks
+			? Math.min(rangeMax, Math.max(Math.floor(capRoom / STEP) * STEP, MIN_CONTAINER))
+			: rangeMax
+	);
 
 	// Heap follows external memory changes, like modpack presets
 	$effect(() => {
@@ -106,7 +127,7 @@
 	}
 
 	function setContainer(mb: number) {
-		memory = Math.min(Math.max(snap(mb), MIN_CONTAINER), rangeMax);
+		memory = Math.min(Math.max(snap(mb), MIN_CONTAINER), ceiling);
 		if (unlocked) {
 			// Heap rides along so it always fits the container
 			memoryMax = Math.min(memoryMax, memory);
@@ -269,6 +290,15 @@
 					class="absolute inset-y-0 left-0 rounded-full bg-primary/25"
 					style="width: {pct(memory)}%"
 				></div>
+				{#if capped && capRoom < rangeMax}
+					<div
+						class="absolute -inset-y-1.5 w-0.5 -translate-x-1/2 rounded-full {capBlocks
+							? 'bg-status-danger/70'
+							: 'bg-status-busy/70'}"
+						style="left: {pct(capRoom)}%"
+						title="Memory limit, {fmtGb(capRoom)} left for this server"
+					></div>
+				{/if}
 				<div
 					class="absolute inset-y-0 rounded-full bg-primary/60"
 					style="left: {pct(memoryMin)}%; width: {Math.max(pct(memoryMax) - pct(memoryMin), 0)}%"
@@ -322,7 +352,7 @@
 				role="slider"
 				aria-label="Server memory"
 				aria-valuemin={MIN_CONTAINER}
-				aria-valuemax={rangeMax}
+				aria-valuemax={ceiling}
 				aria-valuenow={memory}
 				aria-valuetext={fmtGb(memory)}
 				tabindex={disabled ? -1 : 0}
@@ -377,14 +407,46 @@
 		</div>
 	</div>
 
-	{#if totalMb > 0 && occupiedMb > 0}
-		{#if overCommitted}
+	{#if capped}
+		{#if capFull}
+			<p class="text-[10px] text-status-danger">
+				Other servers and modules use {fmtGb(occupiedMb)} of the {fmtGb(capMb)} server memory limit,
+				leaving no room for this one. Ask an administrator to raise the limit.
+			</p>
+		{:else if capBlocks && overCap}
+			<p class="text-[10px] text-status-danger">
+				Over the {fmtGb(capMb)} server memory limit, at most {fmtGb(capRoom)} fits. Memory can only be
+				lowered here.
+			</p>
+		{:else if overCap}
 			<p class="text-[10px] text-status-busy">
-				Sharing {fmtGb(occupiedMb + memory - totalMb)} with other servers
+				Exceeds the {fmtGb(capMb)} server memory limit by {fmtGb(occupiedMb + effectiveMb - capMb)},
+				allowed for administrators
 			</p>
 		{:else}
 			<p class="text-[10px] text-muted-foreground/80">
-				{fmtGb(occupiedMb)} reserved by other servers
+				{fmtGb(capRoom)} of the {fmtGb(capMb)} server memory limit available{occupiedMb > 0
+					? `, ${fmtGb(occupiedMb)} reserved by other servers and modules`
+					: ''}
+			</p>
+		{/if}
+	{/if}
+
+	{#if overrideWins}
+		<p class="text-[10px] text-status-busy">
+			The {fmtGb(overrideMb)} docker memory override is the container limit and counts instead of server
+			memory
+		</p>
+	{/if}
+
+	{#if totalMb > 0 && occupiedMb > 0}
+		{#if overCommitted}
+			<p class="text-[10px] text-status-busy">
+				Sharing {fmtGb(occupiedMb + effectiveMb - totalMb)} of host memory with other servers
+			</p>
+		{:else if !capped}
+			<p class="text-[10px] text-muted-foreground/80">
+				{fmtGb(occupiedMb)} reserved by other servers and modules
 			</p>
 		{/if}
 	{/if}

@@ -9,6 +9,7 @@
 	import AuthSettings from '$lib/components/auth-settings.svelte';
 	import SupportSettings from '$lib/components/support-settings.svelte';
 	import LogsSettings from '$lib/components/logs-settings.svelte';
+	import MemoryQuotaSettings from '$lib/components/memory-quota-settings.svelte';
 	import { PageHeader, EmptyState, TabRail } from '$lib/components/app';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { registerRefresh } from '$lib/stores/refresh';
@@ -29,6 +30,11 @@
 			key: 'server-defaults',
 			label: 'Server defaults',
 			desc: 'Default properties applied to newly created servers'
+		},
+		{
+			key: 'resources',
+			label: 'Resources',
+			desc: 'Limits on what servers may allocate on this host'
 		},
 		{
 			key: 'network',
@@ -171,7 +177,9 @@
 		<div bind:this={tabPane} class="min-h-0 flex-1 overflow-y-auto">
 			<div class="mx-auto w-full max-w-6xl p-4 sm:p-6 2xl:max-w-7xl">
 				{#if visibleTabs.length > 0}
-					{#if activeTab === 'auth' && showSettings}
+					{#if activeTab === 'resources' && showSettings}
+						<MemoryQuotaSettings />
+					{:else if activeTab === 'auth' && showSettings}
 						<AuthSettings />
 					{:else if activeTab === 'support' && showSettings}
 						<SupportSettings />

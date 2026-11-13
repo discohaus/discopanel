@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/discohaus/discopanel/internal/lifecycle"
 	"github.com/discohaus/discopanel/internal/metrics"
 	"github.com/discohaus/discopanel/pkg/files"
 	"github.com/discohaus/discopanel/pkg/minecraft"
@@ -137,36 +139,66 @@ func (s *ServerService) RestoreBackup(ctx context.Context, req *connect.Request[
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("backups are not configured"))
 	}
 
-	switch server.Status {
-	case v1.ServerStatus_SERVER_STATUS_STOPPED, v1.ServerStatus_SERVER_STATUS_ERROR:
-	default:
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("stop the server before restoring"))
-	}
-
 	archivePath, err := files.ResolveUnder(dir, req.Msg.FileName)
-	if err != nil {
+	if err != nil || !strings.HasSuffix(req.Msg.FileName, ".zip") {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid backup name"))
 	}
 	if _, err := os.Stat(archivePath); err != nil {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("backup not found"))
 	}
 
-	// Snapshot current world first so a restore is reversible
-	if worldDirs, err := files.FindWorldDirs(server.DataPath); err == nil && len(worldDirs) > 0 {
-		rels := make([]string, 0, len(worldDirs))
-		for _, w := range worldDirs {
-			if rel, err := filepath.Rel(server.DataPath, w); err == nil {
-				rels = append(rels, rel)
+	// Hold the transition slot: a start racing the restore would boot a
+	// half-written world. Status is re-checked under the slot, and against
+	// docker since the stored status can lag.
+	err = s.lifecycle.Exclusive(ctx, server.Id, "restore", false, func() error {
+		fresh, err := getServer(ctx, s.store, server.Id)
+		if err != nil {
+			return err
+		}
+		switch fresh.Status {
+		case v1.ServerStatus_SERVER_STATUS_STOPPED, v1.ServerStatus_SERVER_STATUS_ERROR:
+		default:
+			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("stop the server before restoring"))
+		}
+		if fresh.ContainerId != "" {
+			if st, err := s.docker.GetContainerStatus(ctx, fresh.ContainerId); err == nil {
+				switch st {
+				case v1.ServerStatus_SERVER_STATUS_RUNNING, v1.ServerStatus_SERVER_STATUS_STARTING,
+					v1.ServerStatus_SERVER_STATUS_UNHEALTHY, v1.ServerStatus_SERVER_STATUS_PAUSED:
+					return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("the server container is still running, stop it before restoring"))
+				}
 			}
 		}
-		safety := filepath.Join(dir, fmt.Sprintf("pre-restore_%s.zip", time.Now().UTC().Format("20060102-150405")))
-		if _, err := files.CreateZipArchive(rels, server.DataPath, safety, true); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to snapshot current world: %w", err))
-		}
-	}
 
-	if _, err := files.ExtractArchive(ctx, archivePath, server.DataPath, nil); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to restore backup: %w", err))
+		// Snapshot current world first so a restore is reversible
+		if worldDirs, err := files.FindWorldDirs(fresh.DataPath); err == nil && len(worldDirs) > 0 {
+			rels := make([]string, 0, len(worldDirs))
+			for _, w := range worldDirs {
+				if rel, err := filepath.Rel(fresh.DataPath, w); err == nil {
+					rels = append(rels, rel)
+				}
+			}
+			safety := filepath.Join(dir, fmt.Sprintf("%s%s.zip", preRestorePrefix, time.Now().UTC().Format("20060102-150405")))
+			if _, err := files.CreateZipArchive(rels, fresh.DataPath, safety, true); err != nil {
+				os.Remove(safety)
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to snapshot current world: %w", err))
+			}
+		}
+
+		if err := restoreArchiveExact(ctx, archivePath, fresh.DataPath); err != nil {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to restore backup: %w", err))
+		}
+		if err := prunePreRestoreSnapshots(dir, keepPreRestoreSnapshots); err != nil {
+			s.log.Warn("Failed to prune pre-restore snapshots for %s: %v", fresh.Name, err)
+		}
+		return nil
+	})
+	var busy *lifecycle.BusyError
+	if errors.As(err, &busy) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_BACKUP_RESTORE, metrics.Attrs{"file": req.Msg.FileName}, "restored backup %s", req.Msg.FileName)

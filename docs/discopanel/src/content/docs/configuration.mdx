@@ -47,6 +47,7 @@ Most installs only ever touch a few of these:
 | `proxy` | Minecraft domain, ports, and TLS. [Proxy & Domains](/guides/proxy/), [HTTPS & Certificates](/guides/tls/). |
 | `auth` | Local accounts, registration, and [OIDC providers](/guides/oidc/keycloak/). |
 | `minecraft.global_config` | Defaults for new servers. Per-server overrides in Properties. |
+| `minecraft.max_total_memory_mb` | Cap on memory allocated across all servers and modules in MB, `0` for none. Settings > Resources overrides it. Administrators may exceed it, except with auth disabled, where it binds everyone. |
 | `module` | [Module](/guides/modules/) port range and `doctor_enabled`. |
 | `docker` | Socket, container labels, `runtime_image` registry mirror, and `agent_url` telemetry address override. Agent address auto-detected by default. |
 | `diagnostics` | Startup checks and release check. |
