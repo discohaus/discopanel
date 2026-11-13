@@ -161,10 +161,7 @@ func (c *Client) CreateModuleContainer(ctx context.Context, module *v1.Module, t
 	// Log driver via config or explicitly
 	logDriver := module.LogDriver
 	if logDriver == "" {
-		logDriver = c.config.LogDriver
-	}
-	if logDriver == "" {
-		logDriver = "local"
+		logDriver = c.DefaultLogDriver()
 	}
 
 	hostConfig := &container.HostConfig{

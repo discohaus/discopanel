@@ -47,6 +47,8 @@ func (p *Provisioner) applyConfigFiles(ctx context.Context, server *v1.Server, c
 	if err := p.writePlayerListFile(ctx, server, cfg, "whitelist.json", strVal(cfg.Whitelist), false, overwriteWhitelist); err != nil {
 		p.progress(server, "warning: failed to write whitelist.json: %v", err)
 	}
+	// Runs after any pack extraction so user keys win over pack updates
+	p.applyConfigOverrides(server)
 	if err := p.installModrinthProjects(ctx, server, cfg, mcVersion, force); err != nil {
 		return err
 	}

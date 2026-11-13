@@ -24,6 +24,22 @@ service PropertiesService {
       object_id_field: "server_id"
     };
   }
+  // Fetch per-file config overrides re-applied on every start
+  rpc GetConfigOverrides(GetConfigOverridesRequest) returns (GetConfigOverridesResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVER_PROPERTIES
+      action: ACTION_TYPE_READ
+      object_id_field: "server_id"
+    };
+  }
+  // Replace the config overrides, applied on the next start
+  rpc UpdateConfigOverrides(UpdateConfigOverridesRequest) returns (UpdateConfigOverridesResponse) {
+    option (discopanel.options.v1.perm) = {
+      resource: RESOURCE_TYPE_SERVER_PROPERTIES
+      action: ACTION_TYPE_UPDATE
+      object_id_field: "server_id"
+    };
+  }
   // Fetch system-wide defaults
   rpc GetGlobalSettings(GetGlobalSettingsRequest) returns (GetGlobalSettingsResponse) {
     option (discopanel.options.v1.perm) = {
@@ -98,4 +114,65 @@ message UpdateGlobalSettingsRequest {
 // Updated global defaults
 message UpdateGlobalSettingsResponse {
   repeated PropertyCategory categories = 1;
+}
+
+// Syntax a config override file is edited with
+enum ConfigFormat {
+  option (discopanel.options.v1.enum_type) = {label: "Config Format"};
+  CONFIG_FORMAT_UNSPECIFIED = 0 [(discopanel.options.v1.value) = {label: "Auto"}]; // Picked by extension
+  CONFIG_FORMAT_PROPERTIES = 1 [(discopanel.options.v1.value) = {label: "Properties"}];
+  CONFIG_FORMAT_TOML = 2 [(discopanel.options.v1.value) = {label: "TOML"}];
+  CONFIG_FORMAT_JSON = 3 [(discopanel.options.v1.value) = {label: "JSON / JSON5"}];
+  CONFIG_FORMAT_YAML = 4 [(discopanel.options.v1.value) = {label: "YAML"}];
+  CONFIG_FORMAT_CFG = 5 [(discopanel.options.v1.value) = {label: "Forge CFG"}];
+  CONFIG_FORMAT_SNBT = 6 [(discopanel.options.v1.value) = {label: "SNBT"}];
+}
+
+// One key forced to a value
+message ConfigOverrideEntry {
+  string key = 1; // Dot path or JSON pointer, literal key for properties
+  string value = 2; // Typed like the existing value, quotes force text
+}
+
+// Overrides for one file in the server data dir
+message ConfigOverrideFile {
+  string path = 1; // Relative to the server data dir
+  ConfigFormat format = 2; // Auto by extension, an explicit value must match it
+  repeated ConfigOverrideEntry entries = 3;
+}
+
+// Per-server overrides, stored in .discopanel/config-overrides.json
+message ConfigOverrides {
+  int32 version = 1;
+  repeated ConfigOverrideFile files = 2;
+}
+
+// Live facts about one override file, same order as files
+message ConfigOverrideFileStatus {
+  string path = 1;
+  bool exists = 2;
+  ConfigFormat format = 3; // Resolved format, unspecified when unsupported
+}
+
+// Config overrides request
+message GetConfigOverridesRequest {
+  string server_id = 1;
+}
+
+// Stored overrides with file status
+message GetConfigOverridesResponse {
+  repeated ConfigOverrideFile files = 1;
+  repeated ConfigOverrideFileStatus status = 2;
+}
+
+// Full replacement list of overrides
+message UpdateConfigOverridesRequest {
+  string server_id = 1;
+  repeated ConfigOverrideFile files = 2;
+}
+
+// Saved overrides with file status
+message UpdateConfigOverridesResponse {
+  repeated ConfigOverrideFile files = 1;
+  repeated ConfigOverrideFileStatus status = 2;
 }

@@ -8,16 +8,21 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/discohaus/discopanel/internal/auth"
 	storage "github.com/discohaus/discopanel/internal/db"
 	"github.com/discohaus/discopanel/internal/docker"
 	"github.com/discohaus/discopanel/internal/lifecycle"
 	"github.com/discohaus/discopanel/internal/metrics"
+	"github.com/discohaus/discopanel/internal/provisioner"
+	"github.com/discohaus/discopanel/internal/rbac"
 	"github.com/discohaus/discopanel/pkg/config"
 	"github.com/discohaus/discopanel/pkg/logger"
 	"github.com/discohaus/discopanel/pkg/minecraft"
+	optionsv1 "github.com/discohaus/discopanel/pkg/proto/discopanel/options/v1"
 	v1 "github.com/discohaus/discopanel/pkg/proto/discopanel/v1"
 	"github.com/discohaus/discopanel/pkg/proto/discopanel/v1/discopanelv1connect"
 	"github.com/discohaus/discopanel/pkg/protometa"
+	"github.com/discohaus/discopanel/pkg/runtimespec"
 	"google.golang.org/protobuf/proto"
 	"gorm.io/gorm"
 )
@@ -29,17 +34,19 @@ type PropertiesService struct {
 	config    *config.Config
 	docker    *docker.Client
 	lifecycle *lifecycle.Manager
+	enforcer  *rbac.Enforcer
 	rec       *metrics.Recorder
 	log       *logger.Logger
 }
 
 // Creates new config service
-func NewPropertiesService(store *storage.Store, cfg *config.Config, docker *docker.Client, lifecycleManager *lifecycle.Manager, rec *metrics.Recorder, log *logger.Logger) *PropertiesService {
+func NewPropertiesService(store *storage.Store, cfg *config.Config, docker *docker.Client, lifecycleManager *lifecycle.Manager, enforcer *rbac.Enforcer, rec *metrics.Recorder, log *logger.Logger) *PropertiesService {
 	return &PropertiesService{
 		store:     store,
 		config:    cfg,
 		docker:    docker,
 		lifecycle: lifecycleManager,
+		enforcer:  enforcer,
 		rec:       rec,
 		log:       log,
 	}
@@ -135,6 +142,74 @@ func (s *PropertiesService) UpdateServerProperties(ctx context.Context, req *con
 
 	return connect.NewResponse(&v1.UpdateServerPropertiesResponse{
 		Categories: categories,
+	}), nil
+}
+
+// Overrides rewrite files on disk, so they also need the files grant
+func (s *PropertiesService) requireServerFiles(ctx context.Context, serverID string, action optionsv1.ActionType) error {
+	user := auth.GetUserFromContext(ctx)
+	if user == nil {
+		return connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+	allowed, err := s.enforcer.Enforce(user.Roles, optionsv1.ResourceType_RESOURCE_TYPE_FILES, action, serverID)
+	if err != nil {
+		s.log.Error("RBAC enforcement error: %v", err)
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	if !allowed {
+		return connect.NewError(connect.CodePermissionDenied,
+			fmt.Errorf("config overrides edit server files and need %s/%s", protometa.Name(optionsv1.ResourceType_RESOURCE_TYPE_FILES), protometa.Name(action)))
+	}
+	return nil
+}
+
+// Gets the server's config file overrides
+func (s *PropertiesService) GetConfigOverrides(ctx context.Context, req *connect.Request[v1.GetConfigOverridesRequest]) (*connect.Response[v1.GetConfigOverridesResponse], error) {
+	server, err := getServer(ctx, s.store, req.Msg.ServerId)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.requireServerFiles(ctx, server.Id, optionsv1.ActionType_ACTION_TYPE_READ); err != nil {
+		return nil, err
+	}
+	overrides, err := runtimespec.ReadConfigOverrides(server.DataPath)
+	if err != nil {
+		s.log.Error("Failed to read config overrides for %s: %v", server.Name, err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to read config overrides"))
+	}
+	return connect.NewResponse(&v1.GetConfigOverridesResponse{
+		Files:  overrides.Files,
+		Status: provisioner.ConfigOverrideStatus(server.DataPath, overrides.Files),
+	}), nil
+}
+
+// Replaces the server's config file overrides, applied on next start
+func (s *PropertiesService) UpdateConfigOverrides(ctx context.Context, req *connect.Request[v1.UpdateConfigOverridesRequest]) (*connect.Response[v1.UpdateConfigOverridesResponse], error) {
+	server, err := getServer(ctx, s.store, req.Msg.ServerId)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.requireServerFiles(ctx, server.Id, optionsv1.ActionType_ACTION_TYPE_UPDATE); err != nil {
+		return nil, err
+	}
+	list, err := provisioner.NormalizeConfigOverrides(server.DataPath, req.Msg.Files)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if err := runtimespec.WriteConfigOverrides(server.DataPath, &v1.ConfigOverrides{Files: list}); err != nil {
+		s.log.Error("Failed to save config overrides for %s: %v", server.Name, err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to save config overrides"))
+	}
+	keys := 0
+	for _, f := range list {
+		keys += len(f.Entries)
+	}
+	s.rec.Record(ctx, server.Id, v1.ServerActionKind_SERVER_ACTION_KIND_PROPERTIES_UPDATE,
+		metrics.Attrs{"config_override_files": strconv.Itoa(len(list)), "config_override_keys": strconv.Itoa(keys)},
+		"updated config overrides (%d files, %d keys)", len(list), keys)
+	return connect.NewResponse(&v1.UpdateConfigOverridesResponse{
+		Files:  list,
+		Status: provisioner.ConfigOverrideStatus(server.DataPath, list),
 	}), nil
 }
 

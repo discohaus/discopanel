@@ -214,34 +214,56 @@ func (c *SLPClient) readPong(conn net.Conn) (int64, error) {
 	return payload, nil
 }
 
-// Extract plain text Motd from description field
+// Extract plain text Motd from description field. The description is a
+// chat component: a string, an array of components, or an object with
+// "text" and nested "extra" components, any of which may be strings.
 func parseDescription(desc json.RawMessage) string {
 	if len(desc) == 0 {
 		return ""
 	}
 
-	// Try parsing as plain string first
-	var plainStr string
-	if err := json.Unmarshal(desc, &plainStr); err == nil {
-		return strings.TrimSpace(plainStr)
-	}
-
-	// Try parsing as chat component object
-	var component struct {
-		Text  string `json:"text"`
-		Extra []struct {
-			Text string `json:"text"`
-		} `json:"extra"`
-	}
-	if err := json.Unmarshal(desc, &component); err == nil {
-		var result strings.Builder
-		result.WriteString(component.Text)
-		for _, extra := range component.Extra {
-			result.WriteString(extra.Text)
-		}
+	var result strings.Builder
+	if appendComponentText(&result, desc, 0) {
 		return strings.TrimSpace(result.String())
 	}
 
-	// Strips JSON formatting and returns raw text
+	// Not a chat component, return the raw text
 	return strings.TrimSpace(string(desc))
+}
+
+// Deep enough for any real Motd, shallow enough to stop hostile nesting
+const maxComponentDepth = 32
+
+// Appends a component's text in reading order, false when it isn't a
+// component at all
+func appendComponentText(b *strings.Builder, raw json.RawMessage, depth int) bool {
+	if depth > maxComponentDepth {
+		return true
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		b.WriteString(str)
+		return true
+	}
+	var list []json.RawMessage
+	if err := json.Unmarshal(raw, &list); err == nil {
+		for _, item := range list {
+			appendComponentText(b, item, depth+1)
+		}
+		return true
+	}
+	var obj struct {
+		Text  *string           `json:"text"`
+		Extra []json.RawMessage `json:"extra"`
+	}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return false
+	}
+	if obj.Text != nil {
+		b.WriteString(*obj.Text)
+	}
+	for _, item := range obj.Extra {
+		appendComponentText(b, item, depth+1)
+	}
+	return true
 }

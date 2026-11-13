@@ -70,9 +70,13 @@ type Client struct {
 	send chan []byte
 	done chan struct{}
 
-	// Authentication
+	// Authentication, guarded by authMu: handlers read it on the read
+	// goroutine while the write goroutine periodically revalidates it.
+	authMu        sync.RWMutex
 	user          *v1.User
 	authenticated bool
+	authMode      authMode
+	token         string
 
 	// Maps serverId to its log channel
 	subscriptions   map[string]chan *v1.LogEntry
@@ -265,6 +269,16 @@ func (c *Client) writePump() {
 			}
 
 		case <-ticker.C:
+			if !c.revalidate() {
+				// Session ended (logout, expiry, deletion, auth turned on):
+				// tell the client why, then drop the connection so no more
+				// logs or metrics reach it.
+				if data, err := proto.Marshal(authFailMessage("session expired")); err == nil {
+					c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+					c.conn.WriteMessage(websocket.BinaryMessage, data)
+				}
+				return
+			}
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
@@ -309,8 +323,7 @@ func (c *Client) handleAuth(msg *v1.AuthMessage) {
 
 	// No auth providers enabled, grants full admin access
 	if !c.hub.authManager.IsAnyAuthEnabled() {
-		c.user = c.hub.authManager.SystemUser()
-		c.authenticated = true
+		c.setIdentity(c.hub.authManager.SystemUser(), authModeSystem, "")
 		c.sendAuthOk()
 		return
 	}
@@ -330,12 +343,10 @@ func (c *Client) handleAuth(msg *v1.AuthMessage) {
 			c.sendAuthFail("invalid token")
 			return
 		}
-		c.user = user
-		c.authenticated = true
+		c.setIdentity(user, authModeToken, msg.Token)
 		c.sendAuthOk()
 	} else if c.hub.authManager.IsAnonymousAccessEnabled() {
-		c.user = c.hub.authManager.AnonymousUser()
-		c.authenticated = true
+		c.setIdentity(c.hub.authManager.AnonymousUser(), authModeAnonymous, "")
 		c.sendAuthOk()
 	} else {
 		c.sendAuthFail("authentication required")
@@ -344,7 +355,8 @@ func (c *Client) handleAuth(msg *v1.AuthMessage) {
 
 // Subscribes to server logs
 func (c *Client) handleSubscribe(msg *v1.SubscribeMessage) {
-	if !c.authenticated {
+	user, authenticated := c.identity()
+	if !authenticated || user == nil {
 		c.sendError("not authenticated")
 		return
 	}
@@ -355,7 +367,7 @@ func (c *Client) handleSubscribe(msg *v1.SubscribeMessage) {
 	}
 
 	// Check permission
-	allowed, err := c.hub.enforcer.Enforce(c.user.Roles, optionsv1.ResourceType_RESOURCE_TYPE_SERVERS, optionsv1.ActionType_ACTION_TYPE_READ, msg.ServerId)
+	allowed, err := c.hub.enforcer.Enforce(user.Roles, optionsv1.ResourceType_RESOURCE_TYPE_SERVERS, optionsv1.ActionType_ACTION_TYPE_READ, msg.ServerId)
 	if err != nil || !allowed {
 		c.sendError("permission denied")
 		return
@@ -449,7 +461,8 @@ func (c *Client) metricsSubscriptions() []string {
 
 // Executes a command on the server
 func (c *Client) handleCommand(msg *v1.CommandMessage) {
-	if !c.authenticated {
+	user, authenticated := c.identity()
+	if !authenticated || user == nil {
 		c.sendError("not authenticated")
 		return
 	}
@@ -465,17 +478,15 @@ func (c *Client) handleCommand(msg *v1.CommandMessage) {
 	}
 
 	// Check command permission
-	if c.user != nil {
-		allowed, err := c.hub.enforcer.Enforce(c.user.Roles, optionsv1.ResourceType_RESOURCE_TYPE_SERVERS, optionsv1.ActionType_ACTION_TYPE_COMMAND, msg.ServerId)
-		if err != nil || !allowed {
-			c.sendCommandResult(msg.ServerId, false, "", "permission denied")
-			return
-		}
+	allowed, err := c.hub.enforcer.Enforce(user.Roles, optionsv1.ResourceType_RESOURCE_TYPE_SERVERS, optionsv1.ActionType_ACTION_TYPE_COMMAND, msg.ServerId)
+	if err != nil || !allowed {
+		c.sendCommandResult(msg.ServerId, false, "", "permission denied")
+		return
 	}
 
 	ctx := metrics.WithTrace(context.Background())
-	if c.user != nil && c.user.Username != "" {
-		ctx = metrics.WithSource(ctx, c.user.Username)
+	if user.Username != "" {
+		ctx = metrics.WithSource(ctx, user.Username)
 	}
 
 	output, err := c.hub.sender.Run(ctx, msg.ServerId, msg.Command, silent)
@@ -489,7 +500,8 @@ func (c *Client) handleCommand(msg *v1.CommandMessage) {
 
 // Predicts completions for a command
 func (c *Client) handleCommandCompletions(msg *v1.CommandCompletionsMessage) {
-	if !c.authenticated {
+	user, authenticated := c.identity()
+	if !authenticated || user == nil {
 		c.sendError("not authenticated")
 		return
 	}
@@ -499,12 +511,10 @@ func (c *Client) handleCommandCompletions(msg *v1.CommandCompletionsMessage) {
 		return
 	}
 
-	if c.user != nil {
-		allowed, err := c.hub.enforcer.Enforce(c.user.Roles, optionsv1.ResourceType_RESOURCE_TYPE_SERVERS, optionsv1.ActionType_ACTION_TYPE_READ, msg.ServerId)
-		if err != nil || !allowed {
-			c.sendCommandCompletionsResult(msg.ServerId, msg.Command, nil)
-			return
-		}
+	allowed, err := c.hub.enforcer.Enforce(user.Roles, optionsv1.ResourceType_RESOURCE_TYPE_SERVERS, optionsv1.ActionType_ACTION_TYPE_READ, msg.ServerId)
+	if err != nil || !allowed {
+		c.sendCommandCompletionsResult(msg.ServerId, msg.Command, nil)
+		return
 	}
 
 	ctx := context.Background()
@@ -569,9 +579,9 @@ func (c *Client) sendMessage(msg *v1.WebSocketServerMessage) {
 func (c *Client) sendAuthOk() {
 	userId := ""
 	username := ""
-	if c.user != nil {
-		userId = c.user.Id
-		username = c.user.Username
+	if user, _ := c.identity(); user != nil {
+		userId = user.Id
+		username = user.Username
 	}
 	c.sendMessage(&v1.WebSocketServerMessage{
 		Type: v1.WSMessageType_WS_MESSAGE_TYPE_AUTH_OK,
@@ -585,14 +595,18 @@ func (c *Client) sendAuthOk() {
 }
 
 func (c *Client) sendAuthFail(errMsg string) {
-	c.sendMessage(&v1.WebSocketServerMessage{
+	c.sendMessage(authFailMessage(errMsg))
+}
+
+func authFailMessage(errMsg string) *v1.WebSocketServerMessage {
+	return &v1.WebSocketServerMessage{
 		Type: v1.WSMessageType_WS_MESSAGE_TYPE_AUTH_FAIL,
 		Payload: &v1.WebSocketServerMessage_AuthFail{
 			AuthFail: &v1.AuthFailMessage{
 				Error: errMsg,
 			},
 		},
-	})
+	}
 }
 
 func (c *Client) sendSubscribed(serverId string) {
